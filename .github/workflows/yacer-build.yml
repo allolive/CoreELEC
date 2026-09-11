@@ -101,9 +101,11 @@ jobs:
             build.CoreELEC-*/toolchain
             build.CoreELEC-*/install_pkg
             build.CoreELEC-*/install_init
-          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
+            build.CoreELEC-*/build/linux-*
+            build.CoreELEC-*/build/u-boot*
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ hashFiles('config/**', 'distro/**', 'projects/Amlogic-ce/options', 'projects/Amlogic-ce/devices/Amlogic-no/options') }}-
           restore-keys: |
-            yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
+            yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ hashFiles('config/**', 'distro/**', 'projects/Amlogic-ce/options', 'projects/Amlogic-ce/devices/Amlogic-no/options') }}-
 
       # The full build output goes to build.log and is uploaded as an artifact.
       # Only the per-package progress lines and anything that looks like an error
@@ -185,15 +187,23 @@ jobs:
             echo "::warning::toolchain present but no stamps - discarding the restored state"
             rm -rf build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg
           fi
-          # build/ is deliberately not cached (36G). Packages that reference a
-          # build directory cannot be trusted from a cache without it: u-boot
-          # hashes files inside build/u-boot-<subdevice>, and the kernel modules
-          # compile against build/linux-*. Drop their stamps so they rebuild.
-          for pat in linux 'u-boot*' media_modules-aml w2-aml aml_bt mt76 \
-                     RTL8852BE-aml RTL8733BS AVL6862; do
-            rm -rf build.CoreELEC-*/.stamps/$pat 2>/dev/null || true
-          done
-          echo "stamps after invalidating build/-dependent packages: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
+          # Most of build/ is not cached, but the two directories other packages
+          # reach into are: u-boot hashes files under build/u-boot-<subdevice>,
+          # and the kernel modules compile against build/linux-*. If either is
+          # missing while its stamp says otherwise, drop the stamps that depend
+          # on it so those packages rebuild instead of failing halfway.
+          if ! ls -d build.CoreELEC-*/build/linux-* >/dev/null 2>&1; then
+            rm -rf build.CoreELEC-*/.stamps/linux build.CoreELEC-*/.stamps/media_modules-aml \
+                   build.CoreELEC-*/.stamps/w2-aml build.CoreELEC-*/.stamps/aml_bt \
+                   build.CoreELEC-*/.stamps/mt76 build.CoreELEC-*/.stamps/RTL8852BE-aml \
+                   build.CoreELEC-*/.stamps/RTL8733BS build.CoreELEC-*/.stamps/AVL6862 2>/dev/null || true
+            echo "no cached kernel build dir - linux and its modules will rebuild"
+          fi
+          if ! ls -d build.CoreELEC-*/build/u-boot-* >/dev/null 2>&1; then
+            rm -rf build.CoreELEC-*/.stamps/u-boot* 2>/dev/null || true
+            echo "no cached u-boot build dirs - u-boot will rebuild"
+          fi
+          echo "stamps usable: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
 
           FREE=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
           echo "free disk: ${FREE}G"
@@ -279,7 +289,9 @@ jobs:
             build.CoreELEC-*/toolchain
             build.CoreELEC-*/install_pkg
             build.CoreELEC-*/install_init
-          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+            build.CoreELEC-*/build/linux-*
+            build.CoreELEC-*/build/u-boot*
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ hashFiles('config/**', 'distro/**', 'projects/Amlogic-ce/options', 'projects/Amlogic-ce/devices/Amlogic-no/options') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
 
       - name: Build stats
@@ -404,6 +416,18 @@ jobs:
           cat update.json
 
           gh release upload yacer-feed releases.json update.json --repo "${{ github.repository }}" --clobber
+
+          # The feed keeps ten builds; without this the releases behind the older
+          # ones would stay for ever, unreferenced. Only build releases are
+          # considered - the source mirror and the feed are left alone.
+          keep=10
+          gh release list --repo "${{ github.repository }}" --limit 200 \
+            --json tagName,createdAt \
+            --jq '.[] | select(.tagName | test("^[0-9]+\\.[0-9]+-")) | "\(.createdAt) \(.tagName)"' 2>/dev/null \
+            | sort -r | tail -n +$((keep+1)) | while read -r _ tag; do
+                echo "  pruning old release $tag"
+                gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+              done
           echo "feed: https://github.com/${{ github.repository }}/releases/download/yacer-feed/releases.json"
 
       - uses: actions/upload-artifact@v4
