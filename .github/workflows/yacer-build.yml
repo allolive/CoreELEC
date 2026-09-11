@@ -1,0 +1,783 @@
+# YACER - Yet Another CoreELEC Repo
+#
+# Builds the Amlogic-no.aarch64 update .tar on every push. The build
+# cross-compiles to aarch64 on an x86_64 runner, so no ARM runner is needed.
+# 'make release' produces the update tar without the per-device .img.gz files,
+# which keeps the runner disk and the job time down.
+name: YACER build
+
+on:
+  push:
+    branches: [ yacer ]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/yacer-feed.yml'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/FUNDING.yml'
+  workflow_dispatch:
+    inputs:
+      clean_cache:
+        description: 'Ignore the cached build state and start from scratch'
+        type: boolean
+        default: false
+      depth:
+        description: 'Internal: how many times this build has already continued'
+        type: string
+        default: '0'
+      deadline_min:
+        description: 'Override the build deadline in minutes (use a small value to exercise the timeout path)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: write        # gh workflow run (chaining) needs this
+
+concurrency:
+  group: yacer-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build update tar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350          # the hard job limit is 360
+    env:
+      PROJECT: Amlogic-ce
+      RELEASE_TAG: builds
+      DEVICE: Amlogic-no
+      ARCH: aarch64
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      BUILD_DEADLINE_MIN: ${{ inputs.deadline_min != '' && inputs.deadline_min || '300' }}
+      # Host binaries land in the cache and are restored onto a different runner,
+      # which may be a different CPU. Without this they are built with -march=native
+      # and the first cached sed dies with SIGILL.
+      BUILD_REUSABLE: '1'
+      CACHE_EPOCH: v2              # bump to invalidate every cache at once
+
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          echo "runner: $(nproc) cores, $(free -g | awk '/^Mem:/{print $2}')G RAM"
+          echo "cpu: $(awk -F: '/model name/{print $2; exit}' /proc/cpuinfo | sed 's/^ //')"
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          echo "after:"; df -h / | tail -1
+
+      # The build tree is upstream's, taken from the mirror branch, with our own
+      # files laid on top - nothing of ours is replayed onto upstream, so there is
+      # nothing to conflict. Files we add are copied and refused if upstream
+      # already has that path; the few upstream files we change are patched, so a
+      # change underneath us stops the build instead of being silently reverted.
+      - uses: actions/checkout@v7
+        with:
+          ref: coreelec-22
+          fetch-depth: 1
+          # nothing after the overlay uses git auth, and the build runs thousands
+          # of third-party configure scripts in this workspace
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .yacer
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assemble our files onto the upstream tree
+        run: |
+          bash .yacer/scripts/yacer-assemble.sh .yacer
+          rm -rf .yacer
+          echo "files that differ from the mirror:"
+          git status --short | sed 's/^/  /'
+
+      # scripts/image lets CUSTOM_VERSION replace the whole version string, and it
+      # feeds the image contents as well as the file name, so the tar and what it
+      # installs agree. The prefix is read from the tree rather than hardcoded, so
+      # it follows upstream when they bump the release.
+      # Free-text dispatch inputs, both of which end up in arithmetic - and bash
+      # arithmetic evaluates command substitution inside an array subscript.
+      # Refuse anything that is not a plain number.
+      - name: Check the inputs
+        run: |
+          case "${BUILD_DEADLINE_MIN}" in
+            ''|*[!0-9]*) echo "::error::deadline_min must be a whole number"; exit 1 ;;
+          esac
+          [ "${BUILD_DEADLINE_MIN}" -ge 5 ] || { echo "::error::deadline_min must be at least 5"; exit 1; }
+          # must leave room inside the job limit for the cache saves, or the job
+          # is cancelled mid-upload and the run's progress is lost
+          # step wall time is deadline*60 + 302s, and the job cap is 350 min: 316
+          # leaves the same headroom for the restore and the cache saves that 320
+          # left when the kill grace was 60s
+          [ "${BUILD_DEADLINE_MIN}" -le 316 ] || { echo "::error::deadline_min must be 316 or less"; exit 1; }
+          case "${DEPTH}" in
+            ''|*[!0-9]*) echo "::error::depth must be a whole number"; exit 1 ;;
+          esac
+        env:
+          DEPTH: ${{ inputs.depth || '0' }}
+
+      - name: Compose the version
+        run: |
+          # eval of an empty grep succeeds and leaves the names unset, which would
+          # bake a malformed version into both the file name and the image.
+          eval "$(grep -E '^[[:space:]]*(OS_MAJOR|OS_MINOR|OS_CODENAME)=' distributions/CoreELEC/version)"
+          for v in OS_MAJOR OS_MINOR OS_CODENAME; do
+            [ -n "${!v:-}" ] || { echo "::error::$v not found in distributions/CoreELEC/version"; exit 1; }
+          done
+          CE_SHA=$(git rev-parse HEAD)
+          YA_SHA="${{ github.sha }}"
+          CE=${CE_SHA:0:7}
+          YA=${YA_SHA:0:7}
+          V="${OS_MAJOR}.${OS_MINOR}-${OS_CODENAME}_yacer_$(date +%Y%m%d%H%M%S)__${CE}_${YA}"
+          echo "CUSTOM_VERSION=$V" >> "$GITHUB_ENV"
+          # full shas, so the release notes can link to both commits
+          echo "CE_SHA=$CE_SHA" >> "$GITHUB_ENV"
+          echo "YA_SHA=$YA_SHA" >> "$GITHUB_ENV"
+          echo "coreelec-22 $CE + yacer $YA -> $V"
+
+      # Pinned once and reused, so the save key cannot hash a tree the build has
+      # since modified and become unrestorable. 'distributions', not 'distro':
+      # the latter matches nothing, and hashFiles only warns when every pattern
+      # misses - so the settings in distributions/CoreELEC/options were silently
+      # outside the key. scripts/ likewise: the overlay can replace a build script
+      # without any package stamp noticing.
+      - name: Pin the cache identity
+        run: |
+          echo "STATE_HASH=${{ hashFiles('config/**', 'distributions/CoreELEC/**', 'scripts/**', 'projects/Amlogic-ce/devices/Amlogic-no/options') }}" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc binutils bzip2 ccache cpio curl device-tree-compiler diffutils \
+            default-jre file g++ gawk gcc gperf gzip help2man java-common \
+            libncurses-dev libxml-parser-perl lzop make openssh-client openssl \
+            libparse-yapp-perl patch patchutils perl python3 python3-dev rdfind \
+            rsync sed tar texinfo u-boot-tools unzip wget xfonts-utils xsltproc \
+            xz-utils zip zlib1g-dev
+
+      - name: Restore ccache
+        if: ${{ inputs.clean_cache != true }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
+          restore-keys: |
+            yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
+
+      # A package whose stamp hash still matches is skipped before it is unpacked,
+      # so a restored stamp costs no download, no unpack and no compile. Only the
+      # stamps, the toolchain and the per-package install trees are needed for
+      # that. build/ is 36G of unpacked sources and object files, and only the
+      # packages that actually rebuild need to recreate it.
+      #
+      # A rolling key: the exact key never matches, so restore-keys returns the
+      # most recent entry. Correctness comes from CoreELEC re-validating every
+      # stamp's deephash, not from the cache key.
+      - name: Restore build state
+        if: ${{ inputs.clean_cache != true }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            build.CoreELEC-*/.stamps
+            build.CoreELEC-*/toolchain
+            build.CoreELEC-*/install_pkg
+            build.CoreELEC-*/install_init
+            build.CoreELEC-*/build/linux-*
+            build.CoreELEC-*/build/u-boot*
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ env.STATE_HASH }}-
+          restore-keys: |
+            yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ env.STATE_HASH }}-
+            yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
+
+      # The full build output goes to build.log and is uploaded as an artifact.
+      # Only the per-package progress lines and anything that looks like an error
+      # reach the console, which keeps the run page readable without losing the
+      # detail needed to diagnose a failure.
+      # ftpmirror.gnu.org is a redirector, and it happily sends you to a mirror
+      # that has not picked up the newest release yet - gcc 16.2.0 404s there while
+      # ftp.gnu.org serves it. The distro mirrors lag the same way. Seed any GNU
+      # source the redirector cannot serve straight from ftp.gnu.org, so the build
+      # finds it already downloaded. Nothing upstream is modified.
+      - name: Pre-seed sources whose upstream is unreachable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          seeded=0
+          for f in $(grep -rlE 'PKG_URL=.*ftpmirror\.gnu\.org' packages projects 2>/dev/null); do
+            name=$(grep -oE '^PKG_NAME="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            ver=$(grep -oE '^PKG_VERSION="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            sha=$(grep -oE '^PKG_SHA256="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            url=$(grep -oE '^PKG_URL="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            [ -z "$name" ] || [ -z "$ver" ] && continue
+            url="${url//\$\{PKG_NAME\}/$name}"; url="${url//\$\{PKG_VERSION\}/$ver}"
+            file="${url##*/}"
+            [ -f "sources/$name/$file" ] && continue
+            if [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$url")" = "200" ]; then continue; fi
+            alt="${url/ftpmirror.gnu.org/ftp.gnu.org}"
+            if [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$alt")" != "200" ]; then
+              echo "  $name-$ver: no working source, leaving it to the build"; continue
+            fi
+            echo "  $name-$ver: seeding from ftp.gnu.org"
+            mkdir -p "sources/$name"
+            # -f so an error page is not saved as a tarball, and verify before
+            # writing the stamp: get_archive trusts the stamp and never re-hashes
+            if ! curl -sSLf -o "sources/$name/$file" "$alt"; then
+              echo "    download failed, leaving it to the build"
+              rm -f "sources/$name/$file"; continue
+            fi
+            if [ -n "$sha" ] && ! echo "$sha  sources/$name/$file" | sha256sum -c - >/dev/null 2>&1; then
+              echo "    checksum mismatch, discarding"
+              rm -f "sources/$name/$file"; continue
+            fi
+            # an empty stamp marks an unverified archive as if it had been checked
+            if [ -z "$sha" ]; then
+              rm -f "sources/$name/$file"; continue
+            fi
+            echo -n "$alt" > "sources/$name/$file.url"
+            echo -n "$sha" > "sources/$name/$file.sha256"
+            seeded=$((seeded+1))
+          done
+          echo "seeded $seeded source archive(s) from ftp.gnu.org"
+
+          # Our own mirror of tarballs whose upstream host has died or is down.
+          # Assets are named <package>__<filename>.
+          #
+          # Each one is verified against the PKG_SHA256 in its own package.mk.
+          # Hashing the downloaded bytes and writing that as the stamp would be
+          # circular: get_archive compares PKG_SHA256 against the stamp file and
+          # never re-hashes the archive, so a self-computed stamp matches whatever
+          # arrived, corrupt or not. Packages that declare no PKG_SHA256 are not
+          # seeded at all - for those, seeding is what suppresses the download, and
+          # there would be nothing to check the result against.
+          declare -A PKGSHA PKGEXT
+          # Only this project: find over all of projects/ would pull in other
+          # boards and let an unrelated override win by alphabetical accident.
+          # Every declared sha is collected, not the first: a package.mk that
+          # chooses one per architecture declares several inside an if, and any
+          # of them is a legitimate upstream archive. Leading whitespace is
+          # allowed for the same reason - gcc-linaro declares its sha indented.
+          while IFS= read -r mk; do
+            n=$(sed -n 's/^[[:space:]]*PKG_NAME="\(.*\)"/\1/p' "$mk" | head -1)
+            [ -n "$n" ] || continue
+            # drop empty declarations: PKG_SHA256="" is common, and joining it in
+            # would leave a blank entry that is neither a checksum nor absent
+            PKGSHA["$n"]=$(sed -n 's/^[[:space:]]*PKG_SHA256="\(.*\)"/\1/p' "$mk" | grep -v '^[[:space:]]*$' | tr '\n' ' ')
+            # the archive formats this package actually asks for, so a mirrored copy
+            # in an old format is recognised as stale rather than blamed on its
+            # checksum - upstream changing .tar.bz2 to .tar.xz is routine
+            PKGEXT["$n"]=$(grep -oE '\.(tar\.(xz|gz|bz2|lz|zst)|tgz|zip)"' "$mk" | tr -d '"' | sort -u | tr '\n' ' ')
+          done < <(find packages "projects/${PROJECT}" -name package.mk 2>/dev/null | sort)
+
+          if ! assets=$(gh release view packages-mirror --repo "${{ github.repository }}" \
+                          --json assets --jq '.assets[].name' 2>mirror.err); then
+            if grep -q "release not found" mirror.err; then
+              # a repo that has never been seeded: every source still has an
+              # upstream home, so carry on rather than blocking the first build
+              echo "::warning::no packages-mirror release - sources come from upstream"
+              assets=""
+            else
+              echo "::error::cannot read the packages-mirror release:"
+              sed 's/^/         /' mirror.err
+              exit 1
+            fi
+          fi
+
+          mirrored=0; skipped=0; stale=0
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            case "$asset" in *__*) ;; *) continue;; esac
+            pkg="${asset%%__*}"; file="${asset#*__}"
+            case "$pkg$file" in *..*|*/*) echo "  refusing odd asset name: $asset"; continue;; esac
+            [ -f "sources/$pkg/$file" ] && continue
+            want=${PKGSHA["$pkg"]:-}
+            if [ -z "${want// /}" ]; then
+              skipped=$((skipped+1)); continue
+            fi
+            exts=${PKGEXT["$pkg"]:-}
+            if [ -n "${exts// /}" ]; then
+              fmt_ok=0
+              for e in $exts; do case "$file" in *"$e") fmt_ok=1; break;; esac; done
+              if [ "$fmt_ok" -ne 1 ]; then
+                echo "  $pkg/$file: stale - the build wants a${exts% } archive"
+                stale=$((stale+1)); continue
+              fi
+            fi
+            mkdir -p "sources/$pkg"
+            url="https://github.com/${{ github.repository }}/releases/download/packages-mirror/$asset"
+            if ! curl -sSLf -o "sources/$pkg/$file" "$url"; then
+              rm -f "sources/$pkg/$file"; continue
+            fi
+            got=$(sha256sum "sources/$pkg/$file" | cut -d' ' -f1)
+            ok=0
+            for w in $want; do [ "$w" = "$got" ] && ok=1 && break; done
+            if [ "$ok" -ne 1 ]; then
+              echo "::warning::$pkg/$file does not match any PKG_SHA256 its package.mk"
+              echo "           declares - corrupt or replaced upstream. Discarding; the"
+              echo "           build will fetch it from its own host."
+              rm -f "sources/$pkg/$file"; continue
+            fi
+            echo -n "$url" > "sources/$pkg/$file.url"
+            echo -n "$got" > "sources/$pkg/$file.sha256"
+            echo "  $pkg/$file: seeded from our mirror"
+            mirrored=$((mirrored+1))
+          done <<< "$assets"
+          echo "seeded $mirrored archive(s) from our own mirror; $skipped unverifiable, $stale stale"
+
+      - name: Check the restored state is usable
+        run: |
+          BT=$(ls -d build.CoreELEC-* 2>/dev/null | head -1)
+          STAMPS=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+          TOOLCHAIN=$(ls -d build.CoreELEC-*/toolchain 2>/dev/null | head -1)
+          echo "restored: $STAMPS stamped package(s), toolchain: ${TOOLCHAIN:-absent}"
+
+          # A toolchain without stamps, or stamps without a toolchain, is a broken
+          # restore. Both directions matter: stamps alone make every package claim
+          # it is already built while the compiler that built them is gone, which
+          # surfaces as a link error deep into the run instead of a clean restart.
+          if [ -n "$TOOLCHAIN" ] && [ "$STAMPS" -eq 0 ]; then
+            echo "::warning::toolchain present but no stamps - discarding the restored state"
+            rm -rf build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg \
+                   build.CoreELEC-*/install_init build.CoreELEC-*/build
+          elif [ -z "$TOOLCHAIN" ] && [ "$STAMPS" -gt 0 ]; then
+            echo "::warning::stamps present but no toolchain - discarding the restored state"
+            rm -rf build.CoreELEC-*/.stamps build.CoreELEC-*/install_pkg \
+                   build.CoreELEC-*/install_init build.CoreELEC-*/build
+            STAMPS=0
+          fi
+
+          # A run killed mid-compile can leave a half-written object in a cached
+          # build dir, and CoreELEC will not clean it: the unpack stamp lives inside
+          # that same directory, so the next run builds incrementally over the
+          # damage. Only build/linux-* and build/u-boot* are cached, so those are
+          # the trees at risk.
+          #
+          # Rather than predict which package was killed, ask what finished.
+          # scripts/build writes .stamps/<pkg>/build_<target> as its very last act,
+          # so "build dir present, no stamp for that package" is a record of a
+          # package that did not finish - true for every kill mode, including the
+          # ones no sentinel can see: the OOM killer, a lost runner, or a cache
+          # written by an older workflow. The package's own name is in the unpack
+          # stamp, so nothing has to be guessed.
+          #
+          # build_target specifically, not any build_*: linux carries build_host too,
+          # and scripts/build removes only the stamp for the target it is about to
+          # rebuild - so a kernel killed mid-target would still have its host stamp
+          # and would otherwise look finished. Every cached package here is a target
+          # build.
+          # BT is empty on a cold run, which would make the globs absolute paths at
+          # the filesystem root.
+          [ -n "$BT" ] || BT=.
+          for d in "$BT"/build/linux-* "$BT"/build/u-boot*; do
+            [ -d "$d" ] || continue
+            # Guard the read: under errexit an assignment from a failing command
+            # substitution aborts the step, and a dir killed during unpack has no
+            # stamp file yet - exactly the case this is here to clean.
+            pkg=""
+            [ -f "$d/.libreelec-unpack" ] &&
+              pkg=$(sed -n 's/^STAMP_PKG_NAME="\(.*\)"/\1/p' "$d/.libreelec-unpack")
+            if [ -z "$pkg" ]; then
+              echo "::warning::$(basename "$d") has no usable unpack stamp - dropping it"
+              rm -rf "$d"
+            elif [ ! -f "$BT/.stamps/$pkg/build_target" ]; then
+              echo "::warning::$pkg did not finish building - dropping $(basename "$d")"
+              # take the stamps with it: a stamp without its tree makes the package
+              # claim it is built while what depends on it has nothing to build against
+              rm -rf "$d" "$BT/.stamps/$pkg"
+            fi
+          done
+
+          # Most of build/ is not cached, but the two directories other packages
+          # reach into are: u-boot hashes files under build/u-boot-<subdevice>,
+          # and the kernel modules compile against build/linux-*. If either is
+          # missing while its stamp says otherwise, drop the stamps that depend
+          # on it so those packages rebuild instead of failing halfway.
+          if ! ls -d build.CoreELEC-*/build/linux-* >/dev/null 2>&1; then
+            rm -rf build.CoreELEC-*/.stamps/linux 2>/dev/null || true
+            echo "no cached kernel build dir - linux will rebuild"
+          fi
+          if ! ls -d build.CoreELEC-*/build/u-boot-* >/dev/null 2>&1; then
+            rm -rf build.CoreELEC-*/.stamps/u-boot* 2>/dev/null || true
+            echo "no cached u-boot build dirs - u-boot will rebuild"
+          fi
+          echo "stamps usable: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
+
+          # An unparsable figure must fail rather than be treated as "plenty": a
+          # bare [ "" -lt 40 ] errors, which is not "less than", so the guard would
+          # pass and the build would run out of disk hours later.
+          FREE=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          if ! [ "$FREE" -ge 0 ] 2>/dev/null; then
+            echo "::error::could not read free disk space"; exit 1
+          fi
+          echo "free disk: ${FREE}G"
+          if [ "$FREE" -lt 40 ]; then
+            echo "::error::only ${FREE}G free, the build needs ~50G"; exit 1
+          fi
+
+      - name: Build
+        run: |
+          start=$(date +%s)
+          STAMPS_BEFORE=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+          echo "STAMPS_BEFORE=$STAMPS_BEFORE" >> "$GITHUB_ENV"
+          # Stop short of the job limit rather than being killed by it: a timed-out
+          # job skips its post steps, so the cache is never written and every
+          # package built in that run is thrown away. Ending cleanly saves the
+          # stamps, and the next run skips everything already built.
+          : > build.log          # create it before tail, or tail may exit at once
+
+          # One deadline for the whole step, not one per attempt: a per-attempt
+          # timeout lets a late failure start a fresh full-length attempt and run
+          # past the job limit, where the job is cancelled and the cache saves are
+          # killed part-way - losing exactly the progress they exist to keep.
+          export DEADLINE_AT=$(( start + BUILD_DEADLINE_MIN * 60 ))
+          echo "deadline at $(date -d @${DEADLINE_AT} -u +%H:%M:%S) UTC"
+          # Run the build from a script placed in its own session, so a cancel can take
+          # down the whole tree - make, its children, and the timeout around them. Run
+          # inline it would sit in `wait` with nothing to signal, the compile would keep
+          # going, and the job would stop only when the runner is force-terminated.
+          cat > run-build.sh <<'EOS'
+          #!/usr/bin/env bash
+          # Source hosts fail often (savannah 502, mirrors missing a new release).
+          # Stamps make a retry cheap: re-running resumes and only re-attempts what
+          # did not finish, so transient network faults cost minutes, not a rebuild.
+          last_rc=0
+          for attempt in 1 2 3; do
+            remain=$(( DEADLINE_AT - $(date +%s) ))
+            if [ "$remain" -le 120 ]; then
+              # a real failure that ran out of retry time is still a failure -
+              # reporting it as a deadline would chain a run that fails the same way
+              if [ "$last_rc" -ne 0 ]; then
+                echo "=== no time left to retry; reporting the last failure ==="
+                exit $last_rc
+              fi
+              echo "=== no time left before the deadline ==="
+              exit 124
+            fi
+            # capture the status directly: after `if cmd; then...fi` the value of
+            # $? is the if-statement's own status, not the command's
+            timeout -k 300s "${remain}s" make release
+            rc=$?
+            [ $rc -eq 0 ] && exit 0
+            # 124 is SIGTERM honoured; 137 is the -k SIGKILL, which is what a long
+            # link or tar gives when it will not die within the grace period. Both
+            # mean the deadline, and neither may be retried.
+            # 124 is timeout expiring, so it is the deadline by definition, and make
+            # wound down on SIGTERM. 137 only means something was SIGKILLed - the -k
+            # grace, or the runner's OOM killer, which happens on a kernel link. Near
+            # the deadline it is the former; away from it, it is a plain failure, and
+            # calling it a deadline would chain a run that OOMs again. 199 is used
+            # rather than 125 because timeout returns 125 for its own errors.
+            [ $rc -eq 124 ] && exit 124
+            if [ $rc -eq 137 ] && [ "$(date +%s)" -ge $(( DEADLINE_AT - 60 )) ]; then
+              exit 199
+            fi
+            last_rc=$rc
+            [ $attempt -eq 3 ] && exit $rc
+            echo "=== attempt ${attempt} failed (rc=${rc}); resuming in 90s ==="
+            sleep 90
+          done
+          EOS
+          chmod +x run-build.sh
+          # Installed before the build starts: a cancel arriving between launch and a
+          # later trap would leave a detached build with nothing left to stop it.
+          # pkill -s, not kill -pid: GNU timeout puts itself and make into their own
+          # process group, so signalling the group leader reaches only the wrapper.
+          # Releasing stdout matters as much - an orphaned tail holds the pipe open
+          # and the runner keeps waiting on it.
+          cleanup() {
+            echo "=== cancelled - stopping the build ==="
+            [ -n "${BUILD_PID:-}" ] && { pkill -s "$BUILD_PID" 2>/dev/null || true; }
+            for pid in "${TAIL_PID:-}" "${HEARTBEAT_PID:-}"; do
+              [ -n "$pid" ] || continue
+              pkill -P "$pid" 2>/dev/null || true
+              kill "$pid" 2>/dev/null || true
+            done
+            exit 143
+          }
+          trap cleanup INT TERM
+
+          setsid ./run-build.sh > build.log 2>&1 &
+          BUILD_PID=$!
+          ( tail -n +1 -f build.log \
+              | grep --line-buffered -E '^\[[0-9]+/[0-9]+\]|FAILED|\*\*\*|error:' ) &
+          TAIL_PID=$!
+          # Some packages take 15+ minutes with nothing to report, so a heartbeat
+          # keeps a long quiet stretch distinguishable from a hung build.
+          ( while kill -0 $BUILD_PID 2>/dev/null; do
+              sleep 300
+              kill -0 $BUILD_PID 2>/dev/null || break
+              echo "... still building ($(( ($(date +%s) - start ) / 60 )) min) - last: $(grep -oE '^\[[0-9]+/[0-9]+\].*' build.log | tail -1)"
+            done ) &
+          HEARTBEAT_PID=$!
+          set +e; wait $BUILD_PID; rc=$?; set -e
+          sleep 2
+          # kill the children first: $! is the subshell, and orphaned tail/grep
+          # keep the step's stdout open, which can hang the job past its limit
+          pkill -P "$TAIL_PID" 2>/dev/null || true
+          pkill -P "$HEARTBEAT_PID" 2>/dev/null || true
+          kill "$TAIL_PID" "$HEARTBEAT_PID" 2>/dev/null || true
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          # 199 is a deadline that needed the SIGKILL, 143 a cancel. Whether either
+          # left a damaged tree is not decided here - the next run works that out by
+          # comparing each cached build dir against its build_target stamp.
+          # a killed deadline is still a deadline as far as chaining goes
+          [ $rc -eq 199 ] && rc=124
+          if [ $rc -eq 124 ]; then
+            STAMPS_AFTER=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+            echo "INCOMPLETE=1" >> "$GITHUB_ENV"
+            echo "STAMPS_AFTER=$STAMPS_AFTER" >> "$GITHUB_ENV"
+            [ "$STAMPS_AFTER" -gt "$STAMPS_BEFORE" ] && echo "PROGRESS=1" >> "$GITHUB_ENV"
+            echo "::error::deadline reached at ${BUILD_DEADLINE_MIN}m - packages stamped ${STAMPS_BEFORE} -> ${STAMPS_AFTER}. The partial build is cached; re-run to continue."
+            # deliberately fails: an unfinished build should read as failed. The
+            # state is still cached by the always() step below.
+            exit 1
+          fi
+          if [ $rc -ne 0 ]; then
+            echo "::group::last 80 lines of build.log"
+            tail -80 build.log
+            echo "::endgroup::"
+          fi
+          exit $rc
+
+      # Publish the tar as a release asset and ask the feed workflow to list it.
+      # CoreELEC's updater serves releases from GitHub Releases in exactly this
+      # shape, so adding the feed URL under Settings > Updates > custom channels
+      # makes these builds appear in the update list.
+      #
+      # This runs immediately after the build, ahead of the cache housekeeping.
+      # Behind those steps, a failure in any of them turned success() false and
+      # discarded a finished build whose tar existed only on a runner that was
+      # about to be destroyed.
+      - name: Publish the release
+        if: success() && env.INCOMPLETE != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          TAR=$(ls -t target/*.tar 2>/dev/null | head -1)
+          [ -n "$TAR" ] || { echo "::error::the build produced no .tar in target/"; exit 1; }
+          BASE=$(basename "$TAR")
+          SIZE=$(stat -c%s "$TAR")
+          SHA=$(cut -d" " -f1 "$TAR.sha256" 2>/dev/null || sha256sum "$TAR" | cut -d" " -f1)
+          echo "publishing $BASE ($SIZE bytes)"
+
+          # One release, one tag, every build. The file name already carries the
+          # date and both commits, so builds do not need a tag each - and the repo
+          # does not fill with them. The feed addresses a build as <tag>/<file>,
+          # which a constant tag satisfies.
+          # Marked a pre-release so GitHub never flags it "Latest" and every visitor
+          # sees the badge. These are unattended builds of one person's tree, tested
+          # on one box or not at all - the repo is public because a fork has to be,
+          # not because the images are for anyone else.
+          gh release create "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --title "YACER builds (untested)" \
+            --prerelease \
+            --notes "Unattended builds. Not tested. Not for general use." \
+            2>/dev/null || true
+
+          gh release upload "$RELEASE_TAG" "$TAR" "$TAR.sha256" \
+            --repo "${{ github.repository }}" --clobber
+
+          # the notes describe the build just added, and link both commits it came from
+          gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --prerelease --notes "## Not for general use
+
+          Unattended CI builds of a personal CoreELEC tree, for one Ugoos AM6B Plus.
+          Most are never installed anywhere. They are public only because this is a
+          public fork - there is no support, no testing promise, and no reason to
+          prefer these over an official CoreELEC release.
+
+          Update tars for Amlogic-no.aarch64, newest first in the update feed.
+
+          **Latest:** \`$BASE\`
+
+          - **yacer** [\`${YA_SHA:0:7}\`](https://github.com/${{ github.repository }}/commit/${YA_SHA})
+          - **coreelec** [\`${CE_SHA:0:7}\`](https://github.com/CoreELEC/CoreELEC/commit/${CE_SHA})
+
+          \`\`\`
+          sha256: $SHA
+          size:   $SIZE bytes
+          \`\`\`" >/dev/null
+
+          # Ask the feed workflow to rebuild. A release created or edited with
+          # GITHUB_TOKEN raises no release event - GitHub does not start runs from
+          # events its own token triggers - so waiting for one would leave the box
+          # offered a stale build for ever. workflow_dispatch is the documented
+          # exception, which is also why the continuation chaining below works.
+          if gh workflow run yacer-feed.yml --repo "${{ github.repository }}" --ref "$REF"; then
+            echo "feed rebuild requested"
+          else
+            echo "::error::could not trigger the feed rebuild - the build is"
+            echo "         published but the box will not be offered it until"
+            echo "         yacer-feed.yml is run"
+            exit 1
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: yacer-build-log-${{ github.run_attempt }}
+          path: build.log
+          retention-days: 14
+
+      - name: Decide whether this run's state is worth keeping
+        if: always()
+        run: |
+          STAMPS=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+          if [ "$STAMPS" -lt 50 ]; then
+            echo "only $STAMPS stamped package(s), down from ${STAMPS_BEFORE} - keeping"
+            echo "the existing cache rather than replacing it with less"
+            echo "WORTH_SAVING=0" >> "$GITHUB_ENV"
+          else
+            echo "$STAMPS stamped package(s) - worth caching"
+            echo "WORTH_SAVING=1" >> "$GITHUB_ENV"
+          fi
+
+      # Saved before ccache: this is the one that decides whether the next run
+      # skips packages, so it gets the room first. Always saved, even when the
+      # build stopped at the deadline - that partial progress is exactly what the
+      # next run needs. A unique key is required because an existing key is never
+      # overwritten.
+      # The cached globs are build/linux-* and build/u-boot*, and nothing removes
+      # the directory a version bump left behind - CoreELEC only clears those via
+      # scripts/clean, which never runs here. Left alone they accumulate until the
+      # save quietly outgrows the repo quota.
+      - name: Drop superseded build directories
+        if: always() && env.WORTH_SAVING == '1'
+        run: |
+          before=$(du -sm build.CoreELEC-*/build build.CoreELEC-*/install_pkg 2>/dev/null | awk '{s+=$1} END {print s+0}')
+          # linux-<version>, and u-boot-<board>-<sha> / u-boot-script-<ver>: the
+          # second glob needs two dashes so the u-boot meta-package's own empty
+          # build/u-boot-<ver> is not grouped with the per-board dirs and deleted.
+          for d in build.CoreELEC-*/build/linux-* build.CoreELEC-*/build/u-boot-*-*; do
+            [ -d "$d" ] || continue
+            # keep the newest of each family; the rest are from older versions
+            fam=${d%-*}
+            newest=$(ls -dt "${fam}"-* 2>/dev/null | head -1)
+            [ "$d" = "$newest" ] && continue
+            echo "  dropping superseded $d"
+            rm -rf "$d"
+          done
+          after=$(du -sm build.CoreELEC-*/build build.CoreELEC-*/install_pkg 2>/dev/null | awk '{s+=$1} END {print s+0}')
+          echo "build+install trees: ${before}M -> ${after}M"
+
+      - name: Save build state
+        if: always() && env.WORTH_SAVING == '1'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            build.CoreELEC-*/.stamps
+            build.CoreELEC-*/toolchain
+            build.CoreELEC-*/install_pkg
+            build.CoreELEC-*/install_init
+            build.CoreELEC-*/build/linux-*
+            build.CoreELEC-*/build/u-boot*
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ env.STATE_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # cache/save reports success whether or not the entry was stored, so ask.
+      - name: Confirm the build state was saved
+        if: always() && env.WORTH_SAVING == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ env.STATE_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # eventually consistent: a single miss is not proof it was not stored,
+          # and a false negative here silently ends the chain
+          found=0
+          for _ in 1 2 3; do
+            if gh cache list --repo "${{ github.repository }}" --limit 100 --json key \
+                 --jq '.[].key' 2>/dev/null | grep -qxF "$WANT"; then found=1; break; fi
+            sleep 10
+          done
+          if [ "$found" -eq 1 ]; then
+            echo "build state cached as $WANT"
+            echo "STATE_CACHED=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::the build state was NOT cached - a continuation would"
+            echo "           start from scratch and reach the same deadline again,"
+            echo "           so the chain is stopped here."
+            echo "STATE_CACHED=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Save ccache
+        if: always() && env.WORTH_SAVING == '1'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+
+      # Only now that the new entry is confirmed. Deleting first would leave the
+      # repo with no cache at all whenever the save then failed - and on a cancel
+      # that is close to certain, because the runner allows about five minutes and
+      # the deletes would spend it before a multi-gigabyte upload even starts.
+      # The quota is 10G and one generation is most of it, so the previous one has
+      # to go; it just has to go second.
+      - name: Retire the superseded cache
+        if: always() && env.STATE_CACHED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_STATE: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ env.STATE_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          KEEP_CCACHE: yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if ! keys=$(gh cache list --repo "${{ github.repository }}" --limit 100 --json key --jq '.[].key'); then
+            echo "::warning::could not list caches - leaving the old entries in place"
+            exit 0
+          fi
+          # ccache has no confirm step of its own, so only retire the previous one
+          # when this run's did land - otherwise a silent save failure leaves none
+          have_ccache=0
+          printf '%s\n' "$keys" | grep -qxF "$KEEP_CCACHE" && have_ccache=1
+          printf '%s\n' "$keys" | grep -E "^yacer-(state|ccache)-" | while read -r k; do
+            [ "$k" = "$KEEP_STATE" ] && continue
+            [ "$k" = "$KEEP_CCACHE" ] && continue
+            case "$k" in yacer-ccache-*) [ "$have_ccache" -eq 1 ] || continue;; esac
+            echo "  retiring $k"
+            gh cache delete "$k" --repo "${{ github.repository }}" 2>/dev/null || true
+          done
+          gh cache list --repo "${{ github.repository }}" --limit 100 --json sizeInBytes \
+            --jq '[.[].sizeInBytes] | add // 0' \
+            | awk '{printf "  cache in use: %.2f GiB of 10 GiB\n", $1/1073741824}'
+
+      - name: Build stats
+        if: always()
+        run: |
+          echo "build time: $(( ${BUILD_SECONDS:-0} / 60 )) min"
+          echo "stamped packages: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
+          du -sh build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg 2>/dev/null || true
+          df -h / | tail -1
+          ccache -s 2>/dev/null || true
+
+      - name: Show artifacts
+        if: always() && env.INCOMPLETE != '1'
+        run: ls -lh target/*.tar target/*.tar.sha256 2>/dev/null || echo "no tar (the build did not get that far)"
+
+      - name: Continue in a follow-up run
+        if: always() && !cancelled() && env.INCOMPLETE == '1' && env.PROGRESS == '1' && env.STATE_CACHED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPTH: ${{ inputs.depth || '0' }}
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ "${DEPTH:-0}" -ge 8 ]; then
+            echo "::error::still unfinished after ${DEPTH} continuations - stopping rather than looping"
+            exit 1
+          fi
+          echo "deadline reached; continuing in a follow-up run (depth $((DEPTH+1)))"
+          gh workflow run yacer-build.yml --repo "${{ github.repository }}" \
+            --ref "$REF" -f depth=$((DEPTH+1))
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.INCOMPLETE != '1'
+        with:
+          name: yacer-update-tar-${{ github.run_attempt }}
+          path: |
+            target/*.tar
+            target/*.tar.sha256
+          retention-days: 14
+          compression-level: 0

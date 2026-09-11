@@ -1,0 +1,127 @@
+# YACER update feed
+#
+# Rebuilds the catalogue the box reads from the releases that actually exist,
+# rather than from whatever the previous run wrote, so a release that is gone
+# stops being listed.
+#
+# It is run explicitly by the build, and can be run by hand. The release trigger
+# below only fires for something a person did: GitHub raises no release event for
+# anything done with GITHUB_TOKEN, which covers both the build's own publish and
+# this workflow's uploads. So a build that publishes and then fails to trigger a
+# rebuild stays unlisted until the next build runs - it does not self-correct.
+name: YACER update feed
+
+on:
+  release:
+    types: [published, unpublished, deleted, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yacer-feed          # serialise: two rebuilds racing would interleave uploads
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    name: rebuild the feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CHANNEL: YACER-22
+          DISTRO_ARCH: Amlogic-no.aarch64
+          KEEP: '10'
+          RELEASE_TAG: builds
+        run: |
+          # Every build lives on one release, distinguished by file name - the
+          # name carries the date and both commits, and sorts chronologically
+          # because the date is fixed width behind a constant prefix. That avoids
+          # a tag per build, and avoids sorting on release timestamps, which are
+          # the commit's date rather than the publish date.
+          set -o pipefail
+
+          if ! assets=$(gh release view "$RELEASE_TAG" --repo "$REPO" --json assets \
+                          --jq '.assets[] | "\(.name)\t\(.size)"' 2>feed.err); then
+            if grep -q "release not found" feed.err; then
+              echo "no $RELEASE_TAG release yet - nothing to list"
+              assets=""
+            else
+              echo "::error::cannot read the $RELEASE_TAG release:"; sed 's/^/         /' feed.err; exit 1
+            fi
+          fi
+
+          printf '%s\n' "$assets" \
+            | grep -E "^CoreELEC-${DISTRO_ARCH}-.*_yacer_[0-9]{14}__.*\.tar\b" \
+            | sort -r > all.tsv || true
+          found=$(grep -c . all.tsv || true)
+          echo "builds on the $RELEASE_TAG release: $found"
+
+          head -n "$KEEP" all.tsv > kept.tsv || true
+          tail -n +$((KEEP+1)) all.tsv > prune.tsv || true
+          echo "listing $(grep -c . kept.tsv || true), pruning $(grep -c . prune.tsv || true)"
+
+          python3 - <<'PYEOF'
+          import json, os
+          repo    = os.environ['REPO']
+          channel = os.environ['CHANNEL']
+          arch    = os.environ['DISTRO_ARCH']
+          tag     = os.environ['RELEASE_TAG']
+
+          rows = []
+          with open('kept.tsv') as fh:
+              for line in fh:
+                  parts = line.rstrip('\n').split('\t')
+                  if len(parts) == 2 and parts[0]:
+                      rows.append((parts[0], int(parts[1])))
+
+          # newest first on the way in; the updater sorts the keys descending and
+          # shows the highest index first, so the newest sits at the top index
+          releases = {
+              str(i): {'file': {'name': '%s/%s' % (tag, name), 'size': size}}
+              for i, (name, size) in enumerate(reversed(rows))
+          }
+          feed = {channel: {
+              'url': 'https://github.com/%s/releases/download/' % repo,
+              'prettyname_regex': r'(^.*)\/.*',
+              'project': {arch: {'releases': releases}},
+          }}
+          json.dump(feed, open('releases.json', 'w'), indent=1)
+
+          if rows:
+              json.dump({'data': {
+                  'host': 'github.com',
+                  'folder': '%s/releases/download/%s' % (repo, tag),
+                  'update': rows[0][0],
+              }}, open('update.json', 'w'), indent=1)
+              print('newest: %s' % rows[0][0])
+          else:
+              print('no builds - update.json will be removed')
+          PYEOF
+
+          gh release create yacer-feed --repo "$REPO" \
+            --title "YACER update feed" \
+            --notes "Update channel for CoreELEC custom channels. Rebuilt from the builds that exist." \
+            2>/dev/null || true
+
+          gh release upload yacer-feed releases.json --repo "$REPO" --clobber
+          if [ -f update.json ]; then
+            gh release upload yacer-feed update.json --repo "$REPO" --clobber
+          else
+            gh release delete-asset yacer-feed update.json --repo "$REPO" --yes 2>/dev/null || true
+          fi
+          echo "feed updated"
+
+          # Only now that the new feed is live: pruning first would leave it naming
+          # downloads that were already gone.
+          while IFS=$'\t' read -r name _; do
+            [ -n "$name" ] || continue
+            echo "  pruning $name"
+            gh release delete-asset "$RELEASE_TAG" "$name" --repo "$REPO" --yes \
+              || echo "::warning::could not prune $name"
+            gh release delete-asset "$RELEASE_TAG" "$name.sha256" --repo "$REPO" --yes 2>/dev/null || true
+          done < prune.tsv

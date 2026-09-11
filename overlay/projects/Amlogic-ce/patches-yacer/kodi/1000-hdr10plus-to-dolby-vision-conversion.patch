@@ -1,0 +1,1810 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 03 Jul 2026 00:00:00 +0000
+Subject: [PATCH] AML: play HDR10+ as Dolby Vision P8.1 (metadata conversion)
+
+Adapts @cpm-code's HDR10+ to Dolby Vision conversion (from pannal/xbmc, branch
+aml-4.9-21.3) to Kodi 22, keeping @pannal's switch to libdovi
+dovi_generate_from_json for the RPU and @doppingkoala's histogram-based avg_pq.
+
+On a Dolby Vision capable display, a stream carrying HDR10+ dynamic metadata is
+played as Dolby Vision profile 8.1. "Tone map HDR to Dolby Vision" does not do
+this: the VS10 engine tone maps from the static HDR10 values and never reads the
+HDR10+ dynamic metadata.
+
+One setting, off by default:
+
+  Settings > CoreELEC > Convert HDR10+ to Dolby Vision
+  Off (default) / CM v4.0 / CM v2.9
+
+CM v2.9 has no field for a level 1 average below 819 codewords. CM v4.0 carries
+the remainder in a level 3 offset, so it is theoretically a more accurate
+representation on a display that reads level 3. This has not been measured.
+
+Co-authored-by: cpm-code <162544069+cpm-code@users.noreply.github.com>
+Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
+Co-authored-by: doppingkoala <doppingkoala@users.noreply.github.com>
+
+Downstream shaping: this was proposed upstream as CoreELEC/xbmc#86 and declined,
+so it stays a downstream patch and has to survive upstream churn on its own. The
+conversion therefore lives in AMLHdr10PlusHook, reached from the codec through a
+handful of one-line calls, rather than inline. The behaviour is unchanged - the
+moved code is the same code - but DVDVideoCodecAmlogic.cpp now carries 16 added
+lines instead of 197, so upstream churn in the codec has almost nothing of ours
+to collide with. CoreELEC's own m_stripHdr10Plus stays in the codec and is
+passed in by reference where arming has to change it; nothing that was already
+CoreELEC's moves into our file.
+
+The one line that is modified rather than added is the native HDR10+ side
+channel gate, which has to learn about conversion for the feature to work at all.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -8954,6 +8954,20 @@
+ msgid "RDS Radio"
+ msgstr ""
+ 
++#. Option for setting #14314 - generate a CM v4.0 Dolby Vision RPU
++#: system/settings/settings.xml
++msgctxt "#14305"
++msgid "CM v4.0"
++msgstr ""
++
++#. Option for setting #14314 - generate a CM v2.9 Dolby Vision RPU
++#: system/settings/settings.xml
++msgctxt "#14306"
++msgid "CM v2.9"
++msgstr ""
++
++#empty strings from id 14307 to 14309
++
+ #: system/settings/settings.xml
+ msgctxt "#14310"
+ msgid "Tone map SDR to Dolby Vision"
+@@ -8974,7 +8988,19 @@
+ msgid "Intended for Dolby Vision enabled displays. HDR content will be tone mapped by Dolby Vision VS-Engine."
+ msgstr ""
+ 
+-#empty strings from id 14305 to 15010
++#. Setting to convert HDR10+ dynamic metadata to Dolby Vision profile 8.1
++#: system/settings/settings.xml
++msgctxt "#14314"
++msgid "Convert HDR10+ to Dolby Vision"
++msgstr ""
++
++#. Help text of setting with label #14314
++#: system/settings/settings.xml
++msgctxt "#14315"
++msgid "Play HDR10+ video as Dolby Vision. Needs a TV that supports Dolby Vision. Video that already has its own Dolby Vision is left as it is.[CR][CR]CM v4.0 carries an average brightness that CM v2.9 has no field for, so it should be more accurate; not every TV uses it."
++msgstr ""
++
++#empty strings from id 14316 to 15010
+ 
+ #: system/settings/settings.xml
+ msgctxt "#14400"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -4001,6 +4001,7 @@
+             <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
+           </dependencies>
+         </setting>
+         <setting id="coreelec.amlogic.hdr2sdr" type="boolean" label="14406" help="14407">
+@@ -4011,6 +4012,7 @@
+             <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
+           </dependencies>
+         </setting>
+         <setting id="coreelec.amlogic.sdr2dv" type="boolean" label="14310" help="14311">
+@@ -4030,6 +4032,25 @@
+           <dependencies>
+             <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
++          </dependencies>
++        </setting>
++        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="14314" help="14315">
++          <requirement>HAVE_AMCODEC</requirement>
++          <default>0</default>
++          <constraints>
++            <options>
++              <option label="351">0</option>
++              <option label="14305">1</option>
++              <option label="14306">2</option>
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++          <dependencies>
++            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+           </dependencies>
+         </setting>
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.cpp
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.cpp
+@@ -0,0 +1,273 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "AMLHdr10Plus.h"
++
++#include "utils/BitstreamReader.h"
++#include "utils/HevcSei.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <optional>
++#include <vector>
++
++namespace KODI::AML::HDR
++{
++
++std::optional<Hdr10PlusMetadata> hdr10plus_sei_to_metadata(CBitstreamReader& br)
++{
++  Hdr10PlusMetadata metadata = {};
++
++  metadata.itu_t_t35_country_code = br.ReadBits(8);
++  metadata.itu_t_t35_terminal_provider_code = br.ReadBits(16);
++  metadata.itu_t_t35_terminal_provider_oriented_code = br.ReadBits(16);
++  metadata.application_identifier = br.ReadBits(8);
++  metadata.application_version = br.ReadBits(8);
++  metadata.num_windows = br.ReadBits(2);
++  // ST 2094-40 allows 1..3; 0 desynchronises every field that follows
++  if (metadata.num_windows < 1 || metadata.num_windows > 3)
++  {
++    CLog::Log(LOGDEBUG, "{} - rejected: num_windows {}", __FUNCTION__, metadata.num_windows);
++    return std::nullopt;
++  }
++
++  if (metadata.num_windows > 1)
++  {
++
++    metadata.processing_windows = std::vector<ProcessingWindow>(metadata.num_windows);
++
++    for (uint8_t i = 1; i < metadata.num_windows; i++)
++    {
++      ProcessingWindow& window = metadata.processing_windows[i];
++      window.window_upper_left_corner_x = br.ReadBits(16);
++      window.window_upper_left_corner_y = br.ReadBits(16);
++      window.window_lower_right_corner_x = br.ReadBits(16);
++      window.window_lower_right_corner_y = br.ReadBits(16);
++      window.center_of_ellipse_x = br.ReadBits(16);
++      window.center_of_ellipse_y = br.ReadBits(16);
++      window.rotation_angle = br.ReadBits(8);
++      window.semimajor_axis_internal_ellipse = br.ReadBits(16);
++      window.semimajor_axis_external_ellipse = br.ReadBits(16);
++      window.semiminor_axis_external_ellipse = br.ReadBits(16);
++      window.overlap_process_option = br.ReadBits(1);
++    }
++  }
++
++  metadata.targeted_system_display_maximum_luminance = br.ReadBits(27);
++  metadata.targeted_system_display_actual_peak_luminance_flag = br.ReadBits(1);
++
++  if (metadata.targeted_system_display_actual_peak_luminance_flag)
++  {
++    ActualTargetedSystemDisplay& display = metadata.actual_targeted_system_display;
++    display.num_rows_targeted_system_display_actual_peak_luminance = br.ReadBits(5);
++    display.num_cols_targeted_system_display_actual_peak_luminance = br.ReadBits(5);
++    // ST 2094-40 allows 2..25 rows/cols
++    if (display.num_rows_targeted_system_display_actual_peak_luminance < 2 ||
++        display.num_rows_targeted_system_display_actual_peak_luminance > 25 ||
++        display.num_cols_targeted_system_display_actual_peak_luminance < 2 ||
++        display.num_cols_targeted_system_display_actual_peak_luminance > 25)
++    {
++      CLog::Log(LOGDEBUG, "{} - rejected: targeted grid {}x{}", __FUNCTION__,
++                display.num_rows_targeted_system_display_actual_peak_luminance,
++                display.num_cols_targeted_system_display_actual_peak_luminance);
++      return std::nullopt;
++    }
++    display.targeted_system_display_actual_peak_luminance.resize(
++        display.num_rows_targeted_system_display_actual_peak_luminance,
++        std::vector<uint8_t>(display.num_cols_targeted_system_display_actual_peak_luminance));
++    for (uint8_t i = 0; i < display.num_rows_targeted_system_display_actual_peak_luminance; i++)
++    {
++      for (uint8_t j = 0; j < display.num_cols_targeted_system_display_actual_peak_luminance; j++)
++      {
++        display.targeted_system_display_actual_peak_luminance[i][j] = br.ReadBits(4);
++      }
++    }
++  }
++
++  // Parse luminance info
++  if (metadata.num_windows > 0)
++  {
++
++    metadata.luminance = std::vector<Luminance>(metadata.num_windows);
++
++    for (uint8_t i = 0; i < metadata.num_windows; i++)
++    {
++
++      Luminance& luminance = metadata.luminance[i];
++      // Parse maxscl and average_maxrgb
++      for (int i = 0; i < 3; i++)
++      {
++        luminance.maxscl[i] = br.ReadBits(17);
++      }
++      luminance.average_maxrgb = br.ReadBits(17);
++
++      // Parse distribution maxrgb
++      luminance.num_distribution_maxrgb_percentiles = br.ReadBits(4);
++      luminance.distribution_maxrgb.resize(luminance.num_distribution_maxrgb_percentiles);
++      for (uint8_t i = 0; i < luminance.num_distribution_maxrgb_percentiles; i++)
++      {
++        luminance.distribution_maxrgb[i].percentage = br.ReadBits(7);
++        luminance.distribution_maxrgb[i].percentile = br.ReadBits(17);
++      }
++      luminance.fraction_bright_pixels = br.ReadBits(10);
++    }
++  }
++
++  // Parse mastering display info
++  metadata.mastering_display_actual_peak_luminance_flag = br.ReadBits(1);
++  if (metadata.mastering_display_actual_peak_luminance_flag)
++  {
++    ActualMasteringDisplay& display = metadata.actual_mastering_display;
++    display.num_rows_mastering_display_actual_peak_luminance = br.ReadBits(5);
++    display.num_cols_mastering_display_actual_peak_luminance = br.ReadBits(5);
++    // ST 2094-40 allows 2..25 rows/cols
++    if (display.num_rows_mastering_display_actual_peak_luminance < 2 ||
++        display.num_rows_mastering_display_actual_peak_luminance > 25 ||
++        display.num_cols_mastering_display_actual_peak_luminance < 2 ||
++        display.num_cols_mastering_display_actual_peak_luminance > 25)
++    {
++      CLog::Log(LOGDEBUG, "{} - rejected: mastering grid {}x{}", __FUNCTION__,
++                display.num_rows_mastering_display_actual_peak_luminance,
++                display.num_cols_mastering_display_actual_peak_luminance);
++      return std::nullopt;
++    }
++    display.mastering_display_actual_peak_luminance.resize(
++        display.num_rows_mastering_display_actual_peak_luminance *
++        display.num_cols_mastering_display_actual_peak_luminance);
++    for (size_t i = 0; i < display.mastering_display_actual_peak_luminance.size(); i++)
++    {
++      display.mastering_display_actual_peak_luminance[i] = br.ReadBits(4);
++    }
++  }
++
++  // Parse tone mapping and colour saturation info, per window
++  metadata.tone_mapping = std::vector<ToneMapping>(metadata.num_windows);
++  for (uint8_t w = 0; w < metadata.num_windows; w++)
++  {
++    ToneMapping& toneMapping = metadata.tone_mapping[w];
++    toneMapping.tone_mapping_flag = br.ReadBits(1);
++    if (toneMapping.tone_mapping_flag)
++    {
++      BezierCurve& curve = toneMapping.bezier_curve;
++      curve.knee_point_x = br.ReadBits(12);
++      curve.knee_point_y = br.ReadBits(12);
++      curve.num_bezier_curve_anchors = br.ReadBits(4);
++      curve.bezier_curve_anchors.resize(curve.num_bezier_curve_anchors);
++      for (uint8_t i = 0; i < curve.num_bezier_curve_anchors; i++)
++      {
++        curve.bezier_curve_anchors[i] = br.ReadBits(10);
++      }
++    }
++
++    toneMapping.color_saturation_mapping_flag = br.ReadBits(1);
++    if (toneMapping.color_saturation_mapping_flag)
++    {
++      toneMapping.color_saturation_weight = br.ReadBits(6);
++    }
++  }
++
++  return metadata;
++}
++
++std::optional<Hdr10PlusMetadata> ExtractHdr10Plus(const std::vector<CHevcSei>& messages,
++                                                  const std::vector<uint8_t>& buf)
++{
++  for (const CHevcSei& sei : messages)
++  {
++    // User Data Registered ITU-T T.35
++    if (sei.m_payloadType == 4 && sei.m_payloadSize >= 7 && sei.m_payloadOffset < buf.size())
++    {
++      const uint8_t* data = buf.data() + sei.m_payloadOffset;
++      // clamp to the real buffer: a crafted payload size/offset must not read past it
++      const size_t size = std::min<size_t>(sei.m_payloadSize, buf.size() - sei.m_payloadOffset);
++
++      CBitstreamReader br(data, size);
++      const auto itu_t_t35_country_code = br.ReadBits(8);
++      const auto itu_t_t35_terminal_provider_code = br.ReadBits(16);
++      const auto itu_t_t35_terminal_provider_oriented_code = br.ReadBits(16);
++
++      // United States, Samsung Electronics America, ST 2094-40
++      if (itu_t_t35_country_code == 0xB5 && itu_t_t35_terminal_provider_code == 0x003C &&
++          itu_t_t35_terminal_provider_oriented_code == 0x0001)
++      {
++        const auto application_identifier = br.ReadBits(8);
++        const auto application_version = br.ReadBits(8);
++
++        if (application_identifier == 4 && application_version <= 1)
++        {
++          CBitstreamReader br2(data, size);
++          const auto metadata = hdr10plus_sei_to_metadata(br2);
++          // A payload that ran past its own end parsed garbage: reject it. Bail rather
++          // than scan on - Find matches on the T.35 header, so Extract must agree.
++          if (!metadata || br2.Position() > size * 8)
++            return std::nullopt;
++          return *metadata;
++        }
++      }
++    }
++  }
++
++  return std::nullopt;
++}
++
++std::optional<MasteringDisplayColourVolume> ExtractMasteringDisplayColourVolume(
++    const std::vector<CHevcSei>& messages, const std::vector<uint8_t>& buf)
++{
++  for (const auto& sei : messages)
++  {
++    // Mastering Display Colour Volume SEI (payload type 137)
++    if (sei.m_payloadType == 137 && sei.m_payloadSize >= 24 && sei.m_payloadOffset < buf.size())
++    {
++      CBitstreamReader br(buf.data() + sei.m_payloadOffset,
++                          std::min<size_t>(sei.m_payloadSize, buf.size() - sei.m_payloadOffset));
++
++      MasteringDisplayColourVolume metadata;
++
++      for (int i = 0; i < 3; ++i)
++      {
++        metadata.displayPrimaries[i].x = br.ReadBits(16);
++        metadata.displayPrimaries[i].y = br.ReadBits(16);
++      }
++
++      metadata.whitePoint.x = br.ReadBits(16);
++      metadata.whitePoint.y = br.ReadBits(16);
++
++      const uint32_t maxLuminanceRaw = br.ReadBits(32);
++      const uint32_t minLuminanceRaw = br.ReadBits(32);
++
++      // Convert to nits for max only (min stays in units of 0.0001 nits)
++      metadata.maxLuminance = static_cast<uint32_t>(std::lround(maxLuminanceRaw / 10000.0));
++      metadata.minLuminance = minLuminanceRaw;
++
++      return metadata;
++    }
++  }
++  return std::nullopt;
++}
++
++std::optional<ContentLightLevel> ExtractContentLightLevel(const std::vector<CHevcSei>& messages,
++                                                          const std::vector<uint8_t>& buf)
++{
++  for (const auto& sei : messages)
++  {
++    // Content Light Level Information SEI (payload type 144)
++    if (sei.m_payloadType == 144 && sei.m_payloadSize >= 4 && sei.m_payloadOffset < buf.size())
++    {
++      CBitstreamReader br(buf.data() + sei.m_payloadOffset,
++                          std::min<size_t>(sei.m_payloadSize, buf.size() - sei.m_payloadOffset));
++
++      const uint16_t maxCLL = br.ReadBits(16);
++      const uint16_t maxFALL = br.ReadBits(16);
++
++      return ContentLightLevel{maxCLL, maxFALL};
++    }
++  }
++  return std::nullopt;
++}
++} // namespace KODI::AML::HDR
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10Plus.h
+@@ -0,0 +1,161 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "utils/BitstreamReader.h"
++
++#include <cstdint>
++#include <optional>
++#include <vector>
++
++class CHevcSei;
++
++namespace KODI::AML::HDR
++{
++
++// Static HDR metadata from the mastering display and content light level SEIs.
++struct DisplayPrimary
++{
++  uint16_t x;
++  uint16_t y;
++};
++
++struct MasteringDisplayColourVolume
++{
++  // HEVC D.3.27: index 0 is GREEN, 1 is BLUE, 2 is RED - not R,G,B.
++  DisplayPrimary displayPrimaries[3];
++  DisplayPrimary whitePoint;
++  uint32_t maxLuminance; // nits
++  uint32_t minLuminance; // units of 0.0001 nits
++};
++
++struct ContentLightLevel
++{
++  uint16_t maxContentLightLevel;
++  uint16_t maxFrameAverageLightLevel;
++};
++
++struct ProcessingWindow
++{
++  uint16_t window_upper_left_corner_x;
++  uint16_t window_upper_left_corner_y;
++  uint16_t window_lower_right_corner_x;
++  uint16_t window_lower_right_corner_y;
++
++  uint16_t center_of_ellipse_x;
++  uint16_t center_of_ellipse_y;
++  uint8_t rotation_angle;
++
++  uint16_t semimajor_axis_internal_ellipse;
++  uint16_t semimajor_axis_external_ellipse;
++  uint16_t semiminor_axis_external_ellipse;
++
++  bool overlap_process_option;
++};
++
++struct DistributionMaxRgb
++{
++  uint8_t percentage;
++  uint32_t percentile;
++};
++
++struct ActualTargetedSystemDisplay
++{
++  uint8_t num_rows_targeted_system_display_actual_peak_luminance;
++  uint8_t num_cols_targeted_system_display_actual_peak_luminance;
++  std::vector<std::vector<uint8_t>> targeted_system_display_actual_peak_luminance;
++};
++
++struct ActualMasteringDisplay
++{
++  uint8_t num_rows_mastering_display_actual_peak_luminance = 0;
++  uint8_t num_cols_mastering_display_actual_peak_luminance = 0;
++  std::vector<uint8_t> mastering_display_actual_peak_luminance;
++};
++
++struct BezierCurve
++{
++  uint16_t knee_point_x = 0;
++  uint16_t knee_point_y = 0;
++  uint8_t num_bezier_curve_anchors = 0;
++  std::vector<uint16_t> bezier_curve_anchors;
++};
++
++struct Luminance
++{
++  uint32_t maxscl[3];
++  uint32_t average_maxrgb;
++  uint16_t num_distribution_maxrgb_percentiles;
++  std::vector<DistributionMaxRgb> distribution_maxrgb;
++  uint16_t fraction_bright_pixels;
++};
++
++// ST 2094-40 carries tone mapping and colour saturation per processing window.
++struct ToneMapping
++{
++  bool tone_mapping_flag = false;
++  BezierCurve bezier_curve;
++  bool color_saturation_mapping_flag = false;
++  uint8_t color_saturation_weight = 0;
++};
++
++struct Hdr10PlusMetadata
++{
++
++  uint8_t itu_t_t35_country_code;
++  uint16_t itu_t_t35_terminal_provider_code;
++  uint16_t itu_t_t35_terminal_provider_oriented_code;
++
++  uint8_t application_identifier;
++  uint8_t application_version;
++
++  uint8_t num_windows;
++  std::vector<ProcessingWindow> processing_windows;
++
++  uint32_t targeted_system_display_maximum_luminance;
++
++  bool targeted_system_display_actual_peak_luminance_flag;
++  ActualTargetedSystemDisplay actual_targeted_system_display;
++
++  std::vector<Luminance> luminance;
++
++  bool mastering_display_actual_peak_luminance_flag;
++  ActualMasteringDisplay actual_mastering_display;
++
++  std::vector<ToneMapping> tone_mapping;
++};
++
++std::optional<Hdr10PlusMetadata> hdr10plus_sei_to_metadata(CBitstreamReader& br);
++
++// Static HDR metadata (from container hints, refreshed from MDCV/CLL SEIs),
++// used when generating DV RPUs from HDR10+ dynamic metadata.
++struct HDRStaticMetadataInfo
++{
++  uint32_t max_lum = 0; // nits
++  uint32_t min_lum = 0; // units of 0.0001 nits
++
++  uint16_t max_cll = 0;
++  uint16_t max_fall = 0;
++
++  // MDCV chromaticities, 0.00002 units, in the SEI's G,B,R order.
++  uint16_t display_primaries_x[3] = {};
++  uint16_t display_primaries_y[3] = {};
++  uint16_t white_point_x = 0;
++  uint16_t white_point_y = 0;
++  bool has_mdcv = false;
++};
++
++// Read-only extraction from SEI messages already parsed by CHevcSei.
++std::optional<Hdr10PlusMetadata> ExtractHdr10Plus(const std::vector<CHevcSei>& messages,
++                                                  const std::vector<uint8_t>& buf);
++std::optional<MasteringDisplayColourVolume> ExtractMasteringDisplayColourVolume(
++    const std::vector<CHevcSei>& messages, const std::vector<uint8_t>& buf);
++std::optional<ContentLightLevel> ExtractContentLightLevel(const std::vector<CHevcSei>& messages,
++                                                          const std::vector<uint8_t>& buf);
++
++} // namespace KODI::AML::HDR
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
+@@ -0,0 +1,641 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "AMLHdr10PlusToDv.h"
++
++#include "AMLHdr10Plus.h"
++#include "utils/HevcSei.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <optional>
++#include <utility>
++#include <vector>
++
++#include <fmt/format.h>
++
++extern "C"
++{
++#ifdef HAVE_LIBDOVI
++#include <libdovi/rpu_parser.h>
++#endif
++}
++
++namespace KODI::AML::HDR
++{
++
++// Nits to PQ
++constexpr double ST2084_Y_MAX = 10000.0;
++constexpr double ST2084_M1 = 2610.0 / 16384.0;
++constexpr double ST2084_M2 = (2523.0 / 4096.0) * 128.0;
++constexpr double ST2084_C1 = 3424.0 / 4096.0;
++constexpr double ST2084_C2 = (2413.0 / 4096.0) * 32.0;
++constexpr double ST2084_C3 = (2392.0 / 4096.0) * 32.0;
++
++// Clamp Values
++constexpr std::uint16_t L1_MAX_PQ_MIN_VALUE = 2081;
++// CMv2.9 average-PQ floor.
++constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE = 819;
++// CMv4.0's own average floor. The remainder below it rides in level 3.
++constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE_CMV40 = 1229;
++// Level 3 offsets are encoded at half level 1's scale: parser.rs scales L1 by
++// 4095 and L3 by 2048 (biased +2048) off the same normalised PQ axis.
++constexpr double L3_PQ_SCALE = 4095.0 / 2048.0;
++
++static double nits_to_pq(double nits)
++{
++  double y = nits / ST2084_Y_MAX;
++  return std::pow((ST2084_C1 + ST2084_C2 * std::pow(y, ST2084_M1)) /
++                      (1.0 + ST2084_C3 * std::pow(y, ST2084_M1)),
++                  ST2084_M2);
++}
++
++static uint16_t cast_pq(double nits)
++{
++  // saturate: the 17-bit percentile/maxscl fields reach 13107 nits, which is
++  // PQ 1.028 -> 4210, outside the 12-bit range every DM field is validated on
++  const double code = std::round(nits_to_pq(nits) * 4095.0);
++  return static_cast<uint16_t>(code < 0.0 ? 0.0 : (code > 4095.0 ? 4095.0 : code));
++}
++
++// Presence is not validity: zeroed and implausible MDCV SEIs exist on real discs.
++// Bounds are ffmpeg's (libavcodec/h2645_sei.c), in the SEI's 0.00002 units.
++static bool PlausibleChroma(uint16_t x, uint16_t y)
++{
++  return x >= 5 && x <= 37000 && y >= 5 && y <= 42000;
++}
++
++// ffmpeg's bounds for this SEI, converted from its raw units to nits. Shared by
++// the adoption gate and the use site, so both apply the same bounds.
++static bool LumPlausible(uint32_t max_lum, uint32_t min_lum)
++{
++  return max_lum >= 5 && max_lum <= 10000 && min_lum <= 50000 && min_lum < max_lum * 10000;
++}
++
++static bool MdcvPlausible(const HDRStaticMetadataInfo& m)
++{
++  if (!PlausibleChroma(m.white_point_x, m.white_point_y))
++    return false;
++  for (int i = 0; i < 3; ++i)
++    if (!PlausibleChroma(m.display_primaries_x[i], m.display_primaries_y[i]))
++      return false;
++  return true;
++}
++
++static uint16_t maximum_pq(const Hdr10PlusMetadata& meta)
++{
++
++  if (meta.num_windows == 0)
++    return 0;
++
++  // max(maxscl) is the full-resolution frame peak; ST 2094-10 6.1.5 is taken over
++  // 6.1.2's 2x2-averaged reduced pixel set, so they are different statistics.
++
++  const auto& max_scl = meta.luminance[0].maxscl;
++  // 17-bit field, so it can encode up to 13107 nits; cast_pq saturates at 4095.
++  const uint32_t max_value = *std::max_element(max_scl, max_scl + 3);
++
++  // ST 2094-40 8.3: all-zero maxscl means "not calculated"; Annex B.3 says
++  // substitute the percentile distribution. Last node is the highest (8.5.4).
++  if (max_value == 0)
++  {
++    const auto& distributions = meta.luminance[0].distribution_maxrgb;
++    if (distributions.empty())
++      return 0;
++    return cast_pq(static_cast<double>(distributions.back().percentile) / 10.0);
++  }
++
++  return cast_pq(static_cast<double>(max_value) / 10.0);
++}
++
++static std::optional<uint16_t> average_pq(const Hdr10PlusMetadata& meta)
++{
++  // guards meta.luminance[0] below: the vector is sized from num_windows, so an
++  // empty one would be an out-of-bounds read, not just a wrong number
++  if (meta.num_windows == 0)
++    return std::nullopt;
++
++  {
++    const auto& dist = meta.luminance[0].distribution_maxrgb;
++
++    // Integrate the quantile function over [0,1] using the percentages the
++    // bitstream carries. Indices 1 and 2 are skipped ON PURPOSE: ST 2094-40
++    // 8.5.4 reserves V1/V2 iff J1=5 and J2=10, and real encoders put junk there.
++    const bool reservedSlots =
++        dist.size() >= 9 && dist[1].percentage == 5 && dist[2].percentage == 10;
++    // >= 9, not == 9: the 10-node layout carries the same reserved J1/J2 slots.
++
++    std::vector<std::pair<double, double>> nodes;
++    nodes.reserve(dist.size());
++    for (size_t i = 0; i < dist.size(); ++i)
++    {
++      if (reservedSlots && (i == 1 || i == 2))
++        continue;
++      if (dist[i].percentage > 100)
++        continue;
++      const double p = static_cast<double>(dist[i].percentage) / 100.0;
++      if (!nodes.empty() && p <= nodes.back().first)
++        continue;
++      nodes.emplace_back(p, nits_to_pq(static_cast<double>(dist[i].percentile) / 10.0));
++    }
++
++    if (nodes.size() >= 3)
++    {
++      // flat extrapolation into the head [0, p0] and the tail [pN, 1], so the
++      // weights cover exactly 1.0 and no normalisation constant is needed
++      double mean_pq = nodes.front().second * nodes.front().first;
++      for (size_t i = 1; i < nodes.size(); ++i)
++        mean_pq +=
++            (nodes[i - 1].second + nodes[i].second) / 2.0 * (nodes[i].first - nodes[i - 1].first);
++      mean_pq += nodes.back().second * (1.0 - nodes.back().first);
++
++      return static_cast<uint16_t>(std::round(mean_pq * 4095.0));
++    }
++  }
++
++  // Absent, not 0: a black frame computes 0 too. Not average_maxrgb - ST 2094-40
++  // 8.4 averages linearised maxRGB where ST 2094-10 6.1.4 wants PQ-encoded.
++  return std::nullopt;
++}
++
++// Mastering-display primaries, chromaticity x32767, in libdovi's level 9 order
++// (R, G, B, white), from PREDEFINED_COLORSPACE_PRIMARIES in primaries.rs.
++struct L9Preset
++{
++  std::uint8_t index;
++  std::uint16_t v[8];
++};
++static const L9Preset L9_PRESETS[] = {
++    {0, {22282, 10485, 8683, 22609, 4915, 1966, 10246, 10780}}, // DCI-P3 D65
++    {1, {20971, 10813, 9830, 19660, 4915, 1966, 10246, 10780}}, // BT.709
++    {2, {23199, 9568, 5570, 26115, 4292, 1507, 10246, 10780}}, // BT.2020
++    {5, {22282, 10485, 8683, 22609, 4915, 1966, 10289, 11501}}, // DCI-P3
++};
++
++// MDCV chromaticities are in units of 0.00002 (x 50000); level 9 uses x 32767.
++static std::uint16_t mdcv_to_l9(std::uint16_t v)
++{
++  return static_cast<std::uint16_t>(std::lround(v * 32767.0 / 50000.0));
++}
++
++static uint16_t clamp16(uint16_t d, uint16_t min, uint16_t max)
++{
++  uint16_t t = d < min ? min : d;
++  return t > max ? max : t;
++}
++
++std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
++    Hdr10PlusRpuCache& cache,
++    const Hdr10PlusMetadata& meta,
++    const HDRStaticMetadataInfo& hdrStaticMetadataInfo,
++    DvCmMode cm_mode)
++{
++
++  // Absent/implausible MDCV: fall back to a 1000-nit / 0.0001-nit display.
++  // Bounds are ffmpeg's for this SEI (libavcodec/h2645_sei.c).
++  const bool lum_ok = LumPlausible(hdrStaticMetadataInfo.max_lum, hdrStaticMetadataInfo.min_lum);
++  uint32_t max_lum = lum_ok ? hdrStaticMetadataInfo.max_lum : 1000;
++  uint32_t min_lum = lum_ok ? hdrStaticMetadataInfo.min_lum : 1;
++  // A declared zero minimum is floored at 0.0001 nits; pannal passes 0 through.
++  // Keeps source_min_pq on the mastering-display ladder rather than at 0.
++  if (!min_lum)
++    min_lum = 1;
++
++  // Static per-title ceiling from the mastering display alone: deriving it
++  // per frame makes level 6 move.
++  const uint32_t ceiling_nits = std::min<uint32_t>(max_lum, 10000);
++  // cast_pq reproduces the 1000/2000/4000/10000 table (3079/3388/3696/4095);
++  // cast_pq(100) is the 2081 floor used as the clamp's lower bound below.
++  const uint16_t source_max_pq = std::max<uint16_t>(cast_pq(ceiling_nits), L1_MAX_PQ_MIN_VALUE);
++
++  // Closed form reproduces the {1,2,5,10,20,50} -> {7,10,17,26,38,62} ladder.
++  // Bounded by the ceiling: a bad mux can push min above max.
++  const uint16_t source_min_pq =
++      std::min<uint16_t>(cast_pq(static_cast<double>(min_lum) * 1e-4), source_max_pq);
++
++  uint16_t max_pq = maximum_pq(meta);
++  if (max_pq == 0)
++    max_pq = cast_pq(ceiling_nits);
++
++  const auto avg_pq_opt = average_pq(meta);
++  uint16_t avg_raw = avg_pq_opt.value_or(0);
++  if (!avg_pq_opt)
++  {
++    // Scene average genuinely unknown. It anchors the mid point of the DM sigmoid,
++    // so take the floor rather than invent a value.
++    if (!cache.warned_no_histogram)
++    {
++      cache.warned_no_histogram = true;
++      CLog::Log(LOGWARNING,
++                "{} - no usable percentile histogram, falling back to "
++                "the minimum average PQ",
++                __FUNCTION__);
++    }
++    avg_raw = L1_AVG_PQ_MIN_VALUE;
++  }
++
++  // CMv4.0 needs the mastering primaries for level 9; without a usable MDCV
++  // emit CMv2.9 rather than assert a default.
++  const bool mdcv_usable = hdrStaticMetadataInfo.has_mdcv && MdcvPlausible(hdrStaticMetadataInfo);
++  const bool cmv40 = (cm_mode != DvCmMode::V29) && mdcv_usable;
++  if (cm_mode != DvCmMode::V29 && !mdcv_usable && !cache.warned_no_mdcv)
++  {
++    cache.warned_no_mdcv = true;
++    CLog::Log(LOGINFO,
++              "{} - CMv4.0 requested but this stream's mastering display "
++              "metadata is {}; emitting CMv2.9.",
++              __FUNCTION__,
++              hdrStaticMetadataInfo.has_mdcv
++                  ? fmt::format("implausible (primaries {},{} {},{} {},{} white {},{})",
++                                hdrStaticMetadataInfo.display_primaries_x[0],
++                                hdrStaticMetadataInfo.display_primaries_y[0],
++                                hdrStaticMetadataInfo.display_primaries_x[1],
++                                hdrStaticMetadataInfo.display_primaries_y[1],
++                                hdrStaticMetadataInfo.display_primaries_x[2],
++                                hdrStaticMetadataInfo.display_primaries_y[2],
++                                hdrStaticMetadataInfo.white_point_x,
++                                hdrStaticMetadataInfo.white_point_y)
++                  : std::string("absent"));
++  }
++
++  Hdr10PlusPqValues pq = {};
++  pq.cmv40 = cmv40;
++  pq.source_min_pq = source_min_pq;
++  pq.source_max_pq = source_max_pq;
++  // No per-frame minimum in HDR10+; the mastering minimum lives in source_min_pq.
++  pq.min_pq = 0;
++  // Cap the scene peak at the source peak: L1 max_pq above source_max_pq breaks
++  // DV tone mapping. Static per title, so an under-declaring master clips.
++  pq.max_pq = clamp16(max_pq, L1_MAX_PQ_MIN_VALUE, source_max_pq);
++  if (max_pq > source_max_pq && !cache.warned_peak_clamped)
++  {
++    cache.warned_peak_clamped = true;
++    CLog::Log(LOGINFO,
++              "{} - frame peak {} exceeds the mastering display ceiling {}; "
++              "clamping. Highlight detail above the declared mastering display is "
++              "not carried into the RPU.",
++              __FUNCTION__, max_pq, source_max_pq);
++  }
++
++  // CMv2.9 has one 12-bit average with an 819 floor (2.43 nits). CMv4.0 parks L1
++  // at its own floor and carries the remainder in level 3 at half L1's scale, so
++  // the pair reads back as L1.avg + (4095/2048)*(L3.avg_pq_offset - 2048).
++  if (cmv40)
++  {
++    pq.avg_pq = clamp16(avg_raw, L1_AVG_PQ_MIN_VALUE_CMV40, (pq.max_pq - 1));
++    const double off = 2048.0 + (static_cast<double>(avg_raw) - pq.avg_pq) / L3_PQ_SCALE;
++    pq.avg_pq_offset = static_cast<uint16_t>(std::lround(std::clamp(off, 0.0, 4095.0)));
++  }
++  else
++  {
++    pq.avg_pq = clamp16(avg_raw, L1_AVG_PQ_MIN_VALUE, (pq.max_pq - 1));
++    pq.avg_pq_offset = 2048;
++  }
++
++  // Level 6 is static, not re-derived per frame. min_lum is in 0.0001-nit units,
++  // so it is not clamped to the 10000 that would mean 1 nit.
++  pq.max_display_mastering_luminance = max_lum;
++  pq.min_display_mastering_luminance = min_lum;
++  pq.max_content_light_level = hdrStaticMetadataInfo.max_cll;
++  pq.max_frame_average_light_level = hdrStaticMetadataInfo.max_fall;
++
++  // Level 9 from the MDCV primaries rather than libdovi's DCI-P3 default.
++  if (cmv40)
++  {
++    const uint16_t l9[8] = {
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_x[2]), // red
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_y[2]),
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_x[0]), // green
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_y[0]),
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_x[1]), // blue
++        mdcv_to_l9(hdrStaticMetadataInfo.display_primaries_y[1]),
++        mdcv_to_l9(hdrStaticMetadataInfo.white_point_x),
++        mdcv_to_l9(hdrStaticMetadataInfo.white_point_y),
++    };
++    pq.l9_index = 255;
++    for (const auto& preset : L9_PRESETS)
++      if (std::equal(std::begin(preset.v), std::end(preset.v), std::begin(l9)))
++      {
++        pq.l9_index = preset.index;
++        break;
++      }
++    std::copy(std::begin(l9), std::end(l9), std::begin(pq.l9));
++    // libdovi requires every custom primary to be non-zero for length 17; the
++    // mdcv_usable gate above rejects zero primaries.
++  }
++
++  if (!cache.announced_cm)
++  {
++    cache.announced_cm = true;
++    CLog::Log(LOGINFO, "{} - content mapping version: {}", __FUNCTION__,
++              pq.cmv40 ? "CMv4.0" : "CMv2.9");
++  }
++
++  // Metadata unchanged: stay in the shot, emit the flag=0 hold variant. This
++  // equality test is the scene-cut detector - HDR10+ is piecewise-constant.
++  if (pq == cache.last_pq && !cache.last_rpu_hold.empty())
++    return cache.last_rpu_hold;
++
++  // declared outside the guard: it is read below whether or not libdovi is built in
++  bool generated = false;
++  std::string libdovi_error;
++
++#ifdef HAVE_LIBDOVI
++  // Identity level 2 trims at the 100/600/1000 nit targets native content uses;
++  // a display given none falls back to its own. CMv4.0 adds level 8 at 1/27/48.
++  static constexpr const char* L2_BLOCKS =
++      R"({"Level2":{"target_max_pq":2081,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}},)"
++      R"({"Level2":{"target_max_pq":2851,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}},)"
++      R"({"Level2":{"target_max_pq":3079,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}})";
++  static constexpr const char* L8_BLOCKS =
++      R"(,{"Level8":{"length":10,"target_display_index":1,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}})"
++      R"(,{"Level8":{"length":10,"target_display_index":27,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}})"
++      R"(,{"Level8":{"length":10,"target_display_index":48,"trim_slope":2048,"trim_offset":2048,"trim_power":2048,"trim_chroma_weight":2048,"trim_saturation_gain":2048,"ms_weight":2048}})";
++
++  std::string extra;
++  if (pq.cmv40)
++  {
++    // min and max offsets are fixed neutral.
++    extra = fmt::format(
++        R"(,{{"Level3":{{"min_pq_offset":2048,"max_pq_offset":2048,"avg_pq_offset":{}}}}})",
++        pq.avg_pq_offset);
++    extra += L8_BLOCKS;
++    if (pq.l9_index == 255)
++      extra += fmt::format(R"(,{{"Level9":{{"length":17,"source_primary_index":255,)"
++                           R"("source_primary_red_x":{},"source_primary_red_y":{},)"
++                           R"("source_primary_green_x":{},"source_primary_green_y":{},)"
++                           R"("source_primary_blue_x":{},"source_primary_blue_y":{},)"
++                           R"("source_primary_white_x":{},"source_primary_white_y":{}}}}})",
++                           pq.l9[0], pq.l9[1], pq.l9[2], pq.l9[3], pq.l9[4], pq.l9[5], pq.l9[6],
++                           pq.l9[7]);
++    else
++      extra +=
++          fmt::format(R"(,{{"Level9":{{"length":1,"source_primary_index":{}}}}})", pq.l9_index);
++  }
++
++  // A 2-frame shot: list[0] carries scene_refresh_flag=1 (metadata just
++  // changed), list[1] carries flag=0 for the identical frames that follow.
++  std::string json = fmt::format(
++      // long_play_mode false, where pannal uses true: it flags every frame as a
++      // scene cut, and list[1] below has to be the flag=0 variant.
++      R"({{"profile":"8.1","cm_version":"{}","long_play_mode":false,"length":2,)"
++      R"("source_min_pq":{},"source_max_pq":{},)"
++      R"("level6":{{"max_display_mastering_luminance":{},"min_display_mastering_luminance":{},)"
++      R"("max_content_light_level":{},"max_frame_average_light_level":{}}},)"
++      R"("default_metadata_blocks":[{{"Level1":{{"min_pq":{},"max_pq":{},"avg_pq":{}}}}},{}{}],)"
++      R"("shots":[{{"start":0,"duration":2}}]}})",
++      pq.cmv40 ? "V40" : "V29", pq.source_min_pq, pq.source_max_pq,
++      pq.max_display_mastering_luminance, pq.min_display_mastering_luminance,
++      pq.max_content_light_level, pq.max_frame_average_light_level, pq.min_pq, pq.max_pq, pq.avg_pq,
++      L2_BLOCKS, extra);
++
++  const DoviRpuOpaqueList* list = dovi_generate_from_json(json.c_str());
++  if (list && list->len >= 2 && list->list && list->list[0] && list->list[1])
++  {
++    const DoviData* d0 = dovi_write_unspec62_nalu(list->list[0]);
++    const DoviData* d1 = dovi_write_unspec62_nalu(list->list[1]);
++    if (d0 && d0->data && d1 && d1->data)
++    {
++      cache.last_rpu_refresh.assign(d0->data, d0->data + d0->len);
++      cache.last_rpu_hold.assign(d1->data, d1->data + d1->len);
++      // cache the key only once both RPUs are produced, so a generation failure
++      // retries next frame instead of pinning a stale pair
++      cache.last_pq = pq;
++      generated = true;
++    }
++    if (d0)
++      dovi_data_free(d0);
++    if (d1)
++      dovi_data_free(d1);
++  }
++  // Block validation reports on the individual RPU, not on list->error.
++  if (list && list->error)
++    libdovi_error = fmt::format(" - libdovi: {}", list->error);
++  else if (list && list->len >= 1 && list->list && list->list[0])
++  {
++    if (const char* e = dovi_rpu_get_error(list->list[0]))
++      libdovi_error = fmt::format(" - libdovi rpu: {}", e);
++  }
++  if (list)
++    dovi_rpu_list_free(list);
++#endif
++
++  // Generation failed: return nothing rather than a stale refresh RPU, which
++  // would signal a scene cut carrying the wrong peak and average.
++  if (!generated)
++  {
++    const int level = cache.warned_generation_failed ? LOGDEBUG : LOGWARNING;
++    cache.warned_generation_failed = true;
++    CLog::Log(level, "{} - generation failed (min_pq {} max_pq {} avg_pq {} cm {}){}", __FUNCTION__,
++              pq.min_pq, pq.max_pq, pq.avg_pq, pq.cmv40 ? "V40" : "V29", libdovi_error);
++    return {};
++  }
++
++  CLog::Log(LOGDEBUG,
++            "{} - min_pq [{}] max_pq [{}] avg_pq [{}] "
++            "mdml max [{}] mdml min [{}] cll [{}] fall [{}]",
++            __FUNCTION__, pq.min_pq, pq.max_pq, pq.avg_pq, pq.max_display_mastering_luminance,
++            pq.min_display_mastering_luminance, pq.max_content_light_level,
++            pq.max_frame_average_light_level);
++
++  // metadata changed -> this frame is the shot start (flag=1)
++  return cache.last_rpu_refresh;
++}
++
++namespace
++{
++// HEVC NAL types we care about in the assembled access unit.
++constexpr uint8_t NAL_SEI_PREFIX = 39;
++constexpr uint8_t NAL_UNSPEC62 = 62; // Dolby Vision RPU
++constexpr uint8_t NAL_UNSPEC63 = 63; // Dolby Vision EL
++
++struct AnnexBNal
++{
++  int offset; // first byte of the NAL, past the start code
++  int size;
++};
++
++// Split an Annex-B buffer into NALs. CBitstreamConverter emits a 4-byte start code
++// for the first NAL and for UNSPEC62 and 3-byte for the rest, so handle both.
++std::vector<AnnexBNal> SplitAnnexB(const uint8_t* b, int size)
++{
++  std::vector<AnnexBNal> nals;
++  const auto isStart = [&](int p)
++  { return p + 2 < size && b[p] == 0 && b[p + 1] == 0 && b[p + 2] == 1; };
++
++  int i = 0;
++  while (i < size && !isStart(i))
++    ++i;
++
++  while (i < size)
++  {
++    const int payload = i + 3;
++    int j = payload;
++    while (j < size && !isStart(j))
++      ++j;
++    int end = j;
++    // A zero immediately before the next start code belongs to that start code.
++    // Exactly one: the converter prepends a 3- or 4-byte code to each verbatim
++    // NAL. Do not loop - a slice's cabac_zero_word padding is part of the NAL.
++    if (end > payload && end < size && b[end - 1] == 0)
++      --end;
++    if (end > payload)
++      nals.push_back({payload, end - payload});
++    i = j;
++  }
++  return nals;
++}
++
++void AppendNal(std::vector<uint8_t>& out, const uint8_t* nal, int size, bool fourByte)
++{
++  if (fourByte)
++    out.push_back(0);
++  out.insert(out.end(), {0, 0, 1});
++  out.insert(out.end(), nal, nal + size);
++}
++} // unnamed namespace
++
++bool CHdr10PlusToDvSession::ProcessAccessUnit(const uint8_t* in,
++                                              int inSize,
++                                              std::vector<uint8_t>& out)
++{
++  m_convertedThisAu = false;
++  m_cache.BeginAu();
++
++  if (!in || inSize <= 0)
++    return false;
++
++  const std::vector<AnnexBNal> nals = SplitAnnexB(in, inSize);
++  if (nals.empty())
++    return false;
++
++  // Pass 1: collect static HDR metadata from every prefix SEI and note which NAL
++  // carries the HDR10+ payload. The MDCV may sit after the T.35 NAL.
++  std::optional<Hdr10PlusMetadata> hdr10plus;
++  // Every NAL carrying a T.35, with its stripped form: a Dolby Vision access unit
++  // must not still carry HDR10+. A later T.35 in the same access unit wins.
++  std::vector<std::pair<size_t, std::vector<uint8_t>>> strippedSeis;
++  for (size_t n = 0; n < nals.size(); ++n)
++  {
++    const uint8_t* nal = in + nals[n].offset;
++    if (nals[n].size < 7 || ((nal[0] >> 1) & 0x3F) != NAL_SEI_PREFIX)
++      continue;
++
++    std::vector<uint8_t> clearBuf;
++    const auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(nal, nals[n].size, clearBuf);
++
++    // Frozen once the first RPU committed to a content mapping version: a late
++    // MDCV must not flip cm_version or move level 6 inside an open DV decode.
++    if (!m_converted)
++    {
++      if (const auto mdcv = ExtractMasteringDisplayColourVolume(messages, clearBuf))
++      {
++        // Adopt only what the use site would use - the same chromaticity and
++        // luminance bounds - so an unusable in-band SEI does not replace the
++        // container seed. All-or-nothing: the MDCV fields only mean anything as a set.
++        HDRStaticMetadataInfo cand = m_static;
++        for (int i = 0; i < 3; ++i)
++        {
++          cand.display_primaries_x[i] = mdcv->displayPrimaries[i].x;
++          cand.display_primaries_y[i] = mdcv->displayPrimaries[i].y;
++        }
++        cand.white_point_x = mdcv->whitePoint.x;
++        cand.white_point_y = mdcv->whitePoint.y;
++        cand.max_lum = mdcv->maxLuminance; // already nits
++        cand.min_lum = mdcv->minLuminance;
++        if (MdcvPlausible(cand) && LumPlausible(cand.max_lum, cand.min_lum))
++        {
++          m_static = cand;
++          m_static.has_mdcv = true;
++        }
++      }
++      if (const auto cll = ExtractContentLightLevel(messages, clearBuf))
++      {
++        // zero is "unknown" in this SEI; it must not overwrite a known value
++        if (cll->maxContentLightLevel != 0)
++          m_static.max_cll = cll->maxContentLightLevel;
++        if (cll->maxFrameAverageLightLevel != 0)
++          m_static.max_fall = cll->maxFrameAverageLightLevel;
++      }
++    }
++
++    // Keyed on the T.35 header, not a successful parse: a Dolby Vision access unit
++    // must not keep the HDR10+ SEI even when its body was rejected.
++    if (CHevcSei::FindHdr10PlusSeiMessage(clearBuf, messages))
++    {
++      strippedSeis.emplace_back(n, CHevcSei::RemoveHdr10PlusFromSeiNalu(nal, nals[n].size));
++      if (const auto meta = ExtractHdr10Plus(messages, clearBuf))
++        hdr10plus = *meta;
++    }
++  }
++
++  // No usable metadata is the same case as a failed generation: hold on the cached
++  // RPU rather than emit a Dolby Vision access unit with none.
++  std::vector<uint8_t> rpu;
++  if (hdr10plus)
++    rpu = create_rpu_nalu_for_hdr10plus(m_cache, *hdr10plus, m_static, m_cmMode);
++
++  if (!rpu.empty())
++  {
++    m_rpu = std::move(rpu);
++    m_holdRun = 0;
++    m_holdWarned = false;
++  }
++  else if (m_rpu.empty())
++  {
++    // Cold cache: nothing to stand in. Leave the access unit alone and let the
++    // stream play as native HDR10+; the decoder is not in DV mode yet.
++    return false;
++  }
++  else if (++m_holdRun >= MAX_HOLD_RUN && !m_holdWarned)
++  {
++    m_holdWarned = true;
++    CLog::Log(LOGWARNING,
++              "{} - no RPU generated for {} access units; "
++              "continuing on the last cached RPU",
++              __FUNCTION__, MAX_HOLD_RUN);
++  }
++
++  if (m_rpu.empty())
++    return false;
++
++  // Pass 2: rebuild the access unit, HDR10+ SEI replaced by its stripped form.
++  out.clear();
++  out.reserve(static_cast<size_t>(inSize) + m_rpu.size() + 8);
++  for (size_t n = 0; n < nals.size(); ++n)
++  {
++    const uint8_t* nal = in + nals[n].offset;
++    const uint8_t type = (nal[0] >> 1) & 0x3F;
++
++    // This access unit is becoming Dolby Vision, so a native RPU/EL is dropped.
++    // A remux that kept in-band RPUs but lost its dvcC gets ours instead.
++    if (type == NAL_UNSPEC62 || type == NAL_UNSPEC63)
++      continue;
++
++    const bool first = out.empty();
++    const auto stripped = std::find_if(strippedSeis.begin(), strippedSeis.end(),
++                                       [n](const auto& s) { return s.first == n; });
++    if (stripped != strippedSeis.end())
++    {
++      if (!stripped->second.empty())
++        AppendNal(out, stripped->second.data(), static_cast<int>(stripped->second.size()), first);
++      continue;
++    }
++    AppendNal(out, nal, nals[n].size, first);
++  }
++
++  // x265 always writes UNSPEC62 with a four-byte start code
++  AppendNal(out, m_rpu.data(), static_cast<int>(m_rpu.size()), true);
++
++  m_converted = true;
++  m_convertedThisAu = true;
++  return true;
++}
++
++} // namespace KODI::AML::HDR
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
+@@ -0,0 +1,144 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "AMLHdr10Plus.h"
++
++#include <algorithm>
++#include <cstdint>
++#include <vector>
++
++namespace KODI::AML::HDR
++{
++
++// V29 clamps the L1 average at 819; V40 parks it at the CMv4.0 floor and
++// carries the remainder in a level 3 offset.
++enum class DvCmMode
++{
++  V29,
++  V40
++};
++
++struct Hdr10PlusPqValues
++{
++  uint16_t source_min_pq;
++  uint16_t source_max_pq;
++  uint16_t min_pq;
++  uint16_t max_pq;
++  uint16_t avg_pq;
++  uint16_t avg_pq_offset; // level 3, 2048 = neutral
++  uint16_t max_display_mastering_luminance;
++  uint16_t min_display_mastering_luminance;
++  uint16_t max_content_light_level;
++  uint16_t max_frame_average_light_level;
++  uint16_t l9[8]; // level 9 custom primaries, x32767, R G B white
++  uint8_t l9_index; // preset index, or 255 for the custom values above
++  bool cmv40;
++
++  bool operator==(const Hdr10PlusPqValues& o) const
++  {
++    return source_min_pq == o.source_min_pq && source_max_pq == o.source_max_pq &&
++           min_pq == o.min_pq && max_pq == o.max_pq && avg_pq == o.avg_pq &&
++           avg_pq_offset == o.avg_pq_offset &&
++           max_display_mastering_luminance == o.max_display_mastering_luminance &&
++           min_display_mastering_luminance == o.min_display_mastering_luminance &&
++           max_content_light_level == o.max_content_light_level &&
++           max_frame_average_light_level == o.max_frame_average_light_level &&
++           l9_index == o.l9_index && cmv40 == o.cmv40 &&
++           std::equal(std::begin(l9), std::end(l9), std::begin(o.l9));
++  }
++};
++
++// Per-stream RPU cache; never shared between decodes.
++struct Hdr10PlusRpuCache
++{
++  std::vector<uint8_t> last_rpu_refresh;
++  std::vector<uint8_t> last_rpu_hold;
++  Hdr10PlusPqValues last_pq = {};
++  Hdr10PlusPqValues saved_pq = {};
++  bool warned_no_histogram = false;
++  bool warned_peak_clamped = false;
++  bool warned_no_mdcv = false;
++  bool announced_cm = false;
++  bool warned_generation_failed = false;
++
++  //! \brief Snapshot the key before an access unit is built.
++  void BeginAu() { saved_pq = last_pq; }
++
++  //! \brief The decoder refused the access unit; the identical packet is
++  //! re-offered, so restore the key rather than invent a scene cut.
++  void RollbackAu() { last_pq = saved_pq; }
++
++  //! \brief Seek/flush: zero the key so the next call regenerates and emits the
++  //! refresh variant. On a generation failure the fallback re-emits the last
++  //! RPU, hold variant included.
++  void InvalidateKey() { last_pq = {}; saved_pq = {}; }
++};
++
++std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
++    Hdr10PlusRpuCache& cache,
++    const Hdr10PlusMetadata& meta,
++    const HDRStaticMetadataInfo& hdrStaticMetadataInfo,
++    DvCmMode cm_mode);
++
++// One HDR10+ -> Dolby Vision conversion session per stream. Runs after the
++// shared CBitstreamConverter, on the assembled access unit, so that no
++// cross-platform file has to change.
++class CHdr10PlusToDvSession
++{
++public:
++  void SetCmMode(DvCmMode mode) { m_cmMode = mode; }
++
++  //! \brief Seed the static HDR metadata from the container at Open. The
++  //! bitstream's own MDCV/CLL SEIs override this when they appear.
++  void SetStaticMetadata(const HDRStaticMetadataInfo& value) { m_static = value; }
++
++  //! \brief Rewrite one Annex-B access unit: drop the HDR10+ SEI and append
++  //! the generated RPU. False means submit the access unit unchanged.
++  bool ProcessAccessUnit(const uint8_t* in, int inSize, std::vector<uint8_t>& out);
++
++  //! \brief True once this stream has produced at least one RPU.
++  bool Converted() const { return m_converted; }
++
++  //! \brief True only for the access unit just processed.
++  bool ConvertedThisAu() const { return m_convertedThisAu; }
++
++  //! \brief The decoder refused this access unit and will be re-offered it.
++  void RollbackAu()
++  {
++    m_cache.RollbackAu();
++    if (m_holdRun > 0)
++      --m_holdRun;
++  }
++
++  //! \brief Seek/flush: the next RPU must re-anchor the display.
++  void Reset()
++  {
++    m_cache.InvalidateKey();
++    m_convertedThisAu = false;
++    m_holdRun = 0;
++    m_holdWarned = false;
++  }
++
++private:
++  // consecutive access units served from the stale hold RPU; crossing this
++  // warns once and playback continues - disarming mid-session would flip the
++  // decoder out of DV mid-stream
++  static constexpr unsigned int MAX_HOLD_RUN = 240;
++
++  Hdr10PlusRpuCache m_cache;
++  HDRStaticMetadataInfo m_static{};
++  DvCmMode m_cmMode{DvCmMode::V29};
++  std::vector<uint8_t> m_rpu;
++  bool m_converted{false};
++  bool m_convertedThisAu{false};
++  unsigned int m_holdRun{0};
++  bool m_holdWarned{false};
++};
++
++} // namespace KODI::AML::HDR
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp
+@@ -0,0 +1,207 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "AMLHdr10PlusHook.h"
++
++#include "DVDStreamInfo.h"
++#include "ServiceBroker.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
++#include "utils/AMLUtils.h"
++#include "utils/BitstreamConverter.h"
++#include "utils/HDRCapabilities.h"
++#include "utils/log.h"
++
++using namespace KODI::AML::HDR;
++
++void CAMLHdr10PlusHook::Arm(CDVDStreamInfo& hints,
++                            CBitstreamConverter* bitstream,
++                            const CHDRCapabilities& caps,
++                            bool& strip)
++{
++  m_convert = false;
++
++  // Latched here, at Open: the hotplug handler rewrites the display caps
++  // unsynchronised from the app thread, so the decode path must not re-read
++  // them once playback is under way.
++  m_sinkLacksHdr10Plus = !caps.SupportsHDR10Plus();
++
++  if (!bitstream)
++    return;
++
++#if defined(HAVE_LIBDOVI)
++    // Convert HDR10+ dynamic metadata to Dolby Vision profile 8.1 RPUs. Only
++    // for PQ HEVC on a DV-capable display, and never for streams that carry
++    // their own DV metadata. Require a PQ signal (transfer or HDR10/HDR10+
++    // flag) so HLG/SDR streams with a stray HDR10+ SEI are not wrapped as DV;
++    // accepting the flag as well avoids missing files with no container
++    // transfer. (The HDR10PLUS arm is defensive only - nothing in the tree ever
++    // assigns that hdrType to a stream; DetermineHdrType yields HDR10 for it.)
++    const bool isPq = hints.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084 ||
++                      hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
++                      hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
++    // One setting carries both the on/off decision and the content mapping
++    // version: 0 off, 1 convert emitting CMv4.0, 2 convert emitting CMv2.9.
++    // Read once here so the choice is a setting change, not a rebuild.
++    const int hdr10PlusToDv = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++        CSettings::SETTING_COREELEC_AMLOGIC_HDR10PLUS_TO_DV);
++    if (hdr10PlusToDv != 0 &&
++        hints.codec == AV_CODEC_ID_HEVC && hints.extradata && !hints.cryptoSession &&
++        isPq &&
++        hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
++        // Redundant on the FFmpeg path, where hdrType is set from the same
++        // configuration record - but a client demuxer copies hdr_type and dovi
++        // across independently (DVDDemuxClient), so an add-on can report
++        // profile 8 alongside HDR10 and only this stops it arming. Neither
++        // covers a remux that kept in-band RPUs but lost the record: nothing
++        // reads the elementary stream this early. See ProcessAccessUnit().
++        hints.dovi.dv_profile == 0 &&
++        aml_support_dolby_vision() &&
++        caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
++        // The settings dependencies only grey the control out; the stored value
++        // survives, so the Dolby Vision master switch and the three VS10 modes
++        // that can claim this stream are re-checked here. sdr2dv is not among
++        // them: aml_convert_to_dv_by_vs_engine only reads it for
++        // hdrType == HDR_TYPE_NONE, which the isPq gate above excludes. The
++        // hdr2dv check is redundant today - its only mechanism is the hdrType
++        // rewrite in CVideoPlayer::OpenStream, which the hdrType clause above
++        // already blocks - and is kept because that coupling lives in
++        // cross-platform code this patch does not own. A silent break there
++        // would mean VS10 and this both converting the same stream.
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR) &&
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR) &&
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV))
++    {
++      m_convert = true;
++      // CMv2.9 cannot represent an average below 819 (2.43 nits) and dark
++      // content sits under it; CMv4.0 carries the remainder in level 3.
++      m_session.SetCmMode(hdr10PlusToDv == 1 ? DvCmMode::V40 : DvCmMode::V29);
++      bitstream->SetRemoveHdr10Plus(false);
++      // the SEI is consumed, not discarded - don't report it as removed
++      strip = false;
++
++      // seed the static HDR metadata from the container; the converter
++      // refreshes it from MDCV/CLL SEIs in the bitstream, up to and including the
++      // access unit that produces the first RPU; static metadata is frozen after
++      HDRStaticMetadataInfo metadata;
++      if (hints.masteringMetadata)
++      {
++        // has_primaries and has_luminance are set independently, and ffmpeg
++        // copies the side data whole either way - reading luminance without the
++        // flag divides 0/0 and casts a NaN.
++        if (hints.masteringMetadata->has_luminance)
++        {
++          metadata.max_lum =
++              static_cast<uint32_t>(av_q2d(hints.masteringMetadata->max_luminance) + 0.5);
++          metadata.min_lum =
++              static_cast<uint32_t>(av_q2d(hints.masteringMetadata->min_luminance) * 10000 + 0.5);
++        }
++        if (hints.masteringMetadata->has_primaries)
++        {
++          // ffmpeg orders display_primaries R,G,B; the SEI - and so
++          // HDRStaticMetadataInfo - orders them G,B,R (HEVC D.3.27). Remap
++          // rather than copy, and scale to the SEI's 0.00002 units. A straight
++          // copy would emit level 9 with the primaries permuted; without the seed
++          // at all, a stream whose mastering metadata lives only in the container
++          // falls back to CMv2.9.
++          constexpr int kOurGbrFromFfmpegRgb[3] = {1, 2, 0};
++          for (int i = 0; i < 3; ++i)
++          {
++            const auto& prim =
++                hints.masteringMetadata->display_primaries[kOurGbrFromFfmpegRgb[i]];
++            metadata.display_primaries_x[i] =
++                static_cast<uint16_t>(av_q2d(prim[0]) * 50000 + 0.5);
++            metadata.display_primaries_y[i] =
++                static_cast<uint16_t>(av_q2d(prim[1]) * 50000 + 0.5);
++          }
++          metadata.white_point_x = static_cast<uint16_t>(
++              av_q2d(hints.masteringMetadata->white_point[0]) * 50000 + 0.5);
++          metadata.white_point_y = static_cast<uint16_t>(
++              av_q2d(hints.masteringMetadata->white_point[1]) * 50000 + 0.5);
++          metadata.has_mdcv = true;
++        }
++      }
++      if (hints.contentLightMetadata)
++      {
++        metadata.max_cll = hints.contentLightMetadata->MaxCLL;
++        metadata.max_fall = hints.contentLightMetadata->MaxFALL;
++      }
++      m_session.SetStaticMetadata(metadata);
++
++      CLog::Log(LOGINFO, "{}::{} - HDR10+ to Dolby Vision profile 8.1 conversion enabled",
++                "CAMLHdr10PlusHook", __FUNCTION__);
++    }
++#endif
++
++}
++
++void CAMLHdr10PlusHook::RewriteAu(uint8_t*& data, uint32_t& size)
++{
++  // Runs on the shared converter's output, so nothing cross-platform changes.
++  if (m_convert && m_session.ProcessAccessUnit(data, size, m_au))
++  {
++    data = m_au.data();
++    size = static_cast<uint32_t>(m_au.size());
++  }
++}
++
++void CAMLHdr10PlusHook::OnDecoderOpen(CDVDStreamInfo& hints,
++                                      StreamHdrType& bufferHdrType,
++                                      bool& isHdr10Plus,
++                                      CBitstreamConverter* bitstream,
++                                      bool& strip)
++{
++      // HDR10+ metadata was converted to DV RPUs: open the decoder in Dolby
++      // Vision profile 8.1 mode instead of plain HDR10.
++      if (m_convert && m_session.Converted())
++      {
++        CLog::Log(LOGINFO,
++                  "CAMLHdr10PlusHook::{}: HDR10+ converted to DV P8.1, opening "
++                  "decoder in DV mode",
++                  __FUNCTION__);
++        hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
++        hints.dovi.dv_version_major = 1;
++        hints.dovi.dv_version_minor = 0;
++        hints.dovi.dv_profile = 8;
++        hints.dovi.dv_level = 6;
++        hints.dovi.rpu_present_flag = 1;
++        hints.dovi.el_present_flag = 0;
++        hints.dovi.bl_present_flag = 1;
++        hints.dovi.dv_bl_signal_compatibility_id = 1;
++        // the output is now Dolby Vision: mark the picture as DV so the AML
++        // renderer takes its DV path (dv_is_used) matching the actual output
++        bufferHdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
++        isHdr10Plus = true; // converted => source was HDR10+; report that, not the DV output
++      }
++      else if (m_convert)
++      {
++        // DEGRADED STATE: conversion was armed but no HDR10+ RPU was produced by
++        // the first access unit (e.g. HDR10+ carried only as container side data,
++        // or an unparseable first SEI). Fall back to native HDR10/HDR10+
++        // rather than dropping anything. The decoder is now latched to HDR10 for
++        // the whole stream, so the converter has to be disarmed with it: left
++        // armed, a later access unit would strip its HDR10+ SEI and inject a DV
++        // RPU into a decode session opened as HDR10, and mute the native side
++        // channel on the way past, leaving neither an RPU nor HDR10+.
++        m_convert = false;
++        if (bitstream && m_sinkLacksHdr10Plus)
++        {
++          bitstream->SetRemoveHdr10Plus(true);
++          strip = true;
++        }
++        CLog::Log(LOGWARNING, "CAMLHdr10PlusHook::{}: HDR10+ to DV conversion armed "
++                  "but no RPU generated on first AU - disarmed, playing as native "
++                  "HDR10/HDR10+",
++                  __FUNCTION__);
++      }
++
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
+@@ -0,0 +1,70 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "AMLHdr10PlusToDv.h"
++#include "cores/VideoPlayer/Interface/StreamInfo.h"
++
++#include <cstdint>
++#include <vector>
++
++class CDVDStreamInfo;
++class CBitstreamConverter;
++class CHDRCapabilities;
++
++//! \brief Turning a stream's HDR10+ dynamic metadata into Dolby Vision profile
++//! 8.1, kept out of the codec that drives it.
++//!
++//! The codec reaches this through a handful of calls and keeps its own state:
++//! m_stripHdr10Plus belongs to CoreELEC and stays there, passed in by reference
++//! where arming has to change it. Nothing here takes over anything the codec
++//! already owned, so this file can grow without moving lines upstream may move.
++class CAMLHdr10PlusHook
++{
++public:
++  //! \brief Decide whether this stream converts, and configure the bitstream
++  //! converter to match. Clears \p strip when the SEI is consumed rather than
++  //! discarded. Called once, from the codec's Open().
++  void Arm(CDVDStreamInfo& hints,
++           CBitstreamConverter* bitstream,
++           const CHDRCapabilities& caps,
++           bool& strip);
++
++  //! \brief Rewrite one assembled access unit so it carries a generated RPU in
++  //! place of its HDR10+ SEI. \p data and \p size are replaced when it does.
++  void RewriteAu(uint8_t*& data, uint32_t& size);
++
++  //! \brief Settle how the decoder opens: Dolby Vision when an RPU was
++  //! produced, native HDR10 when arming did not pay off - in which case the
++  //! converter is disarmed with it and \p strip restored.
++  void OnDecoderOpen(CDVDStreamInfo& hints,
++                     StreamHdrType& bufferHdrType,
++                     bool& isHdr10Plus,
++                     CBitstreamConverter* bitstream,
++                     bool& strip);
++
++  //! \brief Whether an RPU was written into the access unit just handled. The
++  //! native HDR10+ side channel is suppressed on that, never on intent alone:
++  //! a stream armed but not converted would otherwise lose both.
++  bool ConvertedThisAu() const { return m_session.ConvertedThisAu(); }
++
++  //! \brief The decoder refused the access unit and will be re-offered it, so
++  //! give back the cache key generation already committed. Forcing a refresh
++  //! would invent a scene cut on every mid-shot stall.
++  void RollbackAu() { m_session.RollbackAu(); }
++
++  //! \brief A seek breaks the shot: the next RPU carries scene_refresh_flag=1
++  //! so the display re-anchors rather than smoothing on. Cached RPUs are kept.
++  void OnFlush() { m_session.Reset(); }
++
++private:
++  KODI::AML::HDR::CHdr10PlusToDvSession m_session;
++  std::vector<uint8_t> m_au;
++  bool m_convert{false};
++  bool m_sinkLacksHdr10Plus{false};
++};
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+@@ -14,8 +14,14 @@
+ 
+ if(TARGET ${APP_NAME_LC}::AML)
+   list(APPEND SOURCES AMLCodec.cpp
++                      AMLHdr10Plus.cpp
++                      AMLHdr10PlusToDv.cpp
++                      AMLHdr10PlusHook.cpp
+                       DVDVideoCodecAmlogic.cpp)
+   list(APPEND HEADERS AMLCodec.h
++                      AMLHdr10Plus.h
++                      AMLHdr10PlusToDv.h
++                      AMLHdr10PlusHook.h
+                       DVDVideoCodecAmlogic.h)
+ endif()
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -16,6 +16,7 @@
+ #include "DVDClock.h"
+ #include "DVDStreamInfo.h"
+ #include "AMLCodec.h"
++#include "AMLHdr10PlusHook.h"
+ #include "ServiceBroker.h"
+ #include "utils/AMLUtils.h"
+ #include "utils/HDRCapabilities.h"
+@@ -119,6 +120,7 @@
+   m_nalLengthSize = 0;
+   m_streamMeta = {};
+   m_stripHdr10Plus = false;
++  m_h10p = {};
+   m_metadataSequencer.Reset();
+ 
+   CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::Opening: codec {:d} profile:{:d} extra_size:{:d}", m_hints.codec, hints.profile, hints.extradata.GetSize());
+@@ -432,6 +434,8 @@
+       if (m_hints.dovi.dv_profile > 0)
+         m_streamMeta.flags.push_back("rpu-removed");
+     }
++
++    m_h10p.Arm(m_hints, m_bitstream, caps, m_stripHdr10Plus);
+   }
+ 
+   if (m_hints.contentLightMetadata)
+@@ -611,11 +615,14 @@
+       if (!m_bitstream->CanStartDecode())
+       {
+         CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
++        m_h10p.RollbackAu();
+         m_pendingMeta = m_streamMeta;
+         return true;
+       }
+       pData = m_bitstream->GetConvertBuffer();
+       iSize = m_bitstream->GetConvertSize();
++
++      m_h10p.RewriteAu(pData, iSize);
+       doviIsFEL = m_bitstream->GetDoviIsFEL();
+       IsHdr10Plus = m_bitstream->GetIsHdrPlus();
+       if (IsHdr10Plus && m_stripHdr10Plus &&
+@@ -644,6 +651,8 @@
+       if (packet.pts == DVD_NOPTS_VALUE)
+         m_hints.ptsinvalid = true;
+ 
++      m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
++
+       m_processInfo.SetDoviIsFEL(doviIsFEL);
+       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
+ 
+@@ -657,7 +666,8 @@
+     }
+   }
+ 
+-  if (packet.pSideData && packet.iSideDataElems > 0)
++  const bool converting = m_h10p.ConvertedThisAu();
++  if (packet.pSideData && packet.iSideDataElems > 0 && !converting)
+   {
+     const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
+                                                                packet.iSideDataElems,
+@@ -708,6 +718,9 @@
+     m_packages.pop_front();
+   }
+ 
++  if (!data_added && pData)
++    m_h10p.RollbackAu();
++
+   return data_added;
+ }
+ 
+@@ -763,6 +776,8 @@
+ {
+   m_Codec->Reset();
+ 
++  m_h10p.OnFlush();
++
+   while (!m_packages.empty())
+   {
+     DLDemuxPacket dual_layer_packet= m_packages.front();
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "AMLFrameMetadata.h"
++#include "AMLHdr10PlusHook.h"
+ #include "DVDVideoCodec.h"
+ #include "DVDStreamInfo.h"
+ #include "threads/CriticalSection.h"
+@@ -104,6 +105,9 @@
+   h264_sequence  *m_h264_sequence;
+   double          m_h264_sequence_pts;
+   bool            m_has_keyframe;
++  // owns the HDR10+ -> DV conversion for this stream; Amlogic-only, so it lives
++  // here rather than in the shared CBitstreamConverter
++  CAMLHdr10PlusHook m_h10p;
+ 
+   CBitstreamParser *m_bitparser;
+   CBitstreamConverter *m_bitstream;
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -475,6 +475,7 @@
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISABLE = "coreelec.amlogic.disabledolbyvision";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
++  static constexpr auto SETTING_COREELEC_AMLOGIC_HDR10PLUS_TO_DV = "coreelec.amlogic.hdr10plus2dv";
+   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
+   static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
+   static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -295,6 +295,7 @@
+     settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
+     settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV, false);
+     settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV, false);
++    settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_HDR10PLUS_TO_DV, 0);
+     settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, AML_DV_TV_LED);
+     settings->SetBool(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5, true);
+   }
+@@ -466,6 +467,10 @@
+   if (setting)
+     setting->SetVisible(device_dv);
+ 
++  setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_HDR10PLUS_TO_DV);
++  if (setting)
++    setting->SetVisible(device_dv);
++
+   setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
+   if (setting)
+     setting->SetVisible(sink_dv);
