@@ -101,7 +101,6 @@ jobs:
             build.CoreELEC-*/toolchain
             build.CoreELEC-*/install_pkg
             build.CoreELEC-*/install_init
-            build.CoreELEC-*/install_init
           key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
           restore-keys: |
             yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
@@ -186,6 +185,16 @@ jobs:
             echo "::warning::toolchain present but no stamps - discarding the restored state"
             rm -rf build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg
           fi
+          # build/ is deliberately not cached (36G). Packages that reference a
+          # build directory cannot be trusted from a cache without it: u-boot
+          # hashes files inside build/u-boot-<subdevice>, and the kernel modules
+          # compile against build/linux-*. Drop their stamps so they rebuild.
+          for pat in linux 'u-boot*' media_modules-aml w2-aml aml_bt mt76 \
+                     RTL8852BE-aml RTL8733BS AVL6862; do
+            rm -rf build.CoreELEC-*/.stamps/$pat 2>/dev/null || true
+          done
+          echo "stamps after invalidating build/-dependent packages: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
+
           FREE=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
           echo "free disk: ${FREE}G"
           [ "$FREE" -lt 40 ] && { echo "::error::only ${FREE}G free, the build needs ~50G"; exit 1; } || true
@@ -269,6 +278,7 @@ jobs:
             build.CoreELEC-*/.stamps
             build.CoreELEC-*/toolchain
             build.CoreELEC-*/install_pkg
+            build.CoreELEC-*/install_init
           key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
 
 
