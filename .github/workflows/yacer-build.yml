@@ -115,7 +115,9 @@ jobs:
       # ftp.gnu.org serves it. The distro mirrors lag the same way. Seed any GNU
       # source the redirector cannot serve straight from ftp.gnu.org, so the build
       # finds it already downloaded. Nothing upstream is modified.
-      - name: Pre-seed GNU sources the redirector cannot serve
+      - name: Pre-seed sources whose upstream is unreachable
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           seeded=0
           for f in $(grep -rlE 'PKG_URL=.*ftpmirror\.gnu\.org' packages projects 2>/dev/null); do
@@ -148,7 +150,30 @@ jobs:
             echo -n "$sha" > "sources/$name/$file.sha256"
             seeded=$((seeded+1))
           done
-          echo "seeded $seeded source archive(s)"
+          echo "seeded $seeded source archive(s) from ftp.gnu.org"
+
+          # Our own mirror of tarballs whose upstream host has died or is down.
+          # Assets are named <package>__<filename>. The checksum written is the
+          # one computed here, so a corrupted mirror simply fails CoreELEC's own
+          # check and falls back to a normal download rather than being trusted.
+          mirrored=0
+          for asset in $(gh release view yacer-sources --repo "${{ github.repository }}" \
+                           --json assets --jq '.assets[].name' 2>/dev/null); do
+            case "$asset" in *__*) ;; *) continue;; esac
+            pkg="${asset%%__*}"; file="${asset#*__}"
+            [ -f "sources/$pkg/$file" ] && continue
+            mkdir -p "sources/$pkg"
+            if curl -sSLf -o "sources/$pkg/$file" \
+                 "https://github.com/${{ github.repository }}/releases/download/yacer-sources/$asset"; then
+              echo -n "https://github.com/${{ github.repository }}/releases/download/yacer-sources/$asset" > "sources/$pkg/$file.url"
+              sha256sum "sources/$pkg/$file" | cut -d' ' -f1 | tr -d '\n' > "sources/$pkg/$file.sha256"
+              echo "  $pkg/$file: seeded from our mirror"
+              mirrored=$((mirrored+1))
+            else
+              rm -f "sources/$pkg/$file"
+            fi
+          done
+          echo "seeded $mirrored archive(s) from our own mirror"
 
       - name: Check the restored state is usable
         run: |
