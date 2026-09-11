@@ -1,0 +1,80 @@
+# YACER upstream sync
+#
+# coreelec-22 is kept as an exact mirror of CoreELEC/CoreELEC. Nothing of ours
+# lives there, so upstream force-pushing or rewriting history costs us nothing -
+# the mirror simply moves to wherever they are now.
+#
+# Our own work lives on yacer, which is replayed on top of the mirror. That keeps
+# the delta small and visible: git log coreelec-22..yacer is exactly what is ours.
+#
+# A merge is deliberately not used. Merging across an upstream rewrite silently
+# resurrects commits they dropped, which is worse than a conflict because nothing
+# reports it.
+name: YACER upstream sync
+
+on:
+  schedule:
+    - cron: '17 5 * * *'        # daily; every sync that lands changes starts a build
+  workflow_dispatch:
+
+concurrency:
+  group: yacer-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    name: mirror upstream and replay yacer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: yacer
+          fetch-depth: 0
+
+      - name: Sync
+        id: sync
+        run: |
+          git config user.name  "allolive"
+          git config user.email "160342668+allolive@users.noreply.github.com"
+          git remote add upstream https://github.com/CoreELEC/CoreELEC || true
+          git fetch upstream coreelec-22
+          git fetch origin coreelec-22:refs/remotes/origin/coreelec-22 || true
+
+          NEW=$(git rev-parse upstream/coreelec-22)
+          OLD=$(git rev-parse origin/coreelec-22 2>/dev/null || echo "")
+
+          if [ "$NEW" = "$OLD" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "mirror already at ${NEW:0:10}"
+            exit 0
+          fi
+
+          # A rewrite is not an error, but it should be visible rather than silent.
+          if [ -n "$OLD" ] && ! git merge-base --is-ancestor "$OLD" "$NEW"; then
+            echo "::warning::upstream rewrote history - ${OLD:0:10} is no longer an ancestor of ${NEW:0:10}"
+          fi
+
+          # 1. the mirror follows upstream exactly, whatever they did to it
+          git push --force origin "$NEW":refs/heads/coreelec-22
+
+          # 2. replay our commits on top of the new upstream
+          OURS=$(git rev-list --count "$OLD".."HEAD" 2>/dev/null || echo "?")
+          if ! git rebase --onto "$NEW" "$OLD" yacer; then
+            git rebase --abort || true
+            echo "::error::replaying yacer onto ${NEW:0:10} conflicts - resolve locally"
+            exit 1
+          fi
+
+          git push --force-with-lease origin yacer
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "mirror ${OLD:0:10} -> ${NEW:0:10}, replayed $OURS commit(s)"
+
+      - name: Trigger a build
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer

@@ -1,0 +1,164 @@
+# YACER - Yet Another CoreELEC Release
+#
+# Builds the update .tar for the Ugoos AM6B Plus (Amlogic S922X-J, g12b) on every
+# push. The build cross-compiles to aarch64 on an x86_64 runner, so no ARM runner
+# is needed. 'make release' produces the update tar without the per-device .img.gz
+# files, which keeps the runner disk and the job time down.
+name: YACER build
+
+on:
+  push:
+    branches: [ yacer ]
+    paths-ignore:
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/FUNDING.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: yacer-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build update tar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350          # the hard job limit is 360
+    env:
+      PROJECT: Amlogic-ce
+      DEVICE: Amlogic-no
+      ARCH: aarch64
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 7G
+
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/share/swift "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          echo "after:"; df -h / | tail -1
+
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc binutils bzip2 ccache cpio curl device-tree-compiler diffutils \
+            default-jre file g++ gawk gcc gperf gzip help2man java-common \
+            libncurses-dev libxml-parser-perl lzop make openssh-client openssl \
+            libparse-yapp-perl patch patchutils perl python3 python3-dev rdfind \
+            rsync sed tar texinfo u-boot-tools unzip wget xfonts-utils xsltproc \
+            xz-utils zip zlib1g-dev
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: yacer-ccache-${{ env.PROJECT }}-${{ github.sha }}
+          restore-keys: |
+            yacer-ccache-${{ env.PROJECT }}-
+
+      # A package whose stamp hash still matches is skipped before it is unpacked,
+      # so a restored stamp costs no download, no unpack and no compile. Only the
+      # stamps, the toolchain and the per-package install trees are needed for
+      # that. build/ is 36G of unpacked sources and object files, and only the
+      # packages that actually rebuild need to recreate it.
+      #
+      # The key hashes the same inputs the stamps do, so it changes only when a
+      # package definition or a patch changes.
+      - name: Restore build state
+        uses: actions/cache@v4
+        with:
+          path: |
+            build.CoreELEC-*/.stamps
+            build.CoreELEC-*/toolchain
+            build.CoreELEC-*/install_pkg
+          key: yacer-state-${{ env.PROJECT }}-${{ hashFiles('packages/**/package.mk', 'projects/Amlogic-ce/**/package.mk', 'projects/Amlogic-ce/patches/**', 'config/**') }}
+          restore-keys: |
+            yacer-state-${{ env.PROJECT }}-
+
+      # The full build output goes to build.log and is uploaded as an artifact.
+      # Only the per-package progress lines and anything that looks like an error
+      # reach the console, which keeps the run page readable without losing the
+      # detail needed to diagnose a failure.
+      # ftpmirror.gnu.org is a redirector, and it happily sends you to a mirror
+      # that has not picked up the newest release yet - gcc 16.2.0 404s there while
+      # ftp.gnu.org serves it. The distro mirrors lag the same way. Seed any GNU
+      # source the redirector cannot serve straight from ftp.gnu.org, so the build
+      # finds it already downloaded. Nothing upstream is modified.
+      - name: Pre-seed GNU sources the redirector cannot serve
+        run: |
+          seeded=0
+          for f in $(grep -rlE 'PKG_URL=.*ftpmirror\.gnu\.org' packages projects 2>/dev/null); do
+            name=$(grep -oE '^PKG_NAME="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            ver=$(grep -oE '^PKG_VERSION="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            sha=$(grep -oE '^PKG_SHA256="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            url=$(grep -oE '^PKG_URL="[^"]*"' "$f" | head -1 | cut -d'"' -f2)
+            [ -z "$name" ] || [ -z "$ver" ] && continue
+            url="${url//\$\{PKG_NAME\}/$name}"; url="${url//\$\{PKG_VERSION\}/$ver}"
+            file="${url##*/}"
+            [ -f "sources/$name/$file" ] && continue
+            if [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$url")" = "200" ]; then continue; fi
+            alt="${url/ftpmirror.gnu.org/ftp.gnu.org}"
+            if [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$alt")" != "200" ]; then
+              echo "  $name-$ver: no working source, leaving it to the build"; continue
+            fi
+            echo "  $name-$ver: seeding from ftp.gnu.org"
+            mkdir -p "sources/$name"
+            curl -sL -o "sources/$name/$file" "$alt"
+            echo -n "$alt" > "sources/$name/$file.url"
+            echo -n "$sha" > "sources/$name/$file.sha256"
+            seeded=$((seeded+1))
+          done
+          echo "seeded $seeded source archive(s)"
+
+      - name: Build
+        run: |
+          start=$(date +%s)
+          make release > build.log 2>&1 &
+          BUILD_PID=$!
+          ( tail -n +1 -f build.log \
+              | grep --line-buffered -E '^\[[0-9]+/[0-9]+\]|FAILED|\*\*\*|error:' ) &
+          TAIL_PID=$!
+          set +e; wait $BUILD_PID; rc=$?; set -e
+          sleep 2; kill $TAIL_PID 2>/dev/null || true
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          if [ $rc -ne 0 ]; then
+            echo "::group::last 80 lines of build.log"
+            tail -80 build.log
+            echo "::endgroup::"
+          fi
+          exit $rc
+
+      - name: Build stats
+        if: always()
+        run: |
+          echo "build time: $(( ${BUILD_SECONDS:-0} / 60 )) min"
+          echo "stamped packages: $(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)"
+          du -sh build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg 2>/dev/null || true
+          df -h / | tail -1
+          ccache -s 2>/dev/null || true
+
+      - name: Show artifacts
+        run: ls -lh target/*.tar target/*.tar.sha256
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yacer-build-log
+          path: build.log
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yacer-update-tar
+          path: |
+            target/*.tar
+            target/*.tar.sha256
+          retention-days: 14
+          compression-level: 0
