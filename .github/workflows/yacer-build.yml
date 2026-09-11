@@ -14,10 +14,27 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/FUNDING.yml'
   workflow_dispatch:
+    inputs:
+      clean_cache:
+        description: 'Ignore the cached build state and start from scratch'
+        type: boolean
+        default: false
+      depth:
+        description: 'Internal: how many times this build has already continued'
+        type: string
+        default: '0'
+      deadline_min:
+        description: 'Override the build deadline in minutes (use a small value to exercise the timeout path)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: write        # gh workflow run (chaining) needs this
 
 concurrency:
   group: yacer-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -29,11 +46,14 @@ jobs:
       DEVICE: Amlogic-no
       ARCH: aarch64
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 7G
+      CCACHE_MAXSIZE: 2G
+      BUILD_DEADLINE_MIN: ${{ inputs.deadline_min != '' && inputs.deadline_min || '300' }}
+      CACHE_EPOCH: v1              # bump to invalidate every cache at once      # job limit is 360; leave room for cache upload
 
     steps:
       - name: Reclaim runner disk
         run: |
+          echo "runner: $(nproc) cores, $(free -g | awk '/^Mem:/{print $2}')G RAM"
           echo "before:"; df -h / | tail -1
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost /usr/share/swift "${AGENT_TOOLSDIRECTORY:-}" || true
@@ -55,12 +75,13 @@ jobs:
             xz-utils zip zlib1g-dev
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        if: ${{ inputs.clean_cache != true }}
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: yacer-ccache-${{ env.PROJECT }}-${{ github.sha }}
+          key: yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
           restore-keys: |
-            yacer-ccache-${{ env.PROJECT }}-
+            yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
 
       # A package whose stamp hash still matches is skipped before it is unpacked,
       # so a restored stamp costs no download, no unpack and no compile. Only the
@@ -68,18 +89,22 @@ jobs:
       # that. build/ is 36G of unpacked sources and object files, and only the
       # packages that actually rebuild need to recreate it.
       #
-      # The key hashes the same inputs the stamps do, so it changes only when a
-      # package definition or a patch changes.
+      # A rolling key: the exact key never matches, so restore-keys returns the
+      # most recent entry. Correctness comes from CoreELEC re-validating every
+      # stamp's deephash, not from the cache key.
       - name: Restore build state
-        uses: actions/cache@v4
+        if: ${{ inputs.clean_cache != true }}
+        uses: actions/cache/restore@v4
         with:
           path: |
             build.CoreELEC-*/.stamps
             build.CoreELEC-*/toolchain
             build.CoreELEC-*/install_pkg
-          key: yacer-state-${{ env.PROJECT }}-${{ hashFiles('packages/**/package.mk', 'projects/Amlogic-ce/**/package.mk', 'projects/Amlogic-ce/patches/**', 'config/**') }}
+            build.CoreELEC-*/install_init
+            build.CoreELEC-*/install_init
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
           restore-keys: |
-            yacer-state-${{ env.PROJECT }}-
+            yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-
 
       # The full build output goes to build.log and is uploaded as an artifact.
       # Only the per-package progress lines and anything that looks like an error
@@ -109,30 +134,118 @@ jobs:
             fi
             echo "  $name-$ver: seeding from ftp.gnu.org"
             mkdir -p "sources/$name"
-            curl -sL -o "sources/$name/$file" "$alt"
+            # -f so an error page is not saved as a tarball, and verify before
+            # writing the stamp: get_archive trusts the stamp and never re-hashes
+            if ! curl -sSLf -o "sources/$name/$file" "$alt"; then
+              echo "    download failed, leaving it to the build"
+              rm -f "sources/$name/$file"; continue
+            fi
+            if [ -n "$sha" ] && ! echo "$sha  sources/$name/$file" | sha256sum -c - >/dev/null 2>&1; then
+              echo "    checksum mismatch, discarding"
+              rm -f "sources/$name/$file"; continue
+            fi
             echo -n "$alt" > "sources/$name/$file.url"
             echo -n "$sha" > "sources/$name/$file.sha256"
             seeded=$((seeded+1))
           done
           echo "seeded $seeded source archive(s)"
 
+      - name: Check the restored state is usable
+        run: |
+          STAMPS=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+          TOOLCHAIN=$(ls -d build.CoreELEC-*/toolchain 2>/dev/null | head -1)
+          echo "restored: $STAMPS stamped package(s), toolchain: ${TOOLCHAIN:-absent}"
+          # a toolchain without stamps, or stamps without a toolchain, is a broken
+          # restore - drop both and let the build start clean rather than guess
+          if [ -n "$TOOLCHAIN" ] && [ "$STAMPS" -eq 0 ]; then
+            echo "::warning::toolchain present but no stamps - discarding the restored state"
+            rm -rf build.CoreELEC-*/toolchain build.CoreELEC-*/install_pkg
+          fi
+          FREE=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "free disk: ${FREE}G"
+          [ "$FREE" -lt 40 ] && { echo "::error::only ${FREE}G free, the build needs ~50G"; exit 1; } || true
+
       - name: Build
         run: |
           start=$(date +%s)
-          make release > build.log 2>&1 &
+          STAMPS_BEFORE=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+          echo "STAMPS_BEFORE=$STAMPS_BEFORE" >> "$GITHUB_ENV"
+          # Stop short of the job limit rather than being killed by it: a timed-out
+          # job skips its post steps, so the cache is never written and every
+          # package built in that run is thrown away. Ending cleanly saves the
+          # stamps, and the next run skips everything already built.
+          : > build.log          # create it before tail, or tail may exit at once
+          # Source hosts fail often (savannah 502, mirrors missing a new release).
+          # Stamps make a retry cheap: re-running resumes and only re-attempts what
+          # did not finish, so transient network faults cost minutes, not a rebuild.
+          ( for attempt in 1 2 3; do
+              # capture the status directly: after `if cmd; then...fi` the value of
+              # $? is the if-statement's own status, not the command's
+              timeout -k 60s ${BUILD_DEADLINE_MIN}m make release
+              rc=$?
+              [ $rc -eq 0 ] && exit 0
+              [ $rc -eq 124 ] && exit 124          # deadline: do not retry
+              [ $attempt -eq 3 ] && exit $rc
+              echo "=== attempt ${attempt} failed (rc=${rc}); resuming in 90s ==="
+              sleep 90
+            done ) > build.log 2>&1 &
           BUILD_PID=$!
           ( tail -n +1 -f build.log \
               | grep --line-buffered -E '^\[[0-9]+/[0-9]+\]|FAILED|\*\*\*|error:' ) &
           TAIL_PID=$!
+          # Some packages take 15+ minutes with nothing to report, so a heartbeat
+          # keeps a long quiet stretch distinguishable from a hung build.
+          ( while kill -0 $BUILD_PID 2>/dev/null; do
+              sleep 300
+              kill -0 $BUILD_PID 2>/dev/null || break
+              echo "... still building ($(( ($(date +%s) - start ) / 60 )) min) - last: $(grep -oE '^\[[0-9]+/[0-9]+\].*' build.log | tail -1)"
+            done ) &
+          HEARTBEAT_PID=$!
           set +e; wait $BUILD_PID; rc=$?; set -e
-          sleep 2; kill $TAIL_PID 2>/dev/null || true
+          sleep 2
+          # kill the children first: $! is the subshell, and orphaned tail/grep
+          # keep the step's stdout open, which can hang the job past its limit
+          pkill -P "$TAIL_PID" 2>/dev/null || true
+          pkill -P "$HEARTBEAT_PID" 2>/dev/null || true
+          kill "$TAIL_PID" "$HEARTBEAT_PID" 2>/dev/null || true
           echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          if [ $rc -eq 124 ]; then
+            STAMPS_AFTER=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
+            echo "INCOMPLETE=1" >> "$GITHUB_ENV"
+            echo "STAMPS_AFTER=$STAMPS_AFTER" >> "$GITHUB_ENV"
+            echo "::error::deadline reached at ${BUILD_DEADLINE_MIN}m - packages stamped ${STAMPS_BEFORE} -> ${STAMPS_AFTER}. The partial build is cached; re-run to continue."
+            # deliberately fails: an unfinished build should read as failed. The
+            # state is still cached by the always() step below.
+            exit 1
+          fi
           if [ $rc -ne 0 ]; then
             echo "::group::last 80 lines of build.log"
             tail -80 build.log
             echo "::endgroup::"
           fi
           exit $rc
+
+      # Always save, even when the build stopped at the deadline - that partial
+      # progress is exactly what the next run needs. A unique key is required
+      # because an existing key is never overwritten.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: yacer-ccache-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+
+      - name: Save build state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build.CoreELEC-*/.stamps
+            build.CoreELEC-*/toolchain
+            build.CoreELEC-*/install_pkg
+          key: yacer-state-${{ env.CACHE_EPOCH }}-${{ env.PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
 
       - name: Build stats
         if: always()
@@ -144,6 +257,7 @@ jobs:
           ccache -s 2>/dev/null || true
 
       - name: Show artifacts
+        if: env.INCOMPLETE != '1'
         run: ls -lh target/*.tar target/*.tar.sha256
 
       - name: Upload build log
@@ -154,7 +268,111 @@ jobs:
           path: build.log
           retention-days: 14
 
+      # Publish the tar as a release asset and refresh the update feed. CoreELEC's
+      # own updater serves releases from GitHub Releases in exactly this shape, so
+      # the feed below is the same schema pointed at our repository. Adding its URL
+      # under Settings > Updates > custom channels makes these builds show up in
+      # the update list; no change to the distribution is needed.
+      # Only chain when the deadline was hit AND packages were actually built,
+      # so a run that makes no progress cannot loop forever.
+      # Chains only when the deadline was hit AND packages were actually built.
+      # The depth cap is the backstop: actions/cache/save only warns on failure,
+      # so a cache that silently stops saving would otherwise rebuild the same
+      # packages and re-chain forever.
+      - name: Continue in a follow-up run
+        if: always() && env.INCOMPLETE == '1' && env.STAMPS_AFTER > env.STAMPS_BEFORE
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPTH: ${{ inputs.depth || '0' }}
+        run: |
+          if [ "${DEPTH:-0}" -ge 8 ]; then
+            echo "::error::still unfinished after ${DEPTH} continuations - stopping rather than looping"
+            exit 1
+          fi
+          echo "deadline reached; continuing in a follow-up run (depth $((DEPTH+1)))"
+          gh workflow run yacer-build.yml --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}" -f depth=$((DEPTH+1))
+
+      - name: Publish release and update feed
+        if: success() && env.INCOMPLETE != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAR=$(ls -t target/*.tar | head -1)
+          BASE=$(basename "$TAR")                       # CoreELEC-Amlogic-no.aarch64-<ver>.tar
+          VER=${BASE#CoreELEC-${DEVICE}.${ARCH}-}        # <ver>.tar
+          VER=${VER%.tar}                               # <ver>
+          SIZE=$(stat -c%s "$TAR")
+          echo "publishing $BASE as release $VER ($SIZE bytes)"
+
+          # the tar already carries SYSTEM.md5 and KERNEL.md5, which the boot-time
+          # updater checks before flashing; this sha256 verifies the download itself
+          SHA=$(cut -d" " -f1 "$TAR.sha256" 2>/dev/null || sha256sum "$TAR" | cut -d" " -f1)
+          gh release create "$VER" "$TAR" "$TAR.sha256" \
+            --repo "${{ github.repository }}" \
+            --title "$VER" \
+            --notes "Automated YACER build of ${{ github.sha }}.
+
+            sha256: $SHA
+            size:   $SIZE bytes" \
+            || gh release upload "$VER" "$TAR" "$TAR.sha256" --repo "${{ github.repository }}" --clobber
+
+          # the feed lives on a fixed tag so its URL never changes
+          gh release create yacer-feed --repo "${{ github.repository }}" \
+            --title "YACER update feed" --notes "Update channel for CoreELEC custom channels." \
+            2>/dev/null || true
+          gh release download yacer-feed --repo "${{ github.repository }}" \
+            -p releases.json -D . 2>/dev/null || echo '{}' > releases.json
+
+          python3 - "$VER" "$BASE" "$SIZE" <<'PYEOF'
+          import json, sys
+          ver, base, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          try:
+              feed = json.load(open('releases.json'))
+          except Exception:
+              feed = {}
+          ch = feed.setdefault('YACER-22', {
+              'url': 'https://github.com/${{ github.repository }}/releases/download/',
+              'prettyname_regex': r'(^.*)\/.*',
+              'project': {},
+          })
+          rels = ch['project'].setdefault('Amlogic-no.aarch64', {}).setdefault('releases', {})
+          names = [r['file']['name'] for r in rels.values()]
+          new = '%s/%s' % (ver, base)
+          if new not in names:
+              names.insert(0, new)
+          keep = names[:10]                      # newest first while trimming
+          sizes = {r['file']['name']: r['file'].get('size') for r in rels.values()}
+          sizes[new] = size
+          # The updater reads sorted(releases, key=int, reverse=True), and upstream
+          # puts the NEWEST release at the HIGHEST index - so emit oldest-first to
+          # make the newest build appear at the top of the dialog.
+          ch['project']['Amlogic-no.aarch64']['releases'] = {
+              str(i): {'file': {'name': n, 'size': sizes.get(n, 0)}}
+              for i, n in enumerate(reversed(keep))
+          }
+          json.dump(feed, open('releases.json', 'w'), indent=1)
+          print('feed now lists %d build(s)' % len(keep))
+          PYEOF
+
+          # The six-hourly check reads this one; it always names the newest build,
+          # and the box decides whether it already has it.
+          python3 - "$VER" "$BASE" > update.json <<'PYEOF'
+          import json, sys
+          ver, base = sys.argv[1], sys.argv[2]
+          json.dump({'data': {
+              'host': 'github.com',
+              'folder': '${{ github.repository }}/releases/download/%s' % ver,
+              'update': base,
+          }}, sys.stdout, indent=1)
+          PYEOF
+          cat update.json
+
+          gh release upload yacer-feed releases.json update.json --repo "${{ github.repository }}" --clobber
+          echo "feed: https://github.com/${{ github.repository }}/releases/download/yacer-feed/releases.json"
+
       - uses: actions/upload-artifact@v4
+        if: env.INCOMPLETE != '1'
         with:
           name: yacer-update-tar
           path: |

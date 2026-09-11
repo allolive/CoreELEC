@@ -45,7 +45,9 @@ jobs:
           git fetch origin coreelec-22:refs/remotes/origin/coreelec-22 || true
 
           NEW=$(git rev-parse upstream/coreelec-22)
-          OLD=$(git rev-parse origin/coreelec-22 2>/dev/null || echo "")
+          # --verify --quiet prints nothing when the ref is missing; plain
+          # rev-parse echoes the name itself, which is not a sha and not empty
+          OLD=$(git rev-parse --verify --quiet origin/coreelec-22^{commit} || true)
 
           if [ "$NEW" = "$OLD" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
