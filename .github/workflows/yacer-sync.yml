@@ -1,0 +1,61 @@
+# YACER upstream sync
+#
+# coreelec-22 is an exact mirror of CoreELEC/CoreELEC. Nothing of ours lives
+# there, so upstream force-pushing or rewriting history costs us nothing - the
+# mirror simply moves to wherever they are now.
+#
+# Our own files live on the yacer branch, which shares no history with the
+# mirror and is never replayed onto it. The build copies them over a checkout
+# of the mirror instead, so an upstream rewrite can never conflict with us.
+name: YACER upstream sync
+
+on:
+  schedule:
+    - cron: '17 5 * * *'        # daily; every sync that lands changes starts a build
+  workflow_dispatch:
+
+concurrency:
+  group: yacer-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    name: mirror upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: yacer
+          fetch-depth: 1
+
+      - name: Sync
+        id: sync
+        run: |
+          git remote add upstream https://github.com/CoreELEC/CoreELEC || true
+          git fetch --depth=1 upstream coreelec-22
+          git fetch --depth=1 origin coreelec-22:refs/remotes/origin/coreelec-22 || true
+
+          NEW=$(git rev-parse upstream/coreelec-22)
+          # --verify --quiet prints nothing when the ref is missing; plain
+          # rev-parse echoes the name itself, which is not a sha and not empty
+          OLD=$(git rev-parse --verify --quiet origin/coreelec-22^{commit} || true)
+
+          if [ "$NEW" = "$OLD" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "mirror already at ${NEW:0:10}"
+            exit 0
+          fi
+
+          git push --force origin "$NEW":refs/heads/coreelec-22
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "mirror ${OLD:0:10} -> ${NEW:0:10}"
+
+      - name: Trigger a build
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer
