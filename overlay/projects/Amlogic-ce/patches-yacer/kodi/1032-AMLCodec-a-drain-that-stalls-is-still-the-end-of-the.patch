@@ -1,0 +1,37 @@
+From ac15a28187407f5571ad9c8eb67c35262567fa33 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 11 Sep 2026 23:55:00 -0400
+Subject: [PATCH] AMLCodec: a drain that stalls is still the end of the stream
+
+CVideoPlayerVideo drains in a loop that neither waits nor reads its own message
+queue, and takes VC_NONE as "ask again". While draining, the VC_EOF arm waits on
+a data_len that never reaches zero, so the video thread never gets back to its
+queue and the stream change for the next file is never read.
+
+End the drain when the hardware has produced nothing for the decoder timeout the
+next arm already uses.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index e399ad9..6d7aedd 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2871,8 +2871,16 @@
+ 
+     return CDVDVideoCodec::VC_PICTURE;
+   }
+-  else if (m_drain && m_buffer_level_ready && data_len == 0)
++  // the caller's drain loop neither waits nor reads its message queue
++  else if (m_drain && m_buffer_level_ready &&
++           (data_len == 0 || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
++  {
++    if (data_len)
++      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} bytes left after {:d}ms",
++        data_len, elapsed_since_last_frame.count());
++
+     return CDVDVideoCodec::VC_EOF;
++  }
+   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
+     return CDVDVideoCodec::VC_NONE;
+   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
