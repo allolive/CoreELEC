@@ -1,0 +1,242 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] updates: follow our own builds, manually and automatically
+
+Offer only the trains the box can actually move to, and read our own feed beside
+the upstream one so these builds are listed without using a custom-channel slot.
+
+Point the automatic check at that feed too - it asked update.coreelec.org, which
+does not know these builds and would answer with an official one. Both feeds are
+fetched under a timeout, and About says where to report what.
+
+--- a/language/resource.language.cs_cz/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.cs_cz/strings.po	2026-09-11 18:24:19.642458238 -0400
+@@ -51,8 +51,8 @@
+ msgstr "CoreELEC je vytvořen globálním týmem nadšenců pro Linux a Kodi, kteří přispívají svým časem a úsilím ke správě projektu, psaní kódu a poskytování podpory. Baví nás to vyrábět. Doufáme, že se s jeho používáním budete bavit!"
+ 
+ msgctxt "#610"
+-msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
+-msgstr "[B]Podpora[/B] je poskytována prostřednictvím našeho fóra:[CR]https://discourse.coreelec.org[CR][CR][B]Dokumentaci[/B] si můžete přečíst na našem webu:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] si můžete přečíst na našem webu:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] najdete na GitHubu:[CR]https://github.com/CoreELEC[CR][CR]"
++msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR]"
++msgstr "[B]Podpora[/B] je poskytována prostřednictvím našeho fóra:[CR]https://discourse.coreelec.org[CR][CR][B]Dokumentaci[/B] si můžete přečíst na našem webu:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] si můžete přečíst na našem webu:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] najdete na GitHubu:[CR]https://github.com/allolive/CoreELEC[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid ""
+diff -ruN a/language/resource.language.en_gb/strings.po b/language/resource.language.en_gb/strings.po
+--- a/language/resource.language.en_gb/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.en_gb/strings.po	2026-09-11 18:24:19.642793778 -0400
+@@ -49,7 +49,7 @@
+ msgstr ""
+ 
+ msgctxt "#610"
+-msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
++msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ msgstr ""
+ 
+ msgctxt "#700"
+diff -ruN a/language/resource.language.es_es/strings.po b/language/resource.language.es_es/strings.po
+--- a/language/resource.language.es_es/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.es_es/strings.po	2026-09-11 18:24:19.643034241 -0400
+@@ -52,8 +52,8 @@
+ msgstr "CoreELEC está creado por un equipo global de entusiastas de Linux y Kodi que aportan tiempo y esfuerzo para gestionar el proyecto, escribir código y proporcionar soporte. Nos divertimos haciéndolo. ¡Esperamos que tú te diviertas usándolo!"
+ 
+ msgctxt "#610"
+-msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
+-msgstr "[B]Soporte[/B] se proporciona a través de nuestro foro:[CR]https://discourse.coreelec.org[CR][CR][B]Documentación[/B] se puede leer en nuestra página web:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] se puede leer en nuestra página web:[CR]https://wiki.coreelec.org[CR][CR][B]Código[/B] se puede encontrar en GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
++msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR]"
++msgstr "[B]Soporte[/B] se proporciona a través de nuestro foro:[CR]https://discourse.coreelec.org[CR][CR][B]Documentación[/B] se puede leer en nuestra página web:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] se puede leer en nuestra página web:[CR]https://wiki.coreelec.org[CR][CR][B]Código[/B] se puede encontrar en GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid "Configure a hostname, keyboard type, perform a reset, update, or backups and restores"
+diff -ruN a/language/resource.language.fr_ca/strings.po b/language/resource.language.fr_ca/strings.po
+--- a/language/resource.language.fr_ca/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.fr_ca/strings.po	2026-09-11 18:24:19.643399297 -0400
+@@ -60,7 +60,7 @@
+ " in our wiki:[CR]https://libreelec.wiki[CR][CR][B]Code[/B] can be found on "
+ "GitHub:[CR]https://github.com/LibreELEC[CR][CR][B]Donations[/B] towards "
+ "project expenses are accepted via PayPal:[CR]donations@libreelec.tv"
+-msgstr "[B]Le support[/B] est fourni via notre forum :[CR]https://forum.libreelec.tv[CR][CR][B]La documentation[/B] est accessible sur notre wiki :[CR]https://libreelec.wiki[CR][CR][B]Le code source[/B] est disponible sur GitHub :[CR]https://github.com/LibreELEC[CR][CR][B]Les donations[/B] au projet par PayPal sont acceptées :[CR]donations@libreelec.tv"
++msgstr "[B]Le support[/B] est fourni via notre forum :[CR]https://forum.libreelec.tv[CR][CR][B]La documentation[/B] est accessible sur notre wiki :[CR]https://libreelec.wiki[CR][CR][B]Le code source[/B] est disponible sur GitHub :[CR]https://github.com/LibreELEC[CR][CR][B]Les donations[/B] au projet par PayPal sont acceptées :[CR]donations@libreelec.tv[B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid ""
+diff -ruN a/language/resource.language.hu_hu/strings.po b/language/resource.language.hu_hu/strings.po
+--- a/language/resource.language.hu_hu/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.hu_hu/strings.po	2026-09-11 18:24:19.643812735 -0400
+@@ -52,7 +52,7 @@
+ 
+ msgctxt "#610"
+ msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/@DISTRONAME@[CR][CR]"
+-msgstr "[B]A támogatást[/B] a fórumunkon keresztül biztosítjuk: [CR]https://discourse.coreelec.org[CR][CR][B]Dokumentáció[/B] a következő webhelyen olvasható:[CR] A https://coreelec.org[CR][CR][B]Wiki[/B] a weboldalunkon olvasható: [CR]https://wiki.coreelec.org[CR][CR][B]Kód [/B] megtalálható a GitHubon:[CR]https://github.com/@DISTRONAME@[CR][CR]"
++msgstr "[B]A támogatást[/B] a fórumunkon keresztül biztosítjuk: [CR]https://discourse.coreelec.org[CR][CR][B]Dokumentáció[/B] a következő webhelyen olvasható:[CR] A https://coreelec.org[CR][CR][B]Wiki[/B] a weboldalunkon olvasható: [CR]https://wiki.coreelec.org[CR][CR][B]Kód [/B] megtalálható a GitHubon:[CR]https://github.com/@DISTRONAME@[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid "Configure a hostname, keyboard type, perform a reset, update, or backups and restores"
+diff -ruN a/language/resource.language.uk_ua/strings.po b/language/resource.language.uk_ua/strings.po
+--- a/language/resource.language.uk_ua/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.uk_ua/strings.po	2026-09-11 18:24:19.645630007 -0400
+@@ -60,13 +60,13 @@
+ "forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be "
+ "read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read "
+ "at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found"
+-" on GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
++" on GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR]"
+ msgstr ""
+ "[B]Підтримка[/B] надається на нашому "
+ "форумі:[CR]https://discourse.coreelec.org[CR][CR][B]Документацію[/B] можна "
+ "прочитати на нашому сайті:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] можна "
+ "прочитати на нашому сайті:[CR]https://wiki.coreelec.org[CR][CR][B]Код[/B] "
+-"можна знайти на GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
++"можна знайти на GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid ""
+diff -ruN a/language/resource.language.zh_cn/strings.po b/language/resource.language.zh_cn/strings.po
+--- a/language/resource.language.zh_cn/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.zh_cn/strings.po	2026-09-11 18:24:19.645975595 -0400
+@@ -57,8 +57,8 @@
+ msgstr "CoreELEC 由全球热爱 Linux 与 Kodi 的爱好者团队开发，他们投入时间与精力维护项目、编写代码并提供支持。我们在创造的过程中乐在其中，也希望您使用愉快！"
+ 
+ msgctxt "#610"
+-msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/CoreELEC[CR][CR]"
+-msgstr "[B]支持[/B]可通过我们的论坛获取：[CR]https://discourse.coreelec.org[CR][CR][B]文档[/B]可通过我们的网站查阅：[CR]https://coreelec.org[CR][CR][B]维基[/B]可通过我们的网站查阅：[CR]https://wiki.coreelec.org[CR][CR][B]代码[/B]可在 GitHub 获取：[CR]https://github.com/CoreELEC[CR][CR]"
++msgid "[B]Support[/B] is provided via our forum:[CR]https://discourse.coreelec.org[CR][CR][B]Documentation[/B] can be read at our website:[CR]https://coreelec.org[CR][CR][B]Wiki[/B] can be read at our website:[CR]https://wiki.coreelec.org[CR][CR][B]Code[/B] can be found on GitHub:[CR]https://github.com/allolive/CoreELEC[CR][CR]"
++msgstr "[B]支持[/B]可通过我们的论坛获取：[CR]https://discourse.coreelec.org[CR][CR][B]文档[/B]可通过我们的网站查阅：[CR]https://coreelec.org[CR][CR][B]维基[/B]可通过我们的网站查阅：[CR]https://wiki.coreelec.org[CR][CR][B]代码[/B]可在 GitHub 获取：[CR]https://github.com/allolive/CoreELEC[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ 
+ msgctxt "#700"
+ msgid "Configure a hostname, keyboard type, perform a reset, update, or backups and restores"
+diff -ruN a/language/resource.language.zh_tw/strings.po b/language/resource.language.zh_tw/strings.po
+--- a/language/resource.language.zh_tw/strings.po	2026-08-05 12:29:46.000000000 -0400
++++ b/language/resource.language.zh_tw/strings.po	2026-09-11 18:24:19.646103232 -0400
+@@ -59,7 +59,7 @@
+ "forum:[CR]https://forum.libreelec.tv[CR][CR][B]Documentation[/B] can be read"
+ " in our wiki:[CR]https://libreelec.wiki[CR][CR][B]Code[/B] can be found on "
+ "GitHub:[CR]https://github.com/LibreELEC[CR][CR][B]Donations[/B] towards "
+-"project expenses are accepted via PayPal:[CR]donations@libreelec.tv"
++"project expenses are accepted via PayPal:[CR]donations@libreelec.tv[B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
+ msgstr ""
+ 
+ msgctxt "#700"
+diff -ruN a/src/resources/lib/modules/updates.py b/src/resources/lib/modules/updates.py
+--- a/src/resources/lib/modules/updates.py	2026-08-05 12:29:46.000000000 -0400
++++ b/src/resources/lib/modules/updates.py	2026-09-11 18:24:19.626607877 -0400
+@@ -11,6 +11,7 @@
+ import json
+ import xbmc
+ import xbmcgui
++import socket
+ import tarfile
+ import oeWindows
+ import threading
+@@ -27,6 +28,8 @@
+     KERNEL_CMD = None
+     UPDATE_REQUEST_URL = None
+     UPDATE_DOWNLOAD_URL = None
++    YACER_UPDATE_URL = 'https://github.com/allolive/CoreELEC/releases/download/yacer-feed/releases.json'
++    YACER_AUTOUPDATE_URL = 'https://github.com/allolive/CoreELEC/releases/download/yacer-feed/update.json'
+     LOCAL_UPDATE_DIR = None
+     menu = {'2': {
+         'name': 32005,
+@@ -337,6 +340,14 @@
+             self.update_json = self.build_json()
+ 
+             self.struct['update']['settings']['Channel']['values'] = self.get_channels()
++            # A channel saved before the box changed train is no longer on offer,
++            # so move off it - in memory only. An empty list means the feeds did
++            # not answer, which is not the same as the channel being retired, and
++            # writing either case back to disk would destroy a choice we cannot
++            # tell apart from a failed lookup.
++            values = self.struct['update']['settings']['Channel']['values'] or []
++            if values and self.struct['update']['settings']['Channel']['value'] not in values:
++                self.struct['update']['settings']['Channel']['value'] = values[0]
+             self.struct['update']['settings']['Build']['values'] = self.get_available_builds()
+ 
+             # RPi4 EEPROM updating
+@@ -429,6 +440,19 @@
+         elif (a_builder > b_builder):
+           return +1
+ 
++    def is_current_train(self, channel):
++        # channels are named <builder>-<train>; anything named otherwise is a
++        # feed we cannot reason about, so it is left in the list
++        items = channel.rsplit('-', 1)
++        if len(items) != 2:
++            return True
++        # get_os_release leaves VERSION_ID empty when /etc/os-release is short of
++        # it, and an exception here would take the whole channel list down
++        try:
++            return int(items[1]) == int(self.oe.VERSION_ID.split('.')[0])
++        except ValueError:
++            return True
++
+     def get_channels(self):
+         try:
+             self.oe.dbg_log('updates::get_channels', 'enter_function', self.oe.LOGDEBUG)
+@@ -436,7 +460,8 @@
+             self.oe.dbg_log('updates::get_channels', str(self.update_json), self.oe.LOGDEBUG)
+             if not self.update_json is None:
+                 for channel in self.update_json:
+-                    channels.append(channel)
++                    if self.is_current_train(channel):
++                        channels.append(channel)
+             self.oe.dbg_log('updates::get_channels', 'exit_function', self.oe.LOGDEBUG)
+             return sorted(list(set(channels)), key=cmp_to_key(self.custom_sort_train))
+         except Exception as e:
+@@ -497,6 +522,23 @@
+         try:
+             self.oe.dbg_log('updates::build_json', 'enter_function', self.oe.LOGDEBUG)
+             update_json = self.get_json()
++            if update_json is None:
++                update_json = {}
++            # our own builds are always offered, so they need none of the three
++            # custom slots and survive the user clearing them
++            # load_url calls urlopen with no timeout, and this runs from
++            # start_service() before the settings socket is bound: a host that
++            # accepts the connection and then goes quiet would hang the whole
++            # settings service for good.
++            timeout = socket.getdefaulttimeout()
++            socket.setdefaulttimeout(10)
++            try:
++                yacer_json = self.get_json(self.YACER_UPDATE_URL)
++            finally:
++                socket.setdefaulttimeout(timeout)
++            if not yacer_json is None:
++                for channel in yacer_json:
++                    update_json[channel] = yacer_json[channel]
+             if self.struct['update']['settings']['ShowCustomChannels']['value'] == '1':
+                 custom_urls = []
+                 for i in 1,2,3:
+@@ -552,6 +594,34 @@
+             self.oe.dbg_log('updates::get_available_builds', 'ERROR: (' + repr(e) + ')')
+ 
+     def fetch_update_json(self):
++        # The automatic check never looked at the chosen channel: it asks
++        # update.coreelec.org what is newest, which does not know our builds and
++        # would answer with an official one - quietly moving the box off this
++        # tree. Ask our own feed instead; it publishes the shape check_updates_v2
++        # already expects.
++        #
++        # That feed is a static file, so it names the newest build whether or not
++        # the box is running it. check_updates_v2 does no version comparison of
++        # its own - upstream relies on the server staying quiet when there is
++        # nothing to do - so the comparison has to happen here, or the box would
++        # download and reinstall the build it is already running, for ever.
++        try:
++            timeout = socket.getdefaulttimeout()
++            socket.setdefaulttimeout(10)
++            try:
++                data = self.oe.load_url(self.YACER_AUTOUPDATE_URL)
++            finally:
++                socket.setdefaulttimeout(timeout)
++            if not data:
++                return ''
++            if self.oe.VERSION in json.loads(data)['data'].get('update', ''):
++                return ''
++            return data
++        except Exception as e:
++            self.oe.dbg_log('updates::fetch_update_json', 'ERROR: (' + repr(e) + ')')
++            return ''
++
++    def fetch_update_json_upstream(self):
+         try:
+             self.oe.dbg_log('updates::fetch_update_json', 'enter_function', 0)
+ 

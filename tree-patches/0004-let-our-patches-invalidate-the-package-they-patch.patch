@@ -1,0 +1,28 @@
+Let our patches invalidate the package they patch.
+
+calculate_stamp hashes the package directory and the upstream patch
+directories, so a patch of ours under patches-yacer/<package>/ was invisible
+to it: editing one left the stamp unchanged, unpack and build both reported
+the package as already done, and the edit was silently dropped from an
+incremental build.
+
+This also covers common_drivers, whose build directory the kernel copies
+from: without it the kernel would rebuild around an unchanged driver tree.
+
+diff --git a/config/functions b/config/functions
+--- a/config/functions
++++ b/config/functions
+@@ -1109,12 +1109,13 @@
+ }
+ 
+ calculate_stamp() {
+   local stamp data
+ 
+   stamp="$PKG_DIR $PROJECT_DIR/$PROJECT/patches/$PKG_NAME $PROJECT_DIR/$PROJECT/packages/$PKG_NAME"
++  stamp+=" $PROJECT_DIR/$PROJECT/patches-yacer/$PKG_NAME"
+   [ -n "$DEVICE" ] && stamp+=" $PROJECT_DIR/$PROJECT/devices/$DEVICE/patches/$PKG_NAME"
+   [ -n "$PKG_NEED_UNPACK" ] && stamp+=" $PKG_NEED_UNPACK"
+ 
+   if [ -n "$PKG_STAMP_VAR" ]; then
+     local TMP_VAR="$(get_build_dir $PKG_NAME)/.pkg_stamp_var"
+     echo "$PKG_STAMP_VAR" > $TMP_VAR

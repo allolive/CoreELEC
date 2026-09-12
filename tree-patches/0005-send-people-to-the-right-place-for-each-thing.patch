@@ -1,0 +1,42 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] send people to the right place for each thing
+
+Anything about this build - what it is, what changed, where the code is -
+belongs here, so the home url and the ssh banner point at this repository.
+
+Bugs do not. BUG_REPORT_URL follows the git origin, which on a fork is the
+fork, and almost everything in the image is CoreELEC's work: reports about
+it should reach the people who can act on them. Pin it back to CoreELEC.
+
+diff --git a/distributions/CoreELEC/options b/distributions/CoreELEC/options
+index 5c03ce537e..eb91ef5759 100644
+--- a/distributions/CoreELEC/options
++++ b/distributions/CoreELEC/options
+@@ -11,12 +11,12 @@
+   DISTRO_SRC="https://sources.libreelec.tv/$DISTRO_VERSION"
+ 
+ # Distribution Home URL
+-  DISTRO_HOME_URL="https://coreelec.org"
++  DISTRO_HOME_URL="https://github.com/allolive/CoreELEC"
+ 
+ # Welcome Message for SSH Server (up to 5 Lines)
+   GREETING0="##############################################"
+   GREETING1="#                  CoreELEC                  #"
+-  GREETING2="#            https://coreelec.org            #"
++  GREETING2="#  https://github.com/allolive/CoreELEC      #"
+   GREETING3="##############################################"
+   GREETING4=""
+ 
+diff --git a/scripts/image b/scripts/image
+index 2b2ee68d3e..56565fd01b 100755
+--- a/scripts/image
++++ b/scripts/image
+@@ -179,7 +179,7 @@ ID="${DISTRONAME,,}"
+ VERSION_ID="${OS_VERSION}"
+ PRETTY_NAME="${DISTRONAME} (${DISTRO_BUILD}): ${DISTRO_VERSION}"
+ HOME_URL="${DISTRO_HOME_URL}"
+-BUG_REPORT_URL="${ORIGIN_URL}"
++BUG_REPORT_URL="https://github.com/CoreELEC/CoreELEC"
+ BUILD_ID="${GIT_HASH}"
+ DISTRO_ARCH="${DISTRO_ARCH}"
+ DISTRO_BUILD="${DISTRO_BUILD}"

@@ -1,0 +1,40 @@
+Look for our patches, and say which are ours.
+
+They live in projects/<project>/patches-yacer/<package>/ - one place, beside
+the upstream patches rather than scattered through them - and are applied
+exactly as upstream's are, GNU patch with its default fuzz.
+
+diff --git a/scripts/unpack b/scripts/unpack
+--- a/scripts/unpack
++++ b/scripts/unpack
+@@ -155,13 +155,14 @@
+       ${PKG_DIR}/patches/${PKG_VERSION}/*.patch \
+       ${PKG_DIR}/patches/${PKG_VERSION}/${PATCH_ARCH}/*.patch \
+       ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/*.patch \
+       ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PATCH_ARCH}/*.patch \
+       ${PATCH_DIRS_PRJ} \
+       ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PKG_VERSION}/*.patch \
+-      ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/patches/${PKG_NAME}/*.patch; do
++      ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/patches/${PKG_NAME}/*.patch \
++      ${PROJECT_DIR}/${PROJECT}/patches-yacer/${PKG_NAME}/*.patch; do
+ 
+       thisdir="${i%/*}"
+ 
+       if [ "${thisdir}" = "${PKG_DIR}/patches" ]; then
+         PATCH_DESC="(common)"
+       elif [ "${thisdir}" = "${PKG_DIR}/patches/${PATCH_ARCH}" ]; then
+@@ -175,12 +176,14 @@
+       elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PATCH_ARCH}" ]; then
+         PATCH_DESC="(project - ${PATCH_ARCH})"
+       elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PKG_VERSION}" ]; then
+         PATCH_DESC="(project - ${PKG_VERSION})"
+       elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/patches/${PKG_NAME}" ]; then
+         PATCH_DESC="(device)"
++      elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches-yacer/${PKG_NAME}" ]; then
++        PATCH_DESC="(yacer)"
+       else
+         if [[ "${thisdir}" =~ ^${PKG_DIR}/.* ]]; then
+           PATCH_DESC="(common - ${thisdir##*/})"
+         elif [[ "${thisdir}" =~ ^${PROJECT_DIR}/.*/devices/.* ]]; then
+           PATCH_DESC="(device - ${thisdir##*/})"
+         elif [[ "${thisdir}" =~ ^${PROJECT_DIR}/.* ]]; then
