@@ -61,6 +61,9 @@ jobs:
       # and the first cached sed dies with SIGILL.
       BUILD_REUSABLE: '1'
       CACHE_EPOCH: v2              # bump to invalidate every cache at once
+      # largest archive the refresh step will upload. The seed step reads the
+      # same value: it must never prune what the refresh cannot replace.
+      MIRROR_MAX_MB: '250'
 
     steps:
       - name: Reclaim runner disk
@@ -268,9 +271,19 @@ jobs:
           while IFS= read -r mk; do
             n=$(sed -n 's/^[[:space:]]*PKG_NAME="\(.*\)"/\1/p' "$mk" | head -1)
             [ -n "$n" ] || continue
+            # three bl301 packages declare PKG_NAME="bl301_${BL2_MIN_VERSION}"; the
+            # literal would key the map on something no asset is ever named after
+            case "$n" in *'$'*) n=$(basename "$(dirname "$mk")") ;; esac
+            # three bl301 packages declare PKG_NAME="bl301_${BL2_MIN_VERSION}"; the
+            # literal would key the map on something no asset is ever named after
+            case "$n" in *'$'*) n=$(basename "$(dirname "$mk")") ;; esac
             # drop empty declarations: PKG_SHA256="" is common, and joining it in
             # would leave a blank entry that is neither a checksum nor absent
-            PKGSHA["$n"]=$(sed -n 's/^[[:space:]]*PKG_SHA256="\(.*\)"/\1/p' "$mk" | grep -v '^[[:space:]]*$' | tr '\n' ' ')
+            # union, not assign: eight names exist both in packages/ and under
+            # projects/, and last-writer-wins would hide a real sha behind an
+            # override that declares none. More shas can only mean fewer wrong
+            # answers here.
+            PKGSHA["$n"]+=" $(sed -n 's/^[[:space:]]*PKG_SHA256="\(.*\)"/\1/p' "$mk" | grep -v '^[[:space:]]*$' | tr '\n' ' ')"
             # the archive formats this package actually asks for, so a mirrored copy
             # in an old format is recognised as stale rather than blamed on its
             # checksum - upstream changing .tar.bz2 to .tar.xz is routine
@@ -296,6 +309,7 @@ jobs:
           # that is most of the release, a few gigabytes, and one at a time it
           # took over eight minutes; eight at a time it takes about one.
           : > seedlist.tsv
+          : > stale.txt
           skipped=0; stale=0
           while IFS= read -r asset; do
             [ -n "$asset" ] || continue
@@ -304,6 +318,17 @@ jobs:
             case "$pkg$file" in *..*|*/*) echo "  refusing odd asset name: $asset"; continue;; esac
             [ -f "sources/$pkg/$file" ] && continue
             want=${PKGSHA["$pkg"]:-}
+            # Keep only things shaped like a sha256: at least one package declares
+            # PKG_SHA256="$(curl ...)", which is non-empty but can never match, so
+            # the asset would be downloaded and rejected on every run.
+            shas=""
+            for w in $want; do
+              case "$w" in
+                *[!0-9a-f]*) ;;
+                *) [ ${#w} -eq 64 ] && shas="$shas $w" ;;
+              esac
+            done
+            want="$shas"
             if [ -z "${want// /}" ]; then skipped=$((skipped+1)); continue; fi
             exts=${PKGEXT["$pkg"]:-}
             if [ -n "${exts// /}" ]; then
@@ -342,9 +367,18 @@ jobs:
             fi
           done
           echo "::warning::$pkg/$file does not match any PKG_SHA256 in its package.mk"
-          echo "           declares - corrupt or replaced upstream. Discarding; the"
-          echo "           build will fetch it from its own host."
+          echo "           declares - replaced upstream or the tarball was regenerated."
+          echo "           Discarding; the build fetches it from its own host, and the"
+          echo "           refresh step replaces the mirrored copy if this build"
+          echo "           rebuilt that package."
           rm -f "sources/$pkg/$file"
+          # Name it so the refresh step can overwrite it in place once this build
+          # has fetched good bytes for the same archive. Nothing is deleted: the
+          # mirror is shared by every device, and this build only ever holds the
+          # sources its own device needed. One short line appended - O_APPEND
+          # makes a single small write atomic, so parallel workers cannot
+          # interleave.
+          printf '%s\n' "$asset" >> stale.txt
           SEED
           chmod +x seed-one.sh
 
@@ -358,21 +392,11 @@ jobs:
           fi
           mirrored=$(find sources -name '*.sha256' -newer seedlist.tsv 2>/dev/null | wc -l)
           echo "seeded $mirrored of $want_n archive(s) from our own mirror; $skipped unverifiable, $stale stale"
-          # The || true above is needed - xargs reports 125 for a worker killed
-          # by a signal - but it hides a total failure as well as a partial one,
-          # and every worker exits 0 whatever became of its download. gh read the
-          # asset list with a token; the workers fetch over plain https with none,
-          # so a repo turned private, a renamed tag or a long CDN outage 404s all
-          # of them and seeds nothing, cleanly.
-          if [ "$want_n" -gt 0 ] && [ "$mirrored" -eq 0 ]; then
-            echo "::error::the mirror listed $want_n archive(s) and not one could be"
-            echo "         fetched - leaving the build to upstream hosts that are"
-            echo "         mirrored precisely because they do not answer"
-            exit 1
-          fi
-          if [ "$mirrored" -lt "$want_n" ]; then
-            echo "::warning::$((want_n - mirrored)) of $want_n mirrored archive(s) did"
-            echo "           not arrive; the build will try their own hosts"
+
+          if [ -s stale.txt ]; then
+            sort -u stale.txt > s.t && mv s.t stale.txt
+            echo "$(wc -l < stale.txt) mirrored archive(s) no longer match their"
+            echo "package.mk; the refresh step replaces the ones this build rebuilt"
           fi
 
       - name: Check the restored state is usable
@@ -873,3 +897,119 @@ jobs:
             target/*.tar.sha256
           retention-days: 14
           compression-level: 0
+
+      - name: Refresh the source mirror
+        # Last, so nothing here can delay the image, the cache or the artifacts.
+        # A run truncated by the deadline exits non-zero but has still fetched
+        # sources worth keeping, and it is the run most likely to hold the fresh
+        # copy of something the mirror has gone stale on - so it refreshes too.
+        # Best-effort throughout: the mirror exists to spare the next run a dead
+        # upstream, never to fail this one. This never removes an entry outright -
+        # the mirror is shared by every device while a build only holds the sources
+        # its own device needed - though replacing one is a delete then an upload,
+        # so a stale asset can briefly not exist.
+        if: ${{ !cancelled() && (success() || env.INCOMPLETE == '1') }}
+        # generous, because a replacement is delete-then-upload and a kill in that
+        # window loses the asset. Nothing waits on this step - it is the last one.
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MAX_FILES=15                      # a first pass would otherwise push the whole tree
+          MAX_MB=${MIRROR_MAX_MB:-250}      # one slow giant would spend the whole budget
+
+          # Same trust model as seeding: an archive counts as verified when the
+          # stamp get_archive wrote equals a sha its own package.mk declares. That
+          # is a string compare - re-hashing gigabytes here would cost more than
+          # the upload it guards. get_archive only writes that stamp after its own
+          # checksum test passes, so a match is not circular.
+          declare -A PKGSHA
+          while IFS= read -r mk; do
+            n=$(sed -n 's/^[[:space:]]*PKG_NAME="\(.*\)"/\1/p' "$mk" | head -1)
+            [ -n "$n" ] || continue
+            PKGSHA["$n"]+=" $(sed -n 's/^[[:space:]]*PKG_SHA256="\(.*\)"/\1/p' "$mk" \
+                               | grep -v '^[[:space:]]*$' | tr '\n' ' ')"
+          done < <(find packages "projects/${PROJECT}" -name package.mk 2>/dev/null | sort)
+
+          if ! have=$(gh release view packages-mirror --repo "${{ github.repository }}" \
+                        --json assets --jq '.assets[].name' </dev/null 2>/dev/null); then
+            echo "no packages-mirror release to refresh - skipping"
+            exit 0
+          fi
+          [ -f stale.txt ] || : > stale.txt
+
+          : > up_stale.txt
+          : > up_new.txt
+          big=0
+          while IFS= read -r stamp; do
+            [ -n "$stamp" ] || continue
+            archive="${stamp%.sha256}"
+            [ -f "$archive" ] || continue
+            pkg=$(basename "$(dirname "$archive")"); file=$(basename "$archive")
+            asset="${pkg}__${file}"
+            # Two reasons to send one: the mirror has never held it, or it holds a
+            # copy this run rejected. The second is what replaces a stale archive -
+            # --clobber overwrites in place, so nothing has to be deleted.
+            replacing=0
+            if printf '%s\n' "$have" | grep -qxF -- "$asset"; then
+              grep -qxF -- "$asset" stale.txt || continue
+              replacing=1
+            fi
+            want=${PKGSHA["$pkg"]:-}
+            [ -n "${want// /}" ] || continue
+            got=$(cat "$stamp" 2>/dev/null)
+            [ -n "$got" ] || continue
+            ok=0; for w in $want; do [ "$w" = "$got" ] && { ok=1; break; }; done
+            [ "$ok" -eq 1 ] || continue
+            sz=$(stat -c %s "$archive" 2>/dev/null || echo 0)
+            [ "$sz" -gt 0 ] || continue
+            if [ "$sz" -gt $((MAX_MB*1024*1024)) ]; then
+              echo "  too large for the mirror, left to its own host: $asset ($((sz/1048576))MB)"
+              big=$((big+1)); continue
+            fi
+            if [ "$replacing" -eq 1 ]; then
+              printf '%s\t%s\n' "$asset" "$archive" >> up_stale.txt
+            else
+              printf '%s\t%s\n' "$asset" "$archive" >> up_new.txt
+            fi
+          done < <(find sources -name '*.sha256' 2>/dev/null | sort)
+
+          # stale first: an archive is only on disk for the run that re-downloaded
+          # it, so a replacement deferred is usually a replacement lost, while a
+          # first-time upload keeps its chance on every later cold build.
+          cat up_stale.txt up_new.txt > uploads.txt
+          nstale=$(grep -c . up_stale.txt || true)
+          n=$(grep -c . uploads.txt || true)
+          if [ "$n" -eq 0 ]; then
+            echo "mirror already holds every verified archive this build can offer"
+            [ "$big" -gt 0 ] && echo "($big skipped as larger than ${MAX_MB}MB)"
+            exit 0
+          fi
+          if [ "$n" -gt "$MAX_FILES" ]; then
+            # the remainder only returns on a run that downloads it again, which
+            # for most packages means the next cold build rather than the next one
+            echo "$n archive(s) to send ($nstale replacing); taking $MAX_FILES this run"
+            head -n "$MAX_FILES" uploads.txt > u.t && mv u.t uploads.txt
+            n=$MAX_FILES
+          fi
+
+          # gh names the asset after the file, so upload from a staging name that
+          # already reads <package>__<file> rather than renaming afterwards. gh
+          # resolves the symlink and sends the real bytes; a broken one fails
+          # locally before any API call, so --clobber cannot replace a good asset
+          # with an empty one.
+          mkdir -p mirror-stage
+          up=0
+          while IFS=$'\t' read -r asset archive; do
+            [ -n "$asset" ] || continue
+            ln -sf "$PWD/$archive" "mirror-stage/$asset" 2>/dev/null || cp "$archive" "mirror-stage/$asset"
+            if gh release upload packages-mirror "mirror-stage/$asset" \
+                 --repo "${{ github.repository }}" --clobber </dev/null 2>/dev/null; then
+              echo "  mirrored $asset"; up=$((up+1))
+            else
+              echo "  could not mirror $asset"
+            fi
+            rm -f "mirror-stage/$asset"
+          done < uploads.txt
+          echo "sent $up of $n archive(s) to packages-mirror ($nstale replacing); $big too large"
