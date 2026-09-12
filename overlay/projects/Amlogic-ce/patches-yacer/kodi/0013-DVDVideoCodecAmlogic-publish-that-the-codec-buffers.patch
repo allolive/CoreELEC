@@ -1,0 +1,22 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] DVDVideoCodecAmlogic: publish that the codec buffers data
+
+libamcodec keeps its own stream buffer, so the demux queue empties into it and
+its level says nothing about how much is left to play.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 1a79460681..90c2fe1f82 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -407,6 +407,9 @@
+   m_videobuffer.color_transfer = m_hints.colorTransferCharacteristic;
+ 
+   m_processInfo.SetVideoDecoderName(m_pFormatName, true);
++  // libamcodec holds its own stream buffer, so the demux queue level says nothing
++  // about how much is left to play once the source stops.
++  m_processInfo.SetVideoCodecBuffersData(true);
+   m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
+   m_processInfo.SetVideoDeintMethod("hardware");
+   m_processInfo.SetVideoDAR(m_hints.aspect);
