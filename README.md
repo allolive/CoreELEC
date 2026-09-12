@@ -17,6 +17,7 @@ fewer moving parts.
 
 | Patch | What it does |
 | --- | --- |
+| **Buffering over a slow network** | A share that stops answering part way through a file ends playback instead of showing the buffering wheel, and a merely slow one limps on dropping frames. Kodi reads a stall as the end of the file in several places at once, and the check that should start buffering waits for a condition that never arrives once the picture has stopped. These patches attempt to tell a stall apart from a file that has genuinely ended, and to buffer on the cache running dry instead, so playback pauses and picks up again when the share answers. A share that is gone for good still stops, after about two minutes. |
 
 ## Which devices
 

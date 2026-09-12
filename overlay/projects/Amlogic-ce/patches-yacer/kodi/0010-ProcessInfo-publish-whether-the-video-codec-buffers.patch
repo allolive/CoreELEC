@@ -1,0 +1,72 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] ProcessInfo: publish whether the video codec buffers data
+
+A codec that holds compressed data of its own breaks the assumption behind the
+player's stall handling: the demux queue level stops saying how much is left to
+play. Publish it where the codec already publishes its name.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index 0c5f4f2fae..08f9a05d21 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+@@ -34,6 +34,10 @@
+   // player video
+   void ResetVideoCodecInfo();
+   void SetVideoDecoderName(const std::string &name, bool isHw);
++  /*! \brief Tell the player the codec holds compressed data of its own, beyond the
++   demux queue, so a queue level does not say how much is left to play. */
++  void SetVideoCodecBuffersData(bool buffersData);
++  bool GetVideoCodecBuffersData() const;
+   std::string GetVideoDecoderName();
+   bool IsVideoHwDecoder();
+   void SetVideoDeintMethod(const std::string &method);
+@@ -149,6 +153,7 @@
+ 
+   // player video info
+   bool m_videoIsHWDecoder;
++  bool m_videoCodecBuffersData{false};
+   std::string m_videoDecoderName;
+   std::string m_videoDeintMethod;
+   std::string m_videoPixelFormat;
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index d7d8c431bb..1f594b19b9 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+@@ -61,10 +61,25 @@
+ //******************************************************************************
+ // video codec
+ //******************************************************************************
++void CProcessInfo::SetVideoCodecBuffersData(bool buffersData)
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  m_videoCodecBuffersData = buffersData;
++}
++
++bool CProcessInfo::GetVideoCodecBuffersData() const
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  return m_videoCodecBuffersData;
++}
++
+ void CProcessInfo::ResetVideoCodecInfo()
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = false;
+   m_videoDecoderName = "unknown";
+   m_videoDeintMethod = "unknown";
+@@ -104,6 +119,9 @@
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  // A codec publishing its name is claiming the stream, so it also owns what is
++  // said about its buffering. Codecs that hold data of their own say so after this.
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = isHw;
+   m_videoDecoderName = name;
+ 

@@ -1,0 +1,310 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] VideoPlayer: buffer when the source cache runs dry
+
+The handler that should buffer waits for both demux queues to fall to half, and
+the video one does not: with the picture stopped nothing consumes it.
+
+Buffer on the source cache instead - under a second ahead and still shrinking -
+and play again at two seconds, or when the cache stops growing.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index a002bf1885..1c38f35787 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1563,6 +1563,7 @@
+   m_processInfo->SetSpeed(1.0);
+   m_processInfo->SetTempo(1.0);
+   m_processInfo->SetFrameAdvance(false);
++  m_srcUnderrunGaveUp = false;
+   m_State.Clear();
+   m_CurrentVideo.hint.Clear();
+   m_CurrentAudio.hint.Clear();
+@@ -1819,6 +1820,15 @@
+         m_pDemuxer->FillBuffer(fillBuffer);
+     }
+ 
++    // Read nothing while buffering on a dry source. One read of a stalled source
++    // is enough for the demuxer to give up on the file for good, and the hold ends
++    // on the cache refilling, which is measured without reading.
++    if (m_srcUnderrunHold)
++    {
++      CThread::Sleep(10ms);
++      continue;
++    }
++
+     // if the queues are full, no need to read more
+     if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
+         (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
+@@ -2198,6 +2208,33 @@
+   m_VideoPlayerAudioID3->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
+ }
+ 
++namespace
++{
++// The cache holds only a few seconds of content whatever its size, because
++// CFileCache throttles the writer to a small multiple of the bitrate. So buffer
++// only when it is nearly empty, and play again on a figure it can really reach.
++constexpr double SRC_UNDERRUN_TIME = 1.0;
++constexpr double SRC_RESUME_TIME = 2.0;
++// Measure the cache directly rather than off the sample once it reads this low, so
++// the hold is entered before a read reaches the empty cache. Asking has a cost, so
++// only from here down.
++constexpr double SRC_UNDERRUN_WATCH = 2.0;
++// And how often it may be measured directly once it is.
++constexpr auto SRC_PROBE_INTERVAL = 50ms;
++// Or simply when the cache is full, whatever that is in seconds.
++constexpr double SRC_RESUME_LEVEL = 0.8;
++// The player's own buffering leaves the cache dry too, so wait this long after it.
++constexpr auto SRC_UNDERRUN_COOLDOWN = 5000ms;
++// On some cache settings the throttle never lets the figures above be reached, so
++// also play again once the cache has simply stopped growing for this long.
++constexpr auto SRC_GROWTH_TIME = 2000ms;
++constexpr double SRC_GROWTH_MIN = 0.05;
++// Stop waiting eventually, so a source that never comes back ends the file rather
++// than holding the wheel up for ever. Reading again is what ends it: a stalled read
++// makes the demuxer record an end of its own, which the player treats as the end.
++constexpr auto SRC_HOLD_LIMIT = 150s;
++} // unnamed namespace
++
+ CacheInfo CVideoPlayer::GetCachingTimes()
+ {
+   CacheInfo info{};
+@@ -2228,6 +2265,11 @@
+   info.level = 0.0;
+   info.offset = (cached + queued) / length;
+   info.time = 0.0;
++  // From the file's average bitrate. The read rate cannot be used: it decays to
++  // zero on a stalled source, which is exactly when this has to be right.
++  info.forwardTime =
++      (play_sbp > 0.0) ? (static_cast<double>(cached) * play_sbp / DVD_TIME_BASE) : -1.0;
++  info.endcached = (cached >= static_cast<uint64_t>(remain));
+   info.valid = true;
+ 
+   if (currate == 0)
+@@ -2253,6 +2295,57 @@
+   return info;
+ }
+ 
++bool CVideoPlayer::TryEnterSourceUnderrunHold()
++{
++  if (m_srcUnderrunGaveUp || m_pInputStream->IsRealtime() || m_pInputStream->IsEOF() ||
++      !m_syncTimer.IsTimePast() || !m_srcUnderrunCooldown.IsTimePast())
++    return false;
++
++  // Not before playback has settled: the cache is dry while it starts up.
++  if (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
++    return false;
++
++  // UpdatePlayState measures the cache every 200ms. Reading it again has a cost and
++  // clears the flag the slow-source announcement is made from, so do that only once
++  // the sample says the cache is close to empty and the answer has to be current.
++  if (!m_srcCache.valid || m_srcCache.forwardTime < 0.0 ||
++      m_srcCache.forwardTime > SRC_UNDERRUN_WATCH)
++    return false;
++
++  // Only where the codec buffers compressed data of its own. There the demux queues
++  // stay full on a dry source and no stream reports itself stalled, so the stock
++  // handler never runs; a codec that drains its queue is already served by it.
++  if (!m_processInfo->GetVideoCodecBuffersData())
++    return false;
++
++  // On a tight cache the sample sits under the watch threshold for the whole film,
++  // so the measurement below needs its own limit: reading the cache status takes the
++  // cache's locks and consumes the slow-source flag as it reports it.
++  if (!m_srcUnderrunProbe.IsTimePast())
++    return false;
++  m_srcUnderrunProbe.Set(SRC_PROBE_INTERVAL);
++
++  const CacheInfo cache = GetCachingTimes();
++  if (!cache.valid || cache.endcached || cache.forwardTime < 0.0 ||
++      cache.forwardTime > SRC_UNDERRUN_TIME || cache.level >= SRC_RESUME_LEVEL)
++    return false;
++
++  // Still shrinking. CFileCache rate-limits its writer, and the reading is scaled by
++  // the file's average bitrate, so a low one on its own can just be a busy passage.
++  if (!m_srcCache.valid || cache.forwardTime >= m_srcCache.forwardTime)
++    return false;
++
++  CLog::Log(LOGINFO, "CVideoPlayer::{} - source cache down to {:.1f}s - buffering", __FUNCTION__,
++            cache.forwardTime);
++  m_srcUnderrunHold = true;
++  m_srcUnderrunEntry = cache.forwardTime;
++  m_srcUnderrunMark = cache.forwardTime;
++  m_srcUnderrunGrowth.Set(SRC_GROWTH_TIME);
++  m_srcUnderrunDeadline.Set(SRC_HOLD_LIMIT);
++  SetCaching(CACHESTATE_FULL);
++  return true;
++}
++
+ void CVideoPlayer::HandlePlaySpeed()
+ {
+   const bool isInMenu = IsInMenuInternal();
+@@ -2262,7 +2355,47 @@
+   if (tolerateStall && m_caching != CACHESTATE_DONE)
+     SetCaching(CACHESTATE_DONE);
+ 
+-  if (m_caching == CACHESTATE_FULL)
++  if (m_caching == CACHESTATE_FULL && m_srcUnderrunHold)
++  {
++    // Wait for the source, not for the demux queues: they are still full, which is
++    // what the stock exits measure. Sampled by UpdatePlayState, so a hold does not
++    // read the cache status a hundred times a second.
++    const CacheInfo cache = m_srcCache;
++    if (cache.valid && cache.forwardTime > m_srcUnderrunMark + SRC_GROWTH_MIN)
++    {
++      m_srcUnderrunMark = cache.forwardTime;
++      m_srcUnderrunGrowth.Set(SRC_GROWTH_TIME);
++    }
++
++    // Only a cache that filled properly is a recovery. The others release the hold
++    // on a cache that is barely above where it was entered, so they keep the
++    // cooldown, or the hold would be taken again within a second, over and over.
++    const bool recovered = cache.valid && cache.forwardTime >= SRC_RESUME_TIME;
++    const bool giveWayToTheCache =
++        !cache.valid || cache.endcached || cache.level < 0.0 ||
++        cache.level >= SRC_RESUME_LEVEL ||
++        (cache.forwardTime > SRC_UNDERRUN_TIME && m_srcUnderrunGrowth.IsTimePast());
++
++    if (recovered || giveWayToTheCache)
++    {
++      CLog::Log(LOGINFO, "CVideoPlayer::{} - source cache back to {:.1f}s - playing",
++                __FUNCTION__, std::max(0.0, cache.forwardTime));
++      m_srcUnderrunResuming = recovered;
++      SetCaching(CACHESTATE_INIT);
++    }
++    else if (m_srcUnderrunDeadline.IsTimePast())
++    {
++      // Reading again ends the file: the demuxer records an end of its own on a
++      // stalled read. A cache that did grow, however slowly, still has a source, so
++      // that one may buffer again.
++      const bool dead = cache.valid && cache.forwardTime <= m_srcUnderrunEntry + SRC_GROWTH_MIN;
++      CLog::Log(LOGINFO, "CVideoPlayer::{} - source did not come back ({:.1f}s) - resuming",
++                __FUNCTION__, std::max(0.0, cache.forwardTime));
++      m_srcUnderrunGaveUp = dead;
++      SetCaching(CACHESTATE_INIT);
++    }
++  }
++  else if (m_caching == CACHESTATE_FULL)
+   {
+     CacheInfo cache = GetCachingTimes();
+     if (cache.valid)
+@@ -2338,6 +2471,12 @@
+   {
+     if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
+     {
++      // The source cache running dry is the only honest sign of a source in
++      // trouble: one that still trickles is never stalled, and with a hardware
++      // decoder the demux queues stay full.
++      if (TryEnterSourceUnderrunHold())
++        return;
++
+       // take action if audio or video stream is stalled
+       if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
+            (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
+@@ -3643,6 +3782,7 @@
+ 
+       m_playSpeed = speed;
+ 
++      m_srcUnderrunHold = false;
+       m_caching = CACHESTATE_DONE;
+       m_clock.SetSpeed(speed);
+       m_VideoPlayerAudio->SetSpeed(speed);
+@@ -3730,6 +3870,25 @@
+ 
+ void CVideoPlayer::SetCaching(ECacheState state)
+ {
++  // Any move off CACHESTATE_FULL ends a source-underrun hold, a seek included.
++  const bool wasSourceUnderrunHold = m_srcUnderrunHold;
++  if (state != CACHESTATE_FULL)
++    m_srcUnderrunHold = false;
++
++  // The player's own buffering leaves the cache dry, so hold off the next underrun
++  // after it. Coming out of an underrun hold does not: the cache has content again.
++  if (state == CACHESTATE_DONE && m_caching != state && !m_srcUnderrunResuming)
++    m_srcUnderrunCooldown.Set(SRC_UNDERRUN_COOLDOWN);
++  if (state == CACHESTATE_DONE || state == CACHESTATE_FULL)
++    m_srcUnderrunResuming = false;
++
++  // A seek or a new file is a fresh start for a source that was given up on.
++  if (state == CACHESTATE_FLUSH)
++  {
++    m_srcUnderrunGaveUp = false;
++    m_srcUnderrunResuming = false;
++  }
++
+   if(state == CACHESTATE_FLUSH)
+   {
+     CacheInfo cache = GetCachingTimes();
+@@ -3737,6 +3896,11 @@
+       state = CACHESTATE_FULL;
+     else
+       state = CACHESTATE_INIT;
++
++    // A flush that lands back on CACHESTATE_FULL would return below with the hold
++    // ended but the player still paused, because the state did not change.
++    if (wasSourceUnderrunHold && state == CACHESTATE_FULL)
++      state = CACHESTATE_INIT;
+   }
+ 
+   if(m_caching == state)
+@@ -5963,6 +6127,9 @@
+   double queueTime = GetQueueTime();
+   CacheInfo cache = GetCachingTimes();
+ 
++  // The source-underrun policy reads this rather than asking again itself.
++  m_srcCache = cache;
++
+   if (cache.valid)
+   {
+     state.cache_level = std::max(0.0, std::min(1.0, cache.level));
+@@ -5976,6 +6143,10 @@
+     state.cache_time = queueTime / 1000.0;
+   }
+ 
++  // The wheel is drawn from the cache level, and an underrun starts at zero.
++  if (m_srcUnderrunHold)
++    state.cache_level = std::max(state.cache_level, 0.01);
++
+   XFILE::SCacheStatus status;
+   if (m_pInputStream && m_pInputStream->GetCacheStatus(&status))
+   {
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 27f65efde7..18f015e389 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -263,6 +263,8 @@
+   double level; // current cache level
+   double offset; // percentage of file ahead of current position
+   double time; // estimated playback time of current cached bytes
++  double forwardTime; // seconds of content cached ahead, at the file's average bitrate
++  bool endcached; // the rest of the file is already cached
+   bool valid;
+ };
+ 
+@@ -481,6 +483,7 @@
+ 
+   void HandleMessages();
+   void HandlePlaySpeed();
++  bool TryEnterSourceUnderrunHold();
+   bool IsInMenuInternal() const;
+   void SynchronizeDemuxer();
+   void QueueAutoSceneSkip(std::chrono::milliseconds seekTime);
+@@ -563,6 +566,16 @@
+ 
+   ECacheState  m_caching;
+   XbmcThreads::EndTime<> m_cachingTimer;
++  bool m_srcUnderrunHold{false};
++  bool m_srcUnderrunResuming{false};
++  bool m_srcUnderrunGaveUp{false};
++  double m_srcUnderrunMark{0.0};
++  double m_srcUnderrunEntry{0.0};
++  CacheInfo m_srcCache{};
++  XbmcThreads::EndTime<> m_srcUnderrunCooldown;
++  XbmcThreads::EndTime<> m_srcUnderrunDeadline;
++  XbmcThreads::EndTime<> m_srcUnderrunGrowth;
++  XbmcThreads::EndTime<> m_srcUnderrunProbe;
+ 
+   std::unique_ptr<CProcessInfo> m_processInfo;
+ 
