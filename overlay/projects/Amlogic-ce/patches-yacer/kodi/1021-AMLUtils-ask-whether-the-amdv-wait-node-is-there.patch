@@ -1,0 +1,30 @@
+From 45a953d24715d2ecd69aa5129684844b2e5aeed3 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:08:54 -0400
+Subject: [PATCH] AMLUtils: ask whether the amdv wait node is there
+
+aml_amdv_wait() reads amdv_wait_delay without checking the node exists. Without
+aml_media it is missing, and the read returns a default rather than an error.
+CRenderManager treats that number as a delay and counts it down one call at a time.
+
+Check the node first and return 0 if it is not there.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 78af639..f035a3d 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -277,7 +277,11 @@ int aml_amdv_wait(StreamHdrType hdrType)
+   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+   {
+     CSysfsPath amdv_wait_delay{"/sys/module/aml_media/parameters/amdv_wait_delay"};
+-    return amdv_wait_delay.Get<int>().value();
++    // The read cannot report a missing node, so ask first. CRenderManager reads
++    // this as a delay and counts a large one down a call at a time.
++    if (!amdv_wait_delay.Exists())
++      return 0;
++    return amdv_wait_delay.Get<int>().value_or(0);
+   }
+   else
+     return 0;

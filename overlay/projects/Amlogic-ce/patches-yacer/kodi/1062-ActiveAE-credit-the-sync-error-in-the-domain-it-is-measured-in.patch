@@ -1,0 +1,62 @@
+From 7c1a4e0b93d2415a8f0c6e2d1b5a83f7c40e91d6 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 12:00:00 -0400
+Subject: [PATCH] ActiveAE: credit the sync error in the domain it is measured in
+
+A TrueHD stream's sync error is scaled by 0.45 before the sync loop sees it, so
+ordinary jitter does not provoke a correction. The adjust loop then removes the
+error in whole IEC frames of real silence but credits itself the full duration
+against the scaled error, so it stops early. Credit it in the domain it was
+measured in.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+index 8d989de..a1b7c32 100644
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -2640,14 +2640,19 @@
+         ret->pkt->nb_samples = framesToDelay;
+         if (m_mode == MODE_RAW)
+         {
++          // The burst removes real time while error is scaled, so the size and
++          // the credit both have to cross the scale.
++          const double realError = error / stream->m_errorScale;
++
+           ret->pkt->nb_samples = 0;
+-          ret->pkt->pause_burst_ms = error;
+-          if (error > stream->m_format.m_streamInfo.GetDuration())
++          ret->pkt->pause_burst_ms = realError;
++          if (realError > stream->m_format.m_streamInfo.GetDuration())
+             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
+ 
+-          stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
++          const double credit = ret->pkt->pause_burst_ms * stream->m_errorScale;
++          stream->m_syncError.Correction(-credit);
+           stream->m_syncErrorRaw.Correction(-ret->pkt->pause_burst_ms);
+-          error -= ret->pkt->pause_burst_ms;
++          error -= credit;
+         }
+         else
+         {
+@@ -2683,11 +2688,14 @@
+       }
+       if (m_mode == MODE_RAW)
+       {
+-        if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
++        // The same crossing as the delay branch: a whole frame of real time
++        // goes, and the scaled error is owed only its share of it.
++        const double dropped = stream->m_format.m_streamInfo.GetDuration();
++        if (-error / stream->m_errorScale > dropped / 2)
+         {
+-          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
+-          stream->m_syncErrorRaw.Correction(stream->m_format.m_streamInfo.GetDuration());
+-          error += stream->m_format.m_streamInfo.GetDuration();
++          stream->m_syncError.Correction(dropped * stream->m_errorScale);
++          stream->m_syncErrorRaw.Correction(dropped);
++          error += dropped * stream->m_errorScale;
+           buf->pkt->nb_samples = 0;
+         }
+       }
+-- 
+2.43.0

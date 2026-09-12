@@ -1,0 +1,77 @@
+From 0f9ff3d16b6809c2e0ef62f0c27326b90b408f94 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLDisplay: publish the crtc id instead of the pointer
+
+The vblank read needs a crtc id, and was reaching in for the drmModeCrtc the
+display owns to take it - holding a pointer whose lifetime belongs to the display,
+across a hotplug that frees it and takes another. Publish the id instead.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index d6a94fb..e1cea65 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -236,6 +236,7 @@ void CAMLDRMUtils::CleanAndClose()
+ 
+   if (m_crtc)
+   {
++    m_crtcId.store(0, std::memory_order_relaxed);
+     drmModeFreeCrtc(m_crtc);
+     m_crtc = nullptr;
+   }
+@@ -392,6 +393,8 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
+     throw std::runtime_error("failed to get crtc of drmDevice");
+   }
+ 
++  m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
++
+   m_orig_crtc = static_cast<drmModeCrtcPtr>(malloc(sizeof(drmModeCrtc)));
+   if (!m_orig_crtc)
+   {
+@@ -573,6 +576,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
+       aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
+       return false;
+     }
++
++    m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
+   }
+ 
+   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 3c90417..07cd0d3 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -8,6 +8,7 @@
+ #include <gbm.h>
+ #include <xf86drm.h>
+ #include <xf86drmMode.h>
++#include <atomic>
+ #include <memory>
+ #include <unistd.h>
+ #include <utility>
+@@ -85,7 +86,14 @@ public:
+   virtual ~CAMLDRMUtils();
+ 
+   int aml_get_drmDevice_handle() const { return m_fd; }
+-  uint32_t aml_get_drmCrtc_id() const { return m_crtc ? m_crtc->crtc_id : 0; }
++  // The id, not the pointer, so a caller cannot be handed one that
++  // CleanAndClose() has freed. Zero means none is published and the
++  // caller stands down. Not a race as things stand: every reader of
++  // this and the teardown that frees m_crtc are both on the app
++  // thread. An integer is simply the right shape for something read
++  // this often, and an integer id is never dereferenced, so a stale
++  // read costs a stood-down caller rather than a fault.
++  uint32_t aml_get_drmCrtc_id() const { return m_crtcId.load(std::memory_order_relaxed); }
+   void aml_init_drmDevice();
+   void aml_drmDevice_vsync();
+   std::string aml_get_drmDevice_mode();
+@@ -138,6 +146,7 @@ private:
+   drmModeConnection m_connection{DRM_MODE_DISCONNECTED};
+   drmModeEncoderPtr m_encoder{nullptr};
+   drmModeCrtcPtr m_crtc{nullptr};
++  std::atomic<uint32_t> m_crtcId{0};
+   drmModeCrtcPtr m_orig_crtc{nullptr};
+   drmModePlanePtr m_plane{nullptr};
+   CCriticalSection m_drmSection;
