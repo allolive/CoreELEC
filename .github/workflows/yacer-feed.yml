@@ -132,6 +132,7 @@ jobs:
 
           gh release create yacer-feed --repo "$REPO" \
             --title "YACER update feed" \
+            --prerelease \
             --notes "Update channel for CoreELEC custom channels. Rebuilt from the releases that exist." \
             2>/dev/null || true
 
