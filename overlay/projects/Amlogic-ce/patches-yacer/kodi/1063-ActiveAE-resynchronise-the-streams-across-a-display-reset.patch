@@ -1,0 +1,38 @@
+From b48f2ac71e0d6935418cbd7fa2016e5d9c3b78af Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 12:00:00 -0400
+Subject: [PATCH] ActiveAE: resynchronise the streams across a display reset
+
+A display reset unconfigures the sink and rebuilds it, which moves the delay every
+stream's sync error is measured against, and nothing tells the streams. They stay
+SYNC_INSYNC across the rebuild while the pipeline underneath has moved by a
+hundred milliseconds or more. Resynchronise them.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+index a1b7c32..5d6e7f8 100644
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -928,6 +928,19 @@
+             ValidateOutputDevices(false);
+           }
+           Configure();
++          // The sink was unconfigured and has just been rebuilt, so the delay
++          // every stream is measured against has moved. Saying so is what the
++          // resume path already does; Configure cannot, because it only re-inits
++          // when the format or the device changed and a display reset moves
++          // neither.
++          if (displayReset && !m_extError)
++          {
++            // The clock test is SyncStream's own: a stream without one never
++            // enters the state machine, so marking it would strand it here.
++            for (auto& stream : m_streams)
++              if (stream->m_pClock)
++                stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
++          }
+           if (!displayReset)
+             msg->Reply(CActiveAEControlProtocol::ACC);
+           if (!m_extError)
+-- 
+2.43.0

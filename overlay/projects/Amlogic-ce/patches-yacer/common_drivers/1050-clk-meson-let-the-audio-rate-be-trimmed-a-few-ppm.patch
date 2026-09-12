@@ -1,0 +1,185 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] clk: meson: let the audio rate be trimmed a few ppm
+
+Passthrough audio is clocked from mpll0 and the receiver recovers its own sample
+clock from it, so the rate mpll0 runs at is the rate the audio is heard at.
+Measured on g12b it walks about 20ppm against the display, and in passthrough the
+audio engine has nothing finer than a whole 20ms IEC frame to answer with.
+
+Expose the sdm field so the rate can be trimmed instead. One step is about 15ppm,
+and the sigma-delta already dithers this divide, so the field can move under a
+running stream. Nothing else is touched: not n2, not sdm_en, not the gate.
+
+--- a/drivers/clk/meson/g12a.c
++++ b/drivers/clk/meson/g12a.c
+@@ -6691,6 +6691,170 @@
+ 	{}
+ };
+ 
++/*
++ * Audio rate trim.
++ *
++ * Passthrough audio leaves this SoC clocked from mpll0: spdifout_b divides it by
++ * five to give the 512fs bit clock that carries the 192kHz IEC61937 framing. The
++ * sink recovers its own sample clock from that, so the rate mpll0 runs at is the
++ * rate the audio is heard at, and a few parts per million of error there is a
++ * few milliseconds of lip sync per minute.
++ *
++ * mpll0 divides by (16384 * n2 + sdm), so one sdm step is one part in that
++ * divisor - about 15ppm here - and the sigma-delta already dithers the divide,
++ * so moving sdm is a rate change and not a relock. Nothing else in the field is
++ * touched: not n2, not sdm_en, not the gate.
++ *
++ * What has been applied is tracked here rather than inferred from the register,
++ * for the reason vtotal_trim tracks its own: a divisor sitting a step away from
++ * what this driver last wrote is indistinguishable from a trim, and the clock
++ * framework reprograms sdm and n2 together whenever the audio path changes rate.
++ * So the value in force is recorded when the first trim is applied and written
++ * back verbatim to clear, and if the register no longer holds what was applied
++ * then somebody else owns it: the trim is forgotten and the write refused.
++ *
++ * Bounded at four steps because sixty parts per million is already an order more
++ * than any drift measured on this hardware, and a wider range only buys a way to
++ * put the audio clock somewhere its sink will not follow.
++ */
++#define MPLL0_SDM_MASK		GENMASK(13, 0)
++#define MPLL0_SDM_EN		BIT(30)
++/*
++ * Bounded at forty steps, about six hundred parts per million. Sixty was the
++ * range a rate correction needs - the drift measured here is twenty - and it is
++ * still all a controller should be given. The wider range is for moving an
++ * accumulated offset rather than a rate: at sixty parts per million a twenty
++ * millisecond offset takes eight minutes to walk out, at six hundred it takes
++ * half a minute, and the offset only has to be walked once at the start.
++ *
++ * Six hundred parts per million is a hundredth of a semitone, well under the
++ * ear's threshold, and the divider has room for hundreds of steps. What it is
++ * not known to be is inside what a sink's clock recovery will follow, so the
++ * range is opened here and left for a caller to use or not.
++ */
++#define MPLL0_TRIM_MAX		40
++
++static DEFINE_MUTEX(mpll0_trim_mutex);
++static unsigned int mpll0_trim_base;
++static int mpll0_trim_applied;
++static bool mpll0_trim_held;
++
++/* Positive is faster: a smaller divisor is a higher rate. */
++static int mpll0_trim_apply(int steps)
++{
++	struct regmap *map = g12a_mpll0_div.map;
++	unsigned int val, sdm, want;
++	unsigned long flags;
++	bool lost = false;
++	int ret = 0;
++
++	if (!map)
++		return -ENODEV;
++
++	/*
++	 * Read, decide and write under the one lock. mpll_set_rate() writes sdm
++	 * and n2 together while holding it, so a rate change landing between a
++	 * read here and the write below would put this base against that n2 -
++	 * not a few ppm out but a different rate entirely, and self-consistent
++	 * afterwards, so the check above would never catch it again.
++	 */
++	spin_lock_irqsave(&meson_clk_lock, flags);
++
++	ret = regmap_read(map, HHI_MPLL_CNTL1, &val);
++	if (ret)
++		goto out;
++
++	/* With the modulator off the field is not a divisor and must be left alone. */
++	if (!(val & MPLL0_SDM_EN)) {
++		ret = -ENODEV;
++		goto out;
++	}
++
++	sdm = val & MPLL0_SDM_MASK;
++
++	if (mpll0_trim_held && sdm != (mpll0_trim_base - mpll0_trim_applied)) {
++		mpll0_trim_held = false;
++		lost = true;
++		ret = -EBUSY;
++		goto out;
++	}
++
++	if (!mpll0_trim_held) {
++		if (!steps)
++			goto out;
++		mpll0_trim_base = sdm;
++		mpll0_trim_applied = 0;
++		mpll0_trim_held = true;
++	}
++
++	want = mpll0_trim_base - steps;
++	if (want < 1 || want > (MPLL0_SDM_MASK - 1)) {
++		ret = -ERANGE;
++		goto out;
++	}
++
++	ret = regmap_update_bits(map, HHI_MPLL_CNTL1, MPLL0_SDM_MASK, want);
++	if (!ret) {
++		mpll0_trim_applied = steps;
++		if (!steps)
++			mpll0_trim_held = false;
++	}
++
++out:
++	spin_unlock_irqrestore(&meson_clk_lock, flags);
++
++	/* Said outside the lock, where sleeping console drivers are allowed. */
++	if (lost)
++		pr_warn("mpll0: audio trim was overwritten, forgetting it\n");
++
++	return ret;
++}
++
++static int mpll0_trim_set(const char *val, const struct kernel_param *kp)
++{
++	int steps, ret;
++
++	ret = kstrtoint(val, 0, &steps);
++	if (ret)
++		return ret;
++
++	if (steps < -MPLL0_TRIM_MAX || steps > MPLL0_TRIM_MAX)
++		return -ERANGE;
++
++	mutex_lock(&mpll0_trim_mutex);
++	ret = mpll0_trim_apply(steps);
++	mutex_unlock(&mpll0_trim_mutex);
++
++	return ret;
++}
++
++static int mpll0_trim_get(char *buf, const struct kernel_param *kp)
++{
++	struct regmap *map = g12a_mpll0_div.map;
++	unsigned int val;
++	int steps = 0;
++
++	mutex_lock(&mpll0_trim_mutex);
++	/* Re-checked on the way out, so a reprogram that went unnoticed reads zero. */
++	if (mpll0_trim_held && map && !regmap_read(map, HHI_MPLL_CNTL1, &val) &&
++	    (val & MPLL0_SDM_MASK) == (mpll0_trim_base - mpll0_trim_applied))
++		steps = mpll0_trim_applied;
++	else
++		mpll0_trim_held = false;
++	mutex_unlock(&mpll0_trim_mutex);
++
++	return sysfs_emit(buf, "%d\n", steps);
++}
++
++static const struct kernel_param_ops mpll0_trim_ops = {
++	.set = mpll0_trim_set,
++	.get = mpll0_trim_get,
++};
++
++module_param_cb(audio_sdm_trim, &mpll0_trim_ops, NULL, 0644);
++MODULE_PARM_DESC(audio_sdm_trim,
++		 "mpll0 sigma-delta steps, positive is faster audio (~15ppm each)");
++
+ static struct platform_driver g12a_driver = {
+ 	.probe		= meson_g12a_probe,
+ 	.driver		= {

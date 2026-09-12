@@ -1,0 +1,79 @@
+From 6b0261055361f7d9023e512a6ffc4c08d7ac6a90 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:51:04 -0400
+Subject: [PATCH] WinSystemAmlogic: survive a failed display rebuild
+
+aml_init_drmDevice() throws on any of seven failures, having called CleanAndClose()
+first. Nothing between it and the frame loop catches, so a failed rebuild takes the
+process down.
+
+Catch it where the hotplug is handled and leave presentation off. What is left has
+no connector, so the accessors take their not-connected branch and read
+m_connector - guard that read too.
+
+Nothing is retried here: a later hotplug runs the rebuild again, but until one
+arrives the display stays dark. This depends on the previous change serialising
+those reads.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index 8bcec8a..7fc6fcd 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -737,6 +737,10 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
+ 
+     switch (obj_type) {
+       case DRM_MODE_OBJECT_CONNECTOR:
++        // A rebuild that failed freed this and left the object alive. Leave the
++        // function, not the switch: the one below reads the same pointer.
++        if (!m_connector)
++          return ret;
+         id = m_connector->connector_id;
+         ret = get_drmProp(id, name, obj_type, data, data_len);
+         [[fallthrough]];
+@@ -776,6 +780,10 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type,
+ 
+     switch (obj_type) {
+       case DRM_MODE_OBJECT_CONNECTOR:
++        // A rebuild that failed freed this and left the object alive. Leave the
++        // function, not the switch: the one below reads the same pointer.
++        if (!m_connector)
++          return;
+         id = m_connector->connector_id;
+         set_drmProp(id, name, obj_type, value, NULL);
+         [[fallthrough]];
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 155b43b..020c6d1 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <string.h>
+ #include <float.h>
++#include <exception>
+ 
+ #include "ServiceBroker.h"
+ #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
+@@ -196,7 +197,20 @@ bool CWinSystemAmlogic::MessagePump()
+ void CWinSystemAmlogic::HotplugEvent()
+ {
+   SetPresentationReady(false);
+-  m_amlDisplay->aml_init_drmDevice();
++
++  try
++  {
++    m_amlDisplay->aml_init_drmDevice();
++  }
++  catch (const std::exception& e)
++  {
++    // It runs CleanAndClose() before it throws, so what is left has no connector
++    // and presentation stays off. Nothing above this catches, and this runs from
++    // the frame loop, so letting it out ends the process.
++    CLog::Log(LOGERROR, "CWinSystemAmlogic::{} - display rebuild failed: {}", __FUNCTION__,
++              e.what());
++    return;
++  }
+   drmModeConnection connection;
+   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
+ 

@@ -1,0 +1,48 @@
+From 030b0f3e172ffc9c632b12bc6a742936f199ab85 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:07:52 -0400
+Subject: [PATCH] AMLCodec: check the OpenDecoder config allocation
+
+OpenDecoder() copied into the codec config string straight after an unchecked
+malloc(). Check it and skip the optional config instead of dereferencing NULL -
+config_len = 0 is the driver's ordinary path, and HEVC already passes it.
+
+Failing the open has nowhere to go: it runs lazily from AddData, past the software
+fallback, and its result is only logged. CloseDecoder now clears the pointer as
+well as freeing it, like the free beside it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2336,8 +2336,16 @@
+   {
+     am_private->vcodec.config_len = static_cast<int>(config_data.size());
+     am_private->vcodec.config = (char*)malloc(config_data.size() + 1);
+-    config_data.copy(am_private->vcodec.config, config_data.size());
+-    am_private->vcodec.config[am_private->vcodec.config_len] = '\0';
++    if (am_private->vcodec.config)
++    {
++      config_data.copy(am_private->vcodec.config, config_data.size());
++      am_private->vcodec.config[am_private->vcodec.config_len] = '\0';
++    }
++    else
++    {
++      am_private->vcodec.config_len = 0;
++      CLog::Log(LOGERROR, "CAMLCodec::OpenDecoder - config alloc failed");
++    }
+   }
+ 
+   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
+@@ -2499,7 +2507,10 @@
+   am_private->hdr_buf.data = NULL;
+ 
+   if (am_private->vcodec.config)
++  {
+     free(am_private->vcodec.config);
++    am_private->vcodec.config = NULL;
++  }
+ 
+   // return tsync to default so external apps work
+   CSysfsPath("/sys/class/tsync/enable", 1);

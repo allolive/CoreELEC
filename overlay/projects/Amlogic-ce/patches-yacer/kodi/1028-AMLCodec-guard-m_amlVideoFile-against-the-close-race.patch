@@ -1,0 +1,97 @@
+From 17bd08486d0718842bc853cb965b28b1e7b84dc9 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:07:52 -0400
+Subject: [PATCH] AMLCodec: guard m_amlVideoFile against the close race
+
+ReleaseFrame() reads the m_amlVideoFile shared_ptr and then dereferences it, with
+nothing making the two atomic. It runs on the app thread while the codec is torn
+down on the player thread, and buffers still held by the renderer keep the codec
+alive past Close(), so the two do overlap.
+
+Take a copy under a mutex and do the ioctl on the copy, so the lock is not held
+across a syscall and the file cannot be closed mid-call. DequeueBuffer() is only
+reached from the video thread and is left alone.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index e58c4a3..f523b20 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2399,7 +2399,10 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
+     return false;
+   }
+ 
+-  m_amlVideoFile = amlVideoFile;
++  {
++    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
++    m_amlVideoFile = amlVideoFile;
++  }
+   m_defaultVfmMap = GetVfmMap("default");
+ 
+   return true;
+@@ -2553,12 +2556,17 @@ void CAMLCodec::CloseDecoder()
+ 
+ void CAMLCodec::CloseAmlVideo()
+ {
+-  m_amlVideoFile.reset();
++  PosixFilePtr closing;
++  {
++    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
++    closing.swap(m_amlVideoFile);
++  }
++  // Dropped here rather than at the end of the scope, so the node is released at
++  // the same point as before. A frame still in flight holds its own reference.
++  closing.reset();
+ 
+   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
+     SetVfmMap("default", m_defaultVfmMap);
+-
+-  m_amlVideoFile = NULL;
+ }
+ 
+ void CAMLCodec::Reset()
+@@ -2805,7 +2813,12 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+   vbuf.index = index;
+ 
+-  if (!m_amlVideoFile)
++  PosixFilePtr amlVideoFile;
++  {
++    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
++    amlVideoFile = m_amlVideoFile;
++  }
++  if (!amlVideoFile)
+     return 0;
+ 
+   if (drop)
+@@ -2813,7 +2826,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+ 
+   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
+ 
+-  if ((ret = m_amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
++  if ((ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
+     CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
+   return ret;
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index c0b6d70..60c3fe3 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -17,6 +17,7 @@
+ #include "utils/Geometry.h"
+ 
+ #include <deque>
++#include <mutex>
+ #include <atomic>
+ 
+ typedef struct am_private_t am_private_t;
+@@ -129,6 +130,8 @@ private:
+   unsigned int m_state;
+ 
+   PosixFilePtr     m_amlVideoFile;
++  //! Per instance, not file scope: the member it guards is per instance.
++  std::mutex       m_amlVideoFileMutex;
+   std::string      m_defaultVfmMap;
+ 
+   static std::atomic_flag  m_pollSync;

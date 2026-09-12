@@ -1,0 +1,834 @@
+From 7047ef6d4bad0472409bf180ce004a436639a5c5 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLAudioTrim: aim the rate loop off to null the residual offset
+
+Holding the rate takes the drift out but says nothing about where the flat line
+sits: two cold starts of the same file settle tens of milliseconds apart and then
+each holds its own offset perfectly, which is a rate loop doing exactly its job
+and no more. Aim it off centre until the standing offset is gone, then let it
+settle back.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -9123,6 +9123,36 @@
+ msgid "Player-Led"
+ msgstr ""
+ 
++#. Setting to trim the audio clock so sound and picture stay aligned
++#: system/settings/settings.xml
++msgctxt "#14316"
++msgid "Audio passthrough A/V sync"
++msgstr ""
++
++#. Help text of setting with label #14316 "Audio passthrough A/V sync"
++#: system/settings/settings.xml
++msgctxt "#14317"
++msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. Has no effect on PCM output."
++msgstr ""
++
++#. Option for setting #14316 "Audio passthrough A/V sync"
++#: system/settings/settings.xml
++msgctxt "#14318"
++msgid "Light"
++msgstr ""
++
++#. Option for setting #14316 "Audio passthrough A/V sync"
++#: system/settings/settings.xml
++msgctxt "#14319"
++msgid "Medium"
++msgstr ""
++
++#. Option for setting #14316 "Audio passthrough A/V sync"
++#: system/settings/settings.xml
++msgctxt "#14320"
++msgid "Strong"
++msgstr ""
++
+ #: xbmc/music/MusicDatabase.cpp
+ #: xbmc/video/VideoDatabase.cpp
+ msgctxt "#15011"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -4038,6 +4038,20 @@
+           <default>false</default>
+           <control type="toggle" />
+         </setting>
++        <setting id="coreelec.amlogic.audiolead" type="integer" label="14316" help="14317">
++          <requirement>HAVE_AMCODEC</requirement>
++          <level>2</level>
++          <default>0</default>
++          <constraints>
++            <options>
++              <option label="351">0</option>
++              <option label="14318">50</option>
++              <option label="14319">200</option>
++              <option label="14320">600</option>
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++        </setting>
+         <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
+           <requirement>HAVE_AMCODEC</requirement>
+           <default>0</default>
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -10,10 +10,14 @@
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "platform/linux/SysfsPath.h"
+ #include "utils/AMLUtils.h"
++#include "ServiceBroker.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
+ #include "utils/log.h"
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <string>
+ 
+ namespace
+ {
+@@ -25,9 +29,39 @@
+ //! lands on the same divider half the time. Two always moves.
+ constexpr int STEP = 2;
+ 
+-//! The kernel refuses more than four, and sixty parts per million is already an
+-//! order more than anything measured here.
+-constexpr double MAX_LEVEL = 2.0;
++//! What the level may reach while the loop is only nulling the rate. Sixty parts
++//! per million is already an order more than the drift measured here.
++constexpr double MAX_LEVEL_RATE = 2.0;
++
++//! What it may reach while it is also walking an offset out. Bounded by the
++//! kernel, which refuses more than forty.
++constexpr double MAX_LEVEL_HW = 20.0;
++
++//! Where the offset loop is switched on, and how hard. The file holds the
++//! largest rate error it may ask for, in parts per million; absent, the loop
++//! only nulls the rate, which is what it did before this existed.
++//!
++//! Runtime rather than built in because the number is not ours to choose: it is
++//! however much the receiver will follow without dropping lock, and that is a
++//! property of the receiver. It has to be found by ear once, on the box.
++
++//! Sanity bounds on what that file may say.
++constexpr double SLEW_MIN = 5e-6;
++constexpr double SLEW_MAX = 600e-6;
++
++//! How long the offset is given to decay. With the level handed straight to the
++//! feedforward the rate is in place within a few ticks, so this really is the
++//! decay the offset follows rather than an upper bound the inner loop spoils.
++//! Short enough that a title's offset is gone before anyone settles in.
++constexpr double OFFSET_TAU = 25.0 * DVD_TIME_BASE;
++
++//! Below this the offset is not worth a rate error. It has to sit well under
++//! whatever the loop actually settles at, not beside it: measured converging to
++//! 0.46ms against a band of 0.5, the aim switched on and off as the figure
++//! crossed it four times a second and the register alternated with it. A band is
++//! meant to be the point the loop stops caring, so it belongs below the noise it
++//! is ignoring rather than in the middle of it.
++constexpr double OFFSET_DEADBAND = DVD_MSEC_TO_TIME(0.15);
+ 
+ //! How long the error is averaged before a slope is taken from it. A minute of
+ //! means differ by ~0.02ms while a minute of drift is ~1.2ms, so fifteen seconds
+@@ -149,8 +183,12 @@
+     if (!path.Exists())
+       return std::nullopt;
+ 
++    // Against the hardware's range and not the loop's. A level this refuses is
++    // read as no answer at all, which freezes the loop and strands whatever the
++    // register happens to hold - so a ceiling here that is lower than one the
++    // loop can legitimately reach is a latch, not a guard.
+     const std::optional<int> got = path.Get<int>();
+-    if (!got || std::abs(*got) > 4)
++    if (!got || std::abs(*got) > static_cast<int>(MAX_LEVEL_HW) * STEP)
+       return std::nullopt;
+ 
+     return got;
+@@ -161,6 +199,18 @@
+   }
+ }
+ 
++bool CAMLAudioTrim::Supported()
++{
++  try
++  {
++    return CSysfsPath{TRIM_PATH}.Exists();
++  }
++  catch (...)
++  {
++    return false;
++  }
++}
++
+ bool CAMLAudioTrim::WriteLevel(int level)
+ {
+   try
+@@ -252,6 +302,58 @@
+   m_lastDither = 0.0;
+ }
+ 
++double CAMLAudioTrim::Aim() const
++{
++  if (!m_haveSlew || !m_haveLead || std::abs(m_lead) < OFFSET_DEADBAND)
++    return 0.0;
++
++  return std::clamp(-m_lead / OFFSET_TAU, -m_slew, m_slew);
++}
++
++double CAMLAudioTrim::Feedforward() const
++{
++  // What the aim is worth in levels, computed rather than integrated toward.
++  // The step was measured on this hardware at 15.05ppm per sigma-delta unit -
++  // 30.1ppm per level against the 30.0 assumed here, inside half a percent -
++  // so the level a given rate needs is known in advance and there is nothing to
++  // be learned by walking to it.
++  //
++  // This is what makes the correction quick. Left to the integrator alone the
++  // offset could only come out as fast as the rate loop settles, which is
++  // minutes: the outer loop would ask for a rate, the inner one would take three
++  // minutes to get there, and by then the offset had moved on. Handed the level
++  // outright, the rate is there within a few ticks and the offset decays on
++  // OFFSET_TAU as intended, with the integrator left doing what it is good at -
++  // taking out the part this got wrong.
++  return Aim() / STEP_RATE;
++}
++
++//! The cap, in parts per million, or nullopt for a file that is not there or
++//! does not say a usable number. Anything out of bounds is refused rather than
++//! clamped: a file saying 6000 is a typo for 600, and honouring it as the
++//! largest legal value would be reading a mistake as an instruction.
++std::optional<double> CAMLAudioTrim::ReadSlew() const
++{
++  const auto component = CServiceBroker::GetSettingsComponent();
++  if (!component)
++    return std::nullopt;
++
++  const auto settings = component->GetSettings();
++  if (!settings)
++    return std::nullopt;
++
++  // Zero is off, and so is anything the loop cannot act on: the bounds are the
++  // ones the setting is clamped to anyway, so a value outside them reads as off
++  // rather than as a rate nobody meant.
++  const double ppm =
++      static_cast<double>(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_AUDIOLEAD));
++  const double slew = std::abs(ppm) * 1e-6;
++  if (!std::isfinite(slew) || slew < SLEW_MIN || slew > SLEW_MAX)
++    return std::nullopt;
++
++  return slew;
++}
++
+ void CAMLAudioTrim::Settle(double reading)
+ {
+   // Kept as a small history and acted on by the middle value. A clock step too
+@@ -276,19 +378,46 @@
+   // audio running fast, which wants a lower level. The sign is the measured one:
+   // raising the level was seen to raise the rate on this hardware, whatever the
+   // divider arithmetic suggests about which way round that ought to be.
+-  if (std::abs(drift) > MAX_PLAUSIBLE)
++  const double aim = Aim();
++
++  // Widened by whatever the level is allowed to command. This test is here to
++  // throw out readings no clock could have produced, and once the loop may ask
++  // for 600ppm a 600ppm reading is the loop working, not a bad measurement.
++  // Left at a fixed 200ppm it discards every reading taken while the offset is
++  // being walked out, the level stops being updated, and the rate it happens to
++  // be stuck at then runs uncorrected for the rest of the title.
++  //
++  // Not measured against the aim either, tempting as that is: during the ramp
++  // the rate legitimately lags what was asked for by most of the step, so that
++  // test rejects the whole transient it is supposed to allow.
++  const double plausible = MAX_PLAUSIBLE + m_levelMax * STEP_RATE;
++  if (std::abs(drift) > plausible)
+   {
+     CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: {:+.0f}ppm is not a rate, ignoring it",
+               drift * 1e6);
+     return;
+   }
+ 
+-  if (std::abs(drift) < DEADBAND)
++  // The rate the loop is asked to hold. Zero while nothing is driving the
++  // offset, and then this is the loop it always was.
++  //
++  // Otherwise the offset is walked out by aiming off: an offset of l is taken
++  // away over OFFSET_TAU by running the audio at -l/tau, and when l reaches zero
++  // so does the aim, which is the loop stopping by itself rather than being
++  // stopped. It has to enter as a setpoint and not as a bias on the level - the
++  // integral below drives the rate to whatever it is told, so a bias added after
++  // it would simply be integrated back out again.
++  const double err = drift - aim;
++
++  if (std::abs(err) < DEADBAND)
+     return;
+ 
+   const double was = m_want;
+-  m_want -= GAIN * drift / STEP_RATE;
+-  m_want = std::clamp(m_want, -MAX_LEVEL, MAX_LEVEL);
++  m_want -= GAIN * err / STEP_RATE;
++
++  // The integrator keeps the rate range it always had. What the offset needs on
++  // top of that is not integrated at all - see Feedforward().
++  m_want = std::clamp(m_want, -MAX_LEVEL_RATE, MAX_LEVEL_RATE);
+ 
+   // Held against its limit while the drift says nothing changed. The level has
+   // been moved by its whole range and the measurement has not answered, so
+@@ -309,9 +438,12 @@
+   // giving up would hand back the part it had. So the test is not "still
+   // drifting" but "moved the level and nothing happened".
+   const double moved = m_haveDriftAtZero ? std::abs(drift - m_driftAtZero) : 0.0;
+-  const bool answered = moved > 0.5 * MAX_LEVEL * STEP_RATE;
++  const bool answered = moved > 0.5 * MAX_LEVEL_RATE * STEP_RATE;
+ 
+-  if (std::abs(m_want) >= MAX_LEVEL && std::abs(drift) > ANSWERED && !answered)
++  // Against err and not drift. Walking an offset out means deliberately holding
++  // a large rate error, and a level sitting at its limit doing exactly what it
++  // was told is not a knob that has stopped listening.
++  if (std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED && !answered)
+     ++m_clamped;
+   else
+     m_clamped = 0;
+@@ -324,19 +456,32 @@
+               drift * 1e6, m_clamped);
+     m_want = 0.0;
+     m_dither = 0.0;
+-    WriteLevel(0);
++    if (m_everWrote && m_applied != 0)
++      WriteLevel(0);
+     m_stopped = true;
+     return;
+   }
+ 
+-  CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, level {:.2f} -> {:.2f}",
+-            drift * 1e6, was, m_want);
++  if (aim != 0.0)
++    CLog::Log(LOGDEBUG, LOGAUDIO,
++              "CAMLAudioTrim: audio {:+.1f}ppm, aiming {:+.1f}ppm to take out {:+.1f}ms, level "
++              "{:.2f} -> {:.2f}",
++              drift * 1e6, aim * 1e6, m_lead / 1000.0, was, m_want);
++  else
++    CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, level {:.2f} -> {:.2f}",
++              drift * 1e6, was, m_want);
+ }
+ 
+-void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
++void CAMLAudioTrim::Update(const std::optional<double>& error,
++                           const std::optional<double>& lead,
++                           double now)
+ {
+   std::lock_guard<std::mutex> lock(m_mutex);
+ 
++  m_haveLead = lead.has_value();
++  if (lead)
++    m_lead = *lead;
++
+   if (m_stopped)
+     return;
+ 
+@@ -390,6 +535,48 @@
+     return;
+   }
+ 
++  // Below the arming gate, so a disarmed loop does no file IO at all. Re-read
++  // rather than latched: changing it mid playback is how the cap gets found.
++  if (now - m_lastDither >= DITHER)
++  {
++    const std::optional<double> slew = ReadSlew();
++
++    // Acted on only once it has said the same thing twice. The setting can move
++    // under the loop while a slider is being dragged, and taking the first value
++    // seen would otherwise dump the integrator and log a spurious
++    // pair of on/off lines.
++    if (slew == m_slewSeen)
++    {
++      const bool had = m_haveSlew;
++      m_haveSlew = slew.has_value();
++      m_slew = slew.value_or(0.0);
++
++      // Floored to a whole level. The clamp below rounds to an integer before
++      // applying it, so a fractional ceiling clamps a rounded level back to a
++      // fraction, the cast to int then truncates it, and the sigma-delta carry
++      // it did not pay off latches and is never paid off again.
++      // Off means the clock is not touched at all, not merely that the offset is
++      // left alone: with no ceiling the level is always zero, the write is skipped,
++      // and what remains is measurement. That keeps the drift readings - cleaner
++      // ones, since nothing is correcting underneath them - on hardware this has
++      // never been tried on, without writing that hardware's audio clock.
++      m_levelMax = m_haveSlew
++                       ? std::floor(std::min(MAX_LEVEL_HW, MAX_LEVEL_RATE + m_slew / STEP_RATE))
++                       : 0.0;
++
++      // Deliberately not clamping m_want here. Dropping the ceiling under a
++      // wound-up level would step the rate by the whole difference at once, and
++      // taking the file away is the documented kill switch - the one path that
++      // must not itself be the most violent thing the loop ever does. With the
++      // aim gone the integrator walks it back down within a few decisions, and
++      // the per-tick limit in WriteLevel bounds how fast that reaches the clock.
++      if (m_haveSlew != had)
++        CLog::Log(LOGINFO, "CAMLAudioTrim: offset loop {}",
++                  m_haveSlew ? fmt::format("on, up to {:+.0f}ppm", m_slew * 1e6) : "off");
++    }
++    m_slewSeen = slew;
++  }
++
+   if (error)
+   {
+     // A clock step moves the error without the audio rate having changed, and
+@@ -451,16 +638,17 @@
+   // Sigma-delta: the fraction the level cannot express is carried and paid off
+   // by the next slot that can, so the average over a few slots is the wanted
+   // level even though every slot is a whole one.
+-  const double target = m_want + m_dither;
++  const double target =
++      std::clamp(m_want + Feedforward(), -m_levelMax, m_levelMax) + m_dither;
+ 
+   // Clamped after rounding as well as before: the carried fraction can take a
+   // level already at the limit half a step past it, and the kernel refuses the
+   // whole write rather than the excess.
+-  const double put = std::clamp(std::round(target), -MAX_LEVEL, MAX_LEVEL);
+-  m_dither = std::clamp(target - put, -1.0, 1.0);
+-
+-  const int level = static_cast<int>(put) * STEP;
+-
++  // Read before the level is decided, not after. What the step below may be is
++  // measured from where the register actually is, so this has to be the fresh
++  // value - against last tick's remembered one the limit is computed from a base
++  // that may have moved, and bounds the wrong distance.
++  //
+   // Against the register, not against what was last written to it. A remembered
+   // value that the register no longer holds is a loop that has stopped driving
+   // and cannot tell: it goes on integrating, reaches its limit, and leaves the
+@@ -473,6 +661,27 @@
+     return;
+ 
+   m_applied = *got;
++
++  double put = std::clamp(std::round(target), -m_levelMax, m_levelMax);
++
++  // One level a tick. The dither already moves by exactly one, so this is
++  // invisible in normal running; what it bounds is the ways the loop can be
++  // asked to move the level far in one go - the ceiling dropping when the cap
++  // file is taken away, an integrator that wound up while the register was being
++  // refused, or the register having been moved from outside. A rate
++  // discontinuity is the one thing a receiver locked to this clock cannot be
++  // asked to follow.
++  //
++  // Only this path. Release, a stand-down and a disarm all write zero directly
++  // and are meant to: the first two mean the level must not outlive what asked
++  // for it, and the third is a kill switch. Those go straight there.
++  if (m_everWrote)
++    put = std::clamp(put, static_cast<double>(m_applied) / STEP - 1.0,
++                     static_cast<double>(m_applied) / STEP + 1.0);
++
++  m_dither = std::clamp(target - put, -1.0, 1.0);
++
++  const int level = static_cast<int>(put) * STEP;
+   if (level != m_applied)
+     WriteLevel(level);
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -43,12 +43,20 @@
+     return trim;
+   }
+ 
++  //! \brief Whether this kernel carries the trim knob at all.
++  static bool Supported();
++
+   //! \brief Called once per presented frame. Paces itself.
+   //! \param error audio ahead of the master clock in DVD time units, or nullopt
+   //! when nothing measured it this frame. Must be the unscaled figure: this is a
+   //! rate loop, and a reading shrunk by a constant is a gain error.
++  //! \param lead how far the audio leads the picture at the box output, in DVD
++  //! time units, or nullopt when nothing has measured it. Only acted on where a
++  //! cap has been set for it; without one this is a rate loop and nothing else.
+   //! \param now the master clock's absolute time, in DVD time units
+-  void Update(const std::optional<double>& error, double now);
++  void Update(const std::optional<double>& error,
++              const std::optional<double>& lead,
++              double now);
+ 
+   //! \brief Give the clock back and forget everything. For a decoder closing:
+   //! the level must not outlive the playback that asked for it.
+@@ -68,6 +76,17 @@
+   CAMLAudioTrim& operator=(const CAMLAudioTrim&) = delete;
+ 
+   bool Armed();
++
++  //! \brief The rate error the loop should hold to walk the offset out. Zero
++  //! when there is no offset to walk out, or nothing said how fast it may be.
++  double Aim() const;
++
++  //! \brief The aim expressed as levels, applied without being integrated
++  //! toward. The plant gain is known to better than a percent, so the level a
++  //! rate needs is arithmetic, not something to be discovered.
++  double Feedforward() const;
++
++  std::optional<double> ReadSlew() const;
+   void ForgetLocked();
+   std::optional<int> ReadLevel() const;
+   bool WriteLevel(int level);
+@@ -105,4 +124,12 @@
+   mutable std::mutex m_mutex; //!< Release() comes from the player thread
+ 
+   double m_lastDither{0.0};   //!< when the level was last put out
++
++  double m_lead{0.0};         //!< audio ahead of picture at the output
++  bool m_haveLead{false};
++
++  double m_slew{0.0};         //!< the largest rate error the offset may ask for
++  std::optional<double> m_slewSeen; //!< the previous read, to confirm a change
++  bool m_haveSlew{false};     //!< whether the offset loop is switched on at all
++  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -53,6 +53,11 @@
+ 
+ namespace
+ {
++//! The largest audio offset worth honouring, in seconds. Well past anything a
++//! viewer sets by hand, and short of the range where a mistaken sign would be
++//! driving the clock somewhere absurd.
++constexpr double MAX_AUDIO_OFFSET_S = 1.0;
++
+ 
+ std::mutex pollSyncMutex;
+ 
+@@ -2917,10 +2922,81 @@
+   }
+   m_trimWasPassthrough = true;
+ 
++  // Where the viewer asked the audio to sit, rather than on top of the picture.
++  // Kodi's audio offset does not touch the audio at all: SetAVDelay feeds
++  // m_videoDelay into RenderManager's display latency, which moves which frame is
++  // shown at a given clock time - so it lands in the alignment half of the sum
++  // below, and a loop driving that sum to zero would take the viewer's setting
++  // back out over the couple of minutes it needs. Aiming at the setting instead
++  // of at zero holds it.
++  //
++  // Both of the renderer's chosen terms, not just the slider. The latency tweak
++  // from advancedsettings moves the picture for the same reason and by the same
++  // route, so a loop told about one and not the other would hold the viewer's
++  // offset and quietly take their display compensation back out.
++  const float set = m_processInfo.GetVideoSettings().m_AudioDelay;
++  const double wanted = aml_render_chosen_offset(m_hints.hdrType, set);
++
++  // Past what is worth honouring the offset loop stands down rather than aiming
++  // at a truncated target. Clamping the aim while the picture moves by the whole
++  // setting leaves a residue the loop can never take out: it rails at its slew
++  // limit for the rest of the title, walking the very setting it is supposed to
++  // be holding, and doing it silently - the drift follows the aim, so the
++  // stand-down watchdog sees a knob that is working perfectly. The rate loop is
++  // untouched by this and goes on nulling the drift; only the offset half stops.
++  const bool tooBig = std::abs(wanted) > MAX_AUDIO_OFFSET_S * DVD_TIME_BASE;
++
++  // Announced when it CHANGES, not merely when it is non-zero. This line is what
++  // tells a correct sign from an inverted one on a box, and the way to read it is
++  // to nudge the setting and watch - so one that reports the first value and then
++  // never speaks again is the one case it has to get right. Compared on the
++  // truncated figure, which also disposes of the float residue that stepping the
++  // offset up and back down with a remote leaves behind.
++  if (wanted != m_lastAudioOffset)
++  {
++    // The picture is about to be held or skipped by the whole difference, and
++    // nothing else tells the matcher that. Left unsaid it reads the hold as the
++    // picture having stopped and warns about frames that were never lost.
++    CAMLLatency::GetInstance().NoteClockDisturbed();
++
++    // One line, and a true one. Saying it is being held and then that it is not
++    // leaves the log contradicting itself in the place the sign is read from.
++    if (tooBig)
++      CLog::Log(LOGINFO,
++                "CAMLCodec: audio offset {:+.0f}ms is past what the trim will hold - leaving it "
++                "to the renderer",
++                wanted / 1000.0);
++    else if (wanted != 0.0)
++      CLog::Log(LOGINFO, "CAMLCodec: holding the audio offset at {:+.0f}ms rather than nulling it",
++                wanted / 1000.0);
++    else
++      CLog::Log(LOGINFO, "CAMLCodec: audio offset back to nominal");
++
++    m_lastAudioOffset = wanted;
++  }
++
++  std::optional<double> lead = CAMLLatency::GetInstance().Lead();
++
++  // Entering or leaving the stand-down steps the setpoint, and the bucket that
++  // spans the step holds a drift the loop asked for measured against an aim it no
++  // longer has. Settle() would read the difference as its own error and rail the
++  // integrator for minutes taking it back out. Dropping that one measurement
++  // costs a bucket and keeps the level, which is what Forget is for.
++  if (tooBig != m_offsetStoodDown)
++  {
++    m_offsetStoodDown = tooBig;
++    CAMLAudioTrim::GetInstance().Forget();
++  }
++
++  if (tooBig)
++    lead.reset();
++  else if (lead)
++    *lead -= wanted;
++
+   CAMLAudioTrim::GetInstance().Update(audioError == DVD_NOPTS_VALUE
+                                           ? std::nullopt
+                                           : std::optional<double>{audioError},
+-                                      clock->GetAbsoluteClock());
++                                      lead, clock->GetAbsoluteClock());
+ }
+ 
+ void CAMLCodec::GenlockTick(uint64_t omxPts)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -110,6 +110,8 @@
+   //! Whether the audio was a bitstream last frame, so the trim is given back
+   //! once on the way out rather than on every frame after it.
+   bool             m_trimWasPassthrough{false};
++  double           m_lastAudioOffset{0.0};
++  bool             m_offsetStoodDown{false};
+   //! Whether this took the system default vfm chain away, so the close puts back
+   //! only what it actually took.
+   bool             m_vfmMapOverridden{false};
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -46,6 +46,22 @@
+ // How often to report where the picture actually landed.
+ constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
+ 
++//! How long the lead filter remembers. The reading behind it only moves about
++//! once a second, and what reads it decides every fifteen, so this is short
++//! enough to be current at that cadence and long enough to hand it a number
++//! rather than the last sample.
++constexpr double LEAD_TAU = 5.0 * DVD_TIME_BASE;
++
++//! A step this big is not the loop moving the figure - at the most it may ever
++//! ask for, it moves it a hundred times slower than this per sample. Set below a
++//! refresh period so a swallowed one is caught, and well above the ripple.
++constexpr double LEAD_JUMP = DVD_MSEC_TO_TIME(8.0);
++
++//! How long a disagreement is waited out before the new value is believed. Over
++//! the second or so a clock correction takes to cancel in this sum, and under
++//! anything the offset loop is trying to do.
++constexpr double LEAD_RESEAT = 3.0 * DVD_TIME_BASE;
++
+ // Opening a file drops frames on purpose to catch up with the clock, so the
+ // check stands down until the picture has run clean for about this long. Given
+ // in seconds and turned into refreshes, so it means the same at 24Hz and at 60.
+@@ -116,6 +132,8 @@
+   m_audioReports = 0;
+   m_audioSum = 0.0;
+   m_leadSum = 0.0;
++  m_haveLead = false;
++  m_leadOdd = 0.0;
+   m_cadenceSeq = 0;
+   m_ratioIsOne = false;
+   m_classArmed = false;
+@@ -580,8 +598,59 @@
+         m_audioMax = std::max(m_audioMax, audioSyncError);
+       }
+       m_audioSum += audioSyncError;
+-      m_leadSum += audioSyncError + alignment;
+       ++m_audioReports;
++
++      // The same figure the report averages, kept as well on a short filter for
++      // the audio rate loop, which needs it far sooner than once a minute and
++      // wants it smoothed rather than summed. Not guarded against a clock step:
++      // a step cancels in this sum by construction, so unlike either half of it
++      // there is nothing here for a guard to catch.
++      const double lead = audioSyncError + alignment;
++      m_leadSum += lead;
++
++      if (!m_haveLead)
++      {
++        m_leadFilt = lead;
++        m_haveLead = true;
++        m_leadOdd = 0.0;
++      }
++      else
++      {
++        const double dt = absolute - m_leadAt;
++
++        // Two things step this sum without the audio having moved against the
++        // picture at all: the pipeline swallowing a refresh, which shifts the
++        // alignment by a whole period, and a clock correction, whose two halves
++        // cancel here only once the audio side has caught up - it is republished
++        // about once a second, while the alignment side is read live.
++        //
++        // Both are discontinuities, so that is what is tested for. Explicitly
++        // NOT "has the figure moved": moving it is the whole point, and a filter
++        // gated on stillness holds the loop off exactly while it is working,
++        // which was measured doing precisely that - the aim switching on and off
++        // and the rate chattering between its limit and nothing.
++        //
++        // A rejected sample is held rather than dropped for good. A genlock step
++        // heals itself within an interval, so waiting it out is right; a
++        // swallowed refresh does not, so once the disagreement has stood for
++        // longer than that the new value is taken as the truth and seated.
++        if (std::abs(lead - m_leadFilt) > LEAD_JUMP)
++        {
++          m_leadOdd += dt;
++          if (m_leadOdd > LEAD_RESEAT)
++          {
++            m_leadFilt = lead;
++            m_leadOdd = 0.0;
++          }
++        }
++        else
++        {
++          m_leadOdd = 0.0;
++          const double a = (dt <= 0.0) ? 1.0 : 1.0 - std::exp(-dt / LEAD_TAU);
++          m_leadFilt += a * (lead - m_leadFilt);
++        }
++      }
++      m_leadAt = absolute;
+     }
+ 
+     if (absolute - m_since >= TIME_BETWEEN_REPORTS)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -9,6 +9,7 @@
+ 
+ #include <atomic>
+ #include <cstdint>
++#include <optional>
+ 
+ class CDVDClock;
+ 
+@@ -91,6 +92,21 @@
+               double audioSyncError,
+               bool clockSync);
+ 
++  //! \brief How far the audio leads the picture at the box output, smoothed,
++  //! or nullopt before enough of it has been seen.
++  //!
++  //! The sum of the two halves the report prints separately. Worth having on its
++  //! own because it is the only figure here a clock correction cannot move: a
++  //! step of d shifts the alignment by +d and the audio error by -d, so it falls
++  //! out of the sum. What is left is the part no amount of stepping the clock
++  //! will fix, and so the part the audio rate has to walk out.
++  std::optional<double> Lead() const
++  {
++    if (!m_haveLead)
++      return std::nullopt;
++    return m_leadFilt;
++  }
++
+   //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
+   //! path it travels, so the measured answer still stands.
+   void Restart();
+@@ -173,6 +189,11 @@
+   double m_driftPrevAbsolute{0.0};  //!< the previous report, to catch a step
+   double m_driftPrevClock{0.0};
+   double m_lastAlign{0.0};   //!< the newest sample, not the window mean
++
++  double m_leadFilt{0.0};    //!< audio ahead of picture, smoothed over LEAD_TAU
++  double m_leadOdd{0.0};     //!< how long the figure has disagreed with the filter
++  double m_leadAt{0.0};      //!< when that was last advanced
++  bool m_haveLead{false};
+   double m_driftAlign{0.0};  //!< the same at the previous report
+   double m_driftWalkUs{0.0};
+   int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -470,6 +470,7 @@
+   static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
++  static constexpr auto SETTING_COREELEC_AMLOGIC_AUDIOLEAD = "coreelec.amlogic.audiolead";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -420,6 +420,42 @@
+                           videoDelay);
+ }
+ 
++//! How much of the renderer's display latency was chosen rather than measured,
++//! expressed the way it lands in the audio-versus-picture sum.
++//!
++//! CRenderManager builds m_displayLatency from four terms, and two of them are
++//! somebody's decision rather than a property of the pipeline: the latency tweak
++//! from advancedsettings, which says the display adds time that the picture
++//! should be moved early to cover, and the audio offset, which asks for the two
++//! to be deliberately apart. Both move which frame is on screen at a given clock
++//! time, so both arrive in the alignment term looking exactly like error.
++//!
++//! Returned with the tweak's sign flipped against the offset's, because that is
++//! how they enter: the sum carries +tweak and -offset, so their effect on
++//! alignment is the other way round. A reader that subtracts this is left with
++//! the part nobody asked for, which is the only part worth correcting.
++double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay)
++{
++  const auto winSystem = CServiceBroker::GetWinSystem();
++  CGraphicContext& gfx = winSystem->GetGfxContext();
++
++  const bool isHDRUsed =
++      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
++  float refresh = gfx.GetFPS();
++  if (gfx.GetVideoResolution() == RES_WINDOW)
++    refresh = 0;
++
++  const double latencyTweak = static_cast<double>(
++      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
++          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++
++  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
++  // and the renderer's own sum cannot differ by the truncation.
++  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
++
++  return DVD_MSEC_TO_TIME(videoDelay - latencyTweak);
++}
++
+ double aml_refreshes_per_frame(double displayRate, double fps)
+ {
+   // Zero when the content outruns the display, which shows some frames and
+diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+--- a/xbmc/utils/AMLUtils.h
++++ b/xbmc/utils/AMLUtils.h
+@@ -91,6 +91,7 @@
+ //! units, without the vblank term that only the frame loop can use. See
+ //! CRenderManager::PrepareNextRender().
+ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
++double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay);
+ 
+ //! \brief How many times the display shows each frame of a stream at fps.
+ //! Zero if either rate is unknown, or if the content outruns the display.
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -40,6 +40,7 @@
+ #include "utils/log.h"
+ #include "threads/SingleLock.h"
+ 
++#include "cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h"
+ #include "platform/linux/SysfsPath.h"
+ 
+ #include <linux/fb.h>
+@@ -493,6 +494,13 @@
+   if (setting)
+     setting->SetVisible(sink_dv);
+ 
++  // The knob is a kernel module parameter that not every SoC's clock driver
++  // carries. Without it the loop stands down, so the setting would sit there
++  // offering a choice that changes nothing.
++  setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_AUDIOLEAD);
++  if (setting)
++    setting->SetVisible(CAMLAudioTrim::Supported());
++
+   if (IsHDRDisplay())
+   {
+     CServiceBroker::GetSettingsComponent()

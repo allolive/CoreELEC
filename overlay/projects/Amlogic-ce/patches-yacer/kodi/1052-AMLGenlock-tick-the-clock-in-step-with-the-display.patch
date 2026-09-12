@@ -1,0 +1,371 @@
+From b44b7ce4d09a269c812ade6e47315d8925ec31dd Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLGenlock: tick the clock in step with the display
+
+Where a frame lands inside the refresh period is settled by chance when playback
+starts and nothing afterwards moves it. Near the middle the choice of which vblank
+to show a frame on has half a period of slack either side; near the edge it has
+none, and the smallest disturbance flips it - a frame repeated, one dropped to
+catch up, repeated again. Hold the phase away from the edge.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 073b7df..2b59745 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2600,6 +2600,7 @@ void CAMLCodec::CloseAmlVideo()
+ void CAMLCodec::Reset()
+ {
+   CAMLLatency::GetInstance().Restart();
++  m_genlock.Restart();
+ 
+   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
+ 
+@@ -2857,6 +2858,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+   CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
+ }
+ 
++void CAMLCodec::GenlockTick(uint64_t omxPts)
++{
++  CDVDClock* clock = m_hints.pClock;
++  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
++    return;
++
++  // Trick play and live streams have the player driving the clock, so there is
++  // no steady phase. IsPaused() as well as m_speed: a pause reaches the clock
++  // from the decode thread before the speed message reaches this one, and a
++  // display loss pauses the clock without sending one at all.
++  //
++  // Skip while the player slews the clock to refill its buffer too: ErrorAdjust
++  // declines a correction below 100ms while a speed adjust is running anyway.
++  //
++  // Each of these breaks the one rule the step detector rests on - that the
++  // clock and the reference it is derived from advance together - so the
++  // alignment is told to take a fresh reading rather than difference across the
++  // gap and read the whole of it as a step somebody made.
++  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
++      clock->GetSpeedAdjust() != 0.0)
++  {
++    m_genlock.Forget();
++    return;
++  }
++
++  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
++}
+ 
+ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+ {
+@@ -3003,6 +3031,11 @@ void CAMLCodec::SetSpeed(int speed)
+   if (m_speed == speed)
+     return;
+ 
++  // Ahead of the tick's own guard, which a pause never reaches: no frame is
++  // presented while paused, so nothing would notice until the clock had already
++  // skipped the pause.
++  CAMLLatency::GetInstance().NoteClockDisturbed();
++  m_genlock.Restart();
+ 
+   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 7051b81..2f46fd0 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include "AMLGenlock.h"
+ #include "DVDVideoCodec.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+ #include "cores/IPlayer.h"
+@@ -85,6 +86,7 @@ public:
+   int           GetAmlDuration() const;
+   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+   void          LatencyTick(uint64_t omxPts);
++  void          GenlockTick(uint64_t omxPts);
+ 
+   static int    PollFrame();
+   static void   SetPollDevice(int device);
+@@ -142,6 +144,7 @@ private:
+   static int m_pollDevice;
+   static double m_ttd;
+   CProcessInfo &m_processInfo;
++  CAMLGenlock      m_genlock;
+   int m_decoder_timeout;
+   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+new file mode 100644
+index 0000000..464c95d
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -0,0 +1,156 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "AMLGenlock.h"
++
++#include "AMLLatency.h"
++
++#include "ServiceBroker.h"
++#include "cores/VideoPlayer/DVDClock.h"
++#include "cores/VideoPlayer/Process/ProcessInfo.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "utils/AMLUtils.h"
++#include "utils/log.h"
++#include "windowing/GraphicContext.h"
++#include "windowing/WinSystem.h"
++
++#include <cmath>
++
++namespace
++{
++// Below this a reading is measurement noise.
++constexpr double PHASE_NOISE = DVD_MSEC_TO_TIME(0.5);
++
++// Between corrections the clock advances at exactly the rate of the reference it
++// is derived from, so any difference at all is a step somebody made. Compared
++// against a threshold only to leave room for arithmetic, not for drift: the
++// smallest dead band the audio loop can be set to is 20ms.
++constexpr double CLOCK_STEPPED = DVD_MSEC_TO_TIME(10.0);
++
++} // unnamed namespace
++
++void CAMLGenlock::Update(CDVDClock& clock,
++                         CProcessInfo& processInfo,
++                         StreamHdrType hdrType,
++                         double framePts)
++{
++  // A mode change voids any earlier alignment.
++  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
++  const double period = rate > 0.0 ? DVD_TIME_BASE / rate : 0.0;
++  if (period != m_period)
++  {
++    m_period = period;
++    Restart();
++  }
++
++  // A step in the clock voids it too. Ours is not one: the read below is retaken
++  // after a correction, so the alignment does not see its own work and ask for
++  // itself again.
++  double absolute;
++  const double clockNow = clock.GetClock(absolute);
++  if (m_haveClock && std::abs((clockNow - m_lastClock) - (absolute - m_lastAbsolute)) >
++                         CLOCK_STEPPED)
++    Restart();
++  m_lastClock = clockNow;
++  m_lastAbsolute = absolute;
++  m_haveClock = true;
++
++  // Read after the triggers above, so a request they raised is counted here,
++  // and one raised later is left for the next frame.
++  const uint32_t requested = m_alignRequests.load();
++  const bool needsAlign = requested != m_alignDone;
++
++  // Nothing to aim with until the pipeline has been measured: until then
++  // GetDisplayLatency() is CGraphicContext's buffer-count estimate, which is a
++  // whole frame or more out, and aiming with it would step the clock by that
++  // error. Only a refresh-period change clears it, which is the one event that
++  // makes the measured path wrong.
++  if (CAMLLatencyStore::GetInstance().Get() < 0.0f)
++    return;
++
++  // Stand down while CRenderManager centres the frame itself. Its own flag
++  // rather than a second rate comparison: it decides from CRenderManager::m_fps
++  // and this would decide from CProcessInfo, and the two can disagree.
++  if (processInfo.IsRenderClockSync())
++    return;
++
++  // Whole-number ratios only, so pulldown, where there is no fixed phase, is
++  // left alone. Compared with a tolerance: the two rates come from different
++  // sources and exact equality on a ratio of floats does not hold.
++  const double refreshes = aml_refreshes_per_frame(rate, processInfo.GetVideoFps());
++  if (period <= 0.0 || refreshes <= 0.0 || std::abs(std::round(refreshes) - refreshes) > 0.0005)
++    return;
++
++  // Aligned only where playback is already discontinuous - a start, a seek, a
++  // speed change - and left alone after that. The display and the clock do not
++  // walk apart while playing, and stepping the clock under a picture that is
++  // running smoothly is exactly what must not happen.
++  if (!needsAlign)
++    return;
++
++  // Two periods of slack: the offset is taken modulo the period below, so a
++  // whole period of read delay cancels.
++  const std::optional<double> sinceFrameStart = aml_since_frame_start_us(2.0 * period);
++  if (!sinceFrameStart)
++    return;
++
++  // Read the clock again next to the vblank reading: the two are differenced,
++  // so whatever ran between the reading at the top and here would bias it.
++  const double clockAtRead = clock.GetClock();
++  const double latency =
++      aml_render_display_latency(hdrType, processInfo.GetVideoSettings().m_AudioDelay);
++
++  // Aim at zero: a frame should be painted when its timestamp says, once the
++  // latency the renderer schedules it with is taken into account. Only the
++  // position within one period matters, so fold into the half period either
++  // side.
++  // Aim half a period off when the display shows each frame more than once.
++  // There the renderer flips from its early branch, whose threshold is a whole
++  // period below the late one, so aiming at zero puts both of them exactly on a
++  // vblank; half a period leaves each of them half a period of slack.
++  const double offset = std::remainder(clockAtRead - *sinceFrameStart + latency - framePts -
++                                           (std::round(refreshes) == 1.0 ? 0.0 : period / 2.0),
++                                       period);
++
++  CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLGenlock: phase {:+.2f}ms", offset / 1000.0);
++
++  if (std::abs(offset) > PHASE_NOISE)
++  {
++    // While the vsync adjust is running ErrorAdjust quantises anything this
++    // small to a whole frame or to nothing, so leave the alignment owed.
++    if (clock.GetVsyncAdjust() != 0.0)
++      return;
++
++    // Not corrected past the audio loop's own dead band. A step that large can
++    // by itself push the audio error over the threshold, and the correction
++    // that answers it comes back here as another step - which would settle into
++    // a standing oscillation rather than an alignment. Refusing leaves it owed,
++    // which is the same thing this does for every other reason it cannot act.
++    if (std::abs(offset) >= DVD_MSEC_TO_TIME(processInfo.GetMaxPassthroughOffSyncDuration()))
++      return;
++
++    // ErrorAdjust holds the clock lock across the read and the write, and
++    // returns zero if it declines while the player is slewing the clock.
++    const double applied = clock.ErrorAdjust(-offset, "CAMLGenlock");
++    if (applied == 0.0)
++      return;
++
++    // An alignment that could not be made when it was asked for is still owed,
++    // so this can land well into a title rather than only at the start. It is a
++    // step in the clock like any other, and reads as drift if left in.
++    CAMLLatency::GetInstance().NoteClockDisturbed();
++
++    // The step just made is this class's own, so it must not come back round as
++    // a reason to align again. Carried into the baseline rather than dropping
++    // it: ErrorAdjust returns exactly what it applied, and dropping the baseline
++    // would blind the detector for a frame - which is precisely when the audio
++    // loop's own correction tends to land, and it would go unseen.
++    m_lastClock += applied;
++  }
++
++  m_alignDone = requested;
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+new file mode 100644
+index 0000000..3dba542
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+@@ -0,0 +1,76 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "utils/StreamDetails.h"
++
++#include <atomic>
++#include <cstdint>
++
++class CDVDClock;
++class CProcessInfo;
++
++//! \brief Aligns the phase of the player's clock to the display's frames.
++//!
++//! The renderer picks the frame to show at each vsync by comparing the master
++//! clock against the frame's timestamp. Where those timestamps fall inside the
++//! refresh period is settled by chance when playback starts, and near the
++//! decision boundary jitter shows one frame twice and drops the next. Handles
++//! the exact rate match, where CheckEnableClockSync() stands down.
++//!
++//! The phase only, never the rate, once per trigger. The move is at most half a
++//! refresh period, which is also the most it shifts video against audio - and
++//! under a whole period, so the renderer absorbs it without adding or dropping.
++//!
++//! Aligning once is not enough on its own. The audio loop steps the master clock
++//! whenever its own error passes its dead band, which at a start happens a second
++//! or two after the alignment was made, and the picture is then off by whatever
++//! that step left over once the pipeline had swallowed whole refreshes. Measured
++//! at 20ms on a 61ms correction. So a step nobody here made asks for the
++//! alignment again.
++class CAMLGenlock
++{
++public:
++  //! \brief Aligns the clock if an alignment is owed. Called once per frame on
++  //! the frame loop, as the frame is handed to the display. Reads what it
++  //! needs itself, so the frames that owe nothing pay only for the clock.
++  //! \param clock the player's master clock, not retained
++  //! \param processInfo the player's process info, not retained
++  //! \param hdrType the stream's HDR type, for the latency the renderer applies
++  //! \param framePts the frame's timestamp, in master clock units
++  void Update(CDVDClock& clock,
++              CProcessInfo& processInfo,
++              StreamHdrType hdrType,
++              double framePts);
++
++  //! \brief Asks for an alignment on the next frame. Called from the player
++  //! thread on reset and speed change, and from Update() itself. A counter, so
++  //! that a request raised while Update() is running is not cleared by it.
++  void Restart() { ++m_alignRequests; }
++
++  //! \brief Drop the clock reading held for the step check, without asking for
++  //! an alignment. For the frames the caller declines to offer at all: across
++  //! one of those the clock and its reference need not have moved together, and
++  //! differencing over the gap would read the whole of it as a step.
++  void Forget() { m_haveClock = false; }
++
++private:
++  std::atomic<uint32_t> m_alignRequests{1};
++
++  //! \brief The clock against the reference it is derived from, so that a step
++  //! in it can be told from it simply running. App thread only.
++  bool m_haveClock{false};
++  double m_lastClock{0.0};
++  double m_lastAbsolute{0.0};
++
++  //! \brief The request Update() last satisfied. App thread only, as are the
++  //! members below.
++  uint32_t m_alignDone{0};
++
++  double m_period{0.0};
++};
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+index 8716bfa..3f67ff9 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+@@ -14,9 +14,11 @@ endif()
+ 
+ if(TARGET ${APP_NAME_LC}::AML)
+   list(APPEND SOURCES AMLCodec.cpp
++                      AMLGenlock.cpp
+                       AMLLatency.cpp
+                       DVDVideoCodecAmlogic.cpp)
+   list(APPEND HEADERS AMLCodec.h
++                      AMLGenlock.h
+                       AMLLatency.h
+                       DVDVideoCodecAmlogic.h)
+ endif()
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+index 962f41f..57e220b 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -205,6 +205,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+       // Refreshes what the decode thread and the debug overlay read.
+       winSystem->SampleFrameLatency();
+       amli->m_amlCodec->LatencyTick(pts);
++      amli->m_amlCodec->GenlockTick(pts);
+       amli->m_amlCodec = nullptr; //Mark frame as processed
+       m_prevVPts = pts;
+     }

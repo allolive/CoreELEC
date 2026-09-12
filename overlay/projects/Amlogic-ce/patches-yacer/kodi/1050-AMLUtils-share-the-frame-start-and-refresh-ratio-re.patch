@@ -1,0 +1,236 @@
+From 5868a6cdd34525b193664651b919c0970805b53a Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLUtils: share the frame start and refresh ratio reads
+
+Three things are about to want to know where the display is in its frame and how
+many refreshes a frame of content is shown for: the latency measurement, the frame
+scheduling and the phase alignment. Put the reads somewhere they can share before
+any of them is written, rather than letting three copies grow and disagree.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index c6e8d7d..f574986 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -10,9 +10,18 @@
+ #include <regex>
+ #include <string.h>
+ #include <sys/ioctl.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "AMLUtils.h"
++
++#include <cstdint>
++
++#include <cstring>
++
++#include <charconv>
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "settings/AdvancedSettings.h"
+ #include "utils/log.h"
+ #include "utils/StringUtils.h"
+ #include "ServiceBroker.h"
+@@ -21,9 +30,11 @@
+ #include "settings/SettingsComponent.h"
+ #include "platform/linux/SysfsPath.h"
+ #include "windowing/amlogic/WinSystemAmlogic.h"
++#include "windowing/GraphicContext.h"
+ #include "windowing/WinSystem.h"
+ 
+ #include <amcodec/codec.h>
++#include <xf86drm.h>
+ 
+ int aml_get_cpufamily_id()
+ {
+@@ -310,3 +321,120 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
+     CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
+   }
+ }
++
++std::optional<double> aml_since_frame_start_us(double maxAgeUs)
++{
++  const auto reading = aml_vblank_seq_and_age(maxAgeUs);
++  if (!reading)
++    return std::nullopt;
++
++  return reading->second;
++}
++
++double aml_monotonic_us()
++{
++  // The base DRM reports on, so an age read against it can be carried forward.
++  // CurrentHostCounter() is CLOCK_MONOTONIC_RAW and runs 180ms apart here.
++  struct timespec now;
++  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++    return 0.0;
++
++  return static_cast<double>(now.tv_sec) * 1000000.0 +
++         static_cast<double>(now.tv_nsec) / 1000.0;
++}
++
++std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs)
++{
++  const auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
++  if (!winSystem)
++    return std::nullopt;
++
++  const CAMLDisplay* display = winSystem->GetAmlDisplay();
++  if (!display)
++    return std::nullopt;
++
++  const int fd = display->aml_get_Device_handle();
++  const uint32_t crtcId = display->aml_get_Crtc_id();
++  if (fd < 0 || crtcId == 0)
++    return std::nullopt;
++
++  uint64_t sequence = 0;
++  uint64_t vblankNs = 0;
++  if (drmCrtcGetSequence(fd, crtcId, &sequence, &vblankNs) != 0 || vblankNs == 0)
++    return std::nullopt;
++
++  // DRM reports on CLOCK_MONOTONIC, so read the clock DRM used.
++  struct timespec now;
++  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++    return std::nullopt;
++
++  const int64_t nowNs =
++      static_cast<int64_t>(now.tv_sec) * 1000000000 + static_cast<int64_t>(now.tv_nsec);
++
++  const double age = static_cast<double>(nowNs - static_cast<int64_t>(vblankNs)) / 1000.0;
++  if (age < -maxAgeUs || age > maxAgeUs)
++    return std::nullopt;
++
++  return std::make_pair(sequence, age);
++}
++
++std::optional<uint32_t> aml_displayed_pts_ticks()
++{
++  CSysfsPath path("/sys/class/tsync/pts_video");
++  if (!path.Exists())
++    return std::nullopt;
++
++  const std::string raw = path.Get<std::string>().value_or("");
++  const char* p = raw.c_str();
++  int base = 10;
++  if (raw.size() > 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X'))
++  {
++    p += 2;
++    base = 16;
++  }
++
++  uint32_t ticks = 0;
++  const auto res = std::from_chars(p, p + std::strlen(p), ticks, base);
++  if (res.ec != std::errc())
++    return std::nullopt;
++  if (ticks == 0)
++    return std::nullopt;
++
++  return ticks;
++}
++
++double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
++{
++  const auto winSystem = CServiceBroker::GetWinSystem();
++  CGraphicContext& gfx = winSystem->GetGfxContext();
++
++  const bool isHDRUsed =
++      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
++  float refresh = gfx.GetFPS();
++  if (gfx.GetVideoResolution() == RES_WINDOW)
++    refresh = 0;
++
++  const double latencyTweak = static_cast<double>(
++      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
++          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++
++  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so the
++  // aim and the renderer's scheduling do not differ by the truncation.
++  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
++
++  // Without GetFrameLatencyAdjustment(). Callers that want the vblank term
++  // subtract it themselves, and CAMLGenlock does, so including it here would
++  // take it off twice and move the aim by the frame loop's wake jitter.
++  return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
++                          videoDelay);
++}
++
++double aml_refreshes_per_frame(double displayRate, double fps)
++{
++  // Zero when the content outruns the display, which shows some frames and
++  // drops others rather than repeating each of them.
++  if (displayRate <= 0.0 || fps <= 0.0 || fps > displayRate)
++    return 0.0;
++
++  return displayRate / fps;
++}
+diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index cc135d0..d30f533 100644
+--- a/xbmc/utils/AMLUtils.h
++++ b/xbmc/utils/AMLUtils.h
+@@ -8,6 +8,8 @@
+ 
+ #include "utils/StreamDetails.h"
+ 
++#include <optional>
++
+ enum AML_SUPPORT_H264_4K2K
+ {
+   AML_SUPPORT_H264_4K2K_UNINIT = -1,
+@@ -63,3 +65,34 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+ bool aml_video_started();
+ int aml_amdv_wait(StreamHdrType hdrType);
+ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
++
++//! \brief Microseconds since the display began painting the frame on screen,
++//! from the DRM vblank timestamp. Empty if DRM declines or the reading is older
++//! than maxAgeUs. App thread only.
++std::optional<double> aml_since_frame_start_us(double maxAgeUs);
++
++//! \brief Microseconds on CLOCK_MONOTONIC, the base the vblank age is measured
++//! against. Not CurrentHostCounter(), which is a different clock entirely.
++double aml_monotonic_us();
++
++//! \brief The display's vblank counter and how long ago that vblank was. The
++//! counter difference between two readings is an exact whole number of refresh
++//! periods - no timebase, no jitter, nothing to fold - and the age is what the
++//! frame on screen is measured against.
++std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs);
++
++//! \brief The timestamp of the frame the driver has on screen, in the 90kHz
++//! ticks it stores natively. Kept in ticks so it can be compared for equality:
++//! the kernel truncates once when it checks a frame in, so a microsecond round
++//! trip does not come back to the same number.
++std::optional<uint32_t> aml_displayed_pts_ticks();
++
++//! \brief What CRenderManager adds when it schedules a frame, in master clock
++//! units, without the vblank term that only the frame loop can use. See
++//! CRenderManager::PrepareNextRender().
++double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
++
++//! \brief How many times the display shows each frame of a stream at fps.
++//! Zero if either rate is unknown, or if the content outruns the display.
++//! Callers apply their own tolerance; CheckEnableClockSync() uses 0.0005.
++double aml_refreshes_per_frame(double displayRate, double fps);
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 84c2790..1f64bbf 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -86,6 +86,7 @@ public:
+   virtual ~CAMLDRMUtils();
+ 
+   int aml_get_drmDevice_handle() const { return m_fd; }
++  uint32_t aml_get_drmCrtc_id() const { return m_crtc ? m_crtc->crtc_id : 0; }
+   void aml_init_drmDevice();
+   void aml_drmDevice_vsync();
+   std::string aml_get_drmDevice_mode();
+@@ -153,6 +154,7 @@ public:
+ 
+   void aml_refresh_display_caps();
+   int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }
++  uint32_t aml_get_Crtc_id() const { return m_amlDRMUtils->aml_get_drmCrtc_id(); }
+   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
+   void aml_drmDevice_vsync() { m_amlDRMUtils->aml_drmDevice_vsync(); };
+   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }

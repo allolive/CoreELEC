@@ -1,0 +1,39 @@
+From 05f032b252c1a9c6a57b12e4d524d5a635f47e8b Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:07:52 -0400
+Subject: [PATCH] AMLCodec: don't busy-spin write_header on EAGAIN
+
+write_header() retries a failed codec_write with a bare continue - no sleep, no
+limit - so a full ES buffer pins a core until it drains.
+
+write_av_packet() hits the same case but sleeps once and returns, letting its
+caller resume where it left off. write_header cannot do that: its progress is a
+local, so returning would lose a half-written header. Give it a sleep between
+attempts and a cap instead.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 10bcfec..3790225 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -651,6 +651,7 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
+                 return PLAYER_SUCCESS;
+             }
+         }
++        int eagain_retries = 0;
+         while (1) {
+             write_bytes = para->m_dll->codec_write(pkt->codec, pkt->hdr->data + len, pkt->hdr->size - len);
+             if (write_bytes < 0 || write_bytes > (pkt->hdr->size - len)) {
+@@ -658,6 +659,11 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
+                     CLog::Log(LOGDEBUG, "ERROR:write header failed!");
+                     return PLAYER_WR_FAILED;
+                 } else {
++                    if (++eagain_retries > 100) {
++                        CLog::Log(LOGDEBUG, "ERROR:write header timed out (EAGAIN)!");
++                        return PLAYER_WR_FAILED;
++                    }
++                    usleep(RW_WAIT_TIME);
+                     continue;
+                 }
+             } else {

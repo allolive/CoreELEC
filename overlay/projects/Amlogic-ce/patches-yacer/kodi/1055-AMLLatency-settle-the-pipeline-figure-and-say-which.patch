@@ -1,0 +1,129 @@
+From 90df136250ce00880a4c0da13ae8a8568e128127 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLLatency: settle the pipeline figure, and say which regime is running
+
+The measured pipeline count was published on its first repeat and afterwards only
+when a lower count appeared, so which figure a session ended up with depended on
+the order the readings arrived in. Settle on one, and say which regime is
+running.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2881,7 +2881,8 @@
+   }
+ 
+   CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
+-                                    m_processInfo.GetAudioSyncError());
++                                    m_processInfo.GetAudioSyncError(),
++                                    m_processInfo.IsRenderClockSync());
+ }
+ 
+ void CAMLCodec::GenlockTick(uint64_t omxPts)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -35,6 +35,12 @@
+ // A lower answer than the one standing has to be seen this many times running.
+ constexpr unsigned int AGREE_BEFORE_PUBLISHING = 2;
+ 
++//! Readings that must agree before the answer is settled for the mode. Two was
++//! enough to reject a single stray count, but not to choose between two counts
++//! that both keep turning up - and which of those wins decides the schedule by a
++//! whole refresh, differently on each run.
++constexpr unsigned int AGREE_BEFORE_SETTLING = 8;
++
+ // How often to report where the picture actually landed.
+ constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
+ 
+@@ -95,6 +101,7 @@
+ {
+   m_candidate = 0;
+   m_agreed = 0;
++  m_settled = false;
+   m_armed = false;
+   m_haveShown = false;
+   m_pollValid = false;
+@@ -425,13 +432,31 @@
+           ++m_agreed;
+         }
+ 
+-        if ((m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
++        // Settled once, then held until the next seek, which re-opens it. The
++        // published figure sets the renderer's schedule, so a count that keeps
++        // moving moves the picture by a whole refresh - and because only a lower
++        // count was ever accepted, which one a run ended up with depended on where
++        // the polling happened to fall when the title started. That is a whole
++        // frame between one playback and the next, for no reason the viewer sees.
++        if (!m_settled && (m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
+         {
+           CAMLLatencyStore::GetInstance().Set(static_cast<float>(n * 1000.0 / rate));
+           CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: pipeline {} refreshes, {:.1f}ms", n,
+                     n * 1000.0 / rate);
+           m_lastN = n;
+         }
++
++        if (!m_settled && m_lastN != 0 && n == m_lastN && m_agreed >= AGREE_BEFORE_SETTLING)
++        {
++          m_settled = true;
++          // Said out loud, and at INFO, because which regime is in force decides
++          // whether the clock is stepped by an error or by whole frames - and a
++          // run in the other regime is indistinguishable in the log from a run
++          // that simply did not repeat.
++          CLog::Log(LOGINFO,
++                    "CAMLLatency: pipeline settled at {} refreshes ({:.1f}ms), clock sync {}",
++                    n, n * 1000.0 / rate, m_clockSync ? "on" : "off");
++        }
+       }
+       m_armed = false;
+     }
+@@ -451,10 +476,18 @@
+   m_haveShown = true;
+ }
+ 
+-void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError)
++void CAMLLatency::Update(
++    CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError, bool clockSync)
+ {
+   if (!m_pollValid || m_period <= 0.0)
++  {
++    // Kept current even here, so that a regime change across a seek or a mode
++    // change is not read from a value taken before it.
++    m_clockSync = clockSync;
+     return;
++  }
++
++  m_clockSync = clockSync;
+ 
+   // Decided on every presented frame. Settled once per report instead, it would
+   // spend the first minute of every file false - so the check would never run,
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -83,7 +83,13 @@
+   //! over. Arms the matcher and reports where the picture landed.
+   //! \param audioSyncError where the audio leaving the sink sits against the
+   //! same clock, from CProcessInfo, or DVD_NOPTS_VALUE when nothing measured it
+-  void Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError);
++  //! \param clockSync whether the renderer is centring frames itself, which
++  //! changes what a clock correction does and is otherwise invisible in the log
++  void Update(CDVDClock& clock,
++              uint64_t ptsUs,
++              double fps,
++              double audioSyncError,
++              bool clockSync);
+ 
+   //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
+   //! path it travels, so the measured answer still stands.
+@@ -132,6 +138,8 @@
+   uint64_t m_lastN{0};      //!< the answer standing
+   uint64_t m_candidate{0};  //!< a lower one, not yet believed
+   unsigned int m_agreed{0}; //!< how many times running it has turned up
++  bool m_settled{false};    //!< the answer is fixed until the next seek
++  bool m_clockSync{false};  //!< the regime, for the settled line. App thread only.
+ 
+   //! \brief What the last poll read, so the report does not read it again.
+   bool m_pollValid{false};
