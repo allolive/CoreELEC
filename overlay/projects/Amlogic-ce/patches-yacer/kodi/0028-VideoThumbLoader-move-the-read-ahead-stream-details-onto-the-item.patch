@@ -1,0 +1,109 @@
+From ca98c2f06a142a75732e3c01c3298d49d71d7693 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 20:01:48 -0400
+Subject: [PATCH] VideoThumbLoader: stop copying video details while loading lists
+
+The first pass copied read-ahead stream details onto the item, and the
+CStreamDetails copy reallocates every stream and reruns
+DetermineBestStreams. Add move construction/assignment that take the
+streams and best-stream pointers, reparent each stream and leave the
+source as Reset() does; the loader now moves the entry. The preferred
+subtitle language is now the one at read time. Shared CStreamDetails had
+to change: the copy is inside it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/utils/StreamDetails.cpp    | 27 +++++++++++++++++++++++++++
+ xbmc/utils/StreamDetails.h      |  2 ++
+ xbmc/video/VideoDatabase.cpp    |  2 +-
+ xbmc/video/VideoThumbLoader.cpp |  2 +-
+ 4 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
+index e61220a..1c7d25c 100644
+--- a/xbmc/utils/StreamDetails.cpp
++++ b/xbmc/utils/StreamDetails.cpp
+@@ -19,6 +19,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <ranges>
++#include <utility>
+ 
+ const float VIDEOASPECT_EPSILON = 0.025f;
+ 
+@@ -403,6 +404,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
+   *this = that;
+ }
+ 
++CStreamDetails::CStreamDetails(CStreamDetails&& that) noexcept
++  : m_vecItems(std::move(that.m_vecItems)),
++    m_pBestVideo(std::exchange(that.m_pBestVideo, nullptr)),
++    m_pBestAudio(std::exchange(that.m_pBestAudio, nullptr)),
++    m_pBestSubtitle(std::exchange(that.m_pBestSubtitle, nullptr))
++{
++  that.m_vecItems.clear();
++  for (const auto& item : m_vecItems)
++    item->m_pParent = this;
++}
++
++CStreamDetails& CStreamDetails::operator=(CStreamDetails&& that) noexcept
++{
++  if (this != &that)
++  {
++    m_vecItems = std::move(that.m_vecItems);
++    that.m_vecItems.clear();
++    m_pBestVideo = std::exchange(that.m_pBestVideo, nullptr);
++    m_pBestAudio = std::exchange(that.m_pBestAudio, nullptr);
++    m_pBestSubtitle = std::exchange(that.m_pBestSubtitle, nullptr);
++    for (const auto& item : m_vecItems)
++      item->m_pParent = this;
++  }
++  return *this;
++}
++
+ void CStreamDetails::AddStream(CStreamDetail *item)
+ {
+   item->m_pParent = this;
+diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
+index 27434f2..69dc2c6 100644
+--- a/xbmc/utils/StreamDetails.h
++++ b/xbmc/utils/StreamDetails.h
+@@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
+ public:
+   CStreamDetails() { Reset(); }
+   CStreamDetails(const CStreamDetails &that);
++  CStreamDetails(CStreamDetails&& that) noexcept;
+   CStreamDetails& operator=(const CStreamDetails &that);
++  CStreamDetails& operator=(CStreamDetails&& that) noexcept;
+   bool operator ==(const CStreamDetails &that) const;
+   bool operator !=(const CStreamDetails &that) const;
+ 
+diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index 8b483c2..46ba19f 100644
+--- a/xbmc/video/VideoDatabase.cpp
++++ b/xbmc/video/VideoDatabase.cpp
+@@ -4826,7 +4826,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+     {
+       if (details.contains(id))
+         continue;
+-      // Move the node, not the value: each stream points back at its CStreamDetails
++      // Hand the entry over as a node, so it is neither copied nor moved
+       auto node = found.extract(id);
+       const auto it =
+           node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
+diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
+index 18713fa..4329650 100644
+--- a/xbmc/video/VideoThumbLoader.cpp
++++ b/xbmc/video/VideoThumbLoader.cpp
+@@ -219,7 +219,7 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
+       if (prefetched->second.HasItems())
+       {
+         CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
+-        tag.m_streamDetails = prefetched->second;
++        tag.m_streamDetails = std::move(prefetched->second);
+         if (tag.m_streamDetails.GetVideoDuration() > 0)
+           tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
+         pItem->SetInvalid();
+-- 
+2.53.0
+

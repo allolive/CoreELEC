@@ -1,20 +1,17 @@
-From 2f8a1c4e0b7d3a5619e84c2f7b0d5a9e13c46b82 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] FileCache: a stalled source is not the end of the file
+Subject: [PATCH] FileCache: don't stop playback when a network share stalls
 
-A share that stops answering mid-file ends playback, because the cache reports
-the stall as an end of file: the writer stops retrying once the player catches
-up, and the reader returns zero bytes after ten seconds.
-
-Retry a failed read, return EAGAIN while the input has not ended, and pass it
-through so ffmpeg retries rather than ending the file. Wait a second, not ten,
-so the player can still decide to buffer between reads.
+A stalled share ended playback: the file cache reported the stall as end
+of file. Retry a failed read, return EAGAIN while the input has not ended
+and pass it through, and wait 1 s instead of 10 so the player can buffer.
+A stall mid-Matroska-element can still end demuxing until the next seek.
+On every platform a failing read now retries until the user stops. Shared
+code: FileCache, the input stream and the demuxer are not AML-reachable.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index 94fed404e9..932a624a09 100644
+index 94fed40..53913e5 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -24,6 +24,7 @@
@@ -25,21 +22,19 @@ index 94fed404e9..932a624a09 100644
  #include <inttypes.h>
  #include <memory>
  
-@@ -341,8 +342,11 @@
+@@ -341,8 +342,9 @@ void CFileCache::Process()
        iRead = m_source.Read(buffer.get(), maxSourceRead);
      if (iRead <= 0)
      {
 -      // Check for actual EOF and retry as long as we still have data in our cache
 -      if (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0)
-+      // A read that fails before the end of the file is a stall rather than an
-+      // ending, so retry it as well: the cache refills by itself if the source comes
-+      // back. Retrying only while the cache still has data to hand out gives up as
-+      // soon as the player has caught up, which is exactly when a stall shows.
++      // A failed read before the end of the file is a stall, so retry it even once the
++      // player has caught up.
 +      if (m_writePos < m_fileSize && (iRead < 0 || m_pCache->WaitForData(0, 0ms) > 0))
        {
          CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                    __FUNCTION__, m_sourcePath, iRead);
-@@ -491,10 +495,23 @@
+@@ -491,10 +493,21 @@ retry:
  
    if (iRc == CACHE_RC_WOULD_BLOCK)
    {
@@ -56,20 +51,18 @@ index 94fed404e9..932a624a09 100644
 +    // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
 +    if (!m_pCache->IsEndOfInput())
 +    {
-+      // Logged because it is the one thing a player cannot tell from its own state:
-+      // a read that waited out a stall, rather than one that had nothing to wait for.
-+      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read",
-+                __FUNCTION__, m_sourcePath);
++      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read", __FUNCTION__,
++                m_sourcePath);
 +      return -EAGAIN;
 +    }
    }
  
    if (iRc == CACHE_RC_TIMEOUT)
 diff --git a/xbmc/addons/interfaces/Filesystem.cpp b/xbmc/addons/interfaces/Filesystem.cpp
-index 4bf0cf0400..612158976e 100644
+index 4bf0cf0..6121589 100644
 --- a/xbmc/addons/interfaces/Filesystem.cpp
 +++ b/xbmc/addons/interfaces/Filesystem.cpp
-@@ -833,7 +833,10 @@
+@@ -833,7 +833,10 @@ ssize_t Interface_Filesystem::read_file(void* kodiBase, void* file, void* ptr, s
      return -1;
    }
  
@@ -82,7 +75,7 @@ index 4bf0cf0400..612158976e 100644
  
  bool Interface_Filesystem::read_file_string(void* kodiBase,
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index a129064892..67d6ecf956 100644
+index a129064..67d6ecf 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 @@ -14,6 +14,8 @@
@@ -94,7 +87,7 @@ index a129064892..67d6ecf956 100644
  using namespace KODI;
  using namespace XFILE;
  
-@@ -95,6 +97,9 @@
+@@ -95,6 +97,9 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
  
    ssize_t ret = m_pFile->Read(buf, buf_size);
  
@@ -105,10 +98,10 @@ index a129064892..67d6ecf956 100644
      return -1; // player will retry read in case of error until playback is stopped
  
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 2e15008546..e232671f79 100644
+index 2e15008..e232671 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -1094,7 +1094,13 @@
+@@ -1094,7 +1094,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
      {
        // assume we are not eof
        if (m_pFormatContext->pb)

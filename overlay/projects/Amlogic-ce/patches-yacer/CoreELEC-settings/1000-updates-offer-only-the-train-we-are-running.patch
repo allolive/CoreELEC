@@ -1,5 +1,5 @@
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] updates: follow our own builds, manually and automatically
+Subject: [PATCH] updates: offer yacer builds and keep auto-update on them
 
 Offer only the trains the box can actually move to, and read our own feed beside
 the upstream one so these builds are listed without using a custom-channel slot.
@@ -55,7 +55,7 @@ diff -ruN a/language/resource.language.fr_ca/strings.po b/language/resource.lang
  "GitHub:[CR]https://github.com/LibreELEC[CR][CR][B]Donations[/B] towards "
  "project expenses are accepted via PayPal:[CR]donations@libreelec.tv"
 -msgstr "[B]Le support[/B] est fourni via notre forum :[CR]https://forum.libreelec.tv[CR][CR][B]La documentation[/B] est accessible sur notre wiki :[CR]https://libreelec.wiki[CR][CR][B]Le code source[/B] est disponible sur GitHub :[CR]https://github.com/LibreELEC[CR][CR][B]Les donations[/B] au projet par PayPal sont acceptées :[CR]donations@libreelec.tv"
-+msgstr "[B]Le support[/B] est fourni via notre forum :[CR]https://forum.libreelec.tv[CR][CR][B]La documentation[/B] est accessible sur notre wiki :[CR]https://libreelec.wiki[CR][CR][B]Le code source[/B] est disponible sur GitHub :[CR]https://github.com/LibreELEC[CR][CR][B]Les donations[/B] au projet par PayPal sont acceptées :[CR]donations@libreelec.tv[B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
++msgstr "[B]Le support[/B] est fourni via notre forum :[CR]https://forum.libreelec.tv[CR][CR][B]La documentation[/B] est accessible sur notre wiki :[CR]https://libreelec.wiki[CR][CR][B]Le code source[/B] est disponible sur GitHub :[CR]https://github.com/LibreELEC[CR][CR][B]Les donations[/B] au projet par PayPal sont acceptées :[CR]donations@libreelec.tv[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
  
  msgctxt "#700"
  msgid ""
@@ -112,7 +112,7 @@ diff -ruN a/language/resource.language.zh_tw/strings.po b/language/resource.lang
  " in our wiki:[CR]https://libreelec.wiki[CR][CR][B]Code[/B] can be found on "
  "GitHub:[CR]https://github.com/LibreELEC[CR][CR][B]Donations[/B] towards "
 -"project expenses are accepted via PayPal:[CR]donations@libreelec.tv"
-+"project expenses are accepted via PayPal:[CR]donations@libreelec.tv[B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
++"project expenses are accepted via PayPal:[CR]donations@libreelec.tv[CR][CR][B]Reporting a problem[/B][CR]Anything specific to a yacer build - the build itself, or a setting only these builds have - belongs on our tracker:[CR]https://github.com/allolive/CoreELEC/issues[CR]Anything you can reproduce on a stock CoreELEC build is CoreELEC's, and reaches the people who can fix it through the forum above. Please check there first.[CR][CR]"
  msgstr ""
  
  msgctxt "#700"

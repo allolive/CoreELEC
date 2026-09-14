@@ -1,19 +1,13 @@
 From 6b0261055361f7d9023e512a6ffc4c08d7ac6a90 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:51:04 -0400
-Subject: [PATCH] WinSystemAmlogic: survive a failed display rebuild
+Subject: [PATCH] WinSystemAmlogic: keep running if the display can't be set up
 
-aml_init_drmDevice() throws on any of seven failures, having called CleanAndClose()
-first. Nothing between it and the frame loop catches, so a failed rebuild takes the
-process down.
-
-Catch it where the hotplug is handled and leave presentation off. What is left has
-no connector, so the accessors take their not-connected branch and read
-m_connector - guard that read too.
-
-Nothing is retried here: a later hotplug runs the rebuild again, but until one
-arrives the display stays dark. This depends on the previous change serialising
-those reads.
+aml_init_drmDevice() throws (after CleanAndClose()) and nothing catches it
+before the frame loop, so a failed rebuild kills the process. Catch it in
+the hotplug handler and leave presentation off; guard the m_connector read
+in the accessors' not-connected branch too. No retry: the display stays
+dark until the next hotplug. Relies on the previous change's locking.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 

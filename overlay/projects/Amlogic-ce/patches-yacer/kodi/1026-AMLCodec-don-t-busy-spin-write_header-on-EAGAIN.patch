@@ -1,7 +1,7 @@
 From 05f032b252c1a9c6a57b12e4d524d5a635f47e8b Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] AMLCodec: don't busy-spin write_header on EAGAIN
+Subject: [PATCH] AMLCodec: don't hog a CPU core while the decoder is full
 
 write_header() retries a failed codec_write with a bare continue - no sleep, no
 limit - so a full ES buffer pins a core until it drains.

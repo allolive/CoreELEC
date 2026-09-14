@@ -1,5 +1,5 @@
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] send people to the right place for each thing
+Subject: [PATCH] Point the home link at this repository, bug reports at CoreELEC
 
 Anything about this build - what it is, what changed, where the code is -
 belongs here, so the home url and the ssh banner point at this repository.

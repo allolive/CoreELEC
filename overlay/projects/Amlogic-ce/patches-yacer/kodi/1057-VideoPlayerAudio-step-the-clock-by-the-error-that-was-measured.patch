@@ -1,7 +1,7 @@
 From 2f909adadf628ac582671bffebb344dea1b7dfae Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] VideoPlayerAudio: step the clock by the error that was measured
+Subject: [PATCH] VideoPlayerAudio: fully correct TrueHD lip sync errors
 
 A TrueHD passthrough stream's sync error is shrunk to 45% before the engine
 reports it, so that uneven arrival does not provoke a correction every second.

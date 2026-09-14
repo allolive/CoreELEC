@@ -1,7 +1,7 @@
 From 17bd08486d0718842bc853cb965b28b1e7b84dc9 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] AMLCodec: guard m_amlVideoFile against the close race
+Subject: [PATCH] AMLCodec: fix a rare crash when playback stops
 
 ReleaseFrame() reads the m_amlVideoFile shared_ptr and then dereferences it, with
 nothing making the two atomic. It runs on the app thread while the codec is torn

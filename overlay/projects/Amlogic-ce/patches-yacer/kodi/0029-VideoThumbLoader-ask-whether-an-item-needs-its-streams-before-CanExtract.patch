@@ -1,0 +1,34 @@
+From 27316d14ce382302fd641b91415c8d35bd6cedb4 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 19:21:53 -0400
+Subject: [PATCH] VideoThumbLoader: skip a slow check when details are known
+
+The second pass called CDVDFileInfo::CanExtract, which asks the path a
+dozen questions and reparses the URL, before checking whether the item
+needs its stream details at all, which in a library it rarely does. Test
+that first; all three tests only read the item and the settings, so the
+outcome is unchanged.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/video/VideoThumbLoader.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
+index 4329650..2b16710 100644
+--- a/xbmc/video/VideoThumbLoader.cpp
++++ b/xbmc/video/VideoThumbLoader.cpp
+@@ -370,8 +370,8 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
+       }
+     }
+     if (settings->GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS) &&
+-        CDVDFileInfo::CanExtract(*pItem) &&
+-        (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails() || update))
++        (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails() || update) &&
++        CDVDFileInfo::CanExtract(*pItem))
+     {
+       // No tag or no details set, so extract them
+       CLog::LogF(LOGDEBUG, "trying to extract filestream details from video file {}",
+-- 
+2.53.0
+

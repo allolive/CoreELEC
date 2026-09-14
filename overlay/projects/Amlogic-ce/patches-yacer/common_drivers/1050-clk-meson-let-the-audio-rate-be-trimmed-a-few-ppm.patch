@@ -1,5 +1,5 @@
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] clk: meson: let the audio rate be trimmed a few ppm
+Subject: [PATCH] clk: meson: let the audio clock be sped up or slowed slightly
 
 Passthrough audio is clocked from mpll0 and the receiver recovers its own sample
 clock from it, so the rate mpll0 runs at is the rate the audio is heard at.
@@ -12,7 +12,7 @@ running stream. Nothing else is touched: not n2, not sdm_en, not the gate.
 
 --- a/drivers/clk/meson/g12a.c
 +++ b/drivers/clk/meson/g12a.c
-@@ -6691,6 +6691,170 @@
+@@ -6691,6 +6691,166 @@
  	{}
  };
  
@@ -37,10 +37,6 @@ running stream. Nothing else is touched: not n2, not sdm_en, not the gate.
 + * So the value in force is recorded when the first trim is applied and written
 + * back verbatim to clear, and if the register no longer holds what was applied
 + * then somebody else owns it: the trim is forgotten and the write refused.
-+ *
-+ * Bounded at four steps because sixty parts per million is already an order more
-+ * than any drift measured on this hardware, and a wider range only buys a way to
-+ * put the audio clock somewhere its sink will not follow.
 + */
 +#define MPLL0_SDM_MASK		GENMASK(13, 0)
 +#define MPLL0_SDM_EN		BIT(30)

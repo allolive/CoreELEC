@@ -1,7 +1,7 @@
 From 0457150d64faae3c9c5a8823c863c7deece8eab8 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLAudioTrim: hold the audio clock in step with the master clock
+Subject: [PATCH] AMLAudioTrim: stop passthrough audio drifting from the picture
 
 Passthrough audio is played at whatever rate mpll0's divider happens to give. On
 g12b that is about 20ppm slow - 72ms of lip sync an hour - while the picture holds

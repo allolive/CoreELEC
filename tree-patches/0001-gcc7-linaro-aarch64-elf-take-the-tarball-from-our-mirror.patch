@@ -1,3 +1,5 @@
+gcc7-linaro-aarch64-elf: download the toolchain from our mirror
+
 Upstream releases.linaro.org is decommissioned. Take the byte-identical
 tarball from our own mirror instead; PKG_SHA256 still verifies it.
 

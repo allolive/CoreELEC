@@ -1,4 +1,4 @@
-Rebuild the kernel when our kernel-side patches change.
+Rebuild the kernel when our kernel-side patches change
 
 common_drivers is compiled into the kernel image, not against it. Its own
 package stamp covers its patches, so the driver rebuilds - but the kernel

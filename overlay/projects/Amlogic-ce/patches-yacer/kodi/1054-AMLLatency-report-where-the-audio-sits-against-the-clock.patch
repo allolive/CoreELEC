@@ -1,7 +1,7 @@
 From 99d2d3d50138c474c2dca637d01e196976f547f7 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLLatency: report where the audio sits against the clock
+Subject: [PATCH] AMLLatency: add lip sync to the playback timing log
 
 The periodic report says how far the picture landed from where its timestamp asked
 for it, now under 2ms on this box. It says nothing about the sound, which is held

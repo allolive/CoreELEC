@@ -1,7 +1,7 @@
 From c50e8a17d4b3629f0e1a7845b90d2f3e6c81942b Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
-Subject: [PATCH] ActiveAE: judge the sync band in real time too
+Subject: [PATCH] ActiveAE: don't leave TrueHD sync error behind
 
 The adjust loop now spends and credits in the same units, but the band it exits on
 is still read in the scaled one - so on TrueHD it stops anywhere below 30ms scaled

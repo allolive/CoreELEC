@@ -1,23 +1,14 @@
 From 8f3aa746eefa9457f70ac9cb4311f634c8c70165 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLCodec: restore the vfm map that was actually taken
+Subject: [PATCH] AMLCodec: restore the system video path correctly after playback
 
-Single-mode decode uses the global "default" vfm chain: OpenDecoder installs its
-own over it and the close puts the original back. Two things are wrong.
-
-The saved copy is always empty, because GetVfmMap never matches. The kernel prints
-each line as "[NN]  <id> { ... }" and the match ignored the slot index in front of
-it. Match the token before the brace instead, and strip the activity marker
-whatever digit it carries.
-
-The close then wrote that empty copy back as the system default, leaving an entry
-that is still valid, has no nodes, and never becomes active again - so anything
-still on the default chain finds nothing there. Only the next single-mode open
-repairs it.
-
-Record the override where it is made and put back only what was taken: nothing if
-the map was never read, nothing if what came back was empty.
+Single-mode decode replaces the global "default" vfm chain and restores it
+on close, but GetVfmMap never matched (it ignored the "[NN]" slot index),
+so the saved copy was empty and close installed an empty, never-active
+default chain. Match the token before the brace and strip the activity
+marker whatever its digit. Record the override where it is made and
+restore only what was taken: nothing if unread or empty.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 

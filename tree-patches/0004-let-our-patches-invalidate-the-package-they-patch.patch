@@ -1,4 +1,4 @@
-Let our patches invalidate the package they patch.
+Rebuild a package when one of our patches for it changes
 
 calculate_stamp hashes the package directory and the upstream patch
 directories, so a patch of ours under patches-yacer/<package>/ was invisible

@@ -1,28 +1,29 @@
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] ProcessInfo: publish whether the video codec buffers data
+Subject: [PATCH] ProcessInfo: let a video decoder say it holds video of its own
 
 A codec that holds compressed data of its own breaks the assumption behind the
 player's stall handling: the demux queue level stops saying how much is left to
 play. Publish it where the codec already publishes its name.
 
+This is shared code: ProcessInfo is the only channel from the codec to the
+player.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-index 0c5f4f2fae..08f9a05d21 100644
+index 0c5f4f2..f1a3663 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-@@ -34,6 +34,10 @@
-   // player video
-   void ResetVideoCodecInfo();
+@@ -36,6 +36,8 @@ public:
    void SetVideoDecoderName(const std::string &name, bool isHw);
-+  /*! \brief Tell the player the codec holds compressed data of its own, beyond the
-+   demux queue, so a queue level does not say how much is left to play. */
-+  void SetVideoCodecBuffersData(bool buffersData);
-+  bool GetVideoCodecBuffersData() const;
    std::string GetVideoDecoderName();
    bool IsVideoHwDecoder();
++  void SetVideoCodecBuffersData(bool buffersData);
++  bool GetVideoCodecBuffersData() const;
    void SetVideoDeintMethod(const std::string &method);
-@@ -149,6 +153,7 @@
+   std::string GetVideoDeintMethod();
+   void SetVideoPixelFormat(const std::string &pixFormat);
+@@ -149,6 +151,7 @@ protected:
  
    // player video info
    bool m_videoIsHWDecoder;
@@ -31,10 +32,10 @@ index 0c5f4f2fae..08f9a05d21 100644
    std::string m_videoDeintMethod;
    std::string m_videoPixelFormat;
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-index d7d8c431bb..1f594b19b9 100644
+index d7d8c43..1587512 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-@@ -61,10 +61,25 @@
+@@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
  //******************************************************************************
  // video codec
  //******************************************************************************
@@ -60,12 +61,11 @@ index d7d8c431bb..1f594b19b9 100644
    m_videoIsHWDecoder = false;
    m_videoDecoderName = "unknown";
    m_videoDeintMethod = "unknown";
-@@ -104,6 +119,9 @@
+@@ -104,6 +119,8 @@ void CProcessInfo::SetVideoDecoderName(const std::string &name, bool isHw)
  {
    std::unique_lock lock(m_videoCodecSection);
  
-+  // A codec publishing its name is claiming the stream, so it also owns what is
-+  // said about its buffering. Codecs that hold data of their own say so after this.
++  // A codec that holds data of its own says so after naming itself.
 +  m_videoCodecBuffersData = false;
    m_videoIsHWDecoder = isHw;
    m_videoDecoderName = name;

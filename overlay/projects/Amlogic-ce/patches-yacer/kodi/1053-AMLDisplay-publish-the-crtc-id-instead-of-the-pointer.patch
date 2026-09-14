@@ -1,7 +1,7 @@
 From 0f9ff3d16b6809c2e0ef62f0c27326b90b408f94 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLDisplay: publish the crtc id instead of the pointer
+Subject: [PATCH] AMLDisplay: don't keep display data a TV reconnect may replace
 
 The vblank read needs a crtc id, and was reaching in for the drmModeCrtc the
 display owns to take it - holding a pointer whose lifetime belongs to the display,

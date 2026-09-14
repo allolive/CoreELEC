@@ -1,4 +1,4 @@
-Look for our patches, and say which are ours.
+Apply our own package patches, and label them in the build log
 
 They live in projects/<project>/patches-yacer/<package>/ - one place, beside
 the upstream patches rather than scattered through them - and are applied

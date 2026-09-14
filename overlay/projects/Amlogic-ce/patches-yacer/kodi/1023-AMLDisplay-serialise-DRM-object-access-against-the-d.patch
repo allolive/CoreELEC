@@ -1,21 +1,14 @@
 From a1c31be2a9414cd889006d0b47ae067b359d4897 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:26 -0400
-Subject: [PATCH] AMLDisplay: serialise the DRM objects against the display rebuild
+Subject: [PATCH] AMLDisplay: fix a rare crash when the TV reconnects
 
-CAMLDRMUtils publishes m_connector, m_encoder, m_crtc and m_plane and rebuilds them
-on hotplug, on the app thread. The video thread reads them at the same time -
-CAMLCodec writes its Dolby Vision properties at decoder open and reads them back at
-close, both through m_crtc->crtc_id.
-
-The connected flag does not stand in for a lock. CleanAndClose frees the objects
-and only then marks the device disconnected, so a reader can pass the check and
-dereference freed memory. The rebuild marks it connected as soon as it has a
-connector, then does the plane, encoder and crtc lookups with m_crtc still null.
-
-Serialise the accessors and the rebuild with one recursive lock - recursive because
-three of them call each other. The render path is left alone: it runs on the same
-thread as the rebuild.
+CAMLDRMUtils rebuilds m_connector/m_encoder/m_crtc/m_plane on hotplug (app
+thread) while the video thread reads them (CAMLCodec's DV properties via
+m_crtc->crtc_id). The connected flag is no lock: CleanAndClose frees before
+marking disconnected, and the rebuild marks connected before m_crtc is set.
+Serialise the accessors and the rebuild with one recursive lock (three call
+each other). The render path shares the rebuild thread and is left alone.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 

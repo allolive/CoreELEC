@@ -1,7 +1,7 @@
 From e91d3b6402fa87c15d0e4b8a92f7361c05d84e2b Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLLatency: say when the clock was stepped
+Subject: [PATCH] AMLLatency: log when the playback clock jumps
 
 Every m_lost update is gated on m_classArmed, and SETTLE_SECONDS holds that down
 for two seconds after a resume - which is exactly when a clock step lands. So the

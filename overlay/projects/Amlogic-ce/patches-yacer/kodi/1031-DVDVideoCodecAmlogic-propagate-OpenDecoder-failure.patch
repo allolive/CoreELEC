@@ -1,7 +1,7 @@
 From 4e78cb463717cb108e3cde42b725173a9703e06a Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] DVDVideoCodecAmlogic: propagate OpenDecoder failure
+Subject: [PATCH] DVDVideoCodecAmlogic: don't keep feeding a decoder that failed to open
 
 A failed CAMLCodec::OpenDecoder was only logged, and the player kept feeding a
 decoder that never started, leaving playback wedged. Close and drop the codec on

@@ -1,7 +1,7 @@
 From 78bb436a362bee0cac13733a620913fac5c9522c Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] AMLCodec: bound the WMV header extradata copies
+Subject: [PATCH] AMLCodec: fix crashes on VC-1/WMV streams with odd headers
 
 wvc1_write_header() copies GetSize() - 1 bytes from GetData() + 1. GetSize() is
 unsigned, so a stream with no extradata copies SIZE_MAX bytes from a null pointer:

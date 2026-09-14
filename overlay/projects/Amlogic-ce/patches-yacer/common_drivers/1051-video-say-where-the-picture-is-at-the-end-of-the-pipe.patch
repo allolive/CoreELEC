@@ -1,17 +1,12 @@
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] video: say where the picture is at the end of the pipe
+Subject: [PATCH] video: add a diagnostic reading of video output timing
 
-Everything this driver reports about timing is taken before the video
-post-processor, so it cannot see how many frames the Dolby Vision core and the
-scaler hold - which is the depth between an offset measured in the player and the
-one arriving at the connector.
-
-Add one node sampled in a single go with interrupts off: the CLOCK_MONOTONIC base
-DRM timestamps vblanks on, the encoder's frame count, the line it is putting out
-now, and the post-processor CRC where that exists. Read one at a time they say
-nothing about each other.
-
-Read-only, measurement only. Nothing in the driver acts on it.
+The driver's timing reports are all taken before the video post-processor,
+so they miss the frames held by the Dolby Vision core and the scaler. Add
+a read-only node sampled in one go with interrupts off: the CLOCK_MONOTONIC
+base DRM stamps vblanks on, the encoder frame count, the current output
+line, and the post-processor CRC where present. Nothing in the driver acts
+on it.
 
 --- a/drivers/media/video_sink/video.c
 +++ b/drivers/media/video_sink/video.c

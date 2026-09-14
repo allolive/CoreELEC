@@ -1,7 +1,7 @@
 From 90df136250ce00880a4c0da13ae8a8568e128127 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLLatency: settle the pipeline figure, and say which regime is running
+Subject: [PATCH] AMLLatency: keep picture timing the same between playbacks
 
 The measured pipeline count was published on its first repeat and afterwards only
 when a lower count appeared, so which figure a session ended up with depended on

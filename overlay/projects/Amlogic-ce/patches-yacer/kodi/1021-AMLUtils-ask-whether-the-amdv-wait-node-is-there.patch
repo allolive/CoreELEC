@@ -1,7 +1,7 @@
 From 45a953d24715d2ecd69aa5129684844b2e5aeed3 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:08:54 -0400
-Subject: [PATCH] AMLUtils: ask whether the amdv wait node is there
+Subject: [PATCH] AMLUtils: don't wait on a Dolby Vision delay that isn't there
 
 aml_amdv_wait() reads amdv_wait_delay without checking the node exists. Without
 aml_media it is missing, and the read returns a default rather than an error.

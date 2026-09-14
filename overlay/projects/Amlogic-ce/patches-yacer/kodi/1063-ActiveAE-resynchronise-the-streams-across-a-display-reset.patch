@@ -1,7 +1,7 @@
 From b48f2ac71e0d6935418cbd7fa2016e5d9c3b78af Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
-Subject: [PATCH] ActiveAE: resynchronise the streams across a display reset
+Subject: [PATCH] ActiveAE: resync audio after a TV mode change
 
 A display reset unconfigures the sink and rebuilds it, which moves the delay every
 stream's sync error is measured against, and nothing tells the streams. They stay

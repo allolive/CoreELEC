@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 7 Sep 2026 18:00:00 -0400
-Subject: [PATCH] SysfsPath: value-initialise the extraction target
+Subject: [PATCH] SysfsPath: return a safe default when a value can't be read
 
 Get<T>() returns `T value;` after `file >> value`. If the read never runs - the
 open failed, or the file is empty - value comes back uninitialised, and the

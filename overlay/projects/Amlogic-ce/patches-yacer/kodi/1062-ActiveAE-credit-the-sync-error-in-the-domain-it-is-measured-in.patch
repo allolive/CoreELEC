@@ -1,7 +1,7 @@
 From 7c1a4e0b93d2415a8f0c6e2d1b5a83f7c40e91d6 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
-Subject: [PATCH] ActiveAE: credit the sync error in the domain it is measured in
+Subject: [PATCH] ActiveAE: don't cut TrueHD sync corrections short
 
 A TrueHD stream's sync error is scaled by 0.45 before the sync loop sees it, so
 ordinary jitter does not provoke a correction. The adjust loop then removes the

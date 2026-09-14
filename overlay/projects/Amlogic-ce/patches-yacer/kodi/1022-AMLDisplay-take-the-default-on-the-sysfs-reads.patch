@@ -1,7 +1,7 @@
 From 7ad0eed0a4a7ca6e86e468dee5d1a1d7c19fab70 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:57 -0400
-Subject: [PATCH] AMLDisplay: take the default on the sysfs reads
+Subject: [PATCH] AMLDisplay: don't crash when a display setting can't be read
 
 Four functions call value() on a CSysfsPath read. Get() only returns nullopt when
 the read itself fails, so the throw is unlikely, but it is unhandled and value_or

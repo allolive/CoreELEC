@@ -1,7 +1,7 @@
 From 3ef2379b6947f9d81a01c0f8c7b9bb717f6e0a75 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] VideoPlayerAudio: correct once after every resynchronisation
+Subject: [PATCH] VideoPlayerAudio: remove leftover lip sync offset after a resync
 
 The engine calls a stream synchronised once its averaged error is inside 30ms, and
 in passthrough the only thing it can move the audio by is a whole IEC frame - 20ms

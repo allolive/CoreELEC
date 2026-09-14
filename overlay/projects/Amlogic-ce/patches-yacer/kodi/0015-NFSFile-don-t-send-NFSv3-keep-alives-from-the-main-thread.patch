@@ -1,0 +1,29 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] NFSFile: don't freeze Kodi when an NFS server stops answering
+
+The keep-alive does a real NFS read from ProcessSlow on the main thread;
+if the server stops answering, libnfs retries indefinitely; the GUI hangs.
+Skip that read on NFSv3, which keeps no open-file state (libnfs reconnects
+by itself); NFSv4 still needs it for its lease. The keep-alive list and
+context refresh stay, so a paused file's context is not dropped as idle.
+Shared filesystem code: the keep-alive lives here and nowhere else.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
+index fc3e02f..44901b3 100644
+--- a/xbmc/filesystem/NFSFile.cpp
++++ b/xbmc/filesystem/NFSFile.cpp
+@@ -479,6 +479,12 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+   if (!lock.owns_lock())
+     return;
+ 
++  // Only an NFSv4 lease needs the read. NFSv3 is stateless and libnfs reconnects a
++  // dropped connection, while a read to a server that stopped answering would hold
++  // the main thread until it answers.
++  if (!pContext || nfs_get_version(pContext) < 4)
++    return;
++
+   CLog::LogF(LOGDEBUG, "sending keep alive after {}s.",
+              std::chrono::duration_cast<std::chrono::seconds>(KEEP_ALIVE_TIMEOUT).count());
+ 

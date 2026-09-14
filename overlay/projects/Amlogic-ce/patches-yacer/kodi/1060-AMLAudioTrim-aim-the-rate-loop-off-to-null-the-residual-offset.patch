@@ -1,7 +1,7 @@
 From 7047ef6d4bad0472409bf180ce004a436639a5c5 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLAudioTrim: aim the rate loop off to null the residual offset
+Subject: [PATCH] AMLAudioTrim: remove leftover lip sync offset in passthrough
 
 Holding the rate takes the drift out but says nothing about where the flat line
 sits: two cold starts of the same file settle tens of milliseconds apart and then
@@ -14,7 +14,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -9123,6 +9123,36 @@
+@@ -9123,6 +9123,42 @@
  msgid "Player-Led"
  msgstr ""
  
@@ -48,20 +48,27 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
 +msgid "Strong"
 +msgstr ""
 +
++#. Group label for the CoreELEC passthrough audio settings
++#: system/settings/settings.xml
++msgctxt "#14321"
++msgid "Passthrough Audio"
++msgstr ""
++
  #: xbmc/music/MusicDatabase.cpp
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4038,6 +4038,20 @@
-           <default>false</default>
+@@ -4056,6 +4056,25 @@
            <control type="toggle" />
          </setting>
+       </group>
++      <group id="2" label="14321">
 +        <setting id="coreelec.amlogic.audiolead" type="integer" label="14316" help="14317">
 +          <requirement>HAVE_AMCODEC</requirement>
 +          <level>2</level>
-+          <default>0</default>
++          <default>600</default>
 +          <constraints>
 +            <options>
 +              <option label="351">0</option>
@@ -70,11 +77,15 @@ diff --git a/system/settings/settings.xml b/system/settings/settings.xml
 +              <option label="14320">600</option>
 +            </options>
 +          </constraints>
++          <dependencies>
++            <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
++          </dependencies>
 +          <control type="list" format="string" />
 +        </setting>
-         <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
-           <requirement>HAVE_AMCODEC</requirement>
-           <default>0</default>
++      </group>
+     </category>
+     <category id="cache" label="439" help="36399">
+       <visible>false</visible>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp

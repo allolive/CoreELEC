@@ -12,6 +12,8 @@ on:
     paths-ignore:
       - '**.md'
       - '.github/workflows/yacer-feed.yml'
+      - '.github/workflows/yacer-docs.yml'
+      - 'scripts/yacer-changes.py'
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/FUNDING.yml'
   workflow_dispatch:

@@ -1,7 +1,7 @@
 From ad737aaa732d0681e8e8727d15a97eb60af9e863 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] AMLCodec: size the AV1 repack buffer for the worst case
+Subject: [PATCH] AMLCodec: fix a buffer overrun on some AV1 streams
 
 av1_add_frame_dec_info() sized the repack buffer at data_size + 4096, but
 av1_parser_frame() prepends a 20-byte header per OBU; with up to data_size OBUs

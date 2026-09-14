@@ -1,7 +1,7 @@
 From 030b0f3e172ffc9c632b12bc6a742936f199ab85 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] AMLCodec: check the OpenDecoder config allocation
+Subject: [PATCH] AMLCodec: don't crash if memory runs out opening the decoder
 
 OpenDecoder() copied into the codec config string straight after an unchecked
 malloc(). Check it and skip the optional config instead of dereferencing NULL -

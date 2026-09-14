@@ -10,16 +10,10 @@ Unofficial CoreELEC builds for Amlogic devices.
 
 ## Why use these builds instead of an official one
 
-One reason: the patches in the table below. Everything else is CoreELEC exactly
-as they ship it, built from their nightly tree. If none of these matter to you,
-take an [official release](https://coreelec.org) - it is the same software with
-fewer moving parts.
-
-| Patch | What it does |
-| --- | --- |
-| **Buffering over a slow network** | A share that stops answering part way through a file ends playback instead of showing the buffering wheel, and a merely slow one limps on dropping frames. Kodi reads a stall as the end of the file in several places at once, and the check that should start buffering waits for a condition that never arrives once the picture has stopped. These patches attempt to tell a stall apart from a file that has genuinely ended, and to buffer on the cache running dry instead, so playback pauses and picks up again when the share answers. A share that is gone for good still stops, after about two minutes. |
-| **HDR10+ to Dolby Vision** | Kodi's existing "Tone map HDR to Dolby Vision" does not read that metadata at all - the VS10 engine tone maps from the static HDR10 values, so every scene is graded from one set of numbers chosen for the whole file. This attempts to read the per-scene metadata the file carries and emit Dolby Vision profile 8.1 from it, so the brightness the display works to follows the content. Closer to the master on anything with large swings between scenes; on a file graded flat you will see little.<br><br>What it does not do: HDR10+'s tone curve has no Dolby Vision equivalent and is not translated - only the per-scene brightness levels are carried across. CM v2.9 additionally has no field for an average below 819 codewords, which CM v4.0 carries in a level 3 offset. So this is a conversion of the metadata that has somewhere to go, not a lossless one. |
-| **Audio sync on passthrough** | With bitstreamed audio - Dolby TrueHD, DTS-HD, Atmos - sound and picture are only ever brought into average sync, never actually aligned, and the offset drifts as playback goes on. Pausing, resuming or skipping changes the drift again when playback picks up, so it settles somewhere different each time. Kodi has no correction fine enough to take it out on a passthrough stream.<br><br>The video smoothness suffers for it too. Every time the player resynchronises it steps the master clock, and a step lands as a frame repeated or a frame dropped creating a visible hitch. These anomalies are infrequent but noticeable: they arrive with the corrections rather than steadily, so the same sequence can play clean one time and hitch the next.<br><br>This attempts to hold the two together by trimming the audio clock very slightly as it plays, so the offset stops wandering and the corrections stop with it. The kernel has to allow that trim, so this series carries driver patches as well - and it only works on the chips those patches cover: **S905X2/D2/Y2, S922X, A311D and S905X3/D3** (g12a, g12b, sm1). On any other Amlogic chip the setting is there but does nothing.<br><br>Off by default: **Settings → CoreELEC → Audio passthrough A/V sync**, at Light, Medium or Strong. A stronger setting closes a large gap sooner, not more accurately. No effect on PCM output. Some receivers and DACs may struggle to follow a shifted clock. If yours clicks, mutes or drops out, lower the strength or turn it off. |
+Only for the patches we add on top. Everything else is CoreELEC exactly as they
+ship it, built from their nightly tree. If none of those matter to you, take an
+[official release](https://coreelec.org) - it is the same software with fewer
+moving parts.
 
 ## Which devices
 
@@ -29,8 +23,7 @@ S905X/X2/X3/X4/X5, S912, S922X/A311D, S928X and the rest of the `Amlogic-no`
 family. The device tree is chosen per box at boot, so nothing here is tied to a
 particular model. Built and tested on a Ugoos AM6B Plus (S922X-J); every other
 board gets the same image and no specific attention. Audio sync is narrower than
-the rest - it needs a kernel change that exists only on g12a, g12b and sm1, and
-the table says so.
+the rest - it needs a kernel change that exists only on g12a, g12b and sm1.
 
 Not for Raspberry Pi, Rockchip, Allwinner or a PC - CoreELEC is Amlogic only.
 
@@ -77,11 +70,11 @@ beside upstream's `patches/` rather than scattered through them, and are applied
 the same way upstream's are. They show up in the build log as `(yacer)` so it is
 clear which are ours.
 
-The ones in the table above, plus what is not a feature in its own right: guards
-in the Amlogic video path that the audio work is built on, and an updater that
-follows the builds in this repository - offering the train the box is actually
-running rather than the ones upstream happens to publish, and checking here
-rather than the official server when automatic updates are on.
+Each patch's subject and message are what the
+[change list](https://allolive.github.io/CoreELEC/) shows, so write them for
+the people installing the build. `scripts/yacer-changes.py` builds that page
+locally; `.github/workflows/yacer-docs.yml` publishes it whenever a patch
+changes, without committing anything or starting a build.
 
 ## Building locally
 

@@ -1,7 +1,7 @@
 From a79dc3f4bc97b1a87af608b30ef3b7b708d87112 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] WinSystemAmlogic: report the measured display latency
+Subject: [PATCH] WinSystemAmlogic: time pictures against the real display delay
 
 GetDisplayLatency() falls back to (NoOfBuffers() + 1) / fps, which at 23.976 is
 166.8ms, and NoOfBuffers() has exactly one caller in the tree - that expression.

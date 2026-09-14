@@ -1,0 +1,141 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] VideoDatabase: look up artwork for many items at once
+
+GetArtForItem runs one query per item and the thumb loader calls it for
+every row, a round trip each on MySQL. Add GetArtForItems: one "media_id
+IN (...)" query per 500 ids, stored as GetArtForItem stores them. Each id
+of a chunk read gets an entry (empty = no art); a failed chunk is left out
+so the caller falls back to per-item lookups. Abort check before each
+chunk; ids are integers, never item text. Shared code, no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index 0f4fddd..d9a7ed3 100644
+--- a/xbmc/video/VideoDatabase.cpp
++++ b/xbmc/video/VideoDatabase.cpp
+@@ -73,6 +73,7 @@
+ #include <memory>
+ #include <ranges>
+ #include <set>
++#include <span>
+ #include <string>
+ #include <unordered_set>
+ #include <utility>
+@@ -4686,6 +4687,36 @@ bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
+   return false;
+ }
+ 
++namespace
++{
++constexpr size_t MAX_IDS_PER_QUERY = 500;
++
++// Calls fn(ids, idList) for consecutive slices of at most MAX_IDS_PER_QUERY ids, where idList is
++// the slice joined with commas. Stops early, returning false, when abort or fn returns false.
++template<typename Fn>
++bool ForEachIdChunk(const std::vector<int>& ids, const std::function<bool()>& abort, Fn&& fn)
++{
++  for (size_t begin = 0; begin < ids.size(); begin += MAX_IDS_PER_QUERY)
++  {
++    if (abort && abort())
++      return false;
++
++    const auto chunk =
++        std::span(ids).subspan(begin, std::min(MAX_IDS_PER_QUERY, ids.size() - begin));
++    std::string idList;
++    for (const int id : chunk)
++    {
++      if (!idList.empty())
++        idList += ',';
++      idList += std::to_string(id);
++    }
++    if (!fn(chunk, idList))
++      return false;
++  }
++  return true;
++}
++} // namespace
++
+ bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
+ {
+   CVideoInfoTag tag;
+@@ -5516,6 +5547,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
+   return false;
+ }
+ 
++bool CVideoDatabase::GetArtForItems(const std::vector<int>& mediaIds,
++                                    const MediaType& mediaType,
++                                    std::unordered_map<int, KODI::ART::Artwork>& art,
++                                    const std::function<bool()>& abort /* = {} */)
++{
++  if (mediaIds.empty())
++    return true;
++  if (nullptr == m_pDB)
++    return false;
++
++  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
++  if (!pDS)
++    return false;
++
++  return ForEachIdChunk(
++      mediaIds, abort,
++      [&](std::span<const int> ids, const std::string& idList)
++      {
++        std::unordered_map<int, KODI::ART::Artwork> found;
++        try
++        {
++          const std::string sql = PrepareSQL(
++              "SELECT media_id,type,url FROM art WHERE media_id IN (%s) AND media_type='%s'",
++              idList.c_str(), mediaType.c_str());
++          pDS->query(sql);
++          while (!pDS->eof())
++          {
++            found[pDS->fv(0).get_asInt()].try_emplace(pDS->fv(1).get_asString(),
++                                                      pDS->fv(2).get_asString());
++            pDS->next();
++          }
++          pDS->close();
++        }
++        catch (...)
++        {
++          CLog::LogF(LOGERROR, "({} ids, {}) failed", ids.size(), mediaType);
++          return false;
++        }
++
++        for (const int id : ids)
++        {
++          auto node = found.extract(id);
++          art.try_emplace(id, node ? std::move(node.mapped()) : KODI::ART::Artwork{});
++        }
++        return true;
++      });
++}
++
+ bool CVideoDatabase::GetArtForAsset(int assetId,
+                                     ArtFallbackOptions fallback,
+                                     KODI::ART::Artwork& art)
+diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
+index 49be8e8..ce8cab4 100644
+--- a/xbmc/video/VideoDatabase.h
++++ b/xbmc/video/VideoDatabase.h
+@@ -864,6 +864,20 @@ public:
+   bool GetArtForItem(int mediaId, const MediaType& mediaType, KODI::ART::Artwork& art);
+   std::string GetArtForItem(int mediaId, const MediaType &mediaType, const std::string &artType);
+ 
++  /*!
++   * \brief Retrieve the art of many items of one media type with a few queries
++   * \param mediaIds ids of the items, looked up in chunks
++   * \param mediaType media type of the items
++   * \param art receives one entry per id that was looked up, empty if the item has no art. Ids of a
++   * chunk that failed or was not reached are left out, and entries already in the map are kept.
++   * \param abort optional, checked before each chunk; the lookup stops when it returns true
++   * \return true if every chunk was looked up, false if the lookup was stopped or failed
++   */
++  bool GetArtForItems(const std::vector<int>& mediaIds,
++                      const MediaType& mediaType,
++                      std::unordered_map<int, KODI::ART::Artwork>& art,
++                      const std::function<bool()>& abort = {});
++
+   void UpdateArtForItem(int mediaId, const MediaType& mediaType) const;
+ 
+   /*!

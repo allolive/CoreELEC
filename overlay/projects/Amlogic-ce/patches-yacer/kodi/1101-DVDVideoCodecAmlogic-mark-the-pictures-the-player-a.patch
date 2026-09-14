@@ -1,8 +1,7 @@
 From 7c3f1ab94d02e6e5a7f1c8b30d5e4a9682cf1d55 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sat, 12 Sep 2026 13:40:00 -0400
-Subject: [PATCH] DVDVideoCodecAmlogic: mark the pictures the player asked to
- drop
+Subject: [PATCH] DVDVideoCodecAmlogic: catch up faster after a seek
 
 CAMLCodec::GetPicture clears iFlags on the same buffer SetCodecControl wrote
 DVP_FLAG_DROPPED into, so an accurate seek's drop request never reached the

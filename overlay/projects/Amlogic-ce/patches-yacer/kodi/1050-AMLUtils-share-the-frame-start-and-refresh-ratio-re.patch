@@ -1,7 +1,7 @@
 From 5868a6cdd34525b193664651b919c0970805b53a Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLUtils: share the frame start and refresh ratio reads
+Subject: [PATCH] AMLUtils: add shared display timing helpers
 
 Three things are about to want to know where the display is in its frame and how
 many refreshes a frame of content is shown for: the latency measurement, the frame

@@ -1,0 +1,51 @@
+# YACER change list page
+#
+# Publishes the list of patches on this branch to GitHub Pages whenever a patch
+# changes. The page is deployed as a Pages artifact, not committed anywhere, so
+# it adds nothing to the branch and starts no build.
+#
+# One-time setup: Settings -> Pages -> Source: GitHub Actions.
+name: YACER change list
+
+on:
+  push:
+    branches: [ yacer ]
+    paths:
+      - 'overlay/**/patches-yacer/**'
+      - 'scripts/yacer-changes.py'
+      - '.github/workflows/yacer-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: yacer-docs
+  cancel-in-progress: false   # never cut a Pages deploy short
+
+jobs:
+  build:
+    name: build the page
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # each patch shows the date of the last commit that touched it
+      - name: Generate
+        run: python3 scripts/yacer-changes.py site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: publish
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

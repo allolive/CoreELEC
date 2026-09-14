@@ -1,7 +1,7 @@
 From b44b7ce4d09a269c812ade6e47315d8925ec31dd Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLGenlock: tick the clock in step with the display
+Subject: [PATCH] AMLGenlock: line up playback with the display refresh
 
 Where a frame lands inside the refresh period is settled by chance when playback
 starts and nothing afterwards moves it. Near the middle the choice of which vblank
