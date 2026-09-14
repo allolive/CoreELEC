@@ -15,6 +15,9 @@ ship it, built from their nightly tree. If none of those matter to you, take an
 [official release](https://coreelec.org) - it is the same software with fewer
 moving parts.
 
+**[What these builds change](https://allolive.github.io/CoreELEC/)** - the list
+of patches as they stand now.
+
 ## Which devices
 
 Each build is the standard `Amlogic-no.aarch64` update tar - the same one
