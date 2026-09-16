@@ -1,0 +1,44 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: clear EL state and reset core on DV-to-SDR fallback
+
+When the STB control path in dovi.ko rejects a DOVI input with -2
+("dv source but metadata checked as el"), amdv_control_path() retries
+with input[0].src_format forced to FORMAT_SDR, but leaves el_flag and
+the in_md/in_comp RPU and composer pointers and sizes as copied from
+dv_inst. dv_core1a_set()/dv_core1b_set() derive composer_enable and
+el_41_mode from el_flag and el_halfsize_flag, so the retry can program
+core1 with the EL composer enabled for an input just declared SDR. The
+retry also skips the multi_control_path(&invalid_m_dovi_setting) core
+reset that every other source/destination/mode change here performs.
+
+Clear el_flag, in_md, in_comp and their sizes, reset the core as a
+format change does, then re-commit as SDR. All these fields are rebuilt
+from dv_inst on every call, so nothing carries to the next frame. If
+the SDR retry also fails, the existing video_width = 0 path forces a
+res_change reset next frame, so no loop forms.
+
+el_halfsize_flag is left alone: with el_flag 0 it is not read on this
+path.
+
+Reaching the EL case needs a stream whose metadata is flagged as an
+enhancement layer; el_flag is otherwise zeroed by
+amdv_parse_metadata_v2_stb() unless the debug-only enable_mel is set.
+Not yet exercised on S905X5 hardware.
+
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -11164,7 +11164,14 @@
+ 		!is_aml_stb_hdmimode() && vf &&
+ 		new_m_dovi_setting.input[0].src_format == FORMAT_DOVI) {
+ 		pr_dv_dbg("dv source but metadata checked as el, force as sdr source\n");
++		/* plain SDR input: no EL, no RPU; reset core as on a format change */
+ 		new_m_dovi_setting.input[0].src_format = FORMAT_SDR;
++		new_m_dovi_setting.input[0].el_flag = 0;
++		new_m_dovi_setting.input[0].in_md = NULL;
++		new_m_dovi_setting.input[0].in_md_size = 0;
++		new_m_dovi_setting.input[0].in_comp = NULL;
++		new_m_dovi_setting.input[0].in_comp_size = 0;
++		p_funcs_stb->multi_control_path(&invalid_m_dovi_setting);
+ 		flag = p_funcs_stb->multi_control_path(&new_m_dovi_setting);
+ 	}
+ 

@@ -1,0 +1,122 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: only parse AV1 T.35 records that carry a DV RPU
+
+Aux record type 0x14 is used "for both dv and hdr10plus": the AV1 decoder
+hands up every ITU-T T.35 OBU under that tag and only rewrites the buffer
+down to a single record when the OBU really is a DV RPU (payload starting
+b5 00 3b 00 00 08 00 37 cd 08). An HDR10+ OBU, or any other T.35 provider,
+stays in the buffer as a raw 0x14 record.
+
+In parse_sei_and_meta_ext_v1/_v2 and the hw5 copy such a record fails the
+ten byte Dolby header test and falls into the "HEVC dv meta in sei" else
+branch, which forces *src_format = FORMAT_DOVI, prefixes the payload
+00 00 00 and hands it to the RPU parser, then breaks out of the scan. The
+parse cannot succeed - an AV1 RPU has to be unpacked from the EMDF
+container - so the frame is classed as Dolby Vision, reuses the previous
+frame's md/comp buffers and bumps err_parse_cnt; after eleven such frames
+the per instance guard rejects all metadata for the rest of the session,
+including real RPUs. The break also hides a genuine DV record sitting
+behind the offending one in the same aux buffer.
+
+Run the HEVC SEI fallback only for type == DV_SEI; an AV1 T.35 record
+without the Dolby header is skipped (p += size; continue), leaving
+src_format and err_parse_cnt alone. is_amdv_frame gets the matching test:
+an AV1 T.35 record counts as DV only if it is long enough, stays inside
+the aux buffer and starts with that ten byte header.
+
+Needs a DV signalled AV1 stream whose frames carry a non-DV T.35 OBU, or a
+client that never sets negative_dv. Not fixed here: err_parse_cnt is still
+never cleared after a good parse or at flush.
+
+Untested on hardware - g12b has no AV1 hardware decode, so the changed
+branches are unreachable there and no S905X5 box is available.
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -4821,6 +4821,11 @@
+ }
+ EXPORT_SYMBOL(amdv_set_provider);
+ 
++/* itu-t t.35 header of a dolby vision rpu carried in an av1 obu */
++static const u8 av1_dv_t35_hdr[] = {
++	0xb5, 0x00, 0x3b, 0x00, 0x00, 0x08, 0x00, 0x37, 0xcd, 0x08
++};
++
+ /* 0: no dv, 1: dv std, 2: dv ll */
+ int is_amdv_frame(struct vframe_s *vf)
+ {
+@@ -4908,7 +4913,12 @@
+ 			type = (type << 8) | *p++;
+ 			if (type == DV_SEI ||
+ 			    ((type & 0xffff0000) == AV1_SEI &&
+-			    !vf_signal_type_is_hdr10plus(vf)))
++			    !vf_signal_type_is_hdr10plus(vf) &&
++			    size >= sizeof(av1_dv_t35_hdr) &&
++			    p + sizeof(av1_dv_t35_hdr) <=
++			    req.aux_buf + req.aux_size &&
++			    !memcmp(p, av1_dv_t35_hdr,
++				    sizeof(av1_dv_t35_hdr))))
+ 				return 1;
+ 			p += size;
+ 		}
+@@ -5522,7 +5532,7 @@
+ 					}
+ 					rpu_size += 5;
+ 				}
+-			} else {
++			} else if (type == DV_SEI) {
+ 				/* HEVC dv meta in sei */
+ 				*src_format = FORMAT_DOVI;
+ 				if (size > (sizeof(meta_buf) - 3))
+@@ -5532,6 +5542,10 @@
+ 				meta_buf[2] = 0;
+ 				memcpy(&meta_buf[3], p + 1, size - 1);
+ 				rpu_size = size + 2;
++			} else {
++				/* av1 t35 obu that is not dv (e.g. hdr10+) */
++				p += size;
++				continue;
+ 			}
+ 			if ((debug_dolby & 4) && dump_enable) {
+ 				pr_dv_dbg("metadata(%d):\n", rpu_size);
+@@ -5936,7 +5950,7 @@
+ 					}
+ 					rpu_size += 5;
+ 				}
+-			} else {
++			} else if (type == DV_SEI) {
+ 				/* HEVC dv meta in sei */
+ 				*src_format = FORMAT_DOVI;
+ 				if (size > (sizeof(meta_buf) - 3))
+@@ -5946,6 +5960,10 @@
+ 				meta_buf[2] = 0;
+ 				memcpy(&meta_buf[3], p + 1, size - 1);
+ 				rpu_size = size + 2;
++			} else {
++				/* av1 t35 obu that is not dv (e.g. hdr10+) */
++				p += size;
++				continue;
+ 			}
+ 			if ((debug_dolby & 4) && dump_enable_f(dv_id)) {
+ 				pr_dv_dbg("[inst%d]metadata(%d):\n", dv_id + 1, rpu_size);
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw5_process.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw5_process.c
+@@ -543,7 +543,7 @@
+ 					}
+ 					rpu_size += 5;
+ 				}
+-			} else {
++			} else if (type == DV_SEI) {
+ 				/* HEVC dv meta in sei */
+ 				*src_format = FORMAT_DOVI;
+ 				if (size > (sizeof(meta_buf) - 3))
+@@ -553,6 +553,10 @@
+ 				meta_buf[2] = 0;
+ 				memcpy(&meta_buf[3], p + 1, size - 1);
+ 				rpu_size = size + 2;
++			} else {
++				/* av1 t35 obu that is not dv (e.g. hdr10+) */
++				p += size;
++				continue;
+ 			}
+ 			if ((debug_dolby & 4) && dump_enable_f(0)) {
+ 				pr_dv_dbg("metadata(%d):\n", rpu_size);

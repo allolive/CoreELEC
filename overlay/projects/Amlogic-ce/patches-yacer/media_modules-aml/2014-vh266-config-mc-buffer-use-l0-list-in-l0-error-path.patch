@@ -1,0 +1,43 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh266: config_mc_buffer: use L0 list in L0 error path
+
+In config_mc_buffer() the REF_PIC_LIST_0 loop NULL-checks
+slice->m_apcRefPicList[REF_PIC_LIST_0][i], then looks the picture up with
+get_ref_pic_by_POC(). On failure it logs "%dth poc (%d) of RPS is not in
+the pic list0" but reads the POC out of REF_PIC_LIST_1[i] - a copy/paste
+from the list-1 loop below. That entry was never NULL-checked, and list 1
+is only populated up to m_aiNumRefIdx[1] (Slices come zeroed from
+new_slice()), so on low-delay I/P streams it is NULL for every i.
+
+hevc_print() is a plain variadic function and flag 0 prints
+unconditionally, so the argument is always evaluated. A malformed or
+mid-GOP-joined stream that leaves a referenced picture with buf_cfg ==
+NULL therefore turns a decode error into a NULL dereference in the IRQ
+thread instead of an error_mark. Read the POC from list 0 instead; the
+decoder_v4l copy carries identical code and gets the same change.
+
+The underlying condition (referenced picture with no buf_cfg) is left
+alone. Not exercised on hardware: VVC decode exists only on S905X5/S7D
+and no such box is available here.
+--- a/drivers/frame_provider/decoder/h266/vh266.c
++++ b/drivers/frame_provider/decoder/h266/vh266.c
+@@ -3325,7 +3325,7 @@
+ 			} else {
+ 				cur_pic->error_mark = 1;
+ 				hevc_print(hevc, 0, "Error %s, %dth poc (%d) of RPS is not in the pic list0\n",
+-				__func__, i, slice->m_apcRefPicList[REF_PIC_LIST_1][i]->poc);
++				__func__, i, slice->m_apcRefPicList[REF_PIC_LIST_0][i]->poc);
+ 			}
+ 			if (h266_is_long_term(vvc_dec, slice->m_apcRefPicList[REF_PIC_LIST_0][i]->poc))
+ 				long_term_flag = long_term_flag | (1 << i);
+--- a/drivers/frame_provider/decoder_v4l/h266/vh266.c
++++ b/drivers/frame_provider/decoder_v4l/h266/vh266.c
+@@ -2939,7 +2939,7 @@
+ 			} else {
+ 				cur_pic->error_mark = 1;
+ 				hevc_print(hevc, 0, "Error %s, %dth poc (%d) of RPS is not in the pic list0\n",
+-				__func__, i, slice->m_apcRefPicList[REF_PIC_LIST_1][i]->poc);
++				__func__, i, slice->m_apcRefPicList[REF_PIC_LIST_0][i]->poc);
+ 			}
+ 			if (h266_is_long_term(vvc_dec, slice->m_apcRefPicList[REF_PIC_LIST_0][i]->poc))
+ 				long_term_flag = long_term_flag | (1 << i);

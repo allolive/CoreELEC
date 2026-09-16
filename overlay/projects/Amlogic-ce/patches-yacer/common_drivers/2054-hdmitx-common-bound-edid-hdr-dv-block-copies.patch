@@ -1,0 +1,127 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx_common: edid: bound DV VSVDB and HDR metadata copies
+
+The EDID parser sizes copies into struct rx_cap from the sink's 5-bit
+block length byte, and the sysfs dumps reuse those lengths, so a
+malformed EDID corrupts rx_cap: up to 32 bytes are copied into the
+27-byte dv_info.rawdata and into the 7-byte hdr_info.rawdata, and in
+the dynamic block a u8 data_end wraps to 255 while type_length - 3 as
+u32 turns a length byte of 0..2 into a ~4G-iteration write over
+optional_fields[28]. The hdr_cap sysfs dump loops of_len - 3 and wraps
+the same way.
+
+Clamp the DV and static copies to sizeof(rawdata), return early on an
+empty dynamic block, skip descriptors shorter than their type field or
+longer than the block remainder, and clamp the sysfs dumps. dv->length
+keeps the sink's raw value; the version checks and the hdmitx20/21 and
+amdv consumers compare it against real VSVDB sizes. vout*_serve still
+loops j < of_len, now bounded at 29. Not exercised on hardware.
+--- a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
+@@ -763,7 +763,8 @@
+ 		memset(dv, 0, sizeof(struct dv_info));
+ 		dv->block_flag = CORRECT;
+ 		dv->length = length;
+-		memcpy(dv->rawdata, dat, dv->length + 1);
++		memcpy(dv->rawdata, dat, min_t(u32, dv->length + 1,
++						 sizeof(dv->rawdata)));
+ 		dv->ieeeoui = ieeeoui;
+ 		dv->ver = (dat[pos] >> 5) & 0x7;
+ 		if (dv->ver > 2) {
+@@ -990,8 +991,9 @@
+ 
+ 	tag = (buf[pos] >> 5) & 0x7;
+ 	data_end = (buf[pos] & 0x1f);
+-	memset(info->rawdata, 0, 7);
+-	memcpy(info->rawdata, buf, data_end + 1);
++	memset(info->rawdata, 0, sizeof(info->rawdata));
++	memcpy(info->rawdata, buf,
++	       min_t(u32, data_end + 1, sizeof(info->rawdata)));
+ 	pos++;
+ 	ext_tag = buf[pos];
+ 	if (tag != HDMI_EDID_BLOCK_TYPE_EXTENDED_TAG ||
+@@ -1059,11 +1061,17 @@
+ 	if (tag != HDMI_EDID_BLOCK_TYPE_EXTENDED_TAG ||
+ 	    ext_tag != EXTENSION_DRM_DYNAMIC_TAG)
+ 		goto INVALID_DRM_DYNAMIC;
++	/* no descriptors to parse */
++	if (data_end == 0)
++		return 0;
+ 	pos++;
+ 	data_end--;
+ 
+ 	while (data_end) {
+ 		type_length = buf[pos];
++		/* descriptor must hold the type and fit in the block */
++		if (type_length < 2 || type_length + 1 > data_end)
++			break;
+ 		pos++;
+ 		type = (buf[pos + 1] << 8) | buf[pos];
+ 		pos += 2;
+@@ -1084,12 +1092,16 @@
+ 		}
+ 		info->dynamic_info[num].of_len = type_length;
+ 		info->dynamic_info[num].type = type;
+-		info->dynamic_info[num].support_flags = buf[pos];
+-		pos++;
+-		for (i = 0; i < type_length - 3; i++) {
+-			info->dynamic_info[num].optional_fields[i] =
+-			buf[pos];
++		info->dynamic_info[num].support_flags = 0;
++		/* the support flags byte is optional */
++		if (type_length >= 3) {
++			info->dynamic_info[num].support_flags = buf[pos];
+ 			pos++;
++			for (i = 0; i < type_length - 3; i++) {
++				info->dynamic_info[num].optional_fields[i] =
++				buf[pos];
++				pos++;
++			}
+ 		}
+ 		data_end = data_end - (type_length + 1);
+ 	}
+--- a/drivers/media/vout/hdmitx_common/hdmitx_sysfs_common.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_sysfs_common.c
+@@ -411,8 +411,13 @@
+ 	pos += snprintf(buf + pos, size - pos, "HDR Dynamic Metadata:");
+ 
+ 	for (i = 0; i < 4; i++) {
++		unsigned int of_num = 0;
++
+ 		if (hdr->dynamic_info[i].type == 0)
+ 			continue;
++		if (hdr->dynamic_info[i].of_len >= 3)
++			of_num = min_t(u32, hdr->dynamic_info[i].of_len - 3,
++				       sizeof(hdr->dynamic_info[i].optional_fields));
+ 		pos += snprintf(buf + pos, size - pos,
+ 			"\n    metadata_version: %x\n",
+ 			hdr->dynamic_info[i].type);
+@@ -421,8 +426,7 @@
+ 			hdr->dynamic_info[i].support_flags);
+ 		pos += snprintf(buf + pos, size - pos,
+ 			"        optional_fields:");
+-		for (j = 0; j <
+-			(hdr->dynamic_info[i].of_len - 3); j++)
++		for (j = 0; j < of_num; j++)
+ 			pos += snprintf(buf + pos, size - pos, " %x",
+ 				hdr->dynamic_info[i].optional_fields[j]);
+ 	}
+@@ -445,7 +449,8 @@
+ 			"  monitor_mode_support: %u\n", cuva->monitor_mode_sup);
+ 		pos += snprintf(buf + pos, size - pos,
+ 			"  rx_mode_support: %u\n", cuva->rx_mode_sup);
+-		for (i = 0; i < (cuva->length + 1); i++)
++		for (i = 0; i < min_t(u32, cuva->length + 1,
++					  sizeof(cuva->rawdata)); i++)
+ 			pos += snprintf(buf + pos, size - pos, "%02x",
+ 				cuva->rawdata[i]);
+ 		pos += snprintf(buf + pos, size - pos, "\n");
+@@ -663,7 +668,7 @@
+ 	pos += snprintf(buf + pos, size - pos,
+ 		"EMP: %d\n", dv->dv_emp_cap);
+ 	pos += snprintf(buf + pos, size - pos, "VSVDB: ");
+-	for (i = 0; i < (dv->length + 1); i++)
++	for (i = 0; i < min_t(int, dv->length + 1, sizeof(dv->rawdata)); i++)
+ 		pos += snprintf(buf + pos, size - pos, "%02x",
+ 		dv->rawdata[i]);
+ 	pos += snprintf(buf + pos, size - pos, "\n");

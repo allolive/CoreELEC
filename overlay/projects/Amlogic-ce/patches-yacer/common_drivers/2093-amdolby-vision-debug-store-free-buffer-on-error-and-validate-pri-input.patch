@@ -1,0 +1,415 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: debug_store: free buf_orig on error, bound pri_input
+
+amdolby_vision_debug_store() kstrdup()s its input into buf_orig, but the
+35 argument-parsing failures do a bare "return -EINVAL;" and leak it.
+parse_param_amdv() fills absent tokens with "", so "echo amdv_crc >
+/sys/class/amdolby_vision/debug" is enough. The node is 0644, but the
+function is also reached from drivers/drm/meson_crtc.c via the DRM
+dv_debug blob property, where a client looping on a malformed string
+leaks without bound. Convert those returns to "ret = -EINVAL; goto out;"
+with out: before the existing kfree(); success still returns count.
+
+Also bound "pri_input N", stored unchecked into a static int used to
+index dv_inst[] and m_dovi_setting.input[]. Reject outside
+[0, NUM_IPCORE1), tested on the long so values above INT_MAX are
+rejected before truncation. Not exercised on hardware.
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -15869,6 +15869,7 @@
+ 	char *buf_orig, *parm[MAX_PARAM] = {NULL};
+ 	long val = 0;
+ 	long val2 = 0;
++	ssize_t ret = count;
+ 
+ 	if (!buf)
+ 		return count;
+@@ -15888,8 +15889,10 @@
+ 				parm[k] = "";
+ 	}
+ 	if (!strcmp(parm[0], "amdv_crc")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		if (val == 1)
+ 			amdv_crc_clear(val);
+ 		else if (val == 2)
+@@ -15900,10 +15903,14 @@
+ 		long tbl_id;
+ 		long value;
+ 
+-		if (kstrtoul(parm[1], 10, &tbl_id) < 0)
+-			return -EINVAL;
+-		if (kstrtoul(parm[2], 16, &value) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &tbl_id) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
++		if (kstrtoul(parm[2], 16, &value) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		tv_amdv_dma_table_modify((u32)tbl_id, (u64)value);
+ 	} else if (!strcmp(parm[0], "dv_efuse")) {
+ 		tv_amdv_efuse_info();
+@@ -15911,8 +15918,10 @@
+ 		tv_amdv_el_info();
+ #ifdef V2_4_3
+ 	} else if (!strcmp(parm[0], "force_support_emp")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		if (val == 0)
+ 			force_support_emp = 0;
+ 		else
+@@ -15920,8 +15929,10 @@
+ 		pr_info("force_support_emp %d\n", force_support_emp);
+ #endif
+ 	} else if (!strcmp(parm[0], "enable_vpu_probe")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		if (val == 0) {
+ 			enable_vpu_probe = 0;
+ 		} else {
+@@ -15932,30 +15943,40 @@
+ 		pr_info("set enable_vpu_probe %d\n",
+ 			enable_vpu_probe);
+ 	} else if (!strcmp(parm[0], "debug_bypass_vpp_pq")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		set_debug_bypass_vpp_pq(val);
+ 		pr_info("set debug_bypass_vpp_pq %d\n",
+ 			(int)val);
+ 	} else if (!strcmp(parm[0], "force_cert_bypass_vpp_pq")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		set_bypass_all_vpp_pq(val);
+ 		pr_info("set bypass_all_vpp_pq %d\n",
+ 			(int)val);
+ 	} else if (!strcmp(parm[0], "enable_fel")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		enable_fel = val;
+ 		pr_info("enable_fel %d\n", enable_fel);
+ 	} else if (!strcmp(parm[0], "enable_mel")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		enable_mel = val;
+ 		pr_info("enable_mel %d\n", enable_mel);
+ 	} else if (!strcmp(parm[0], "enable_tunnel")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		enable_tunnel = val;
+ 		pr_info("enable_tunnel %d\n", enable_tunnel);
+ 		if (is_aml_sc2() || is_aml_t7() || is_aml_t3() ||
+@@ -15982,8 +16003,10 @@
+ 		if (ko_info)
+ 			pr_info("ko info: %s\n", ko_info);
+ 	} else if (!strcmp(parm[0], "enable_vf_check")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		if (val == 0) {
+ 			enable_vf_check = 0;
+ 		} else {
+@@ -15994,23 +16017,35 @@
+ 		pr_info("set enable_vf_check %d\n",
+ 			enable_vf_check);
+ 	} else if (!strcmp(parm[0], "force_hdmin_fmt")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_hdmin_fmt = val;
+ 		pr_info("set force_hdmin_fmt %d\n", force_hdmin_fmt);
+ 	} else if (!strcmp(parm[0], "force_bypass_pps_sr_cm")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_bypass_pps_sr_cm = val;
+ 		pr_info("set force_skip_pps_sr_cm %d\n", force_bypass_pps_sr_cm);
+ 	} else if (!strcmp(parm[0], "pri_input")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
++		if (val < 0 || val >= NUM_IPCORE1) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		pri_input = val;
+ 		pr_info("set pri_input %d\n", pri_input);
+ 	} else if (!strcmp(parm[0], "debug_ko")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_ko = val;
+ 		pr_info("set debug_ko %d\n", debug_ko);
+ 		if (is_aml_hw5()) {
+@@ -16020,28 +16055,38 @@
+ 				tv_hw5_setting->enable_debug = debug_ko;
+ 		}
+ 	} else if (!strcmp(parm[0], "debug_disable_aoi")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_disable_aoi = val;
+ 		pr_info("set debug_disable_aoi %d\n", debug_disable_aoi);
+ 	} else if (!strcmp(parm[0], "debug_cp_res")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_cp_res = val;
+ 		pr_info("set debug_cp_res 0x%x\n", debug_cp_res);
+ 	} else if (!strcmp(parm[0], "debug_dma_start_line")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_dma_start_line = val;
+ 		pr_info("set debug_dma_start_line %d\n", debug_dma_start_line);
+ 	} else if (!strcmp(parm[0], "debug_vpotch")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_vpotch = val;
+ 		pr_info("set debug_vpotch %d\n", debug_vpotch);
+ 	} else if (!strcmp(parm[0], "force_runmode")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		if (val == 0)
+ 			force_runmode = 0;
+ 		else
+@@ -16052,15 +16097,19 @@
+ 		pr_info("force unmap\n");
+ 		force_unmap_all_inst();
+ 	} else if (!strcmp(parm[0], "dv5_bypass")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		dolby5_bypass_ctrl((uint)val);
+ 	} else if (!strcmp(parm[0], "dv5_version")) {
+ 		pr_info(HW5_DRIVER_VER);
+ 		pr_info("\n");
+ 	} else if (!strcmp(parm[0], "dump_pyramid")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		dump_pyramid = (uint)val;
+ 		pr_info("set dump_pyramid %d\n", dump_pyramid);
+ 		dump_pyramid_buf(dump_pyramid);
+@@ -16075,18 +16124,24 @@
+ 		else
+ 			dump_top1_frame(0, 0);
+ 	} else if (!strcmp(parm[0], "force_sdr10")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_sdr10 = val;
+ 		pr_info("set force_sdr10 %d\n", force_sdr10);
+ 	} else if (!strcmp(parm[0], "need_pps")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		need_pps = val;
+ 		pr_info("set need_pps %d\n", need_pps);
+ 	} else if (!strcmp(parm[0], "venc_crc_enable")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		venc_crc_enable = val;
+ 		if (venc_crc_enable)
+ 			WRITE_VPP_DV_REG_BITS(T3X_VENC_CRC, 1, 16, 1);
+@@ -16094,18 +16149,24 @@
+ 			WRITE_VPP_DV_REG_BITS(T3X_VENC_CRC, 0, 16, 1);
+ 		pr_info("set venc_crc_enable %d\n", venc_crc_enable);
+ 	} else if (!strcmp(parm[0], "trace_amdv_isr")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		trace_amdv_isr = val;
+ 		pr_info("set trace_amdv_isr %d\n", trace_amdv_isr);
+ 	} else if (!strcmp(parm[0], "output_4k240hz")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		output_4k240hz = val ? 1 : 0;
+ 		pr_info("set 4k240hz_output %d\n", output_4k240hz);
+ 	} else if (!strcmp(parm[0], "force_ignore_top1_result")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_ignore_top1_result = val;
+ 		if (val == 0)
+ 			force_ignore_top1_result = 0;
+@@ -16113,8 +16174,10 @@
+ 			force_ignore_top1_result = 1;
+ 		pr_info("set force_ignore_top1_result %d\n", force_ignore_top1_result);
+ 	} else if (!strcmp(parm[0], "pyramid_read_urgent")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		pr_info("set pyramid_read_urgent %d\n", (int)val);
+ 		if (val >= 0 && val < 4) {
+ 			pyramid_read_urgent = val;
+@@ -16122,18 +16185,24 @@
+ 			WRITE_VPP_DV_REG_BITS(VPU_WRARB_UGT_L2C1, val, 16, 2);
+ 		}
+ 	} else if (!strcmp(parm[0], "variable_fps_mode")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		variable_fps_mode = val;
+ 		pr_info("set variable_fps_mode %d\n", variable_fps_mode);
+ 	} else if (!strcmp(parm[0], "force_vsync_id")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_vsync_id = val;
+ 		pr_info("set force_vsync_id 0x%x\n", force_vsync_id);
+ 	} else if (!strcmp(parm[0], "debug_force_mode")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		debug_force_mode = val;
+ 		if (val == 0)
+ 			debug_force_mode = false;
+@@ -16141,29 +16210,36 @@
+ 			debug_force_mode = true;
+ 		pr_info("set debug_force_mode %d\n", debug_force_mode);
+ 	} else if (!strcmp(parm[0], "force_core2c_on")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_core2c_on = val;
+ 		pr_info("force_core2c_on %d\n", force_core2c_on);
+ 	} else if (!strcmp(parm[0], "force_toggle_each_vsync")) {
+-		if (kstrtoul(parm[1], 10, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 10, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_toggle_each_vsync = val;
+ 		pr_info("force_toggle_each_vsync %d\n", force_toggle_each_vsync);
+ 	} else if (!strcmp(parm[0], "force_toggle_once")) {
+ 		force_toggle_once = true;
+ 		pr_info("set force_toggle_once\n");
+ 	} else if (!strcmp(parm[0], "force_yuv_range")) {
+-		if (kstrtoul(parm[1], 16, &val) < 0)
+-			return -EINVAL;
++		if (kstrtoul(parm[1], 16, &val) < 0) {
++			ret = -EINVAL;
++			goto out;
++		}
+ 		force_yuv_range = val;
+ 		pr_info("force_yuv_range 0x%x\n", force_yuv_range);
+ 	} else {
+ 		pr_info("unsupport cmd\n");
+ 	}
+ 
++out:
+ 	kfree(buf_orig);
+-	return count;
++	return ret;
+ }
+ 
+ void amdv_debug_store(char *buf)

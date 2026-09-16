@@ -1,0 +1,65 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: bounds-check dv_inst index in the control path
+
+amdv_control_path() takes the instance id straight off the vframe
+(id = vf->src_fmt.dv_id) and, inside the "if (vd_proc_info)" blocks,
+compares and writes dv_inst[id].video_width/video_height before any
+bounds check; the only dv_inst_valid(id) check comes later.  dv_inst[]
+is a static array of NUM_INST (15) entries, so a negative id reads and
+writes the memory just before the array, from vsync context.
+
+dv_id can be negative: dv_inst_map() sets *inst = -1 when all 15 slots
+are mapped, and the V4L2 decoders and v4lvideo copy that -1 into
+vf->src_fmt.dv_id.  Nothing on the way down replaces it, and need_cp
+can be set by a display-size change alone, so the call happens even
+when metadata parsing failed for that frame.
+
+Guard both vd_proc_info blocks with dv_inst_valid(id), and make the two
+debug prints report 0 for an out-of-range id.  Behaviour past the
+existing dv_inst_valid(id) check is unchanged: an invalid instance is
+not skipped, so input[i].valid and valid_video_num stay as they are.
+
+Not reproduced on hardware - the trigger needs all 15 instances mapped
+at once, i.e. an instance leak; this is a bounds check placed where the
+code already expected one.
+
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -10862,7 +10862,7 @@
+ 				pr_dv_dbg("check id1 %d %d\n", id, vd1_inst_id);
+ 
+ 			/*video_width is set in parser_metadata,it's vframe size,not vd1 real size*/
+-			if (vd_proc_info) {
++			if (vd_proc_info && dv_inst_valid(id)) {
+ 				vd1_hsize = (display_size >> 16) & 0xffff;
+ 				vd1_vsize = display_size & 0xffff;
+ 				if (debug_dolby & 0x8)
+@@ -10889,7 +10889,7 @@
+ 				pr_dv_dbg("check id2 %d %d\n", id, vd2_inst_id);
+ 
+ 			/*video_width is set in parser_metadata,it's vframe size,not vd2 real size*/
+-			if (vd_proc_info) {
++			if (vd_proc_info && dv_inst_valid(id)) {
+ 				vd2_hsize = (display_size_2 >> 16) & 0xffff;
+ 				vd2_vsize = display_size_2 & 0xffff;
+ 				if (debug_dolby & 0x8)
+@@ -11132,7 +11132,8 @@
+ 			 dst_format,
+ 			 new_m_dovi_setting.input[0].in_md_size,
+ 			 new_m_dovi_setting.input[0].in_comp_size,
+-			 dv_inst[inst_id_1].frame_count,
++			 dv_inst_valid(inst_id_1) ?
++				dv_inst[inst_id_1].frame_count : 0,
+ 			 hdmi_in_allm,
+ 			 local_allm);
+ 		if (vf_2)
+@@ -11145,7 +11146,8 @@
+ 			 dst_format,
+ 			 new_m_dovi_setting.input[1].in_md_size,
+ 			 new_m_dovi_setting.input[1].in_comp_size,
+-			 dv_inst[inst_id_2].frame_count);
++			 dv_inst_valid(inst_id_2) ?
++				dv_inst[inst_id_2].frame_count : 0);
+ 		pr_dv_dbg
+ 		("osd %d,osd size:%dx%d,g min-max %d-%d,t min-max:%d-%d,pri:%s,flag=%x\n",
+ 		 !is_graphics_output_off(),

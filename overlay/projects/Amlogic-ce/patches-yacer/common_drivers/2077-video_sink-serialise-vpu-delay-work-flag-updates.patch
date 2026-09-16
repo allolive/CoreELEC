@@ -1,0 +1,327 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: serialise vpu_delay_work_flag updates under delay_work_lock
+
+The VDx_MEM_POWER_ON/OFF and VPU_VDx_CLK_SWITCH macros update
+vpu_delay_work_flag under delay_work_lock; the event-bit writers
+(do_vpu_delay_work(), update_primary_fmt_event(),
+set_amdv_delay_work_flag(), the vsync LAYERx_CHANGED sets) do not.
+
+Stopping video sets the VD1 memory power-off bit and starts a 100-vsync
+countdown. If video restarts inside that window, enable_video_layer()
+clears the bit under the lock while the delayed work is doing an
+unlocked "flag &= ~EVENT" and writes back a stale value with the bit
+still set; VD1, AFBC, scaler and film-grain memory are then powered down
+while VD1 is on screen. The reverse interleaving loses a power-off
+request instead. Racy, not reproducible on demand.
+
+do_vpu_delay_work() now copies and clears the event bits under the lock
+and acts on the copy; a new VPU_DELAY_WORK_FLAG_SET() macro replaces the
+unlocked sets. vpu_work_process() still reads the flag unlocked to decide
+whether to schedule; a torn read there costs one deferred schedule.
+Not exercised on S905X5 hardware.
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -309,6 +309,14 @@
+ 		vpu_mem_power_off_count = VPU_MEM_POWEROFF_DELAY; \
+ 		spin_unlock_irqrestore(&delay_work_lock, flags); \
+ 	} while (0)
++
++#define VPU_DELAY_WORK_FLAG_SET(flag) \
++	do { \
++		unsigned long flags; \
++		spin_lock_irqsave(&delay_work_lock, flags); \
++		vpu_delay_work_flag |= (flag); \
++		spin_unlock_irqrestore(&delay_work_lock, flags); \
++	} while (0)
+ #endif
+ 
+ #define VIDEO_LAYER_ON() \
+@@ -5269,7 +5277,7 @@
+ void set_amdv_delay_work_flag(void)
+ {
+ 	if (get_amdv_apo_enable())
+-		vpu_delay_work_flag |= VPU_DELAYWORK_APO_FLAG_DOLBY;
++		VPU_DELAY_WORK_FLAG_SET(VPU_DELAYWORK_APO_FLAG_DOLBY);
+ }
+ #endif
+ 
+@@ -7371,8 +7379,7 @@
+ 			if (vd_layer[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 				pr_info("VIDEO: VsyncEnableVideoLayer\n");
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ #endif
+ 			force_flush = true;
+ 		} else if (vd_layer[0].onoff_state ==
+@@ -7388,8 +7395,7 @@
+ 				vd_layer[1].global_output = vd_layer[0].global_output;
+ 			}
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ #endif
+ 			fgrain_stop(&vd_layer[0], vd_layer[0].vpp_index);
+ 			if (vd_layer[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+@@ -7448,8 +7454,7 @@
+ 				vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				if (vd_layer[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer2\n");
+@@ -7462,8 +7467,7 @@
+ 				vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				fgrain_stop(&vd_layer[1], vd_layer[1].vpp_index);
+ 				if (vd_layer[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+@@ -7518,8 +7522,7 @@
+ 				vd_layer[2].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[2].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ #endif
+ 				if (vd_layer[2].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer3\n");
+@@ -7532,8 +7535,7 @@
+ 				vd_layer[2].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[2].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ #endif
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 				fgrain_stop(&vd_layer[2], vd_layer[2].vpp_index);
+@@ -7969,8 +7971,7 @@
+ 			vd_layer[0].onoff_time = jiffies_to_msecs(jiffies);
+ 			if (vd_layer[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 				pr_info("VIDEO: VsyncEnableVideoLayer\n");
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ 			force_flush = true;
+ 		} else if (vd_layer[0].onoff_state ==
+ 			VIDEO_ENABLE_STATE_OFF_REQ) {
+@@ -7980,8 +7981,7 @@
+ 				vd_layer[1].pre_blend_en = 0;
+ 			vd_layer[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 			vd_layer[0].onoff_time = jiffies_to_msecs(jiffies);
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 			fgrain_stop(&vd_layer[0], vd_layer[0].vpp_index);
+ #endif
+@@ -8025,8 +8025,7 @@
+ 				}
+ 				vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ 				if (vd_layer[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer2\n");
+ 				force_flush = true;
+@@ -8036,8 +8035,7 @@
+ 				vd_layer[1].post_blend_en = 0;
+ 				vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 				fgrain_stop(&vd_layer[1], vd_layer[1].vpp_index);
+ #endif
+@@ -8085,8 +8083,7 @@
+ 				}
+ 				vd_layer[2].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[2].onoff_time = jiffies_to_msecs(jiffies);
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ 				if (vd_layer[2].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer3\n");
+ 				force_flush = true;
+@@ -8096,8 +8093,7 @@
+ 				vd_layer[2].post_blend_en = 0;
+ 				vd_layer[2].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer[2].onoff_time = jiffies_to_msecs(jiffies);
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 				fgrain_stop(&vd_layer[2], vd_layer[2].vpp_index);
+ #endif
+@@ -8353,8 +8349,7 @@
+ 			if (vd_layer[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 				pr_info("VIDEO: VsyncEnableVideoLayer\n");
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ #endif
+ 			force_flush = true;
+ 		} else if (vd_layer[0].onoff_state ==
+@@ -8369,8 +8364,7 @@
+ 			vd_layer[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 			vd_layer[0].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER1_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER1_CHANGED);
+ #endif
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 			fgrain_stop(&vd_layer[0], vd_layer[0].vpp_index);
+@@ -8440,8 +8434,7 @@
+ 			vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 			vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER2_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 			if (vd_layer[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 				pr_info("VIDEO: VsyncEnableVideoLayer2\n");
+@@ -8456,8 +8449,7 @@
+ 			vd_layer[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 			vd_layer[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-			vpu_delay_work_flag |=
+-				VPU_VIDEO_LAYER2_CHANGED;
++			VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ #ifdef CONFIG_AMLOGIC_MEDIA_LUT_DMA
+ 			fgrain_stop(&vd_layer[1], vd_layer[1].vpp_index);
+@@ -9091,8 +9083,7 @@
+ 				vd_layer_vpp[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[0].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-					vpu_delay_work_flag |=
+-						VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer2\n");
+@@ -9103,8 +9094,7 @@
+ 				vd_layer_vpp[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[0].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-					vpu_delay_work_flag |=
+-						VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncDisableVideoLayer2\n");
+@@ -9197,8 +9187,7 @@
+ 				vd_layer_vpp[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[0].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer2\n");
+@@ -9209,8 +9198,7 @@
+ 				vd_layer_vpp[0].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[0].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER2_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER2_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[0].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncDisableVideoLayer2\n");
+@@ -9357,8 +9345,7 @@
+ 				vd_layer_vpp[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncEnableVideoLayer3\n");
+@@ -9369,8 +9356,7 @@
+ 				vd_layer_vpp[1].onoff_state = VIDEO_ENABLE_STATE_IDLE;
+ 				vd_layer_vpp[1].onoff_time = jiffies_to_msecs(jiffies);
+ #ifdef CONFIG_AMLOGIC_VPU
+-				vpu_delay_work_flag |=
+-					VPU_VIDEO_LAYER3_CHANGED;
++				VPU_DELAY_WORK_FLAG_SET(VPU_VIDEO_LAYER3_CHANGED);
+ #endif
+ 				if (vd_layer_vpp[1].global_debug & DEBUG_FLAG_BASIC_INFO)
+ 					pr_info("VIDEO: VsyncDisableVideoLayer3\n");
+@@ -11446,31 +11432,37 @@
+ {
+ 	unsigned long flags;
+ 	unsigned int r;
++	int events;
+ 	enum vframe_signal_fmt_e fmt = VFRAME_SIGNAL_FMT_INVALID;
+ 
+-	if (vpu_delay_work_flag & VPU_PRIMARY_FMT_CHANGED) {
+-		vpu_delay_work_flag &= ~VPU_PRIMARY_FMT_CHANGED;
++	/*
++	 * Take and clear the event bits under the lock: the vsync path
++	 * updates other bits of vpu_delay_work_flag concurrently, and an
++	 * unlocked read-modify-write here could restore a memory power-off
++	 * bit that VDx_MEM_POWER_ON() has just cleared.
++	 */
++	spin_lock_irqsave(&delay_work_lock, flags);
++	events = vpu_delay_work_flag &
++		 (VPU_PRIMARY_FMT_CHANGED |
++		  VPU_DELAYWORK_APO_FLAG_DOLBY |
++		  VPU_VIDEO_LAYER1_CHANGED |
++		  VPU_VIDEO_LAYER2_CHANGED |
++		  VPU_VIDEO_LAYER3_CHANGED);
++	vpu_delay_work_flag &= ~events;
++	spin_unlock_irqrestore(&delay_work_lock, flags);
++
++	if (events & VPU_PRIMARY_FMT_CHANGED) {
+ 		fmt = (enum vframe_signal_fmt_e)atomic_read(&cur_primary_src_fmt);
+ 		video_send_uevent(VIDEO_FMT_EVENT, fmt);
+ 	}
+ 
+ #ifdef CONFIG_AMLOGIC_MEDIA_ENHANCEMENT_DOLBYVISION
+-		if (vpu_delay_work_flag & VPU_DELAYWORK_APO_FLAG_DOLBY) {
+-			vpu_delay_work_flag &= ~VPU_DELAYWORK_APO_FLAG_DOLBY;
++		if (events & VPU_DELAYWORK_APO_FLAG_DOLBY) {
+ 			set_amdv_apo_enable(false);
+ 			amdv_send_uevent(AMDV_CONT_EVENT, &apo_value);
+ 		}
+ #endif
+ 
+-	if (vpu_delay_work_flag & VPU_VIDEO_LAYER1_CHANGED)
+-		vpu_delay_work_flag &= ~VPU_VIDEO_LAYER1_CHANGED;
+-
+-	if (vpu_delay_work_flag & VPU_VIDEO_LAYER2_CHANGED)
+-		vpu_delay_work_flag &= ~VPU_VIDEO_LAYER2_CHANGED;
+-
+-	if (vpu_delay_work_flag & VPU_VIDEO_LAYER3_CHANGED)
+-		vpu_delay_work_flag &= ~VPU_VIDEO_LAYER3_CHANGED;
+-
+ 	spin_lock_irqsave(&delay_work_lock, flags);
+ 
+ 	if (cur_dev->display_module == S5_DISPLAY_MODULE)
+@@ -13576,7 +13568,7 @@
+ 
+ void update_primary_fmt_event(void)
+ {
+-	vpu_delay_work_flag |= VPU_PRIMARY_FMT_CHANGED;
++	VPU_DELAY_WORK_FLAG_SET(VPU_PRIMARY_FMT_CHANGED);
+ }
+ 
+ /*********************************************************

@@ -1,0 +1,84 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] codec_mm: keeper: restore user when re-keeping an unmasked handle
+
+codec_mm_keeper_mask_keep_mem() reuses an existing slot when the handle is
+already kept: it returns the old keep_id and drops the extra reference it
+just took, but leaves the slot's user count and pending free deadline
+alone. If that slot was already unmasked, user is 0 and the deadline is
+armed, so the new keeper gets a valid id while codec_mm_keeper_monitor()
+still frees the slot, dropping its only reference.
+
+video_keeper unmasks every keep id with a 120 ms delay on each newly
+displayed frame; a decoder reset re-keeping the same handle inside that
+window leaves amvideo scanning out memory the keeper no longer holds, so
+the VPU later reads freed memory. Restore user to 1 and clear the deadline
+when re-keeping a slot whose user has fallen to 0. Since the caller decides
+to free with the slot unlocked, codec_mm_keeper_free_keep() now takes force
+and repeats the test under mgr->lock, also bailing out on a NULL handle so
+mgr->num cannot go negative.
+
+Not fixed: two keepers holding the same handle at once still share one user
+count, so the first unmask frees for both.
+
+Untested on hardware: the race needs the same handle re-kept inside the
+120 ms window.
+--- a/drivers/media/common/codec_mm/codec_mm_keeper.c
++++ b/drivers/media/common/codec_mm/codec_mm_keeper.c
+@@ -102,6 +102,10 @@
+ 		} else if (mgr->keep_list[i].handle == mem_handle) {
+ 			have_samed = 1;
+ 			keep_id = mgr->keep_list[i].keep_id;
++			if (mgr->keep_list[i].user <= 0) {
++				mgr->keep_list[i].user = 1;
++				mgr->keep_list[i].delay_on_jiffies64 = 0;
++			}
+ 			break;
+ 		}
+ 	}
+@@ -164,18 +172,32 @@
+ }
+ EXPORT_SYMBOL(codec_mm_keeper_unmask_keeper);
+ 
+-static int codec_mm_keeper_free_keep(int index)
++static int codec_mm_keeper_free_keep(int index, int force)
+ {
+ 	struct codec_mm_keeper_mgr *mgr = get_codec_mm_keeper_mgr();
++	struct keep_mem_info *info = &mgr->keep_list[index];
+ 	void *mem_handle = NULL;
+ 	int type;
+ 	unsigned long flags;
++	bool want_free;
+ 
+ 	spin_lock_irqsave(&mgr->lock, flags);
+-	mem_handle = mgr->keep_list[index].handle;
+-	type = mgr->keep_list[index].type;
+-	mgr->keep_list[index].handle = NULL;
+-	mgr->keep_list[index].delay_on_jiffies64 = 0;
++	/*
++	 * The caller checked the slot unlocked: it may have been kept
++	 * again or freed since, so check again before freeing it.
++	 */
++	want_free = force == 1 ||
++		(info->user <= 0 &&
++		 (force == 2 || time_after64(get_jiffies_64(),
++					     info->delay_on_jiffies64)));
++	if (!info->handle || !want_free) {
++		spin_unlock_irqrestore(&mgr->lock, flags);
++		return -1;
++	}
++	mem_handle = info->handle;
++	type = info->type;
++	info->handle = NULL;
++	info->delay_on_jiffies64 = 0;
+ 	mgr->num--;
+ 	spin_unlock_irqrestore(&mgr->lock, flags);
+ 	if (!mem_handle)
+@@ -217,7 +239,7 @@
+ 			want_free = 1;
+ 
+ 		if (want_free)
+-			codec_mm_keeper_free_keep(i);
++			codec_mm_keeper_free_keep(i, force);
+ 	}
+ 
+ 	return 0;

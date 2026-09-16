@@ -1,0 +1,29 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] DVDClock: take m_critSection in GetClock(double&)
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- F113 xbmc/cores/VideoPlayer/DVDClock.cpp:69: GetClock(double& absolute) reads Discontinuity() state under the wrong lock; new render-thread callers can see a clock that is hours off
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+--- a/xbmc/cores/VideoPlayer/DVDClock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDClock.cpp
+@@ -68,9 +68,12 @@
+ 
+ double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
+ {
++  // SystemToPlaying() state is guarded by m_critSection (ErrorAdjust holds it
++  // when calling here); lock order: m_critSection -> m_systemsection.
++  std::unique_lock lock(m_critSection);
+   int64_t current = m_videoRefClock->GetTime(interpolated);
+ 
+-  std::unique_lock lock(m_systemsection);
++  std::unique_lock systemLock(m_systemsection);
+   absolute = SystemToAbsolute(current);
+ 
+   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);

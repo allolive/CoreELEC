@@ -1,0 +1,197 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: hw: protect interrupt st_data between IRQ and bottom half
+
+intr_t.st_data carries an hdmitx21 interrupt event from the hard IRQ to
+its bottom half with no locking. intr_status_save_and_clear() ORs the
+status register into st_data and then write-1-clears the hardware, so
+the event lives only there; the bottom half and the sw handlers do an
+unprotected "read st_data; st_data = 0". hdmi_intr_wq is not WQ_UNBOUND,
+so the IRQ can preempt the kworker between that load and store and the
+newly ORed bit is lost: a dropped HPD edge leaves hpd_state stale until
+the next edge, a dropped HDCP2 AUTH_DONE/RCVID_CHANGED stalls until the
+2 s/3 s timeout. The window is a few instructions - it needs contact
+bounce or an interrupt burst to hit. Add a file-local spinlock,
+intr_st_lock (nested outside the leaf register lock), around every
+st_data access, with a new intr_st_fetch_clr() helper for the
+read-then-zero sites. Callbacks still run with the lock dropped.
+
+hdmitx21 does not probe on g12b (of_match covers t7/s5/s1a/s7/s7d/s6
+only), so this is compile-only there; not exercised on S905X5 hardware.
+
+--- a/drivers/media/vout/hdmitx21/hdmi_tx.h
++++ b/drivers/media/vout/hdmitx21/hdmi_tx.h
+@@ -394,6 +394,7 @@
+ void hdcp1x_intr_handler(struct intr_t *intr);
+ void hdcp2x_intr_handler(struct intr_t *intr);
+ void intr_status_save_clr_cp2txs(u8 regs[]);
++u32 intr_st_fetch_clr(struct intr_t *intr);
+ void hdcptx_init_reg(void);
+ void hdcptx2_src_auth_start(u8 content_type);
+ void hdcptx1_auth_start(void);
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
+@@ -1402,9 +1402,8 @@
+ 	u8 hdcp14_intreg[1];
+ 
+ 	pr_hdcp_info(L_2, "%s[%d]\n", __func__, __LINE__);
+-	hdcp14_intreg[0] = intr->st_data;
+ 	/* clear intr state asap instead of clear after process intr */
+-	intr->st_data = 0;
++	hdcp14_intreg[0] = intr_st_fetch_clr(intr);
+ 	hdcp1x_process_intr(p_hdcp, hdcp14_intreg);
+ }
+ 
+--- a/drivers/media/vout/hdmitx21/hw/interrupts.c
++++ b/drivers/media/vout/hdmitx21/hw/interrupts.c
+@@ -34,6 +34,11 @@
+ 
+ static pf_callback earc_hdmitx_hpdst;
+ 
++/* protects intr_t.st_data between intr_handler() and the bottom half;
++ * nests outside the register access lock, never take it the other way
++ */
++static DEFINE_SPINLOCK(intr_st_lock);
++
+ static void ddc_stall_req_handler(struct intr_t *intr);
+ void hdmitx21_earc_hpdst(pf_callback cb)
+ {
+@@ -127,8 +132,27 @@
+ 	},
+ };
+ 
++/* read and clear the saved interrupt state atomically against the ISR,
++ * which ORs new status bits into st_data and clears them in hardware
++ */
++u32 intr_st_fetch_clr(struct intr_t *intr)
++{
++	unsigned long flags;
++	u32 st;
++
++	spin_lock_irqsave(&intr_st_lock, flags);
++	st = intr->st_data;
++	intr->st_data = 0;
++	spin_unlock_irqrestore(&intr_st_lock, flags);
++
++	return st;
++}
++
+ void intr_status_save_clr_cp2txs(u8 regs[])
+ {
++	unsigned long flags;
++
++	spin_lock_irqsave(&intr_st_lock, flags);
+ 	regs[0] = hdmi_all_intrs.entity.cp2tx_intr0.st_data;
+ 	regs[1] = hdmi_all_intrs.entity.cp2tx_intr1.st_data;
+ 	regs[2] = hdmi_all_intrs.entity.cp2tx_intr2.st_data;
+@@ -137,6 +161,7 @@
+ 	hdmi_all_intrs.entity.cp2tx_intr1.st_data = 0;
+ 	hdmi_all_intrs.entity.cp2tx_intr2.st_data = 0;
+ 	hdmi_all_intrs.entity.cp2tx_intr3.st_data = 0;
++	spin_unlock_irqrestore(&intr_st_lock, flags);
+ }
+ 
+ static void top_hpd_intr_stub_handler(struct intr_t *intr)
+@@ -150,7 +175,7 @@
+ 	static u32 vsync_cnt;
+ 
+ 	/* clear intr state asap */
+-	intr->st_data = 0;
++	intr_st_fetch_clr(intr);
+ 	vsync_cnt++;
+ 	if (vsync_cnt % 64 == 0) {
+ 		/* blank here */
+@@ -170,7 +195,7 @@
+ static void intr5_sw_handler(struct intr_t *intr)
+ {
+ 	/* clear intr state asap */
+-	intr->st_data = 0;
++	intr_st_fetch_clr(intr);
+ 	/* clear pfifo intr twice */
+ 	hdmitx21_set_reg_bits(INTR5_SW_TPI_IVCTX, 1, 3, 1);
+ 	hdmitx21_set_reg_bits(INTR5_SW_TPI_IVCTX, 1, 3, 1);
+@@ -182,7 +207,7 @@
+ static void ddc_stall_req_handler(struct intr_t *intr)
+ {
+ 	/* clear intr state asap */
+-	intr->st_data = 0;
++	intr_st_fetch_clr(intr);
+ }
+ 
+ static void _intr_enable(struct intr_t *pint, bool en)
+@@ -261,17 +286,16 @@
+ {
+ 	int i;
+ 	struct intr_t *pint = (struct intr_t *)&hdmi_all_intrs;
+-	u32 val;
++	unsigned long flags;
++	bool fire;
+ 	struct hdmitx_dev *hdev = container_of((struct delayed_work *)work,
+ 		struct hdmitx_dev, work_internal_intr);
+ 	bool ret;
++	u32 dat_top;
+ 
+-	if (pint->st_data) {
+-		u32 dat_top;
+-
+-		dat_top = pint->st_data;
+-		/* clear intr state asap */
+-		pint->st_data = 0;
++	/* clear intr state asap */
++	dat_top = intr_st_fetch_clr(pint);
++	if (dat_top) {
+ 		/* check HPD status */
+ 		if (!hdev->pxp_mode && ((dat_top & (1 << 1)) && (dat_top & (1 << 2)))) {
+ 			if (hdmitx21_hpd_hw_op(HPD_READ_HPD_GPIO))
+@@ -333,16 +357,18 @@
+ 		pint++;
+ 		/* HDMITX_INFO("-----i = %d, pint->st_data = 0x%x\n", i, pint->st_data); */
+ 		/* only process the enabled interrupt */
+-		if (((hdmitx21_rd_reg(pint->intr_mask_reg) & pint->mask_data) ||
++		fire = (hdmitx21_rd_reg(pint->intr_mask_reg) & pint->mask_data) ||
+ 			(pint->intr_mask_reg == INTR5_MASK_SW_TPI_IVCTX &&
+-			!hdev->ignore_fifo_intr5)) &&
+-			(pint->st_data & pint->mask_data)) {
+-			val = pint->st_data;
++			!hdev->ignore_fifo_intr5);
++		spin_lock_irqsave(&intr_st_lock, flags);
++		fire = fire && (pint->st_data & pint->mask_data);
++		if (!fire)
++			pint->st_data = 0;
++		spin_unlock_irqrestore(&intr_st_lock, flags);
++		if (fire) {
+ 			/* clear st_data asap in callback function */
+ 			if (pint->callback)
+ 				pint->callback(pint);
+-		} else {
+-			pint->st_data = 0;
+ 		}
+ 	}
+ }
+@@ -360,8 +386,10 @@
+ 	struct intr_t *pint = (struct intr_t *)&hdmi_all_intrs;
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 	u32 gate_status = hdmitx21_get_gate_status();
++	unsigned long flags;
+ 	u32 tmp;
+ 
++	spin_lock_irqsave(&intr_st_lock, flags);
+ 	for (i = 0; i < sizeof(union intr_u) / sizeof(struct intr_t); i++, pint++) {
+ 		if (hdev->tx_hw.chip_data->chip_type == MESON_CPU_ID_S7 ||
+ 			hdev->tx_hw.chip_data->chip_type == MESON_CPU_ID_S7D ||
+@@ -401,6 +429,7 @@
+ 			hdmitx21_wr_reg(pint->intr_clr_reg, pint->st_data);
+ 		}
+ 	}
++	spin_unlock_irqrestore(&intr_st_lock, flags);
+ }
+ 
+ void intr_status_init_clear(void)
+@@ -430,7 +459,7 @@
+ 		}
+ 		st_data = hdmitx21_rd_reg(pint->intr_st_reg);
+ 		hdmitx21_wr_reg(pint->intr_clr_reg, st_data);
+-		pint->st_data = 0;
++		intr_st_fetch_clr(pint);
+ 	}
+ }
+ 

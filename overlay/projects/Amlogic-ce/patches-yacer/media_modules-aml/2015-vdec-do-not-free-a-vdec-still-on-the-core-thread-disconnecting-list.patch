@@ -1,0 +1,68 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vdec: finish the disconnect under the core lock to avoid a UAF
+
+vdec_core_thread() moved a vdec whose status is CONNECTED and whose
+next_status is DISCONNECTED off core->connected_vdec_list into a
+stack-local disconnecting_list, dropped vdec_core->lock and vdec_mutex,
+then ran another instance before finally doing list_del(),
+vdec_set_status() and complete(&vdec->inactive_done) at the end of the
+same loop iteration. In between the vdec is on no global list:
+vdec_disconnect() waits only 2000 ms on inactive_done and returns 0 on
+timeout, and vdec_connect_list_force_clear() scans only
+connected_vdec_list, so vdec_release() can vfree() the structure while
+the core thread still holds the pointer and writes to it three times.
+
+Do the three operations in place, still under vdec_core->lock and
+vdec_mutex, so a vdec is always either on connected_vdec_list or fully
+disconnected with inactive_done signalled. vdec_set_status() is a plain
+store and complete() takes only the completion's own leaf lock, so both
+are safe under spin_lock_irqsave().
+
+Triggering the old race needs the core thread stalled for over two
+seconds in another instance's prepare/run (firmware or TEE load, slow CMA)
+plus a second connected instance to elect - PiP or overlapping instances.
+The separate case of a vdec stuck ACTIVE (the usual "vdec_disconnect
+timeout!!!" log line) is unchanged; force_clear() still recovers it.
+
+Not exercised on hardware; reviewed by code reading, applies at zero fuzz.
+--- a/drivers/frame_provider/decoder/utils/vdec.c
++++ b/drivers/frame_provider/decoder/utils/vdec.c
+@@ -5053,7 +5053,6 @@
+ 	while (down_interruptible(&core->sem) == 0) {
+ 		struct vdec_s *vdec, *tmp, *worker;
+ 		unsigned long sched_mask = 0;
+-		LIST_HEAD(disconnecting_list);
+ 		ATRACE_COUNTER("0.vdec_thread", 1);
+ 		if (kthread_should_stop())
+ 			break;
+@@ -5143,7 +5142,14 @@
+ 					core->last_hevc_back = NULL;
+ 				if (core->last_run_vdec == vdec)
+ 					core->last_run_vdec = NULL;
+-				list_move(&vdec->list, &disconnecting_list);
++				/*
++				 * Finish the disconnect under the locks:
++				 * vdec_release() may free the vdec once
++				 * inactive_done completes or times out.
++				 */
++				list_del(&vdec->list);
++				vdec_set_status(vdec, VDEC_STATUS_DISCONNECTED);
++				complete(&vdec->inactive_done);
+ 			}
+ 		}
+ 		vdec_core_unlock(vdec_core, flags);
+@@ -5298,14 +5304,6 @@
+ 				up(&core->sem);
+ 		}
+ 
+-		/* remove disconnected decoder from active list */
+-		list_for_each_entry_safe(vdec, tmp, &disconnecting_list, list) {
+-			list_del(&vdec->list);
+-			vdec_set_status(vdec, VDEC_STATUS_DISCONNECTED);
+-			/*core->last_vdec = NULL;*/
+-			complete(&vdec->inactive_done);
+-		}
+-
+ 		/* if there is no new work scheduled and nothing
+ 		 * is running, sleep 20ms
+ 		 */

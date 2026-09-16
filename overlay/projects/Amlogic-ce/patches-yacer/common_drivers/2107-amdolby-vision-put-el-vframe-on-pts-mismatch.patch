@@ -1,0 +1,40 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: release EL vframe on BL/EL PTS mismatch
+
+In amdv_parse_metadata_v1() and amdv_parse_metadata_v2_stb(), with a
+separate "dveldec" enhancement-layer decoder and toggle_mode 1, the EL
+vframe is taken off the queue with dvel_vf_get() before its pts_us64 is
+compared with the base layer's. On a match it goes to
+amdvdolby_vision_vf_add() and is later released; on a mismatch the else
+branch only prints "bl(...) not found el(...)" and drops the pointer, so
+the frame never returns to dveldec's small pool. A handful of mismatches
+starve it and the base layer stalls waiting for the EL.
+
+Put the frame back with dvel_vf_put() in that branch, the same
+get-then-put idiom amdv_wait_metadata_v1() uses when it skips a stale EL.
+
+The branch needs FLAG_CHECK_ES_PTS (0x400) in the dolby_vision_flags
+module parameter plus the dual-decoder VFM path, neither of which is set
+by default, so this is untested on hardware.
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -8252,6 +8252,9 @@
+ 					("bl(%p-%lld) not found el(%p-%lld)\n",
+ 					 vf, vf->pts_us64,
+ 					 el_vf, el_vf->pts_us64);
++				/* el already taken but not paired: release it */
++				if (el_vf)
++					dvel_vf_put(el_vf);
+ 			}
+ 		} else if (toggle_mode == 1) {
+ 			if (debug_dolby & 2)
+@@ -9870,6 +9873,9 @@
+ 					("bl(%p-%lld) not found el(%p-%lld)\n",
+ 					 vf, vf->pts_us64,
+ 					 el_vf, el_vf->pts_us64);
++				/* el already taken but not paired: release it */
++				if (el_vf)
++					dvel_vf_put(el_vf);
+ 			}
+ 		} else if (toggle_mode == 1) {
+ 			if (debug_dolby & 2)

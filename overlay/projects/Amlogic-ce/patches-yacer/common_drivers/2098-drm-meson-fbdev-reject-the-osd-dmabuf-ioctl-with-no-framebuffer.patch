@@ -1,0 +1,24 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: fbdev: reject FBIOGET_OSD_DMABUF with no fb
+
+am_meson_drm_fbdev_ioctl() runs container_of() on helper->fb without
+checking it. struct am_meson_fb has base at offset 0, so a NULL fb yields a
+NULL meson_fb and the following bufp[0] read faults. helper->fb is NULL
+before the first modeset and after the fbdev framebuffer is released, and
+the ioctl is reachable from userspace throughout. Return -ENODEV instead.
+
+The dma_buf refcount and fd handling in the same ioctl were already fixed
+by 2063; this patch adds only the missing framebuffer check and applies on
+top of it. Not exercised on hardware.
+
+--- a/drivers/drm/meson_fbdev.c
++++ b/drivers/drm/meson_fbdev.c
+@@ -335,6 +335,8 @@ static int am_meson_drm_fbdev_ioctl(struct fb_info *info,
+ 	if (cmd == FBIOGET_OSD_DMABUF) {
+ 		struct dma_buf *dmabuf;
+ 
++		if (!helper->fb)
++			return -ENODEV;
+ 		meson_fb = container_of(helper->fb, struct am_meson_fb, base);
+ 		/* serialise against a realloc on the console_lock-only paths */
+ 		mutex_lock(&info->mm_lock);

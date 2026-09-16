@@ -1,0 +1,109 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vfm: free trace buffers only after in-flight vf_get/vf_put finish
+
+vf_unreg_provider() kfree()d prov->traceget / prov->traceput as soon as
+the provider was removed from provider_table, before vf_provider_close()
+and before the loop that waits for providers_used() to drop to zero. A
+reader already inside vf_get()/vf_put() (or vfm_dump_one()) can have
+loaded the pointer before it was cleared, and vftrace_info_in() then
+spin_lock_irqsave()s inside freed slab memory and writes to it from the
+vsync IRQ path. Only reachable with vfm_trace_enable set via sysfs
+(default 0); otherwise both pointers are NULL.
+
+Detach the pointers where the table slot is cleared and free them after
+the drain loop. If that loop times out after 10000 iterations a reader is
+still running, so return without freeing and leak ~2.5 KiB of debug
+buffers rather than risk the use-after-free.
+
+vftrace_alloc_trace() also takes vfm_trace_num straight from sysfs with
+no bounds check and never checked the allocation before memset()ing it.
+Reject max <= 0, clamp to VFTRACE_MAX_NUM (4096 entries), use kzalloc()
+and return NULL on failure; every caller already treats NULL as tracing
+off. The clamp is silent - sysfs still reads back the written value.
+
+Generic VFM code, not SoC-gated. Not run on S905X5 hardware, and the race
+has not been reproduced on g12b.
+--- a/drivers/media/common/vfm/vframe_provider.c
++++ b/drivers/media/common/vfm/vframe_provider.c
+@@ -330,6 +330,8 @@
+ {
+ 	struct vframe_provider_s *p = NULL;
+ 	struct vframe_receiver_s *receiver = NULL;
++	void *traceget = NULL;
++	void *traceput = NULL;
+ 	int i;
+ 
+ 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
+@@ -340,14 +342,17 @@
+ 			provider_table[i].used = false;
+ 			provider_table[i].vframe_provider = NULL;
+ 			TABLE_UNLOCK();
+-			if (p->traceget) {
+-				vftrace_free_trace(prov->traceget);
+-				p->traceget = NULL;
+-			}
+-			if (p->traceput) {
+-				vftrace_free_trace(prov->traceput);
+-				p->traceput = NULL;
+-			}
++			/*
++			 * Detach the trace buffers now, but free them only
++			 * after the providers_used() wait below: vf_get/vf_put
++			 * take providers_lock() before looking up the provider,
++			 * so once that count drops to 0 none can still hold
++			 * the old pointers.
++			 */
++			traceget = p->traceget;
++			p->traceget = NULL;
++			traceput = p->traceput;
++			p->traceput = NULL;
+ 			vf_provider_close(prov);
+ 			if (vfm_debug_flag & 1)
+ 				pr_err("%s:%s\n", __func__, prov->name);
+@@ -387,10 +392,13 @@
+ 				       prov->name, cnt);
+ 				provider_print_last_info();
+ 				prov->ops = NULL;
+-				break;
++				/* still in use: leak trace buffers, don't free */
++				return;
+ 			}
+ 		}
+ 	}
++	vftrace_free_trace(traceget);
++	vftrace_free_trace(traceput);
+ }
+ EXPORT_SYMBOL(vf_unreg_provider);
+ void vf_light_reg_provider(struct vframe_provider_s *prov)
+--- a/drivers/media/common/vfm/vftrace.c
++++ b/drivers/media/common/vfm/vftrace.c
+@@ -25,6 +25,8 @@
+ 	u32 pts;
+ };
+ 
++#define VFTRACE_MAX_NUM 4096
++
+ struct vf_trace {
+ 	const char *name;
+ 	int max;
+@@ -38,11 +40,16 @@
+ 
+ void *vftrace_alloc_trace(const char *name, int get, int max)
+ {
+-	int buf_size = sizeof(struct vf_trace) +
+-		max * sizeof(struct trace_info);
+-	struct vf_trace *trace = kmalloc(buf_size, GFP_KERNEL);
++	struct vf_trace *trace;
+ 
+-	memset(trace, 0, buf_size);
++	if (max <= 0)
++		return NULL;
++	if (max > VFTRACE_MAX_NUM)
++		max = VFTRACE_MAX_NUM;
++	trace = kzalloc(sizeof(struct vf_trace) +
++			max * sizeof(struct trace_info), GFP_KERNEL);
++	if (!trace)
++		return NULL;
+ 	trace->max = max;
+ 	trace->w_index = 0;
+ 	trace->name = name;

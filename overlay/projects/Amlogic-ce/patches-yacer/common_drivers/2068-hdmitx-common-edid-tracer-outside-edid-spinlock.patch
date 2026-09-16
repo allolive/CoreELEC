@@ -1,0 +1,41 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx_common: run EDID tracer post-processing outside edid_spinlock
+
+hdmitx_common_get_edid() calls hdmitx_common_edid_tracer_post_proc()
+while holding edid_spinlock with IRQs disabled. On an EDID with a bad
+header, post_proc logs HDMITX_EDID_HEAD_ERROR, which with
+CONFIG_AMLOGIC_MEDIA_RESMANAGE=y reaches resman_notify_error_info():
+two mutexes and two kzalloc(GFP_KERNEL) calls, i.e. sleeping in atomic
+context in the hotplug worker. It is the only post_proc event that gets
+there. Needs a bad DDC read - HPD high but garbage or zeroes, as after a
+TV or AVR leaves standby, or on a flaky cable.
+
+Move the call to just after spin_unlock_irqrestore(). Parsing and
+hdmitx_set_hdr_priority() stay under the lock, so edid_spinlock readers
+still see a consistent rxcap, and post_proc reads only fields that
+hdmitx_set_hdr_priority() does not write. Tested on g12b only.
+--- a/drivers/media/vout/hdmitx_common/hdmitx_common.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_common.c
+@@ -835,7 +835,6 @@
+ 	spin_lock_irqsave(&tx_comm->edid_spinlock, flags);
+ 	hdmitx_edid_rxcap_clear(&tx_comm->rxcap);
+ 	hdmitx_edid_parse(&tx_comm->rxcap, tx_comm->EDID_buf);
+-	hdmitx_common_edid_tracer_post_proc(tx_comm, &tx_comm->rxcap);
+ 
+ 	/* update the hdr/hdr10+/dv capabilities in the end of parse */
+ 	hdmitx_set_hdr_priority(tx_comm, tx_comm->hdr_priority);
+@@ -843,6 +842,14 @@
+ 	spin_unlock_irqrestore(&tx_comm->edid_spinlock, flags);
+ 
+ 	/*
++	 * The tracer may sleep (resman_notify_error_info() takes mutexes
++	 * and allocates with GFP_KERNEL), so it must not run under
++	 * edid_spinlock. It only reads parse results that
++	 * hdmitx_set_hdr_priority() does not modify.
++	 */
++	hdmitx_common_edid_tracer_post_proc(tx_comm, &tx_comm->rxcap);
++
++	/*
+ 	 * notify phy addr to rx/cec:
+ 	 * rx/cec currently do not use the phy addr of below
+ 	 * two interfaces, just keep for safety

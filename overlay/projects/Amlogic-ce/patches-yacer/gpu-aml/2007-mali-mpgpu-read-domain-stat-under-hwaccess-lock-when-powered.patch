@@ -1,0 +1,63 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] mali mpgpu: read domain_stat under hwaccess_lock when powered
+
+domain_stat_read() in the Amlogic devicetree platform glue calls
+kbase_pm_get_ready_cores(), which reads the GPU SHADER_READY registers,
+without taking hwaccess_lock and without checking
+kbdev->pm.backend.gpu_powered. mali_get_online_pp() in platform_gx.c does
+both.
+
+Reading /sys/class/mpgpu/domain_stat (mode 0644) while the GPU is
+runtime-suspended - the normal state when nothing is composing - hits the
+WARN_ON(!gpu_powered) inside kbase_reg_read(): it returns 0, but prints a
+backtrace per read, so a loop over the node floods the log, and panics on a
+panic_on_warn kernel. The unlocked read also races kbase_pm_update_state.
+
+Take hwaccess_lock and skip the read when unpowered; core_ready starts at 0,
+so the node prints what it printed before in both power states. Patched in
+bifrost/r44p0 and valhall/r44p0, covering all three gpu-aml modules. Not
+built or hardware-tested here.
+--- a/bifrost/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
++++ b/bifrost/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
+@@ -46,12 +46,17 @@
+ 		struct class_attribute *attr, char *buf)
+ {
+ 	unsigned int val;
+-	u64 core_ready;
++	u64 core_ready = 0;
++	unsigned long flags;
+ 	mali_plat_info_t* pmali_plat = get_mali_plat_data();
+ 	struct platform_device* ptr_plt_dev = pmali_plat->pdev;
+ 	struct kbase_device *kbdev = dev_get_drvdata(&ptr_plt_dev->dev);
+ 
+-	core_ready = kbase_pm_get_ready_cores(kbdev, KBASE_PM_CORE_SHADER);
++	/* kbase_reg_read() requires gpu_powered; as in mali_get_online_pp() */
++	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
++	if (kbdev->pm.backend.gpu_powered)
++		core_ready = kbase_pm_get_ready_cores(kbdev, KBASE_PM_CORE_SHADER);
++	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+ 	val = core_ready;
+ 	return sprintf(buf, "%x\n", val);
+ }
+--- a/valhall/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
++++ b/valhall/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
+@@ -46,12 +46,17 @@
+ 		struct class_attribute *attr, char *buf)
+ {
+ 	unsigned int val;
+-	u64 core_ready;
++	u64 core_ready = 0;
++	unsigned long flags;
+ 	mali_plat_info_t* pmali_plat = get_mali_plat_data();
+ 	struct platform_device* ptr_plt_dev = pmali_plat->pdev;
+ 	struct kbase_device *kbdev = dev_get_drvdata(&ptr_plt_dev->dev);
+ 
+-	core_ready = kbase_pm_get_ready_cores(kbdev, KBASE_PM_CORE_SHADER);
++	/* kbase_reg_read() requires gpu_powered; as in mali_get_online_pp() */
++	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
++	if (kbdev->pm.backend.gpu_powered)
++		core_ready = kbase_pm_get_ready_cores(kbdev, KBASE_PM_CORE_SHADER);
++	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+ 	val = core_ready;
+ 	return sprintf(buf, "%x\n", val);
+ }

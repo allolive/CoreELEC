@@ -1,0 +1,111 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] codec_mm: dmabuf_manage: check dma-buf ops and fix a dma_buf leak
+
+dmabuf_manage_get_handle(), _get_phyaddr() and _import() read dbuf->priv as
+a struct dmabuf_manage_block without checking this driver exported the buffer.
+An fd from another exporter (dma-heap, uvm, ion) has the first 24 bytes of its
+own priv read as paddr/handle/extend and part of that returned to user space:
+an info leak, an out-of-bounds read if that object is smaller, or a NULL deref
+if it keeps no priv. The two *_get_dmabufinfo() helpers separately "goto
+error" on a block->type mismatch, below the dma_buf_put(), leaking a reference.
+
+Add dmabuf_manage_to_block(), returning priv only for our own buffers, and use
+it in all five sites; get_handle and get_phyaddr now return -EINVAL for a
+foreign fd, import still accepts one and returns the full untruncated address.
+Both mismatch branches goto error_fd. Build-tested only: nothing in CoreELEC
+opens /dev/secmem.
+--- a/drivers/media/common/codec_mm/dmabuf_manage.c
++++ b/drivers/media/common/codec_mm/dmabuf_manage.c
+@@ -442,6 +442,14 @@
+ }
+ EXPORT_SYMBOL(dmabuf_is_esbuf);
+ 
++/* priv is only a dmabuf_manage_block for buffers exported by this driver */
++static struct dmabuf_manage_block *dmabuf_manage_to_block(struct dma_buf *dbuf)
++{
++	if (!dmabuf_is_esbuf(dbuf))
++		return NULL;
++	return dbuf->priv;
++}
++
+ #if IS_ENABLED(CONFIG_AMLOGIC_OPTEE)
+ static int dmabuf_manage_secmem_ctx_match(struct tee_ioctl_version_data *ver,
+ 	const void *data)
+@@ -750,11 +758,15 @@
+ 		pr_error("dma_buf_get failed\n");
+ 		goto error_get;
+ 	}
+-	block = dbuf->priv;
+-	if (block->extend)
++	block = dmabuf_manage_to_block(dbuf);
++	if (!block) {
++		pr_error("not a dmabuf_manage buffer\n");
++		res = -EINVAL;
++	} else if (block->extend) {
+ 		res = block->handle;
+-	else
++	} else {
+ 		res = (long)(block->handle & (0xffffffff));
++	}
+ 	dma_buf_put(dbuf);
+ error_get:
+ error_copy:
+@@ -780,11 +792,15 @@
+ 		pr_error("dma_buf_get failed\n");
+ 		goto error_get;
+ 	}
+-	block = dbuf->priv;
+-	if (block->extend)
++	block = dmabuf_manage_to_block(dbuf);
++	if (!block) {
++		pr_error("not a dmabuf_manage buffer\n");
++		res = -EINVAL;
++	} else if (block->extend) {
+ 		res = block->paddr;
+-	else
++	} else {
+ 		res = (long)(block->paddr & (0xffffffff));
++	}
+ 	dma_buf_put(dbuf);
+ error_get:
+ error_copy:
+@@ -824,8 +840,9 @@
+ 		goto error_map;
+ 	}
+ 	paddr = sg_dma_address(sgt->sgl);
+-	block = dbuf->priv;
+-	if (block->extend)
++	/* foreign exporters carry no extend flag: return the full address */
++	block = dmabuf_manage_to_block(dbuf);
++	if (!block || block->extend)
+ 		res = paddr;
+ 	else
+ 		res = (long)(paddr & (0xffffffff));
+@@ -998,10 +1015,10 @@
+ 	dbuf = dma_buf_get(info.fd);
+ 	if (IS_ERR(dbuf))
+ 		goto error;
+-	if (dbuf->priv && dbuf->ops == &dmabuf_manage_ops) {
+-		block = dbuf->priv;
++	block = dmabuf_manage_to_block(dbuf);
++	if (block) {
+ 		if (block->type != info.type)
+-			goto error;
++			goto error_fd;
+ 		info.paddr = block->paddr;
+ 		info.size = block->size;
+ 		info.handle = block->handle;
+@@ -1042,10 +1059,10 @@
+ 	dbuf = dma_buf_get(info.fd);
+ 	if (IS_ERR(dbuf))
+ 		goto error;
+-	if (dbuf->priv && dbuf->ops == &dmabuf_manage_ops) {
+-		block = dbuf->priv;
++	block = dmabuf_manage_to_block(dbuf);
++	if (block) {
+ 		if (block->type != info.type)
+-			goto error;
++			goto error_fd;
+ 		info.paddr = block->extend_paddr;
+ 		info.size = block->extend_size;
+ 		info.handle = block->extend_handle;

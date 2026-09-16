@@ -1,0 +1,45 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] codec_mm: dmabuf_manage: bound mmap to the buffer
+
+dmabuf_manage_mmap() ignored the caller's mapping: it passed the block's own
+paddr_size as the length to remap_pfn_range() and always started at the base
+of the buffer. A mapping shorter than the buffer therefore populated page
+tables past vma->vm_end, into whatever follows the VMA, and a non-zero
+vm_pgoff was silently ignored, so the caller got the wrong pages.
+
+Map what was asked for: reject an offset past the end of the buffer, or a
+length that would run past it, then remap vm_end - vm_start bytes starting
+at the requested page offset.
+
+Mapping an exported block is still allowed; that is a policy question, not
+part of this overrun fix. Reached only through mmap of a dmabuf_manage fd,
+so no decode or display path is affected. Not run on hardware.
+--- a/drivers/media/common/codec_mm/dmabuf_manage.c
++++ b/drivers/media/common/codec_mm/dmabuf_manage.c
+@@ -411,6 +411,8 @@
+ 	struct dmabuf_manage_block *block = NULL;
+ 	phys_addr_t paddr = 0;
+ 	unsigned long paddr_size = 0;
++	unsigned long nr_pages;
++	unsigned long vma_size = vma->vm_end - vma->vm_start;
+ 
+ 	pr_enter();
+ 	block = (struct dmabuf_manage_block *)dbuf->priv;
+@@ -422,9 +424,15 @@
+ 		paddr_size = block->size;
+ 	}
+ 
++	nr_pages = PAGE_ALIGN(paddr_size) >> PAGE_SHIFT;
++	if (vma->vm_pgoff >= nr_pages ||
++	    (vma_size >> PAGE_SHIFT) > nr_pages - vma->vm_pgoff)
++		return -EINVAL;
++
+ 	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+-	return remap_pfn_range(vma, vma->vm_start, page_to_pfn(phys_to_page(paddr)),
+-		paddr_size, vma->vm_page_prot);
++	return remap_pfn_range(vma, vma->vm_start,
++		PHYS_PFN(paddr) + vma->vm_pgoff,
++		vma_size, vma->vm_page_prot);
+ }
+ 
+ static struct dma_buf_ops dmabuf_manage_ops = {

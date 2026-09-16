@@ -1,0 +1,88 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] cvbs: debug_store: free the original kstrdup buffer
+
+cvbs_debug_store() duplicates the sysfs write buffer into p with kstrdup(),
+then hands &p to strsep() six times to split argv[0..5]. strsep() advances
+the pointer, so at DEBUG_END p is no longer what kstrdup() returned, yet
+that label does kfree(p). With six or fewer tokens p is NULL, so the
+duplicate leaks on every write; with seven or more - e.g.
+echo "r c 0 1 2 3 4" > /sys/class/cvbs/debug - p points into the middle of
+the allocation and kfree() gets an interior pointer. Three switch arms also
+return bare instead of goto, skipping the free, and kstrdup() is unchecked,
+so on allocation failure argv[0] stays NULL and the following strcmp()
+dereferences it.
+
+Keep the original in buf_orig, return early if the allocation fails, let p
+stay the cursor, turn the five bare returns into goto DEBUG_END, and free
+buf_orig there. The node is 0644, so the invalid free needs a root write of
+a long debug command; the leak happens on any write. Not built or booted
+here.
+--- a/drivers/media/vout/cvbs/cvbs_out.c
++++ b/drivers/media/vout/cvbs/cvbs_out.c
+@@ -1163,7 +1163,7 @@
+ 	unsigned int ret = 0;
+ 	unsigned long addr, start, end, value, length, old;
+ 	unsigned int argc, bist;
+-	char *p = NULL, *para = NULL,
++	char *buf_orig, *p = NULL, *para = NULL,
+ 		*argv[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+ 	char *str_type = NULL;
+ 	unsigned int i, cmd;
+@@ -1176,7 +1176,10 @@
+ 	struct performance_config_s *perfconf = NULL;
+ 	struct reg_s *s = NULL;
+ 
+-	p = kstrdup(buf, GFP_KERNEL);
++	buf_orig = kstrdup(buf, GFP_KERNEL);
++	if (!buf_orig)
++		return;
++	p = buf_orig;
+ 	for (argc = 0; argc < 6; argc++) {
+ 		para = strsep(&p, " ");
+ 		if (!para)
+@@ -1367,7 +1370,7 @@
+ 	case CMD_VP_SET:
+ 		if (cvbs_drv->vinfo->mode != VMODE_CVBS) {
+ 			pr_info("NOT VMODE_CVBS,Return\n");
+-			return;
++			goto DEBUG_END;
+ 		}
+ 		cvbs_performance_enhancement(local_cvbs_mode);
+ 		break;
+@@ -1417,11 +1420,11 @@
+ 	case CMD_SVA_VALUE:
+ 		perfconf = &cvbs_drv->perf_conf_pal_sva;
+ 		if (!perfconf)
+-			return;
++			goto DEBUG_END;
+ 
+ 		if (!perfconf->reg_table) {
+ 			cvbs_log_info("no performance table\n");
+-			return;
++			goto DEBUG_END;
+ 		}
+ 
+ 		i = 0;
+@@ -1438,11 +1441,11 @@
+ 	case CMD_TTC_VALUE:
+ 		perfconf = &cvbs_drv->perf_conf_ntsc_ttc;
+ 		if (!perfconf)
+-			return;
++			goto DEBUG_END;
+ 
+ 		if (!perfconf->reg_table) {
+ 			cvbs_log_info("no performance table\n");
+-			return;
++			goto DEBUG_END;
+ 		}
+ 
+ 		i = 0;
+@@ -1489,7 +1492,7 @@
+ 	}
+ 
+ DEBUG_END:
+-	kfree(p);
++	kfree(buf_orig);
+ }
+ 
+ static ssize_t aml_CVBS_attr_debug_store(struct class *class,

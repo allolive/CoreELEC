@@ -1,0 +1,36 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] rdma: rdma_check_conflict: test adr[k], not adr[i]
+
+rdma_check_conflict() records a register another RDMA channel has already
+queued for this frame, so a later read-modify-write builds its new value
+from the pending value instead of the live hardware one. The slot loop
+runs over k (0..MAX_CONFLICT, 32), but its emptiness test reads
+rdma_info.rdma_reg.adr[i], the other channel's index; the two assignments
+below it use [k].
+
+With adr[i] zero every conflict lands in slot 0, overwriting whatever was
+recorded there; with adr[i] non-zero nothing is recorded at all. Either
+way the dropped register falls back to the live VCBUS value and the
+read-modify-write can clobber bits the other channel queued for the same
+vsync - an intermittent wrong-bits glitch in a shared VPP/blend register,
+not a memory-safety issue (adr[i] was always in bounds, channel_num <= 16).
+
+Fix the test to use adr[k]. The table can now hold more than one live
+entry; entries are retired in rdma_mgr_isr only when the register reads
+back equal to the tracked value, so a register that never converges keeps
+its slot until reset - previously true of slot 0, now of up to 32. The
+unlocked access to rdma_info.rdma_reg is pre-existing and unchanged.
+
+Not exercised on hardware: triggering it needs two RDMA channels queueing
+the same register in one frame.
+--- a/drivers/media/common/rdma/rdma_mgr.c
++++ b/drivers/media/common/rdma/rdma_mgr.c
+@@ -1315,7 +1315,7 @@
+ 						READ_VCBUS_REG(adr));
+ 			}
+ 			for (k = 0; k < MAX_CONFLICT; k++) {
+-				if (!rdma_info.rdma_reg.adr[i]) {
++				if (!rdma_info.rdma_reg.adr[k]) {
+ 					rdma_info.rdma_reg.adr[k] = adr;
+ 					rdma_info.rdma_reg.val[k] =
+ 						oth_ins->reg_buf[(j << 1) + 1];

@@ -1,0 +1,38 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: ext_v2: bound AV1 T35 header check and debug dump
+
+parse_sei_and_meta_ext_v2() only checks a record's announced length
+against the rest of the aux buffer, then for an AV1 T35 OBU dereferences
+p[0..9] for the Dolby ITU-T T.35 signature and p[10..12] for the RPU
+size; a record of length 1 at the end of the buffer reads up to twelve
+bytes past aux_buf + aux_size, and the existing "p + 13 + rpu_size"
+guard runs only after those reads. Require size >= 13 first, so short
+AV1 records take the non-RPU path as a non-matching signature already
+does. The debug dump under debug_dolby & 4 iterates i < size, the record
+length, but prints from the 1024-byte meta_buf; unlike the HEVC branch
+the AV1 branch never clamps, so a Dolby record over 1024 bytes dumps
+stack to dmesg. Iterate over rpu_size and stop at the buffer end. Both
+need a malformed stream; ext_v1's identical code is untouched. Not
+exercised on hardware (AV1 DV is S905X5, not g12b).
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -5888,7 +5888,9 @@
+ 			*total_comp_size = 0;
+ 			*total_md_size = 0;
+ 
++			/* obu header and rpu size bits span p[0..12] */
+ 			if ((type & 0xffff0000) == AV1_SEI &&
++			    size >= 13 &&
+ 			    p[0] == 0xb5 &&
+ 			    p[1] == 0x00 &&
+ 			    p[2] == 0x3b &&
+@@ -5949,7 +5951,8 @@
+ 			}
+ 			if ((debug_dolby & 4) && dump_enable_f(dv_id)) {
+ 				pr_dv_dbg("[inst%d]metadata(%d):\n", dv_id + 1, rpu_size);
+-				for (i = 0; i < size; i += 16)
++				for (i = 0; i < rpu_size &&
++				     i + 16 <= sizeof(meta_buf); i += 16)
+ 					pr_info("%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+ 						meta_buf[i],
+ 						meta_buf[i + 1],

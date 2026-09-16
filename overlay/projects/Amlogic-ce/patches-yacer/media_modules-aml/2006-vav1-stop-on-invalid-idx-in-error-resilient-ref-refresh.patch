@@ -1,0 +1,28 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vav1: stop on INVALID_IDX in error-resilient ref refresh
+
+In read_uncompressed_header(), the error-resilient reference refresh calls
+get_free_frame_buffer() and, on INVALID_IDX, calls aom_internal_error() and
+indexes anyway. Upstream libaom longjmps out of that call; here the longjmp
+is under #ifdef ORI_CODE (av1_bufmgr.c:717), so it returns and
+buf = &frame_bufs[-1] (INVALID_IDX is -1, av1_global.h:912) points just
+before BufferPool_s.frame_bufs, inside the enclosing AV1HW_s. It is written
+through and stored in cm->ref_frame_map[]: a bitstream-triggered OOB write.
+It needs real pool exhaustion - all 16 FRAME_BUFFERS held by ref_count or
+vf_ref - while this loop can need eight new buffers in one header. Clear
+the slot and continue instead; the old reference was already dropped, and
+NULL ref_frame_map entries are handled elsewhere. Needs the companion
+film-grain NULL-check patch. Untested: g12b has no AV1 decode.
+--- a/drivers/frame_provider/decoder/vav1/av1_bufmgr.c
++++ b/drivers/frame_provider/decoder/vav1/av1_bufmgr.c
+@@ -2209,6 +2209,10 @@
+           if (buf_idx == INVALID_IDX) {
+             aom_internal_error(&cm->error, AOM_CODEC_MEM_ERROR,
+                                "Unable to find free frame buffer");
++            /* No longjmp here: never index frame_bufs[] with INVALID_IDX;
++             * the old ref was already dropped, so clear the slot. */
++            cm->ref_frame_map[ref_idx] = NULL;
++            continue;
+           }
+           buf = &frame_bufs[buf_idx];
+           lock_buffer_pool(pool, flags);

@@ -1,0 +1,60 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] di_multi: roll back suspend state when di_suspend aborts
+
+di_suspend() (.suspend_late for dim-g12b and dim-s7d) sets
+DI_SUSPEND_FLAG, lowers the vpu_clkb rate, runs di_clear_for_suspend()
+and gates clk_b off before polling dpre/dpst/dct_can_exit() 20 times; on
+timeout it returns -1 with none of that undone. A failed suspend_late
+aborts the suspend, and the PM core then never calls the matching
+resume, so the flag is never cleared: dim_api_reg(), the
+DI_POST_REG_RD/WR helpers and the di ioctl path all refuse, and
+deinterlacing stays dead until reboot. The DI kthreads are freezable and
+already frozen here, so one frozen mid-frame keeps the state non-idle
+for all 20 polls. Undo the state on the failure path and return -EBUSY
+instead of -1 (an observable errno change for /sys/power/state). Not
+exercised on hardware: the branch needs DI to be stuck at suspend time.
+
+--- a/drivers/media/di_multi/di_sys.c
++++ b/drivers/media/di_multi/di_sys.c
+@@ -4285,6 +4285,7 @@
+ 	unsigned int ready_count = 0;
+ 	unsigned int sleep_count = 0;
+ 	struct di_ch_s *pch;
++	unsigned long clkb_rate = 0;
+ 
+ 	if (DIM_IS_ICS(T5W) || DIM_IS_IC(S7D)) {
+ 		reg_rst[0] = RD(DI_TOP_PRE_CTRL);
+@@ -4311,6 +4312,7 @@
+ 		   DIM_IS_IC(S5)) {
+ 	#ifdef CLK_TREE_SUPPORT
+ 			if (dimp_get(edi_mp_clock_low_ratio)) {
++				clkb_rate = clk_get_rate(di_devp->vpu_clkb);
+ 				clk_set_rate(di_devp->vpu_clkb,
+ 					dimp_get(edi_mp_clock_low_ratio));
+ 			}
+@@ -4335,10 +4337,21 @@
+ 			}
+ 			sleep_count++;
+ 		}
+-		if (ready_count == DI_CHANNEL_NUB)
+-			clk_disable_unprepare(di_devp->vpu_clkb);
+-		else
+-			return -1;
++		if (ready_count != DI_CHANNEL_NUB) {
++			/*
++			 * The PM core aborts the suspend and never calls
++			 * di_resume() for us: undo what was done above so
++			 * DI is usable again.
++			 */
++			if (!is_meson_txlx_cpu())
++				diext_clk_b_sw(true);
++			if (clkb_rate)
++				clk_set_rate(di_devp->vpu_clkb, clkb_rate);
++			di_devp->flags &= ~DI_SUSPEND_FLAG;
++			PR_ERR("%s: DI not idle, abort suspend\n", __func__);
++			return -EBUSY;
++		}
++		clk_disable_unprepare(di_devp->vpu_clkb);
+ 	}
+ 	PR_INF("%s finish\n", __func__);
+ 	return 0;

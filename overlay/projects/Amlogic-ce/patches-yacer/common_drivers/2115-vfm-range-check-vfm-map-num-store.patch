@@ -1,0 +1,44 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vfm: range-check vfm_map_num sysfs store
+
+vfm_map_num_store() assigned the parsed value straight to vfm_map_num
+with no bounds check, and /sys/class/vfm/vfm_map_num is CLASS_ATTR_RW(),
+so root can write it. vfm_map_num is the only bound every walk of the
+fixed 40-entry vfm_map[VFM_MAP_COUNT] uses. A value above the populated
+count reaches NULL slots that vf_check_node() and
+vf_get_provider_name_inmap() dereference without a test; a value above
+VFM_MAP_COUNT walks off the array into the globals behind it and treats
+them as struct vfm_map_s pointers. Those lookups run on the vf_get/
+vf_peek/vf_put path from the vsync interrupt.
+
+Reject values outside [0, VFM_MAP_COUNT] and values naming an
+unpopulated slot with -EINVAL, under the existing spinlock that
+vfm_map_add() takes when it publishes a slot. val also becomes int,
+which is what kstrtoint() expects. Not exercised on hardware.
+--- a/drivers/media/common/vfm/vfm.c
++++ b/drivers/media/common/vfm/vfm.c
+@@ -790,7 +790,8 @@
+ 				 struct class_attribute *attr,
+ 				 const char *buf, size_t size)
+ {
+-	unsigned int val;
++	unsigned long flags;
++	int val;
+ 	ssize_t ret;
+ 
+ 	val = -1;
+@@ -798,7 +799,14 @@
+ 	if (ret != 0)
+ 		return -EINVAL;
+ 
++	/* slots fill in order and are never freed: accept only populated counts */
++	spin_lock_irqsave(&lock, flags);
++	if (val < 0 || val > VFM_MAP_COUNT || (val > 0 && !vfm_map[val - 1])) {
++		spin_unlock_irqrestore(&lock, flags);
++		return -EINVAL;
++	}
+ 	vfm_map_num = val;
++	spin_unlock_irqrestore(&lock, flags);
+ 
+ 	return size;
+ }

@@ -1,0 +1,61 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] di_multi: mtask: pop a whole command record on fifo overflow
+
+dim_fcmd_s::fifo is an untyped byte kfifo of
+sizeof(struct mtsk_cmd_s) * MAX_KFIFO_L_CMD_NUB = 8 * 32 = 256 bytes, and
+every normal access moves exactly one 8-byte record. The drop-oldest path
+in mtask_send_cmd()/mtask_send_cmd_block() instead pops
+sizeof(unsigned int), so it removes half a record, compares the 4 bytes
+returned against sizeof(struct mtsk_cmd_s) and always returns false. The
+new command is dropped anyway and the read offset is left mid-record:
+kfifo_is_full() never trips again and every later mtask_get_cmd() decodes
+cmd/nub/page bits out of the previous record's blk_flg_s word, so
+blk_polling() allocates and releases blocks with garbage parameters for
+the life of the channel.
+
+Pop sizeof(struct mtsk_cmd_s) so the fifo stays record-aligned, and
+atomic_dec() fcmd->doing for the discarded command, which blk_polling()
+would otherwise never decrement. The fifo is full when this runs, so at
+least 31 increments remain outstanding. The previously unreachable
+PR_ERR("lost cmd") and err_cmd_cnt++ now fire once per dropped command.
+
+Reaching the overflow needs 32 commands queued while the memory thread is
+stalled (e.g. a slow codec_mm_alloc_for_dma under CMA pressure), which was
+not reproduced here; the fix is reasoned from the code. tb_task.c carries
+the same bug for struct tb_task_cmd_s and is deliberately left alone.
+--- a/drivers/media/di_multi/di_task.c
++++ b/drivers/media/di_multi/di_task.c
+@@ -578,7 +578,7 @@
+ 	//dbg_mem2("%s:cmd[%d]:\n", __func__, cmd);
+ 	cmd->block_mode = 0;
+ 	if (kfifo_is_full(&fcmd->fifo)) {
+-		if (kfifo_out(&fcmd->fifo, &val, sizeof(unsigned int))
++		if (kfifo_out(&fcmd->fifo, &val, sizeof(struct mtsk_cmd_s))
+ 		    != sizeof(struct mtsk_cmd_s)) {
+ 			//PR_ERR("%s:can't out\n", __func__);
+ 			return false;
+@@ -586,6 +586,7 @@
+ 
+ 		PR_ERR("%s:lost cmd[%d]\n", __func__, val.cmd);
+ 		tsk->err_cmd_cnt++;
++		atomic_dec(&fcmd->doing);
+ 		/*return false;*/
+ 	}
+ 	if (fcmd->flg_lock & DIM_QUE_LOCK_WR)
+@@ -614,7 +615,7 @@
+ 	//dbg_mem2("%s:cmd[%d]:\n", __func__, cmd);
+ 	cmd->block_mode = 1;
+ 	if (kfifo_is_full(&fcmd->fifo)) {
+-		if (kfifo_out(&fcmd->fifo, &val, sizeof(unsigned int))
++		if (kfifo_out(&fcmd->fifo, &val, sizeof(struct mtsk_cmd_s))
+ 		    != sizeof(struct mtsk_cmd_s)) {
+ 			//PR_ERR("%s:can't out\n", __func__);
+ 			return false;
+@@ -622,6 +623,7 @@
+ 
+ 		PR_ERR("%s:lost cmd[%d]\n", __func__, val.cmd);
+ 		tsk->err_cmd_cnt++;
++		atomic_dec(&fcmd->doing);
+ 		/*return false;*/
+ 	}
+ 	if (fcmd->flg_lock & DIM_QUE_LOCK_WR)

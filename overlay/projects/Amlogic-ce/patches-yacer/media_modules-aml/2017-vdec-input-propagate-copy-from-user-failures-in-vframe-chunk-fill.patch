@@ -1,0 +1,63 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vdec_input: propagate copy_from_user failures in vframe_chunk_fill
+
+vframe_chunk_fill() dropped the return value of copy_from_user_to_phyaddr()
+in all three branches and returned 0 unconditionally, so the
+"vframe_chunk_fill failed" check in vdec_input_add_chunk() could never fire
+on -EFAULT (aml_copy_from_user()) or -1 (codec_mm_vmap() NULL). A frame-mode
+write() whose user buffer loses a page after access_ok() then queues a chunk
+of size = count over a block tail still holding the previous frame, advances
+total_wr_count and reports full success.
+
+Capture and return the value at each call site, making the caller's existing
+cleanup reachable; add the missing kfree(chunk->head_meta_buf) there, as in
+vdec_input_release_chunk(). No lock is held at the early returns and
+block->wp is only advanced later in vframe_block_add_chunk(), so a failed
+fill leaves the block untouched. Not exercised on hardware.
+--- a/drivers/frame_provider/decoder/utils/vdec_input.c
++++ b/drivers/frame_provider/decoder/utils/vdec_input.c
+@@ -145,25 +145,33 @@
+ 			size_t count, struct vframe_block_list_s *block)
+ {
+ 	u8 *p = (u8 *)block->start_virt + block->wp;
++	int ret;
++
+ 	if (block->type == VDEC_TYPE_FRAME_BLOCK) {
+-		copy_from_user_to_phyaddr(input, p, buf, count,
++		ret = copy_from_user_to_phyaddr(input, p, buf, count,
+ 			block->start + block->wp,
+ 			chunk->padding_size,
+ 			block->is_mapped);
++		if (ret)
++			return ret;
+ 	} else if (block->type == VDEC_TYPE_FRAME_CIRCULAR) {
+ 		size_t len = min((size_t)(block->size - block->wp), count);
+ 		u32 wp;
+ 
+-		copy_from_user_to_phyaddr(input, p, buf, len,
++		ret = copy_from_user_to_phyaddr(input, p, buf, len,
+ 				block->start + block->wp, 0,
+ 				block->is_mapped);
++		if (ret)
++			return ret;
+ 		p += len;
+ 
+ 		if (count > len) {
+-			copy_from_user_to_phyaddr(input, p, buf + len,
++			ret = copy_from_user_to_phyaddr(input, p, buf + len,
+ 				count - len,
+ 				block->start, 0,
+ 				block->is_mapped);
++			if (ret)
++				return ret;
+ 
+ 			p += count - len;
+ 		}
+@@ -988,6 +996,7 @@
+ 				chunk->hdr10p_data_buf = NULL;
+ 				chunk->hdr10p_data_size = 0;
+ 			}
++			kfree(chunk->head_meta_buf);
+ 			kfree(chunk);
+ 			return -EFAULT;
+ 		}

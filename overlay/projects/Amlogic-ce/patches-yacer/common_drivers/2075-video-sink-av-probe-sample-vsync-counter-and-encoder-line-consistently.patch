@@ -1,0 +1,148 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: av_probe: count vsyncs at ISR entry, reconcile with line
+
+av_probe reported the driver's global vsync_count as its vsync field, but
+that counter is incremented only in misc_early_proc(), well inside
+vsync_isr_in() -- after the RDMA over-field record, Dolby Vision and
+per-layer setup, several milliseconds with DV enabled on g12b.  Passes
+that return earlier (video_proc_lock contention, overrun_flag,
+video_suspend, DEBUG_FLAG_VSYNC_DONONE, the first_irq RDMA workaround)
+never increment it, so it drifts permanently behind the encoder, and
+between the encoder wrapping and the interrupt reaching misc_early_proc()
+it is paired with a small line number.  Any offset built on the triple is
+then a whole frame out, intermittently.
+
+Stamp a dedicated counter, timestamp and encoder line at the top of
+vsync_isr()/vsync_fisr(), published under a seqcount, the way DRM stamps
+vblank.  ktime_get_mono_fast_ns() because the same code is compiled into
+the FIQ handler under CONFIG_AML_VSYNC_FIQ_ENABLE, and
+raw_write_seqcount_*() because the caller is already non-preemptible.
+
+That leaves only interrupt entry latency, so the count is reconciled
+against the line using the refresh period and field height from the
+current vinfo; the thresholds (three quarters of a period, half a field)
+leave about 300 lines of margin at 1080p60 and 150 at 1080i50, and the
+correction is suppressed when the last stamp is over two periods old.
+The thresholds are derived from the encoder line behaviour the
+low-latency path already assumes, not measured; not exercised on
+hardware.  vsync_count itself is untouched.
+
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -5319,6 +5319,20 @@
+ 	}
+ }
+ 
++static seqcount_t av_probe_seq = SEQCNT_ZERO(av_probe_seq);
++static u32 av_probe_vsync;
++static u32 av_probe_isr_line;
++static u64 av_probe_isr_ns;
++
++static void av_probe_stamp(void)
++{
++	raw_write_seqcount_begin(&av_probe_seq);
++	av_probe_vsync++;
++	av_probe_isr_ns = ktime_get_mono_fast_ns();	/* also called from FIQ */
++	av_probe_isr_line = get_cur_enc_line();
++	raw_write_seqcount_end(&av_probe_seq);
++}
++
+ #ifdef FIQ_VSYNC
+ void vsync_fisr_in(void)
+ #else
+@@ -5343,6 +5363,7 @@
+ #ifdef FIQ_VSYNC
+ void vsync_fisr(void)
+ {
++	av_probe_stamp();
+ 	lowlatency_vsync_count++;
+ 	atomic_set(&video_inirq_flag, 1);
+ 	vsync_fisr_in();
+@@ -5353,6 +5374,7 @@
+ {
+ 	irqreturn_t ret;
+ 
++	av_probe_stamp();
+ 	if (get_lowlatency_mode())
+ 		put_buffer_proc();
+ 	lowlatency_vsync_count++;
+@@ -10811,14 +10833,16 @@
+  * depth is exactly what stands between a measured offset and the one arriving at
+  * the connector.
+  *
+- * Three readings, taken with interrupts off because read one at a time they say
+- * nothing about each other, which is the only reason to have them:
++ * Three readings that are only worth anything together:
+  *
+  *   mono   CLOCK_MONOTONIC, the base DRM timestamps vblanks on, so an audio
+  *          position read beside this can be subtracted from it
+- *   vsync  frames the encoder has begun since boot. Not vsync_cnt[], which
+- *          counts only the interrupts that had to be dropped and so reads zero
+- *          on a healthy box
++ *   vsync  frames (fields, when interlaced) the encoder has begun since boot,
++ *          counted at the top of the vsync interrupt so dropped and skipped
++ *          passes still count.
++ *          Not vsync_cnt[], which counts only the interrupts that had to be
++ *          dropped and so reads zero on a healthy box, and not vsync_count,
++ *          which is bumped part-way through the pass and not on every one
+  *   line   which line of the current frame the encoder is putting out now,
+  *          i.e. how far into the frame this reading was taken
+  *   crc    of the frame the post-processor produced, when vpp_crc is enabled.
+@@ -10829,6 +10853,11 @@
+  *          it, which leaves the pipeline depth a constant to be measured once
+  *          from outside rather than something this node can answer.
+  *
++ * The encoder starts the next frame before its interrupt is serviced, so the
++ * count is reconciled with the line: a reading whose line is below the one the
++ * interrupt was entered at, or most of a frame after that entry yet barely past
++ * its line, is in a frame not yet stamped and counts it.
++ *
+  * Read-only, and reads a register the vsync path already reads every frame.
+  */
+ static ssize_t av_probe_show
+@@ -10836,16 +10865,40 @@
+ 	struct class_attribute *attr,
+ 	char *buf)
+ {
++	const struct vinfo_s *vinfo;
+ 	unsigned long flags;
+-	u32 vsync, line;
+-	u64 mono;
++	unsigned int seq;
++	u32 vsync, line, isr_line, field_lines = 0;
++	u64 mono, isr_ns, elapsed, period = 0;
+ 
+ 	local_irq_save(flags);
+-	mono = ktime_get_ns();
+-	vsync = vsync_count;
+-	line = get_cur_enc_line();
++	vinfo = get_current_vinfo();
++	if (vinfo && vinfo->sync_duration_num) {
++		period = div_u64((u64)vinfo->sync_duration_den * NSEC_PER_SEC,
++				 vinfo->sync_duration_num);
++		field_lines = vinfo->field_height;
++	}
++	do {
++		seq = read_seqcount_begin(&av_probe_seq);
++		vsync = av_probe_vsync;
++		isr_ns = av_probe_isr_ns;
++		isr_line = av_probe_isr_line;
++		mono = ktime_get_ns();
++		line = get_cur_enc_line();
++	} while (read_seqcount_retry(&av_probe_seq, seq));
+ 	local_irq_restore(flags);
+ 
++	/*
++	 * The stamp uses the FIQ-safe fast clock, mono the one DRM uses; they can
++	 * differ slightly either way, hence the clamp.
++	 */
++	elapsed = mono > isr_ns ? mono - isr_ns : 0;
++	if (vsync && period && elapsed < 2 * period &&
++	    (line < isr_line ||
++	     (elapsed >= period - period / 4 &&
++	      line - isr_line < field_lines / 2)))
++		vsync++;
++
+ 	return snprintf(buf, 128, "mono %llu vsync %u line %u crc %x\n",
+ 		mono, vsync, line, vpp_crc_result);
+ }

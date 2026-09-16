@@ -1,0 +1,69 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: pip_alpha: bound layer_id and win_num from sysfs
+
+pip_alpha_store() uses the first two sysfs values unchecked. win_num
+sizes the second parse (param_num = win_num * 4 + 2); parse_para() takes
+no buffer size, so that count is the only bound on writes into the stack
+array int parsed[66]. "0 20 " plus 80 numbers stores 82 ints, 16 words
+past the frame. The fill loop also runs to win_num, past the
+MAX_PIP_WINDOW (16) alpha_win arrays, and win_en |= 1 << i is undefined
+at i >= 32. Separately layer_id indexes vd_layer[MAX_VD_LAYER] (3), so
+"3 1 0 0 0 0" writes into adjacent globals the vsync ISR reads.
+
+Return -EINVAL unless 0 <= layer_id < MAX_VD_LAYER and 0 <= win_num <=
+MAX_PIP_WINDOW, and size parsed[] as MAX_PIP_WINDOW * 4 + 2 (the same
+66). alpha_win is memset first, retiring the uninit_use_in_call
+suppression. The pre-existing race with the ISR reading vd_layer[] is
+left alone. video_cut.c has the identical function and is fixed the same
+way, but needs CONFIG_AMLOGIC_ZAPPER_CUT and is not built here. Not
+exercised on hardware.
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -10948,13 +10948,17 @@
+ {
+ 	int i = 0;
+ 	int param_num;
+-	int parsed[66];
++	int parsed[MAX_PIP_WINDOW * 4 + 2];
+ 	int layer_id, win_num, win_en = 0;
+ 	struct pip_alpha_scpxn_s alpha_win;
+ 
++	memset(&alpha_win, 0, sizeof(alpha_win));
+ 	if (likely(parse_para(buf, 2, parsed) >= 2)) {
+ 		layer_id = parsed[0];
+ 		win_num = parsed[1];
++		if (layer_id < 0 || layer_id >= MAX_VD_LAYER ||
++		    win_num < 0 || win_num > MAX_PIP_WINDOW)
++			return -EINVAL;
+ 		param_num = win_num * 4 + 2;
+ 		if (likely(parse_para(buf, param_num, parsed) == param_num)) {
+ 			for (i = 0; i < win_num; i++) {
+@@ -10967,7 +10971,6 @@
+ 			pr_info("layer_id=%d, win_num=%d, win_en=%d\n",
+ 				layer_id, win_num, win_en);
+ 			vd_layer[layer_id].alpha_win_en = win_en;
+-			/*coverity[uninit_use_in_call]*/
+ 			memcpy(&vd_layer[layer_id].alpha_win, &alpha_win,
+ 				sizeof(struct pip_alpha_scpxn_s));
+ 			vd_layer[0].property_changed = true;
+--- a/drivers/media/video_sink/video_cut.c
++++ b/drivers/media/video_sink/video_cut.c
+@@ -7891,13 +7891,17 @@
+ {
+ 	int i = 0;
+ 	int param_num;
+-	int parsed[66];
++	int parsed[MAX_PIP_WINDOW * 4 + 2];
+ 	int layer_id, win_num, win_en = 0;
+ 	struct pip_alpha_scpxn_s alpha_win;
+ 
++	memset(&alpha_win, 0, sizeof(alpha_win));
+ 	if (likely(parse_para(buf, 2, parsed) >= 2)) {
+ 		layer_id = parsed[0];
+ 		win_num = parsed[1];
++		if (layer_id < 0 || layer_id >= MAX_VD_LAYER ||
++		    win_num < 0 || win_num > MAX_PIP_WINDOW)
++			return -EINVAL;
+ 		param_num = win_num * 4 + 2;
+ 		if (likely(parse_para(buf, param_num, parsed) == param_num)) {
+ 			for (i = 0; i < win_num; i++) {

@@ -1,0 +1,47 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] clk: meson: mask frac sign bit, fix g12a hdmi_pll_dco frac width
+
+The legacy __pll_params_to_rate() in clk-pll.c treats the fractional field
+as sign-magnitude - bit (width-1) selects add or subtract - but multiplies
+the raw field, sign bit included, into frac_rate. With weight 2^(width-2)
+the sign bit alone contributes 2 * parent_rate to the subtraction, so any
+PLL with that bit set reads about two parent clocks low. Mask it off before
+the multiply.
+
+g12a_hdmi_pll_dco also declares frac width 16; HHI_HDMI_PLL_CNTL1 is 19
+bits (lcd_clk_g12.c: len 19, frac_range 1<<17, sign_bit 18), as fixed_pll_dco
+and hifi_pll_dco in the same file already declare. Together the two defects
+make hdmi_pll_dco report ~1.2% low for the rates hdmitx20 programs directly,
+e.g. m=0xf3 frac=0x18000 reads 5784 MHz instead of 5850 MHz. Reported rate
+only: the clock is read-only (meson_clk_pll_ro_ops), so nothing is
+programmed through CCF. gp0_pll_dco has the same width discrepancy but is
+left alone - it is writable, where the width would also change set_rate.
+
+Not confirmed yet against a clk_summary dump on the g12b box.
+--- a/drivers/clk/meson/clk-pll.c
++++ b/drivers/clk/meson/clk-pll.c
+@@ -83,8 +83,11 @@
+ 
+ 	rate = (u64)parent_rate * m;
+ 	if (frac && pll->frac.width > 2) {
+-		frac_rate = (u64)parent_rate * frac;
+-		if (frac & (1 << (pll->frac.width - 1))) {
++		/* The top bit of frac is the sign, not part of the magnitude */
++		u32 sign = (u32)BIT(pll->frac.width - 1);
++
++		frac_rate = (u64)parent_rate * (frac & ~sign);
++		if (frac & sign) {
+ 			if (pll->flags & CLK_MESON_PLL_FIXED_FRAC_WEIGHT_PRECISION)
+ 				rate -= DIV_ROUND_UP_ULL(frac_rate, FIXED_FRAC_WEIGHT_PRECISION);
+ 			else
+--- a/drivers/clk/meson/g12a.c
++++ b/drivers/clk/meson/g12a.c
+@@ -1699,7 +1699,7 @@
+ 		.frac = {
+ 			.reg_off = HHI_HDMI_PLL_CNTL1,
+ 			.shift   = 0,
+-			.width   = 16,
++			.width   = 19,
+ 		},
+ 		.l = {
+ 			.reg_off = HHI_HDMI_PLL_CNTL0,

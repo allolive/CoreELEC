@@ -1,0 +1,95 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx: only clear the zero HDR10+ VSIF in work_hdr
+
+When HDR10+ output stops, amcsc sends an SDR DRM packet and then the
+all-zero HDR10+ VSIF, which sets hdr_status_pos = 4. The DRM packet
+schedules work_hdr; hdr_work_func sleeps 1.5 s and then clears the
+vendor infoframe slot whenever hdr_status_pos is still 4, without
+checking which VSIF is there and without taking a lock. Nothing on the
+Dolby Vision start path resets hdr_status_pos, so a DV start inside
+that window (playlist change at the same mode) has its fresh DV VSIF
+wiped until amdv resends it; an HDMI 1.4b or real HDR10+ VSIF likewise.
+
+Read the live VSIF IEEE OUI and clear only if it is 0 (zero VSIF or
+empty slot), or CUVA_IEEEOUI on hdmitx21, where
+hdmitx_set_cuva_hdr_vs_emds also sets pos = 4. Check and clear under
+hdev->tx_comm.edid_spinlock, which the other VSIF setters already hold;
+the msleep and uevent stay outside it. hdmitx_set_hdr10plus_pkt does
+not take the lock, so a real HDR10+ VSIF landing right after the OUI
+read can still be cleared, costing one frame. The hdmitx21 side has not
+been run on S905X5 hardware.
+
+--- a/drivers/media/vout/hdmitx20/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx20/hdmi_tx_main.c
+@@ -584,6 +584,8 @@
+ 	struct hdmitx_dev *hdev =
+ 		container_of(work, struct hdmitx_dev, work_hdr);
+ 	struct hdmitx_hw_common *tx_hw_base = &hdev->tx_hw.base;
++	unsigned int ieee_code;
++	unsigned long flags;
+ 
+ 	if (hdev->hdr_transfer_feature == T_BT709 &&
+ 	    hdev->hdr_color_feature == C_BT709) {
+@@ -599,12 +601,22 @@
+ 		 * disable DRM packets completely ONLY if hdr transfer
+ 		 * feature and color feature still demand SDR.
+ 		 */
++		spin_lock_irqsave(&hdev->tx_comm.edid_spinlock, flags);
+ 		if (hdr_status_pos == 4) {
+-			/* zero hdr10+ VSIF being sent - disable it */
+-			HDMITX_INFO("%s: disable hdr10+ vsif\n", __func__);
+-			hdmitx_hw_set_packet(tx_hw_base, HDMI_PACKET_VEND, NULL, NULL);
++			/*
++			 * zero hdr10+ VSIF being sent - disable it, unless
++			 * another VSIF (e.g. DV or HDMI1.4b) replaced it
++			 */
++			ieee_code = hdmitx_rd_reg(HDMITX_DWC_FC_VSDIEEEID0) |
++				    hdmitx_rd_reg(HDMITX_DWC_FC_VSDIEEEID1) << 8 |
++				    hdmitx_rd_reg(HDMITX_DWC_FC_VSDIEEEID2) << 16;
++			if (ieee_code == 0) {
++				HDMITX_INFO("%s: disable hdr10+ vsif\n", __func__);
++				hdmitx_hw_set_packet(tx_hw_base, HDMI_PACKET_VEND, NULL, NULL);
++			}
+ 			hdr_status_pos = 0;
+ 		}
++		spin_unlock_irqrestore(&hdev->tx_comm.edid_spinlock, flags);
+ 		if (hdev->hdr_transfer_feature == T_BT709 &&
+ 		    hdev->hdr_color_feature == C_BT709) {
+ 			hdev->tx_comm.hdmi_current_hdr_mode = 0;
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -817,6 +817,8 @@
+ 	struct hdmitx_dev *hdev =
+ 		container_of(work, struct hdmitx_dev, work_hdr);
+ 	struct hdmi_drm_infoframe *info = &hdev->infoframes.drm.drm;
++	unsigned int ieee_code;
++	unsigned long flags;
+ 
+ 	if (hdev->hdr_transfer_feature == T_BT709 &&
+ 	    hdev->hdr_color_feature == C_BT709) {
+@@ -831,13 +833,21 @@
+ 		 * disable DRM packets completely ONLY if hdr transfer
+ 		 * feature and color feature still demand SDR.
+ 		 */
++		spin_lock_irqsave(&hdev->tx_comm.edid_spinlock, flags);
+ 		if (hdr_status_pos == 4) {
+-			/* zero hdr10+ VSIF being sent - disable it */
+-			HDMITX_INFO("%s: disable hdr10+ vsif\n", __func__);
+-			/* hdmi_vend_infoframe_set(NULL); */
+-			hdmi_vend_infoframe_rawset(NULL, NULL);
++			/*
++			 * zero hdr10+ VSIF being sent - disable it, unless
++			 * another VSIF (e.g. DV or HDMI1.4b) replaced it
++			 */
++			ieee_code = hdmitx21_get_vender_infoframe_ieee();
++			if (ieee_code == 0 || ieee_code == CUVA_IEEEOUI) {
++				HDMITX_INFO("%s: disable hdr10+ vsif\n", __func__);
++				/* hdmi_vend_infoframe_set(NULL); */
++				hdmi_vend_infoframe_rawset(NULL, NULL);
++			}
+ 			hdr_status_pos = 0;
+ 		}
++		spin_unlock_irqrestore(&hdev->tx_comm.edid_spinlock, flags);
+ 		if (hdev->hdr_transfer_feature == T_BT709 &&
+ 		    hdev->hdr_color_feature == C_BT709) {
+ 			/* update hdr mode flag */

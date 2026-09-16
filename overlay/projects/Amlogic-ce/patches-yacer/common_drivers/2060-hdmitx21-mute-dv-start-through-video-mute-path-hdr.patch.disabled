@@ -1,0 +1,102 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: mute DV start and route the HDR mute through the mute mask
+
+Patch 1052 mutes the output for hdr_mute_frame frames when Dolby Vision
+starts, but only in hdmitx20 (g12b). hdmitx21 (S905X5/S7D) has no such
+mute, so hdmitx_set_vsif_pkt switching EOTF_T_NULL to a DV type shows the
+flash 1052 fixed; add the same mute there. The SDR->HDR mute in
+hdmitx_set_drm_pkt and hdr_unmute_work_func also write CONF_VIDEO_MUTE_OP
+directly, bypassing the vid_mute_path mask, so an HDR start lifts a mute
+set via vid_mute sysfs (PATH_1), HDCP stream type (PATH_2) or re-auth
+(PATH_3), and any mute_op(1, PATH_x) ends an HDR mute early. Both now use
+hdmitx21_video_mute_op with a new VIDEO_MUTE_PATH_HDR (0x1, clear of the
+PATH_n bits at 0x8000000 and down); vid_mute_path moves from a mutex to
+an irqsave spinlock, as the packet paths mute under edid_spinlock. A
+PATH_2/PATH_3 mute now deliberately survives an HDR/DV start. hdmitx21
+only, so g12b is unchanged. Not built or run on S905X5 hardware yet.
+
+--- a/drivers/media/vout/hdmitx21/hdmi_tx.h
++++ b/drivers/media/vout/hdmitx21/hdmi_tx.h
+@@ -27,6 +27,7 @@
+ #define VIDEO_MUTE_PATH_1 0x8000000 //mute by vid_mute sysfs node
+ #define VIDEO_MUTE_PATH_2 0x4000000 //mute by stream type 1
+ #define VIDEO_MUTE_PATH_3 0x2000000 //mute by rx request auth
++#define VIDEO_MUTE_PATH_HDR 0x1 //mute while HDR/DV output starts
+ 
+ #define AUDIO_MUTE_PATH_1 0x8000000 //mute by audio module
+ #define AUDIO_MUTE_PATH_2 0x4000000 //mute by aud_mote sysfs node
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -756,13 +756,18 @@
+ 	mutex_unlock(&aud_mute_mutex);
+ }
+ 
+-static DEFINE_MUTEX(vid_mute_mutex);
++/*
++ * a spinlock, not a mutex: the HDR/DV packet paths mute through here
++ * while holding edid_spinlock
++ */
++static DEFINE_SPINLOCK(vid_mute_lock);
+ void hdmitx21_video_mute_op(u32 flag, unsigned int path)
+ {
+ 	static unsigned int vid_mute_path;
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
++	unsigned long flags;
+ 
+-	mutex_lock(&vid_mute_mutex);
++	spin_lock_irqsave(&vid_mute_lock, flags);
+ 	if (flag == 0)
+ 		vid_mute_path |= path;
+ 	else
+@@ -778,7 +783,7 @@
+ 			hdmitx_hw_cntl_config(&hdev->tx_hw.base, CONF_VIDEO_MUTE_OP, VIDEO_UNMUTE);
+ 		}
+ 	}
+-	mutex_unlock(&vid_mute_mutex);
++	spin_unlock_irqrestore(&vid_mute_lock, flags);
+ }
+ 
+ /*
+@@ -800,17 +805,14 @@
+ static void hdr_unmute_work_func(struct work_struct *work)
+ {
+ 	unsigned int mute_us;
+-	struct hdmitx_dev *hdev =
+-		container_of(work, struct hdmitx_dev, work_hdr_unmute);
+ 
+ 	if (hdr_mute_frame) {
+ 		HDMITX_INFO("vid mute %d frames before play hdr/hlg video\n",
+ 			hdr_mute_frame);
+ 		mute_us = hdr_mute_frame * hdmitx_get_frame_duration();
+ 		usleep_range(mute_us, mute_us + 10);
+-		HDMITX_INFO("%s: VID_UNMUTE\n", __func__);
+-		hdmitx_hw_cntl_config(&hdev->tx_hw.base, CONF_VIDEO_MUTE_OP, VIDEO_UNMUTE);
+ 	}
++	hdmitx21_video_mute_op(1, VIDEO_MUTE_PATH_HDR);
+ }
+ static void hdr_work_func(struct work_struct *work)
+ {
+@@ -1133,9 +1139,8 @@
+ 		/* NOTE: for HDR <-> HLG, also need update last mode */
+ 		hdev->tx_comm.hdmi_last_hdr_mode = hdev->tx_comm.hdmi_current_hdr_mode;
+ 		if (hdr_mute_frame) {
+-			HDMITX_INFO("%s: VID_MUTE\n", __func__);
+ 			/* TODO mute in vsync */
+-			hdmitx_hw_cntl_config(&hdev->tx_hw.base, CONF_VIDEO_MUTE_OP, VIDEO_MUTE);
++			hdmitx21_video_mute_op(0, VIDEO_MUTE_PATH_HDR);
+ 			HDMITX_INFO("SDR->HDR enter mute\n");
+ 			/*
+ 			 * force unmute after specific frames,
+@@ -1255,6 +1260,12 @@
+ 	if (hdev->tx_comm.hdmi_current_eotf_type != type ||
+ 		hdev->tx_comm.hdmi_current_tunnel_mode != tunnel_mode ||
+ 		hdev->hdmi_current_signal_sdr != signal_sdr) {
++		if (hdr_mute_frame && hdev->tx_comm.hdmi_current_eotf_type == EOTF_T_NULL &&
++		    type != EOTF_T_NULL) {
++			hdmitx21_video_mute_op(0, VIDEO_MUTE_PATH_HDR);
++			HDMITX_INFO("SDR->DV enter mute\n");
++			schedule_work(&hdev->work_hdr_unmute);
++		}
+ 		hdev->tx_comm.hdmi_current_eotf_type = type;
+ 		hdev->tx_comm.hdmi_current_tunnel_mode = tunnel_mode;
+ 		hdev->hdmi_current_signal_sdr = signal_sdr;

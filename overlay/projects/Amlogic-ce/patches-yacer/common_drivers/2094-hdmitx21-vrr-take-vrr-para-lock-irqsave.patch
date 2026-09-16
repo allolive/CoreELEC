@@ -1,0 +1,44 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: vrr: take vrr_para.lock with irqsave
+
+vrr_para.lock in hdmi_tx_vrr.c is taken with plain spin_lock in both
+directions: hdmitx_set_vrr_para() writes conf_params from process
+context (hdmitx_set_fr_hint(), holding only vout_mutex), while
+hdmitx_get_vrr_params() reads it from the vrr_vsync hard interrupt
+handler. If that interrupt lands on the writing CPU before the
+spin_unlock, the handler spins forever on a lock its own CPU holds.
+The window is a few instructions wide, so a real hang is rare, but
+lockdep flags the HARDIRQ-ON-W / IN-HARDIRQ-W usage immediately.
+
+Use spin_lock_irqsave()/spin_unlock_irqrestore() in both functions;
+they are the only users of this lock, so the class becomes uniformly
+irq-safe. Neither is on a per-frame path. The surrounding unlocked
+reads of conf_params.vrr_enabled are pre-existing and left alone.
+No S905X5 hardware here, so this is not exercised on a board.
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+@@ -788,16 +788,20 @@
+ 
+ void hdmitx_set_vrr_para(const struct vrr_conf_para *para)
+ {
+-	spin_lock(&vrr_para.lock);
++	unsigned long flags;
++
++	spin_lock_irqsave(&vrr_para.lock, flags);
+ 	vrr_para.conf_params = *para;
+-	spin_unlock(&vrr_para.lock);
++	spin_unlock_irqrestore(&vrr_para.lock, flags);
+ }
+ 
+ static void hdmitx_get_vrr_params(struct vrr_conf_para *para)
+ {
+-	spin_lock(&vrr_para.lock);
++	unsigned long flags;
++
++	spin_lock_irqsave(&vrr_para.lock, flags);
+ 	*para = vrr_para.conf_params;
+-	spin_unlock(&vrr_para.lock);
++	spin_unlock_irqrestore(&vrr_para.lock, flags);
+ }
+ 
+ int hdmitx_dump_vrr_status(struct seq_file *s, void *p)

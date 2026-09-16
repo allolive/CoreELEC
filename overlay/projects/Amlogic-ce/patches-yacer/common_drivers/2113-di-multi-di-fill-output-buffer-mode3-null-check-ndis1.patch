@@ -1,0 +1,36 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] di_multi: fix bypass NULL check in di_fill_output_buffer_mode3
+
+di_fill_output_buffer_mode3() reads ndis1 from buffer->private_data but
+guards the bypass branch with IS_ERR_OR_NULL(pintf).  pintf is set two
+lines earlier to &pch->itf, so the test is always false and the branch
+is dead; the function then dereferences ndis1->header.index
+unconditionally and oopses on a bypass buffer, which carries no DI
+local buffer (ndis_fill_ready_bypass() queues the caller's own input
+with DI_FLAG_BUF_BY_PASS and no ndis attached, in tmode 3).
+
+Test ndis1 instead.  empty_input_done() is the right disposal: it is the
+caller's own input buffer, and the bypass path clears nins->c.ori before
+recycling, so it is completed exactly once.  The warning becomes the
+debug-gated dim_print now the branch is live, so a sustained bypass
+cannot spam the log once per frame.
+
+Reachable only through /dev/di_v4l (root-only CRC test node), so it is
+latent robustness, not a crash seen on a box; not exercised on hardware.
+Range-checking ndis1->header.index is left out as separate hardening.
+
+--- a/drivers/media/di_multi/di_interface.c
++++ b/drivers/media/di_multi/di_interface.c
+@@ -773,9 +773,9 @@
+ 
+ 	sum_pst_p_inc(ch);
+ 	ndis1 = (struct dim_ndis_s *)buffer->private_data;
+-	if (IS_ERR_OR_NULL(pintf)) {
+-		/* bypass */
+-		PR_WARN("%s:bypass?\n", __func__);
++	if (IS_ERR_OR_NULL(ndis1)) {
++		/* bypass: caller's own input buffer, no di local buffer */
++		dim_print("%s:bypass 0x%px\n", __func__, buffer);
+ 		pintf->u.dinst.parm.ops.empty_input_done(buffer);
+ 		sum_p_inc(ch);//
+ 		return DI_ERR_NONE;

@@ -1,0 +1,95 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: hdcp: synchronise disable with the HDCP interrupt bottom half
+
+hdmitx21_disable_hdcp() cancels the hdcp_wq works, then hdcp_mode_set(0)
+clears p_hdcp->hdcptx_enabled only after hdcptx_reset(), which sleeps in
+ddc_check_busy() and the hdcptx2_auth_stop() poll loop. The HDCP bottom
+half runs on a different workqueue (hdmi_intr_wq) that the disable path
+never cancels, and the CP2TX interrupt mask is never closed. An AUTH_FAIL
+arriving in that window sees hdcptx_enabled still 1 and re-arms
+timer_hdcp_auth_fail_retry for 200 ms after the cancel; SKE_SEND likewise
+re-arms timer_hdcp_rpt_auth. The stray work then runs hdcptx_reset() with
+the HDCP clock gate already closed and no lock held.
+
+Clear hdcptx_enabled before hdcptx_reset() and before hdcp_cancel_works(),
+refuse to arm work while it is false (the cancel form is still allowed
+through), and return early from the bksv_poll_done, ddc_check_nak and
+auth_fail_retry handlers. The flag stays a plain bool, so this narrows the
+arming race rather than closing it; the handler guards are the backstop.
+Not done here: hdcp_enable_intrs(0), flushing work_internal_intr, and
+ddc_mutex around the DDC abort/reset.
+
+hdmitx21 does not probe on g12b (of_match lists t7/s5/s1a/s7/s7d/s6), so
+the change is compiled but dormant there and is not exercised on hardware.
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
+@@ -133,8 +133,13 @@
+ 	pr_hdcp_info(L_0, "%s[%d] %d\n", __func__, __LINE__, mode);
+ 
+ 	if (mode == 0) {
+-		hdcptx_reset(p_hdcp);
++		/*
++		 * clear enabled flag before reset, so that the hdcp
++		 * interrupt bottom half running meanwhile won't re-arm
++		 * the auth works that hdcptx_reset() just stopped
++		 */
+ 		p_hdcp->hdcptx_enabled = 0;
++		hdcptx_reset(p_hdcp);
+ 		return;
+ 	}
+ 
+@@ -280,6 +285,7 @@
+ 	cancel_delayed_work(&hdev->work_up_hdcp_timeout);
+ 	cancel_delayed_work(&hdev->work_start_hdcp);
+ 	if (hdev->tx_comm.hdcp_mode != 0) {
++		p_hdcp->hdcptx_enabled = 0;
+ 		hdcp_cancel_works(hdev->am_hdcp);
+ 		hdev->tx_comm.hdcp_mode = 0;
+ 		hdcp_mode_set(0);
+@@ -1785,6 +1796,13 @@
+ 
+ static bool hdcp_schedule_work(struct hdcp_work *work, u32 delay_ms, u32 period_ms)
+ {
++	/*
++	 * hdcp is being or already disabled, don't arm new works
++	 * (no caller checks the return value)
++	 */
++	if (!p_hdcp->hdcptx_enabled && (delay_ms || period_ms))
++		return 0;
++
+ 	pr_hdcp_info(L_2, "hdcptx: schedule %s: delay %d ms  period %d ms\n",
+ 		work->name, delay_ms, period_ms);
+ 
+@@ -1927,6 +1945,10 @@
+ 	u8 copp_data1;
+ 	struct hdcp_work *work = &p_hdcp->timer_bksv_poll_done;
+ 
++	/* stale work armed while hdcp was being disabled */
++	if (!p_hdcp->hdcptx_enabled)
++		return;
++
+ 	pr_hdcp_info(L_2, "%s[%d] period %d ms\n", __func__, __LINE__,
+ 		work->period_ms);
+ 	copp_data1 = hdcptx1_ds_cap_status_get();
+@@ -1976,6 +1998,10 @@
+ 	static int cnt;
+ 	struct hdcp_work *work = &p_hdcp->timer_ddc_check_nak;
+ 
++	/* stale work armed while hdcp was being disabled */
++	if (!p_hdcp->hdcptx_enabled)
++		return;
++
+ 	if (cnt % 128 == 0) {
+ 		cnt++;
+ 		pr_hdcp_info(L_2, "%s[%d] period %d ms\n", __func__, __LINE__,
+@@ -1994,6 +2020,10 @@
+ {
+ 	struct hdcp_work *work = &p_hdcp->timer_hdcp_auth_fail_retry;
+ 
++	/* stale work armed while hdcp was being disabled */
++	if (!p_hdcp->hdcptx_enabled)
++		return;
++
+ 	pr_hdcp_info(L_2, "%s[%d] period %d ms\n", __func__, __LINE__,
+ 		work->period_ms);
+ 	hdcptx_reset(p_hdcp);

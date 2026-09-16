@@ -1,0 +1,101 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh265: bound set_aux_data writes by the real aux buffer size
+
+set_aux_data() bounds its output with AUX_DATA_SIZE1 (24 KB), but for
+hevc->pic_transfer the destination is only prefix_aux_size bytes:
+hevc_local_init() does vzalloc(prefix_aux_size) and prefix_aux_buf_size
+defaults to 12 KB. Output exceeds input - each record costs 8 header
+bytes plus one byte per 16-bit aux word - so an access unit of many tiny
+prefix SEI NALs, each its own tagged four-word group, yields ~3 bytes per
+input word. With the firmware prefix region capped at 6144 words, writes
+can reach 18432 bytes into a 12288-byte buffer. Triggering it needs
+crafted content.
+
+Compute the real capacity once (prefix_aux_size for pic_transfer, else
+AUX_DATA_SIZE1, which vdec_data_get_index() guarantees for cur_pic), use
+it in the entry check, and replace the AUX_DATA_SIZE1 - 11 guard with an
+end pointer tested before each write that advances p. aux_count is in
+16-bit words and aux_size in bytes, so compare against aux_size / 2.
+Truncation mid-record drops the pending record instead of committing it.
+
+The same mismatch exists in the h265 v4l and fb copies; only
+decoder/h265/vh265.c is fixed here. Not exercised on S905X5 hardware.
+--- a/drivers/frame_provider/decoder/h265/vh265.c
++++ b/drivers/frame_provider/decoder/h265/vh265.c
+@@ -6827,9 +6827,18 @@
+ 		READ_VREG(HEVC_AUX_DATA_SIZE);
+ 	unsigned int aux_count = 0;
+ 	int aux_size = 0;
++	int buf_size;
++
+ 	if (pic == NULL || 0 == aux_data_is_available(hevc))
+ 		return;
+ 
++	/*
++	 * pic_transfer owns a private prefix_aux_size buffer, every other
++	 * picture uses a vdec_data aux buffer of at least AUX_DATA_SIZE1.
++	 */
++	buf_size = (pic == hevc->pic_transfer) ?
++		hevc->prefix_aux_size : AUX_DATA_SIZE1;
++
+ 	if ((pic->BUF_index < 0) || (!hevc->m_BUF[pic->BUF_index].start_adr)) {
+ 		hevc_print(hevc, 0,
+ 			"%s, aux data buf should be released\n", __func__);
+@@ -6858,8 +6867,8 @@
+ 			aux_count, suffix_flag, dv_meta_flag);
+ 	}
+ 
+-	if ((aux_count > aux_size) ||
+-		(pic->aux_data_size + aux_count > AUX_DATA_SIZE1)) {
++	if ((aux_count > aux_size / 2) ||
++		(pic->aux_data_size + aux_count > buf_size)) {
+ 		hevc_print(hevc, 0,
+ 			"%s:aux_count(%d) is over size\n", __func__, aux_count);
+ 		aux_count = 0;
+@@ -6883,6 +6892,7 @@
+ 			unsigned char valid_tag = 0;
+ 			unsigned char *h = pic->aux_data_buf + pic->aux_data_size;
+ 			unsigned char *p = h + 8;
++			unsigned char *end = pic->aux_data_buf + buf_size;
+ 			int len = 0;
+ 			int padding_len = 0;
+ 
+@@ -6899,11 +6909,6 @@
+ 					else
+ 						valid_tag = 0;
+ 					if (valid_tag && len > 0) {
+-						if ((char *)p > (pic->aux_data_buf + AUX_DATA_SIZE1 - 11)) {
+-							hevc_print(hevc, 0, "%s, buf oversize risk %px %px\n",
+-								__func__, p, pic->aux_data_buf);
+-							break;
+-						}
+ 						pic->aux_data_size += (len + 8);
+ 						h[0] = (len >> 24) & 0xff;
+ 						h[1] = (len >> 16) & 0xff;
+@@ -6917,6 +6922,12 @@
+ 						padding_len = 0;
+ 					}
+ 					if (valid_tag) {
++						/* p == h + 8: room for the header and one data group */
++						if (end - p < 4) {
++							hevc_print(hevc, 0, "%s, buf oversize risk %px %px\n",
++								__func__, p, pic->aux_data_buf);
++							break;
++						}
+ 						h[4] = tag;
+ 						h[5] = 0;
+ 						h[6] = 0;
+@@ -6924,6 +6935,13 @@
+ 					}
+ 				}
+ 				if (valid_tag) {
++					if (end - p < 4) {
++						/* drop the truncated record */
++						hevc_print(hevc, 0, "%s, buf oversize risk %px %px\n",
++							__func__, p, pic->aux_data_buf);
++						len = 0;
++						break;
++					}
+ 					for (ii = 0; ii < 4; ii++) {
+ 						unsigned short aa = aux_adr[i + 3 - ii];
+ 						*p = aa & 0xff;

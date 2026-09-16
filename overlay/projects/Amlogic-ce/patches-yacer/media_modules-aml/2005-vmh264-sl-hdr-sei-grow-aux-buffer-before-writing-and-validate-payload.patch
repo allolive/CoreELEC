@@ -1,0 +1,91 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vmh264: grow aux buffer before writing SL-HDR SEI
+
+parse_one_sei_record() writes an 8-byte header plus the payload of an
+SL-HDR T.35 SEI (B5 00 3A 01 / B5 00 3A 00) to pic->aux_data_buf +
+pic->aux_data_size without checking that the buffer exists or how big it
+is.  On the H264_SLICE_HEAD_DONE path no AUX_DATA_READY has run for that
+picture yet, so aux_data_buf is normally NULL and this is a NULL write
+that oopses the decoder IRQ thread; if a buffer from an earlier
+set_aux_data() is still attached, the write runs past an exact-size
+allocation instead.  The existing aux_data_size + i >= SEI_ITU_DATA_SIZE
+guard compares against a 5K constant unrelated to the allocation.
+Compute the 8-aligned record length, refuse a record larger than
+SEI_ITU_DATA_SIZE, krealloc() the buffer (GFP_KERNEL, as set_aux_data()
+does; the call site sleeps under hw->pic_mutex) and only then write.
+Also require payload_size >= 5 / >= 4 before the signature compares,
+which otherwise read past the 8K sei_data_buf on a short tail payload.
+
+pic->aux_data_size is no longer clamped to SEI_ITU_DATA_SIZE; only each
+record is capped.  Needs a stream carrying an SL-HDR T.35 SEI to hit;
+reviewed but not exercised on hardware.
+--- a/drivers/frame_provider/decoder/h264_multi/vmh264.c
++++ b/drivers/frame_provider/decoder/h264_multi/vmh264.c
+@@ -7432,7 +7432,8 @@
+ 			int data_len;
+ 			u8 *user_data_buf;
+ 
+-			if (p_sei[0] == 0xB5
++			if (payload_size >= 5
++				&& p_sei[0] == 0xB5
+ 				&& p_sei[1] == 0x00
+ 				&& p_sei[2] == 0x3D
+ 				&& p_sei[3] == 0x01
+@@ -7453,16 +7454,33 @@
+ 					dpb_print_cont(DECODE_ID(hw),
+ 						0, "\n");
+ 				}
+-			}  else if (
+-				(p_sei[0] == 0xB5 && p_sei[1] == 0x00 && p_sei[2] == 0x3A && p_sei[3] == 0x01) ||
+-				(p_sei[0] == 0xB5 && p_sei[1] == 0x00 && p_sei[2] == 0x3A && p_sei[3] == 0x00)) {
++			}  else if (payload_size >= 4 &&
++				((p_sei[0] == 0xB5 && p_sei[1] == 0x00 && p_sei[2] == 0x3A && p_sei[3] == 0x01) ||
++				(p_sei[0] == 0xB5 && p_sei[1] == 0x00 && p_sei[2] == 0x3A && p_sei[3] == 0x00))) {
+ 				if (pic) {
++					char *new_buf;
++
+ 					dpb_print(DECODE_ID(hw), PRINT_FLAG_SEI_DETAIL,
+ 							"%s: size %d\n", __func__, pic->aux_data_size);
+ 					#define SEI_DATA_HEADER     0x8
+ 					#define AUX_TAG_SEI         0x2
+ 
++					data_len = ALIGN(payload_size + SEI_DATA_HEADER, 8);
++					if (data_len > SEI_ITU_DATA_SIZE) {
++						hw->sei_need_parse = false;
++						break;
++					}
++					new_buf = krealloc(pic->aux_data_buf,
++							   pic->aux_data_size + data_len,
++							   GFP_KERNEL);
++					if (!new_buf) {
++						hw->sei_need_parse = false;
++						break;
++					}
++					pic->aux_data_buf = new_buf;
++
+ 					user_data_buf = pic->aux_data_buf + pic->aux_data_size;
++					memset(user_data_buf, 0, data_len);
+ 
+ 					user_data_buf[0] = (payload_size >> 24) & 0xff;
+ 					user_data_buf[1] = (payload_size >> 16) & 0xff;
+@@ -7474,19 +7492,9 @@
+ 					user_data_buf[7] = 0;
+ 
+ 					user_data_buf = user_data_buf + SEI_DATA_HEADER;
+-					for (i = 0; i < payload_size; i++) {
+-						if (pic->aux_data_size + i >= SEI_ITU_DATA_SIZE)
+-							break; // Avoid out-of-bound writing
+-						user_data_buf[i] = p_sei[i];
+-					}
+-
+-					data_len = payload_size + SEI_DATA_HEADER;
+-					if (data_len % 8)
+-						data_len = ((data_len + 8) >> 3) << 3;
++					memcpy(user_data_buf, p_sei, payload_size);
+ 
+ 					pic->aux_data_size += data_len;
+-					if (pic->aux_data_size >= SEI_ITU_DATA_SIZE)
+-						pic->aux_data_size = SEI_ITU_DATA_SIZE;
+ 
+ 					if (dpb_is_debug(DECODE_ID(hw),
+ 						PRINT_FLAG_SEI_DETAIL)) {

@@ -1,0 +1,57 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amvecm: hdr10+: clamp ST 2094-40 row/col counts to array size
+
+parser_hdr10_plus_medata() reads num_rows/num_cols for both ST 2094-40
+actual-peak-luminance grids as 5-bit fields, so a stream can ask for up to
+31x31, but tgt_sys_disp_act_pk_lumi and mast_disp_act_pk_lumi are
+u16 [25][25]. The fill loops are bounded only by those stream-supplied
+counts, so a 31x31 grid writes flat element 780 of 625, about 312 bytes
+past the array; for the mastering grid roughly 186 bytes land past the
+global vframe_hdr_plus_sei in module .bss. getbits() does not help: on a
+short record it returns -1 and leaves the value untouched, and no caller
+checks it. The debug dump reads the same grids back with the stored
+counts, so it over-reads too. Only a malformed stream triggers this.
+
+Clamp the value with min_t()/ARRAY_SIZE() right after each getbits(), before
+it reaches the struct field and the loop bound. Not compile- or
+stream-tested here.
+--- a/drivers/media/enhancement/amvecm/hdr/am_hdr10_plus.c
++++ b/drivers/media/enhancement/amvecm/hdr/am_hdr10_plus.c
+@@ -286,6 +286,9 @@
+ 		getbits(metadata, totbitoffset,
+ 			&value, size,
+ 		sei_md_bits.len_num_rows_tgt_sys_disp_act_pk_lumi);
++		/* ST 2094-40 caps the grid at 25x25, the size of the array */
++		value = min_t(unsigned int, value,
++			ARRAY_SIZE(hdr_plus_sei.tgt_sys_disp_act_pk_lumi));
+ 		hdr_plus_sei.num_rows_tgt_sys_disp_act_pk_lumi =
+ 			(u16)value;
+ 		totbitoffset +=
+@@ -296,6 +299,8 @@
+ 		getbits(metadata, totbitoffset,
+ 			&value, size,
+ 		sei_md_bits.len_num_cols_tgt_sys_disp_act_pk_lumi);
++		value = min_t(unsigned int, value,
++			ARRAY_SIZE(hdr_plus_sei.tgt_sys_disp_act_pk_lumi[0]));
+ 		hdr_plus_sei.num_cols_tgt_sys_disp_act_pk_lumi =
+ 			(u16)value;
+ 		totbitoffset +=
+@@ -376,6 +381,9 @@
+ 		getbits(metadata, totbitoffset,
+ 			&value, size,
+ 		sei_md_bits.len_num_rows_mast_disp_act_pk_lumi);
++		/* ST 2094-40 caps the grid at 25x25, the size of the array */
++		value = min_t(unsigned int, value,
++			ARRAY_SIZE(hdr_plus_sei.mast_disp_act_pk_lumi));
+ 		hdr_plus_sei.num_rows_mast_disp_act_pk_lumi =
+ 			(u16)value;
+ 		totbitoffset +=
+@@ -386,6 +394,8 @@
+ 		getbits(metadata, totbitoffset,
+ 			&value, size,
+ 		sei_md_bits.len_num_cols_mast_disp_act_pk_lumi);
++		value = min_t(unsigned int, value,
++			ARRAY_SIZE(hdr_plus_sei.mast_disp_act_pk_lumi[0]));
+ 		hdr_plus_sei.num_cols_mast_disp_act_pk_lumi =
+ 			(u16)value;
+ 		totbitoffset +=

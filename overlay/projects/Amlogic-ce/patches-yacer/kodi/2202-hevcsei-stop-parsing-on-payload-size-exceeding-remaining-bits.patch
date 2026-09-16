@@ -1,0 +1,55 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] HevcSei: stop parsing on payload size exceeding remaining bits
+
+HevcSei.cpp compares m_payloadSize, which is a byte count, against
+AvailableBits(), a bit count, so a payload up to 8x the remaining data
+passes the check. SkipBits() then runs past the end and the parse loop
+can keep going on garbage instead of stopping. Compare against
+AvailableBits() / 8 instead.
+
+AvailableBits() itself underflows to a huge unsigned value once
+m_posBits passes length * 8; clamp it to 0.
+
+m_payloadType is accumulated in 255 increments, so widen it from
+uint8_t to uint32_t to match m_payloadSize.
+
+Needs a malformed stream to trigger. Not exercised on hardware.
+
+--- a/xbmc/utils/BitstreamReader.h
++++ b/xbmc/utils/BitstreamReader.h
+@@ -18,7 +18,10 @@
+   void       SkipBits(int nbits);
+   uint32_t   GetBits(int nbits);
+   unsigned int Position() { return m_posBits; }
+-  unsigned int AvailableBits() { return length * 8 - m_posBits; }
++  unsigned int AvailableBits()
++  {
++    return m_posBits >= length * 8 ? 0 : length * 8 - m_posBits;
++  }
+ 
+ private:
+   const uint8_t *buffer, *start;
+--- a/xbmc/utils/HevcSei.cpp
++++ b/xbmc/utils/HevcSei.cpp
+@@ -73,8 +73,8 @@
+   sei.m_payloadSize += lastPayloadSizeByte;
+   sei.m_payloadOffset = br.Position() / 8;
+ 
+-  // Invalid size
+-  if (sei.m_payloadSize > br.AvailableBits())
++  // Invalid size (payload size is in bytes)
++  if (sei.m_payloadSize > br.AvailableBits() / 8)
+     return 1;
+ 
+   br.SkipBits(sei.m_payloadSize * 8);
+--- a/xbmc/utils/HevcSei.h
++++ b/xbmc/utils/HevcSei.h
+@@ -30,7 +30,7 @@
+   CHevcSei() = default;
+   ~CHevcSei() = default;
+ 
+-  uint8_t m_payloadType{0};
++  uint32_t m_payloadType{0};
+   size_t m_payloadSize{0};
+ 
+   // In relation to the input SEI rbsp payload

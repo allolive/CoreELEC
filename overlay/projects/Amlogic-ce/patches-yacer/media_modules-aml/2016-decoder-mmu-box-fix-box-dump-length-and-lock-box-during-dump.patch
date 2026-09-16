@@ -1,0 +1,100 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] decoder_mmu_box: fix box_dump length accounting and lock box during dump
+
+decoder_mmu_box_dump_all() counts each per-box header twice: BUFPRINT
+already adds the header length to tsize and advances pbuf, then the call
+site does "s += decoder_mmu_box_dump(...)" and adds it again. The output
+cursor skips unwritten bytes and the total grows about twice as fast as
+the text; with several MMU boxes active it passes PAGE_SIZE, snprintf()
+gets a negative size that widens to a huge size_t, vsnprintf() hits
+WARN_ON_ONCE(size > INT_MAX) and returns 0, and box_dump_show() reports
+more than a page. Use "s =" as the bmmu sibling already does, and
+scnprintf() in all four BUFPRINT macros so the accumulated length is
+what was written.
+
+Both dump_all() functions walk box->sc_list / box->mm_list under only
+mgr->mutex, while every writer of those lists serialises on box->mutex
+and frees expansion nodes there, so a dump racing a decoder freeing
+buffers can follow a kfree()d node. Take box->mutex around the per-box
+dump. New nesting is mgr->mutex then box->mutex; no path takes them the
+other way (free paths drop box->mutex before mgr_del_box()). Both entry
+points are process context. Not exercised on hardware.
+
+Deliberately not fixed: the buf==NULL pr_info path still accumulates
+tsize while resetting pbuf each iteration.
+
+--- a/drivers/frame_provider/decoder/utils/decoder_bmmu_box.c
++++ b/drivers/frame_provider/decoder/utils/decoder_bmmu_box.c
+@@ -565,7 +565,7 @@
+ 	}
+ #define BUFPRINT(args...) \
+ 	do {\
+-		s = snprintf(pbuf, size - tsize, args);\
++		s = scnprintf(pbuf, size - tsize, args);\
+ 		tsize += s;\
+ 		pbuf += s; \
+ 	} while (0)
+@@ -630,7 +630,7 @@
+ 	}
+ #define BUFPRINT(args...) \
+ 	do {\
+-		s = snprintf(pbuf, size - tsize, args);\
++		s = scnprintf(pbuf, size - tsize, args);\
+ 		tsize += s;\
+ 		pbuf += s; \
+ 	} while (0)
+@@ -651,6 +651,7 @@
+ 				 box->max_mm_num,
+ 				 box->total_size,
+ 				 box->exp_num);
++		mutex_lock(&box->mutex);
+ 		if (buf) {
+ 			s = decoder_bmmu_box_dump(box, pbuf, size - tsize);
+ 			if (s > 0) {
+@@ -662,6 +663,7 @@
+ 			pbuf = sbuf;
+ 			tsize += decoder_bmmu_box_dump(box, NULL, 0);
+ 		}
++		mutex_unlock(&box->mutex);
+ 		list = list->next;
+ 		i++;
+ 	}
+--- a/drivers/frame_provider/decoder/utils/decoder_mmu_box.c
++++ b/drivers/frame_provider/decoder/utils/decoder_mmu_box.c
+@@ -370,7 +370,7 @@
+ 	}
+ 	#define BUFPRINT(args...) \
+ 	do {\
+-		s = snprintf(pbuf, size - tsize, args);\
++		s = scnprintf(pbuf, size - tsize, args);\
+ 		tsize += s;\
+ 		pbuf += s; \
+ 	} while (0)
+@@ -425,7 +425,7 @@
+ 
+ 	#define BUFPRINT(args...) \
+ 	do {\
+-		s = snprintf(pbuf, size - tsize, args);\
++		s = scnprintf(pbuf, size - tsize, args);\
+ 		tsize += s;\
+ 		pbuf += s; \
+ 	} while (0)
+@@ -445,8 +445,9 @@
+ 			box->channel_id,
+ 			box->max_sc_num,
+ 			box->exp_num);
++		mutex_lock(&box->mutex);
+ 		if (buf) {
+-			s += decoder_mmu_box_dump(box, pbuf, size - tsize);
++			s = decoder_mmu_box_dump(box, pbuf, size - tsize);
+ 			if (s > 0) {
+ 				tsize += s;
+ 				pbuf += s;
+@@ -456,6 +457,7 @@
+ 			pbuf = sbuf;
+ 			tsize += decoder_mmu_box_dump(box, NULL, 0);
+ 		}
++		mutex_unlock(&box->mutex);
+ 		list = list->next;
+ 		i++;
+ 	}

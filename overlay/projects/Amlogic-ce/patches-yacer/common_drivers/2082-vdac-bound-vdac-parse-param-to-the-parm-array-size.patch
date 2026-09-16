@@ -1,0 +1,64 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vdac: bound vdac_parse_param to the parm[] array size
+
+vdac_debug_store() declares "char *parm[3]" and passes it to
+vdac_parse_param(), which does "parm[n++] = token" for every space- or
+newline-separated token with no bound on n. A write of more than three
+tokens, e.g. "echo 'w reg_cntl0 1 2 3 4' > /sys/class/amvdac/debug",
+stores past the array over reg_val, tmp and the stack canary. The
+attribute is 0644, so this is root-only, not reachable from playback.
+
+Pass the array size in and stop at n < max; the caller passes
+ARRAY_SIZE(parm), which also drops the bogus "(char **)&parm" cast.
+Also free buf_orig on the "!parm[0]" return, return -ENOMEM when
+kstrdup() fails, and goto vdac_store_err when kstrtouint() fails in the
+"w" branch instead of writing an uninitialised reg_val to a register -
+so a malformed value now returns -EINVAL. Not built or run on hardware.
+--- a/drivers/media/vout/vdac/vdac_dev.c
++++ b/drivers/media/vout/vdac/vdac_dev.c
+@@ -827,7 +827,7 @@
+ 	return sprintf(buf, "%s\n", vdac_debug_usage_str);
+ }
+ 
+-static void vdac_parse_param(char *buf_orig, char **parm)
++static void vdac_parse_param(char *buf_orig, char **parm, unsigned int max)
+ {
+ 	char *ps, *token;
+ 	char delim1[3] = " ";
+@@ -836,7 +836,7 @@
+ 
+ 	ps = buf_orig;
+ 	strcat(delim1, delim2);
+-	while (1) {
++	while (n < max) {
+ 		token = strsep(&ps, delim1);
+ 		if (!token)
+ 			break;
+@@ -861,9 +861,13 @@
+ 	}
+ 
+ 	buf_orig = kstrdup(buff, GFP_KERNEL);
+-	vdac_parse_param(buf_orig, (char **)&parm);
+-	if (!parm[0])
++	if (!buf_orig)
++		return -ENOMEM;
++	vdac_parse_param(buf_orig, parm, ARRAY_SIZE(parm));
++	if (!parm[0]) {
++		kfree(buf_orig);
+ 		return count;
++	}
+ 
+ 	if (!strcmp(parm[0], "flag")) {
+ 		pr_info("vdac_private_flag: 0x%x\n", pri_flag);
+@@ -892,8 +896,10 @@
+ 		pr_info("cdac_disable:%d\n", s_vdac_data->cdac_disable);
+ 	} else if (!strcmp(parm[0], "w")) {
+ 		if (parm[1] && parm[2]) {
+-			if (kstrtouint(parm[2], 16, &reg_val) < 0)
++			if (kstrtouint(parm[2], 16, &reg_val) < 0) {
+ 				pr_info("reg value error\n");
++				goto vdac_store_err;
++			}
+ 
+ 			if (!strcmp(parm[1], "reg_cntl0"))
+ 				vdac_ana_reg_write(s_vdac_data->reg_cntl0, reg_val);

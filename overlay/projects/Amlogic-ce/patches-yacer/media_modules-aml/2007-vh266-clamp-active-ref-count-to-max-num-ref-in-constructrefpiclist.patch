@@ -1,0 +1,41 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh266: reject slices whose active ref count exceeds MAX_NUM_REF
+
+constructRefPicList() fills m_apcRefPicList[list][ii] and
+m_bIsUsedAsLongTerm[list][ii] for every ii < m_aiNumRefIdx[list]. Both
+arrays are [NUM_REF_PIC_LIST_01][MAX_NUM_REF + 1], i.e. 17 entries per
+list. m_aiNumRefIdx[] comes from the ucode-written NumRefIdx param via two
+6-bit masks, so it can be 0..63; the only bound applied is
+getNumRefEntries(), itself checked only against MAX_NUM_REF_PICS (29).
+
+A malformed or crafted VVC stream with 18 or more RPL entries and a
+matching num_ref_idx_active therefore writes indices 17..28, spilling L0
+into row 1 and L1 past the arrays into m_aiRefPOCList, m_iDepth and
+m_scaledRefPicList. setRefPOCList() then dereferences a slot holding two
+packed POCs as a Picture *. The loops in vh266.c already cap with
+"&& i < MAX_NUM_REF"; h266_bufmgr.c does not.
+
+Reject the slice in xDecodeSlice() once m_aiNumRefIdx[] is filled, before
+anything consumes it, using the same "return -1" path as the two
+MAX_NUM_REF_PICS rejects just above. The spec limits
+num_ref_idx_active_minus1 to 0..14, so conforming streams are unaffected.
+
+Not exercised on hardware: no S905X5 here and no VVC stream decoded. If
+the closed ucode already clamps NumRefIdx, the check is inert.
+--- a/drivers/frame_provider/decoder/h266/h266_bufmgr.c
++++ b/drivers/frame_provider/decoder/h266/h266_bufmgr.c
+@@ -3054,6 +3054,14 @@
+ 		p_declib->m_apcSlicePilot->m_aiNumRefIdx[0] = (param->p.slice_type == I_SLICE) ? 0 : 1;
+ 		p_declib->m_apcSlicePilot->m_aiNumRefIdx[1] = (param->p.slice_type == B_SLICE) ? 1 : 0;
+ 	}
++	if (p_declib->m_apcSlicePilot->m_aiNumRefIdx[0] > MAX_NUM_REF ||
++	    p_declib->m_apcSlicePilot->m_aiNumRefIdx[1] > MAX_NUM_REF) {
++		hevc_print(p_declib->hw, H266_DEBUG_BUFMGR,
++			"Err: NumRefIdx L0:%d L1:%d > MAX_NUM_REF !\n",
++			p_declib->m_apcSlicePilot->m_aiNumRefIdx[0],
++			p_declib->m_apcSlicePilot->m_aiNumRefIdx[1]);
++		return -1;
++	}
+ 	p_declib->m_apcSlicePilot->m_eSliceType = param->p.slice_type;
+ 	//p_declib->m_apcSlicePilot->m_iPOC = param->p.PocLsb;
+ 	p_declib->m_apcSlicePilot->m_iPOC = calcPOC(p_declib);

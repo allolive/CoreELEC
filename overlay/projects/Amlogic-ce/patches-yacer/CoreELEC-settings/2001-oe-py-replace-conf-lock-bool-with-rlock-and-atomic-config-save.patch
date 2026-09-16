@@ -1,0 +1,213 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] CoreELEC-settings: oe.py: RLock and atomic config save
+
+conf_lock in src/oe.py was a module-level bool, cleared only just before a
+successful return; load_config and save_config swallow all exceptions, so one
+failure leaves it True and every later settings call blocks in load_config's
+`while conf_lock: time.sleep(0.2)`. It was not a lock either - test and store
+are separate bytecodes, and BlueZ handlers and the GUI thread all write.
+save_config opened the real file 'w' without fsync, so an interrupted save
+leaves an unparseable oe_settings.xml that hangs the service on every boot.
+
+Use a threading.RLock via `with`, held across the read-modify-write in
+write_setting and remove_node. save_config writes .tmp, fsyncs, os.replace()s
+in the same dir. load_config moves a damaged or non-UTF-8 file to
+oe_settings.xml.bad and returns an empty document, so the box comes up on
+defaults (hostname, BT audio device revert) instead of hanging. Exercised in
+plain Python against the pinned tree (949f6237), not on hardware.
+
+--- a/src/oe.py
++++ b/src/oe.py
+@@ -18,12 +18,14 @@
+ import tarfile
+ import traceback
+ import subprocess
++import threading
+ import defaults
+ import shutil
+ import hashlib, binascii
+ import json
+ 
+ from xml.dom import minidom
++from xml.parsers.expat import ExpatError
+ from xbmc import LOGDEBUG, LOGINFO, LOGWARNING, LOGERROR
+ import xml.etree.ElementTree as ET
+ 
+@@ -38,7 +40,7 @@
+ xbmcm = xbmc.Monitor()
+ 
+ is_service = False
+-conf_lock = False
++conf_lock = threading.RLock()
+ __busy__ = 0
+ xbmcIsPlaying = 0
+ input_request = False
+@@ -797,45 +799,55 @@
+     except Exception as e:
+         dbg_log('oe::standby_devices', 'ERROR: (' + repr(e) + ')')
+ 
++def new_config():
++    xml_conf = minidom.Document()
++    xml_main = xml_conf.createElement('coreelec')
++    xml_conf.appendChild(xml_main)
++    xml_sub = xml_conf.createElement('addon_config')
++    xml_main.appendChild(xml_sub)
++    xml_sub = xml_conf.createElement('settings')
++    xml_main.appendChild(xml_sub)
++    return xml_conf
++
++
+ def load_config():
+     try:
+-        global conf_lock
+-        while conf_lock:
+-            time.sleep(0.2)
+-        conf_lock = True
+-        if os.path.exists(configFile):
+-            config_file = open(configFile, 'r')
+-            config_text = config_file.read()
+-            config_file.close()
+-        else:
+-            config_text = ''
+-        if config_text == '':
+-            xml_conf = minidom.Document()
+-            xml_main = xml_conf.createElement('coreelec')
+-            xml_conf.appendChild(xml_main)
+-            xml_sub = xml_conf.createElement('addon_config')
+-            xml_main.appendChild(xml_sub)
+-            xml_sub = xml_conf.createElement('settings')
+-            xml_main.appendChild(xml_sub)
+-            config_text = xml_conf.toprettyxml()
+-        else:
+-            xml_conf = minidom.parseString(config_text)
+-        conf_lock = False
+-        return xml_conf
++        with conf_lock:
++            if not os.path.exists(configFile):
++                return new_config()
++            try:
++                with open(configFile, 'r', encoding='utf-8') as config_file:
++                    config_text = config_file.read()
++                if config_text == '':
++                    return new_config()
++                return minidom.parseString(config_text)
++            except (ValueError, ExpatError) as e:
++                # damaged file: keep a copy aside and start over, otherwise
++                # every later read/write of a setting fails the same way
++                dbg_log('oe::load_config', 'ERROR: (' + repr(e) + '), moved to ' + configFile + '.bad')
++                try:
++                    os.replace(configFile, configFile + '.bad')
++                except OSError as e:
++                    dbg_log('oe::load_config', 'ERROR: (' + repr(e) + ')')
++                return new_config()
+     except Exception as e:
+         dbg_log('oe::load_config', 'ERROR: (' + repr(e) + ')')
+ 
+ 
+ def save_config(xml_conf):
++    tmp_file = configFile + '.tmp'
+     try:
+-        global configFile, conf_lock
+-        while conf_lock:
+-            time.sleep(0.2)
+-        conf_lock = True
+-        config_file = open(configFile, 'w')
+-        config_file.write(xml_conf.toprettyxml())
+-        config_file.close()
+-        conf_lock = False
++        with conf_lock:
++            try:
++                with open(tmp_file, 'w', encoding='utf-8') as config_file:
++                    config_file.write(xml_conf.toprettyxml())
++                    config_file.flush()
++                    os.fsync(config_file.fileno())
++                os.replace(tmp_file, configFile)
++            except Exception:
++                if os.path.exists(tmp_file):
++                    os.remove(tmp_file)
++                raise
+     except Exception as e:
+         dbg_log('oe::save_config', 'ERROR: (' + repr(e) + ')')
+ 
+@@ -874,11 +886,12 @@
+ 
+ def remove_node(node_name):
+     try:
+-        xml_conf = load_config()
+-        xml_node = xml_conf.getElementsByTagName(node_name)
+-        for xml_main_node in xml_node:
+-            xml_main_node.parentNode.removeChild(xml_main_node)
+-        save_config(xml_conf)
++        with conf_lock:
++            xml_conf = load_config()
++            xml_node = xml_conf.getElementsByTagName(node_name)
++            for xml_main_node in xml_node:
++                xml_main_node.parentNode.removeChild(xml_main_node)
++            save_config(xml_conf)
+     except Exception as e:
+         dbg_log('oe::remove_node', 'ERROR: (' + repr(e) + ')')
+ 
+@@ -900,35 +913,36 @@
+ 
+ def write_setting(module, setting, value, main_node='settings'):
+     try:
+-        xml_conf = load_config()
+-        xml_settings = xml_conf.getElementsByTagName(main_node)
+-        if len(xml_settings) == 0:
+-            for xml_main in xml_conf.getElementsByTagName('coreelec'):
+-                xml_sub = xml_conf.createElement(main_node)
+-                xml_main.appendChild(xml_sub)
+-                xml_settings = xml_conf.getElementsByTagName(main_node)
+-        module_found = 0
+-        setting_found = 0
+-        for xml_setting in xml_settings:
+-            for xml_modul in xml_setting.getElementsByTagName(module):
+-                module_found = 1
+-                for xml_modul_setting in xml_modul.getElementsByTagName(setting):
+-                    setting_found = 1
+-        if setting_found == 1:
+-            if hasattr(xml_modul_setting.firstChild, 'nodeValue'):
+-                xml_modul_setting.firstChild.nodeValue = value
++        with conf_lock:
++            xml_conf = load_config()
++            xml_settings = xml_conf.getElementsByTagName(main_node)
++            if len(xml_settings) == 0:
++                for xml_main in xml_conf.getElementsByTagName('coreelec'):
++                    xml_sub = xml_conf.createElement(main_node)
++                    xml_main.appendChild(xml_sub)
++                    xml_settings = xml_conf.getElementsByTagName(main_node)
++            module_found = 0
++            setting_found = 0
++            for xml_setting in xml_settings:
++                for xml_modul in xml_setting.getElementsByTagName(module):
++                    module_found = 1
++                    for xml_modul_setting in xml_modul.getElementsByTagName(setting):
++                        setting_found = 1
++            if setting_found == 1:
++                if hasattr(xml_modul_setting.firstChild, 'nodeValue'):
++                    xml_modul_setting.firstChild.nodeValue = value
++                else:
++                    xml_value = xml_conf.createTextNode(value)
++                    xml_modul_setting.appendChild(xml_value)
+             else:
++                if module_found == 0:
++                    xml_modul = xml_conf.createElement(module)
++                    xml_setting.appendChild(xml_modul)
++                xml_setting = xml_conf.createElement(setting)
++                xml_modul.appendChild(xml_setting)
+                 xml_value = xml_conf.createTextNode(value)
+-                xml_modul_setting.appendChild(xml_value)
+-        else:
+-            if module_found == 0:
+-                xml_modul = xml_conf.createElement(module)
+-                xml_setting.appendChild(xml_modul)
+-            xml_setting = xml_conf.createElement(setting)
+-            xml_modul.appendChild(xml_setting)
+-            xml_value = xml_conf.createTextNode(value)
+-            xml_setting.appendChild(xml_value)
+-        save_config(xml_conf)
++                xml_setting.appendChild(xml_value)
++            save_config(xml_conf)
+     except Exception as e:
+         dbg_log('oe::write_setting', 'ERROR: (' + repr(e) + ')')
+ 

@@ -1,0 +1,34 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: use per-path blackout policy in pipx_vf_unreg_provider
+
+pipx_vf_unreg_provider() handles the provider-unregister event for both PIP
+paths: pip_receiver_event_fun() calls it with path_index 1 and
+pip2_receiver_event_fun() with path_index 2. The blackout test used
+blackout[2] unconditionally, i.e. the PIP2 policy, whichever path was being
+torn down. Everywhere else blackout[] is indexed by VFM path, and the two
+values are separately settable (blackout_pip_policy writes blackout[1],
+blackout_pip2_policy writes blackout[2]); the pr_info() below the test
+already prints blackout[path_index], so log and action could disagree.
+
+With blackout_pip_policy=1 and blackout_pip2_policy=0, a PIP1 unregister
+skipped safe_switch_videolayer() and try_free_keep_vdx(), leaving VD2 on
+with its keeper frame. It is a policy error only: the keep-failed branch
+below still switches the layers off if vf_keep_current_locked() fails.
+
+Use blackout[path_index]. path_index is only ever 1 or 2 here, both below
+MAX_VD_LAYERS (3). With the shipped defaults both PIP policies are 0, so
+the expressions are equal and behaviour is unchanged; the difference
+appears only once userspace sets them differently. Kodi writes only
+blackout_policy and runs no VFM_PATH_PIP provider, so this has not been
+exercised on hardware.
+--- a/drivers/media/video_sink/video_func.c
++++ b/drivers/media/video_sink/video_func.c
+@@ -5899,7 +5899,7 @@
+ 	if (!layer1_used && !layer2_used && !layer3_used)
+ 		cur_dispbuf[path_index] = NULL;
+ 
+-	if (blackout[2] | force_blackout) {
++	if (blackout[path_index] | force_blackout) {
+ 		if (layer1_used)
+ 			safe_switch_videolayer
+ 				(0, false, false);

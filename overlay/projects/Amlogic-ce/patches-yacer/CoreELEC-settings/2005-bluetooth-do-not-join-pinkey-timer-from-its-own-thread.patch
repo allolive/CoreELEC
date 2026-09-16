@@ -1,0 +1,45 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] bluetooth: do not join pinkey timer from its own thread
+
+open_pinkey_window() starts a pinkeyTimer thread (60 s for a passkey,
+30 s for a PIN code). On expiry pinkeyTimer.run() calls
+close_pinkey_window() on the timer's own thread, which does
+pinkey_timer.stop() then pinkey_timer.join() - joining itself, so join()
+raises RuntimeError('cannot join current thread'). @log.log_function
+swallows it, so pinkey_window.close() never runs and pinkey_timer and
+pinkey_window stay set: the passkey window is left on screen and the next
+pairing attempt reuses it, showing the old passkey. It clears only if
+BlueZ follows up with Agent.Cancel, InterfacesAdded, or display_pincode.
+
+Skip the join when the timer is joining itself; every other caller runs
+on a different thread and joins exactly as before. Also drop the
+redundant self._stop_event.clear() at the top of pinkeyTimer.run() - the
+event is already clear, and clearing it there erases a stop() that lands
+between start() and run(), leaving the caller blocked in join() for the
+full runtime. The same line in discoveryThread.run() is left alone: its
+stop() also calls parent.stop_discovery(), so it is not a no-op.
+
+Verified only by applying the patches-yacer stack and byte-compiling
+bluetooth.py; not exercised on real pairing hardware.
+
+--- a/src/resources/lib/modules/bluetooth.py
++++ b/src/resources/lib/modules/bluetooth.py
+@@ -619,7 +619,9 @@
+     def close_pinkey_window(self):
+         if hasattr(self, 'pinkey_timer'):
+             self.pinkey_timer.stop()
+-            self.pinkey_timer.join()
++            # pinkeyTimer.run calls this on expiry; a thread cannot join itself
++            if self.pinkey_timer is not threading.current_thread():
++                self.pinkey_timer.join()
+             self.pinkey_timer = None
+             del self.pinkey_timer
+         if hasattr(self, 'pinkey_window'):
+@@ -1178,7 +1180,6 @@
+ 
+     @log.log_function()
+     def run(self):
+-        self._stop_event.clear()
+         self.endtime = self.start_time + self.runtime
+         while not self.stopped and not oe.xbmcm.abortRequested():
+             current_time = time.monotonic()

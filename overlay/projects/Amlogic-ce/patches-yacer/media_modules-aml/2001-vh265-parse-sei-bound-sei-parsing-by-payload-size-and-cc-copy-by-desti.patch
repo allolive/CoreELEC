@@ -1,0 +1,119 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh265: parse_sei: bound SEI parsing and CC copy
+
+parse_sei() walks the SEI records the ucode collected into the picture's
+aux buffer, and three bounds are missing.
+
+The closed-caption copy writes ALIGN(payload_size, 8) bytes at
+hevc->sei_itu_data_buf + sei_itu_data_len without comparing against
+SEI_ITU_DATA_SIZE (5*1024), the size of the kmalloc. sei_itu_data_len is
+reset only once per picture, so writes accumulate over every record; a
+crafted picture packed with 9-byte CC payloads writes roughly 8.9 KB into
+the 5120-byte object and corrupts the slab.
+
+The two "while (*p == 0xff)" runs for payload_type and payload_size are
+unbounded and can walk p off the end of the record. And the fixed-size
+bodies read 24 bytes (mastering display), 4 (content light level) and 8
+(T.35, for check_dvb_dv()) regardless of payload_size.
+
+The fix keeps one end pointer for the 0xff scans, requires payload_size
+to cover each fixed body, and skips a CC payload that would overflow the
+buffer. Each skip breaks out of the switch, so p still advances and the
+remaining messages are parsed. Well-formed streams are unaffected: real
+mastering display SEI is exactly 24 bytes, CLL 4, every recognised T.35
+payload longer than 8, and per-picture CC is on the order of 100 bytes.
+
+The identical parse_sei() in h265_fb/vh265_fb.c is left alone; it is
+probed only for S5/T3X. All three defects need a malformed stream to
+trigger, so playback testing does not exercise them.
+
+--- a/drivers/frame_provider/decoder/h265/vh265.c
++++ b/drivers/frame_provider/decoder/h265/vh265.c
+@@ -8980,6 +8980,7 @@
+ 	struct PIC_s *pic, char *sei_buf, uint32_t size, bool parse_cc)
+ {
+ 	char *p = sei_buf;
++	char *end = sei_buf + size;
+ 	char *p_sei;
+ 	uint16_t header;
+ 	uint16_t nal_unit_type;
+@@ -8998,22 +8999,26 @@
+ 	if ((nal_unit_type != NAL_UNIT_SEI)
+ 	&& (nal_unit_type != NAL_UNIT_SEI_SUFFIX))
+ 		return 0;
+-	while (p+4 <= sei_buf+size) {
++	while (p+4 <= end) {
+ 		payload_type = 0;
+ 		payload_size = 0;
+-		while (*p == 0xff) {
++		while (p < end && *p == 0xff) {
+ 			payload_type += *p++;
+ 		}
++		if (p >= end)
++			break;
+ 		payload_type += *p++;
+ 
+-		while (*p == 0xff) {
++		while (p < end && *p == 0xff) {
+ 			payload_size += *p++;
+ 		}
++		if (p >= end)
++			break;
+ 		payload_size += *p++;
+ 		if (payload_size == 0)
+ 			break;
+ 
+-		if (p+payload_size <= sei_buf+size) {
++		if (p+payload_size <= end) {
+ 			switch (payload_type) {
+ 			case SEI_PicTiming:
+ 				if ((parser_sei_enable & 0x4) &&
+@@ -9030,6 +9035,9 @@
+ 				}
+ 				break;
+ 			case SEI_UserDataITU_T_T35:
++				/* check_dvb_dv() reads 8 bytes, signature checks up to 7 */
++				if (payload_size < 8)
++					break;
+ 				p_sei = p;
+ 				check_dvb_dv(hevc, p);
+ 				if (p_sei[0] == 0xB5
+@@ -9099,6 +9107,10 @@
+ 				}
+ #else
+ 				} else if (parse_cc && check_hevc_cc_type(p_sei)) {
++					data_len = ALIGN(payload_size, 8);
++					if (hevc->sei_itu_data_len + data_len >
++						SEI_ITU_DATA_SIZE)
++						break;
+ 					user_data_buf = hevc->sei_itu_data_buf
+ 						+ hevc->sei_itu_data_len;
+ 					/* user data length should be align with 8 bytes,
+@@ -9115,9 +9127,6 @@
+ 						}
+ 					}
+ 					/* pr_info("\n"); */
+-					data_len = payload_size;
+-					if (payload_size % 8)
+-						data_len = ((payload_size + 8) >> 3) << 3;
+ 					hevc->sei_itu_data_len += data_len;
+ 					if (get_dbg_flag(hevc) & H265_DEBUG_PRINT_SEI) {
+ 						user_data_buf = hevc->sei_itu_data_buf;
+@@ -9136,6 +9145,8 @@
+ 				break;
+ 			case SEI_MasteringDisplayColorVolume:
+ 				/* master_display_colour */
++				if (payload_size < 24)
++					break;
+ 				p_sei = p;
+ 				for (i = 0; i < 3; i++) {
+ 					for (j = 0; j < 2; j++) {
+@@ -9167,6 +9178,8 @@
+ 				break;
+ 			case SEI_ContentLightLevel:
+ 				/* content_light_level */
++				if (payload_size < 4)
++					break;
+ 				p_sei = p;
+ 				hevc->content_light_level[0]
+ 					= (*p_sei<<8) | *(p_sei+1);

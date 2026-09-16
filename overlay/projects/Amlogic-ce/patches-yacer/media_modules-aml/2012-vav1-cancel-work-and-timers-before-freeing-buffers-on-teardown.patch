@@ -1,0 +1,69 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vav1: cancel work before freeing its buffers on teardown
+
+The AV1 multi-instance decoder can be torn down while its own work item is
+still running, and the teardown frees the buffers that work touches before
+it stops it.
+
+The AOM_AV1_RESULT_NEED_MORE_BUFFER branch of av1_work_implement()
+re-queues itself while get_free_buf_count() is 0 and never checks
+vdec->next_status, so a starved instance stays VDEC_STATUS_ACTIVE and
+vdec_disconnect() burns its full 2 s wait. Then vmav1_stop() calls
+av1_local_uninit() - freeing the rpm, lmem, aux and film-grain buffers and
+NULLing rpm_ptr/lmem_ptr - before cancel_work_sync(), and
+ammvdec_av1_remove() vfree()s hw->dv_data_buf before calling vmav1_stop().
+If a buffer frees up in that window the still-queued work runs
+av1_release_bufs()/av1_continue_decoding() on those pointers: a
+use-after-free or NULL deref at stop.
+
+The fix leaves the NEED_MORE_BUFFER loop via DEC_RESULT_FORCE_EXIT when
+next_status is VDEC_STATUS_DISCONNECTED, cancels both work items before
+av1_local_uninit(), and frees dv_data_buf after vmav1_stop(). vav1_fb and
+the v4l copies carry the same two defects and are left alone. S922X has no
+AV1 hardware, so this is untested at runtime; S905X5 is the live target.
+
+--- a/drivers/frame_provider/decoder/vav1/vav1.c
++++ b/drivers/frame_provider/decoder/vav1/vav1.c
+@@ -10553,10 +10553,10 @@
+ 		vf_unreg_provider(&vav1_vf_prov);
+ 		hw->stat &= ~STAT_VF_HOOK;
+ 	}
+-	av1_local_uninit(hw);
+-	reset_process_time(hw);
+ 	cancel_work_sync(&hw->work);
+ 	cancel_work_sync(&hw->set_clk_work);
++	av1_local_uninit(hw);
++	reset_process_time(hw);
+ 	uninit_mmu_buffers(hw);
+ 	if (hw->fw)
+ 		vfree(hw->fw);
+@@ -11065,6 +11065,13 @@
+ 		}
+ 	}
+ 
++	if (hw->dec_result == AOM_AV1_RESULT_NEED_MORE_BUFFER &&
++		vdec->next_status == VDEC_STATUS_DISCONNECTED) {
++		/* stopping: do not wait for buffers, release the core */
++		reset_process_time(hw);
++		hw->dec_result = DEC_RESULT_FORCE_EXIT;
++	}
++
+ 	if (hw->dec_result == AOM_AV1_RESULT_NEED_MORE_BUFFER) {
+ 		reset_process_time(hw);
+ 		if (get_free_buf_count(hw) <= 0) {
+@@ -12406,13 +12413,13 @@
+ 	vdec_aux_data_check_exit(vdec);
+ #endif
+ 
++	vmav1_stop(hw);
++
+ 	if (hw->dv_data_buf != NULL) {
+ 		vfree(hw->dv_data_buf);
+ 		hw->dv_data_buf = NULL;
+ 	}
+ 
+-	vmav1_stop(hw);
+-
+ 	if (vdec->parallel_dec == 1)
+ 		vdec_core_release(hw_to_vdec(hw), CORE_MASK_HEVC);
+ 	else

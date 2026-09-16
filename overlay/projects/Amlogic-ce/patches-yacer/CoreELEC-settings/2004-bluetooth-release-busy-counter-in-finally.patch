@@ -1,0 +1,98 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] settings: release the Bluetooth busy counter in finally
+
+start_discovery, stop_discovery, trust_device and remove_device release
+oe.set_busy(0) with a plain statement after their D-Bus call, and
+@log.log_function() swallows the exception, so one DBusError leaves
+oe.__busy__ stuck at 1 for the life of the process. menu_connections()
+starts with "if oe.is_busy(): return", so the Bluetooth page then stops
+listing devices or starting discovery until Kodi restarts. Triggers:
+Remove on a device BlueZ already dropped (org.bluez.Error.DoesNotExist),
+or stop_discovery after bluetoothd restarted. Wrap the four bodies in
+try/finally, and drop set_busy(0) from dbus_error_handler - its three
+callers already release in their own finally, and the double release was
+driving the counter to -1. oe.set_busy itself is unchanged. Verified by
+code reading and py_compile; not exercised against a real D-Bus failure.
+--- a/src/resources/lib/modules/bluetooth.py
++++ b/src/resources/lib/modules/bluetooth.py
+@@ -260,24 +260,27 @@
+     @log.log_function()
+     def start_discovery(self):
+         oe.set_busy(1)
+-        # Check BlueZ's actual state, not our cached flag
+-        # BlueZ can stop discovery on its own (timeout, or during certain operations)
+-        if dbus_bluez.adapter_get_discovering(self.dbusBluezAdapter):
++        try:
++            # Check BlueZ's actual state, not our cached flag
++            # BlueZ can stop discovery on its own (timeout, or during certain operations)
++            if dbus_bluez.adapter_get_discovering(self.dbusBluezAdapter):
++                self.discovering = True
++                return
++
+             self.discovering = True
++            dbus_bluez.adapter_start_discovery(self.dbusBluezAdapter)
++        finally:
+             oe.set_busy(0)
+-            return
+-
+-        self.discovering = True
+-        dbus_bluez.adapter_start_discovery(self.dbusBluezAdapter)
+-        oe.set_busy(0)
+ 
+     @log.log_function()
+     def stop_discovery(self):
+         oe.set_busy(1)
+-        if self.discovering:
+-            dbus_bluez.adapter_stop_discovery(self.dbusBluezAdapter)
++        try:
++            if self.discovering:
++                dbus_bluez.adapter_stop_discovery(self.dbusBluezAdapter)
++        finally:
+             self.discovering = False
+-        oe.set_busy(0)
++            oe.set_busy(0)
+ 
+     # ###################################################################
+     # # Bluetooth Device
+@@ -354,8 +357,10 @@
+     @log.log_function()
+     def trust_device(self, path):
+         oe.set_busy(1)
+-        dbus_bluez.device_set_trusted(path, True)
+-        oe.set_busy(0)
++        try:
++            dbus_bluez.device_set_trusted(path, True)
++        finally:
++            oe.set_busy(0)
+ 
+     @log.log_function()
+     def connect_device(self, path):
+@@ -394,12 +399,14 @@
+         if listItem is None:
+             return
+         oe.set_busy(1)
+-        log.log(f"remove_device->entry: {listItem.getProperty('entry')}", log.DEBUG)
+-        path = listItem.getProperty('entry')
+-        dbus_bluez.adapter_remove_device(self.dbusBluezAdapter, path)
+-        self.disable_device_standby(listItem)
+-        self.menu_connections()
+-        oe.set_busy(0)
++        try:
++            log.log(f"remove_device->entry: {listItem.getProperty('entry')}", log.DEBUG)
++            path = listItem.getProperty('entry')
++            dbus_bluez.adapter_remove_device(self.dbusBluezAdapter, path)
++            self.disable_device_standby(listItem)
++            self.menu_connections()
++        finally:
++            oe.set_busy(0)
+ 
+     # ###################################################################
+     # # Bluetooth Error Handler
+@@ -408,7 +415,6 @@
+     @log.log_function()
+     def dbus_error_handler(self, error):
+         log.log(f'error message: {repr(error.message)}', log.DEBUG)
+-        oe.set_busy(0)
+         oe.notify('Bluetooth error', error.message.split('.')[0], 'bt')
+         if hasattr(self, 'pinkey_window'):
+             self.close_pinkey_window()

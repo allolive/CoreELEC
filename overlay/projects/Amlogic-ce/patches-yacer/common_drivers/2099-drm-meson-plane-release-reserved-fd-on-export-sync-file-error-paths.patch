@@ -1,0 +1,41 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: plane: release reserved fd on export-sync-file errors
+
+am_meson_dmabuf_export_sync_file_ioctl() reserves a descriptor with
+get_unused_fd_flags(O_CLOEXEC) before validating its arguments, then
+returns directly on two failures: arg->dmabuf_fd <= 0, and dma_buf_get()
+failing. Neither calls put_unused_fd(), so each such call burns one
+descriptor in the caller's file table; only the sync_file_create()
+failure reaches the existing err_put_fd label. A process holding DRM
+master that repeats the ioctl with a bad dmabuf_fd eventually hits
+EMFILE, and the slots return only when it exits.
+
+Send both failures through err_put_fd. The returned errno is unchanged
+(-EINVAL), so there is no uapi change. Reaching the leak requires a
+DRM-master caller passing a bad fd; Kodi does not call this ioctl, so
+this is hardening. Compile- and read-verified only, not exercised on
+hardware.
+
+--- a/drivers/drm/meson_plane.c
++++ b/drivers/drm/meson_plane.c
+@@ -261,12 +261,16 @@
+ 	fd = get_unused_fd_flags(O_CLOEXEC);
+ 	if (fd < 0)
+ 		return fd;
+-	if (arg->dmabuf_fd <= 0)
+-		return -EINVAL;
++	if (arg->dmabuf_fd <= 0) {
++		ret = -EINVAL;
++		goto err_put_fd;
++	}
+ 
+ 	dmabuf = dma_buf_get(arg->dmabuf_fd);
+-	if (IS_ERR_OR_NULL(dmabuf))
+-		return -EINVAL;
++	if (IS_ERR_OR_NULL(dmabuf)) {
++		ret = -EINVAL;
++		goto err_put_fd;
++	}
+ 
+ 	if (arg->flags & DMA_BUF_SYNC_WRITE) {
+ 		//fence = dma_resv_get_singleton_unlocked(dmabuf->resv);

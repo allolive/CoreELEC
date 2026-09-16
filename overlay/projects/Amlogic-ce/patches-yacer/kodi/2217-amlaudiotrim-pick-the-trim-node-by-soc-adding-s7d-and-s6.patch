@@ -1,0 +1,102 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] AMLAudioTrim: pick the trim node by SoC, adding S7D and S6
+
+The trim loop hard-codes the g12a driver's mpll0 trim node,
+/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim. On S905X5 the
+audio clock comes from the HIFI PLLs, trimmed by the s6 driver (plain
+S905X5) or the s7d one (S905X5M); the g12a handler refuses the write with
+-ENODEV, the read back never moves, and the loop disables itself.
+
+Resolve the node once from the SoC id: AML_S6 and AML_S7D take their own
+node, any other or unidentified family keeps the g12a path unchanged. Not
+by which node exists: with both drivers built in both module parameters
+appear whether or not the driver probed. STEP=2 and the limit of forty
+carry over to S6/S7D as an assumption. Needs the kernel patches adding the
+node (1112 for S6, 2084 for S7D); not exercised on S905X5 hardware.
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+index e99b256..c498219 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -22,11 +22,32 @@
+ namespace
+ {
+ constexpr const char* ENABLE_PATH = "/storage/.kodi/userdata/aml-audio-trim";
+-constexpr const char* TRIM_PATH =
+-    "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
+ 
+-//! The hardware ignores the field's low bit and rounds up, so a step of one
+-//! lands on the same divider half the time. Two always moves.
++//! Where the trim lives depends on which clock driver runs the SoC: the g12a
++//! one trims mpll0 on g12a/g12b/sm1, the s7d one the HIFI PLL on the
++//! S905X5M and the s6 one the HIFI PLL on the plain S905X5; any
++//! other or unidentified SoC keeps the g12a node, as before. Chosen by SoC and
++//! not by which node exists, because a kernel with both drivers built in
++//! registers both nodes whether or not their driver ever probed.
++const char* TrimPath()
++{
++  static const char* const path = []() -> const char* {
++    switch (aml_get_cpufamily_id())
++    {
++      case AML_S7D:
++        return "/sys/module/amlogic_clk_soc_s7d/parameters/audio_sdm_trim";
++      case AML_S6:
++        return "/sys/module/amlogic_clk_soc_s6/parameters/audio_sdm_trim";
++      default:
++        return "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
++    }
++  }();
++  return path;
++}
++
++//! The g12a driver's mpll0 ignores the field's low bit and rounds up, so a step
++//! of one lands on the same divider half the time. Two always moves. S7D and S6 share
++//! this step and the kernel's limit of forty until measured on that hardware.
+ constexpr int STEP = 2;
+ 
+ //! What the level may reach while the loop is only nulling the rate. Sixty parts
+@@ -156,7 +177,7 @@
+ 
+   try
+   {
+-    CSysfsPath{TRIM_PATH}.Set(0);
++    CSysfsPath{TrimPath()}.Set(0);
+   }
+   catch (...)
+   {
+@@ -179,7 +200,7 @@
+ {
+   try
+   {
+-    CSysfsPath path{TRIM_PATH};
++    CSysfsPath path{TrimPath()};
+     if (!path.Exists())
+       return std::nullopt;
+ 
+@@ -203,7 +224,7 @@
+ {
+   try
+   {
+-    return CSysfsPath{TRIM_PATH}.Exists();
++    return CSysfsPath{TrimPath()}.Exists();
+   }
+   catch (...)
+   {
+@@ -215,7 +236,7 @@
+ {
+   try
+   {
+-    CSysfsPath{TRIM_PATH}.Set(level);
++    CSysfsPath{TrimPath()}.Set(level);
+   }
+   catch (...)
+   {
+@@ -529,7 +550,7 @@
+     m_checked = true;
+     m_present = ReadLevel().has_value();
+     if (!m_present)
+-      CLog::Log(LOGINFO, "CAMLAudioTrim: no audio_sdm_trim in this kernel");
++      CLog::Log(LOGINFO, "CAMLAudioTrim: no {} in this kernel", TrimPath());
+   }
+ 
+   if (!m_present)

@@ -1,0 +1,36 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: crtc: send commit event immediately when vblank is off
+
+am_meson_crtc_atomic_flush() arms the pending commit event on the next
+vblank. If drm_crtc_vblank_get() fails it parks the event in the single
+amcrtc->event slot, drained only by the VPU vsync handler. vblank_get
+fails when am_meson_crtc_atomic_enable() takes its VMODE_MAX early return
+(vout rejected the mode name): the crtc stays active with vblank off, and
+with vout at "null" the vsync interrupt may never fire. The event is then
+never sent, a second flush overwrites the first, flip_done never
+completes and an attached OUT_FENCE is never signalled, freezing a client
+that waits without a timeout (Kodi's eglClientWaitSyncKHR/FOREVER).
+
+Complete the event immediately instead, with drm_crtc_send_vblank_event();
+flush already holds dev->event_lock with irqsave as that helper requires.
+The armed path is unchanged. Display stays black after the failed modeset;
+this only stops the hang. Needs an already-failed modeset; not reproduced
+on hardware.
+--- a/drivers/drm/meson_crtc.c
++++ b/drivers/drm/meson_crtc.c
+@@ -976,10 +976,14 @@
+ 
+ 	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+ 	if (crtc->state->event) {
++		/*
++		 * If vblank is unavailable (e.g. atomic_enable bailed before
++		 * vblank_on), no vsync will deliver the event: complete it now.
++		 */
+ 		if (drm_crtc_vblank_get(crtc) == 0)
+ 			drm_crtc_arm_vblank_event(crtc, crtc->state->event);
+ 		else
+-			amcrtc->event = crtc->state->event;
++			drm_crtc_send_vblank_event(crtc, crtc->state->event);
+ 
+ 		crtc->state->event = NULL;
+ 	}

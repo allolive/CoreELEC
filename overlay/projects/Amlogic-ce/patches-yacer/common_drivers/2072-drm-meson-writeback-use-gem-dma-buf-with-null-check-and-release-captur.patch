@@ -1,0 +1,112 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: writeback: reject fbs with no dma_buf and drain job queue
+
+meson_writeback_capture_picture() does get_dma_buf(meson_fb->bufp[0]->dmabuf)
+unchecked.  Only am_meson_gem_alloc_ion_buff() sets that field, so a gem
+imported through PRIME leaves it NULL and a master committing WRITEBACK_FB_ID
+with such an fb oopses in the capture kworker.  Reject it in atomic_check
+(-EINVAL on the commit), with a backstop in the capture path.  Rejecting
+beats using the imported dma_buf: vdin uses PFN_PHYS(page_to_pfn(sg_page(
+sgt->sgl))) over the whole buffer, so a scattered import would DMA into the
+wrong memory.  vdin_capture_picture() fails before it takes the buffer, so
+drop our reference there and return -EIO instead of vdin's raw -1.  Finally,
+the work item read one shared ->fb, which a second commit queued while the
+work was pending overwrote, leaving a job on job_queue unsignalled; loop over
+job_queue and capture job->fb instead.  Not exercised on hardware here.
+--- a/drivers/drm/meson_writeback.c
++++ b/drivers/drm/meson_writeback.c
+@@ -53,6 +53,7 @@
+ 	struct drm_connector_state *conn_state;
+ 	struct drm_crtc_state *crtc_state;
+ 	struct drm_framebuffer *fb;
++	struct am_meson_fb *meson_fb;
+ 	int i;
+ 
+ 	DRM_DEBUG("am_drm_writeback: %s %d\n", __func__, __LINE__);
+@@ -71,6 +72,12 @@
+ 		return -EINVAL;
+ 	}
+ 
++	meson_fb = container_of(fb, struct am_meson_fb, base);
++	if (!meson_fb->bufp[0] || !meson_fb->bufp[0]->dmabuf) {
++		DRM_ERROR("%s framebuffer has no dmabuf\n", __func__);
++		return -EINVAL;
++	}
++
+ 	for (i = 0; i < ARRAY_SIZE(writeback_fmts); i++) {
+ 		if (fb->format->format == writeback_fmts[i])
+ 			break;
+@@ -163,6 +174,8 @@
+ 	(enum tvin_color_fmt_e)meson_writeback_format_covert2vdin(format);
+ 	vdin_pram.dfmt =
+ 	(enum tvin_color_fmt_e)meson_writeback_format_covert2vdin(format);
++	if (!meson_fb->bufp[0] || !meson_fb->bufp[0]->dmabuf)
++		return -EINVAL;
+ 	dmabuf = meson_fb->bufp[0]->dmabuf;
+ 	get_dma_buf(dmabuf);
+ 
+@@ -172,8 +185,9 @@
+ 
+ 	ret = vdin_capture_picture(&vdin_pram, dmabuf);
+ 	if (ret) {
++		dma_buf_put(dmabuf);
+ 		DRM_ERROR("writeback capture picture fail!\n");
+-		return ret;
++		return -EIO;
+ 	}
+ 
+ 	return ret;
+@@ -183,12 +198,30 @@
+ {
+ 	struct am_drm_writeback *drm_writeback = container_of(work,
+ 			struct am_drm_writeback, writeback_work);
++	struct drm_writeback_connector *wb_conn = &drm_writeback->wb_connector;
++	struct drm_writeback_job *job;
++	unsigned long flags;
++	int ret;
++
++	/*
++	 * Several jobs may be queued before the work runs; capture each one
++	 * into its own fb. Only this work removes jobs from the queue, so the
++	 * head job stays valid until drm_writeback_signal_completion().
++	 */
++	for (;;) {
++		spin_lock_irqsave(&wb_conn->job_lock, flags);
++		job = list_first_entry_or_null(&wb_conn->job_queue,
++					       struct drm_writeback_job,
++					       list_entry);
++		spin_unlock_irqrestore(&wb_conn->job_lock, flags);
++		if (!job)
++			break;
+ 
+-	meson_writeback_capture_picture(drm_writeback->fb,
+-		drm_writeback->capture_port);
+-
+-	drm_writeback_signal_completion(&drm_writeback->wb_connector, 0);
+-	DRM_DEBUG("%s %d capture done!\n", __func__, __LINE__);
++		ret = meson_writeback_capture_picture(job->fb,
++						      drm_writeback->capture_port);
++		drm_writeback_signal_completion(wb_conn, ret);
++		DRM_DEBUG("%s %d capture done!\n", __func__, __LINE__);
++	}
+ }
+ 
+ static void meson_writeback_connector_atomic_commit(struct drm_connector *conn,
+@@ -210,7 +243,6 @@
+ 
+ 	drm_writeback = connector_to_am_writeback(conn);
+ 	fb = conn_state->writeback_job->fb;
+-	drm_writeback->fb = fb;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(writeback_fmts); i++) {
+ 		if (fb->format->format == writeback_fmts[i])
+--- a/drivers/drm/meson_writeback.h
++++ b/drivers/drm/meson_writeback.h
+@@ -15,7 +15,6 @@
+ 	struct meson_connector base;
+ 	struct drm_writeback_connector wb_connector;
+ 	struct drm_device drm_dev;
+-	struct drm_framebuffer *fb;
+ 	struct workqueue_struct *writeback_wq;
+ 	struct work_struct writeback_work;
+ 

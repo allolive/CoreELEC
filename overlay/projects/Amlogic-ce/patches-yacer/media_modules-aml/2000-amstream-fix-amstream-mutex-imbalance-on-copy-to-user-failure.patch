@@ -1,0 +1,42 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amstream: fix amstream_mutex imbalance on copy_to_user failure
+
+Three ioctl error paths mis-account amstream_mutex when copy_to_user()
+faults. In amstream_do_ioctl_new(), GET_QOSINFO and GET_MVDECINFO take
+the mutex once and drop it once after kfree(tmpbuf); the copy loops over
+uarg_old->minfo[m] and uarg->vframe_qos[i] unlock and break, but that
+break only leaves the for loop, so the common unlock runs too and the
+mutex is released twice. In amstream_do_ioctl_old(), the UD_BUF_READ
+copy_to_user() failure path breaks out of the switch still holding it.
+
+Drop the two unlocks inside the copy loops, and add the missing unlock
+before the UD_BUF_READ break, matching the vdec_read_user_data() failure
+path above it. Triggering any of these needs a destination buffer that
+faults on write, so a broken or hostile local client rather than normal
+playback; not exercised on hardware.
+--- a/drivers/stream_input/amports/amstream.c
++++ b/drivers/stream_input/amports/amstream.c
+@@ -2556,7 +2556,6 @@
+ 										&tmpbuf[m],
+ 										sizeof(struct vframe_counter_s_old))) {
+ 								r = -EFAULT;
+-								mutex_unlock(&amstream_mutex);
+ 								break;
+ 							}
+ 					} else if (struct_size == sizeof(struct av_param_mvdec_t)) {//new struct
+@@ -2581,7 +2580,6 @@
+ 									&tmpbuf[i].qos,
+ 									sizeof(struct vframe_qos_s))) {
+ 							r = -EFAULT;
+-							mutex_unlock(&amstream_mutex);
+ 							break;
+ 						}
+ 				}
+@@ -3147,6 +3145,7 @@
+ 							p_userdata_param,
+ 							sizeof(struct userdata_param_t))) {
+ 							r = -EFAULT;
++							mutex_unlock(&amstream_mutex);
+ 							break;
+ 						}
+ 					} else {

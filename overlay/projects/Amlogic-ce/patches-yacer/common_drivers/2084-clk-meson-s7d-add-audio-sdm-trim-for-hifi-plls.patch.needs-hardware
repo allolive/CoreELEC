@@ -1,0 +1,440 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] clk: meson: s7d: add audio_sdm_trim for HIFI PLLs (port yacer 1050)
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- S002 drivers/clk/meson/s7d.c:571: Port yacer 1050 audio_sdm_trim (passthrough audio rate trim) to the S7D HIFI PLLs
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+Review note (second round): two reviewers split on this patch. Both objected
+that the comment called the unused PLL "audio-only" when hifi_pll is a
+selectable parent of vclk, vdec, hcodec, vpu, vapb, sd_emmc and gen in this
+controller. That is corrected, and a trim is now refused with -EBUSY while any
+clock in this provider is parented on the PLL; clearing a trim is still always
+allowed. What cannot be settled here is whether moving frac live is glitch-free
+under a running IEC61937 passthrough stream, and whether the PLL on real S905X5
+hardware sits on a table entry with frac room either side - if it does not,
+every write returns -ERANGE and the knob is inert. Both need the box.
+
+BEFORE ENABLING THIS, measure on an S905X5:
+- that a step moves the audio rate at all, in the right direction, by roughly
+  15ppm, against the display clock;
+- that no click, mute or resync is audible in DD+/TrueHD passthrough when a
+  step is applied mid-stream;
+- which of hifi_pll / hifi1_pll actually carries the 48kHz family.
+
+--- a/drivers/clk/meson/s7d.c
++++ b/drivers/clk/meson/s7d.c
+@@ -12,6 +12,9 @@
+ #include <linux/of_address.h>
+ #include <linux/clkdev.h>
+ #include <linux/arm-smccc.h>
++#include <linux/math64.h>
++#include <linux/mutex.h>
++#include <linux/sched.h>
+ 
+ #include "clk-pll.h"
+ #include "clk-regmap.h"
+@@ -2048,6 +2051,380 @@
+ 	&hifi1_pll
+ };
+ 
++/*
++ * Audio rate trim.
++ *
++ * The S7D counterpart of audio_sdm_trim on g12a, with the same contract: whole
++ * steps, positive is faster, about 15ppm a step, at most forty either way.
++ *
++ * Audio here is clocked from the HIFI PLLs rather than from an mpll: hifi_pll
++ * carries the 48kHz family (491.52M, the IEC61937 HBR rate) and hifi1_pll the
++ * 44.1kHz family (451.584M), and the sink recovers its sample clock from
++ * whichever one the stream is on. Both sit on a fractional multiplier - m plus
++ * frac/100000 of half the reference - and meson_clk_pll_v4_set_rate() rewrites
++ * only frac, without a disable or a relock, when m and n stay the same and the
++ * PLL is enabled (a gated one gets the same m, n and od rewritten and stays
++ * gated). That is the path used here: the rate is moved through clk_set_rate(),
++ * so the clock framework's own lock serialises it against the audio driver's
++ * rate changes and the cached rate, consumers and notifiers stay consistent
++ * with the register. A step is taken only when it keeps m, n and od exactly
++ * where they are; anything that would reselect the table entry is refused
++ * rather than relocked under a running stream.
++ *
++ * Each PLL that is running, or still holds a trim, is moved.
++ *
++ * Neither PLL is audio-only: both appear in the vclk, vdec, hcodec, vpu, vapb,
++ * sd_emmc and gen parent lists in this controller, and clk_set_rate() would
++ * carry the trim to whatever is parented on them. The audio clocks live in a
++ * different controller, so anything in this provider sitting on the PLL is a
++ * non-audio consumer and a trim is refused while one is there.
++ *
++ * What has been applied is tracked rather than inferred from the rate, as on
++ * g12a: the rate in force is recorded when a trim is taken, and if the PLL no
++ * longer runs at what this last left it at then somebody else reprogrammed it,
++ * so the trim is forgotten and the write refused. The check is repeated in a
++ * rate-change notifier, which runs under the framework's lock immediately
++ * before the rate is written, so a change landing between the check and the
++ * write is refused too instead of being overwritten against the wrong base.
++ * The rate left behind is taken from the same notifier, under that lock.
++ *
++ * The limit keeps a trim under the audio drivers' own rate-change threshold
++ * (THRESHOLD_HIFI0/1 in auge, 1000ppm), below which they do not react.
++ */
++#define HIFI_TRIM_MAX		40
++#define HIFI_TRIM_PPM		15
++
++struct hifi_trim {
++	struct clk_regmap *pll;
++	struct clk *clk;
++	struct notifier_block nb;
++	unsigned long base;
++	unsigned long target;
++	unsigned long expect;
++	unsigned long seen;
++	int applied;
++	bool held;
++};
++
++static DEFINE_MUTEX(hifi_trim_mutex);
++static struct task_struct *hifi_trim_task;
++static struct hifi_trim hifi_trims[] = {
++	{ .pll = &hifi_pll },
++	{ .pll = &hifi1_pll },
++};
++
++/* Integer part of meson_clk_pll_params_to_rate() in clk-pll.c (frac 0). */
++static unsigned long hifi_trim_entry_rate(struct meson_clk_pll_data *pll,
++					  unsigned long prate, unsigned int m,
++					  unsigned int n, unsigned int od)
++{
++	if (pll->flags & CLK_MESON_PLL_FIXED_EN0P5)
++		prate >>= 1;
++	if (pll->flags & CLK_MESON_PLL_POWER_OF_TWO)
++		n = BIT(n);
++	if (!n)
++		return 0;
++
++	return ((u64)DIV_ROUND_UP(prate, n) * m) >> od;
++}
++
++/*
++ * True when @target is reached by frac alone: it lies inside the current
++ * multiplier with a margin either side, and no table entry would be chosen
++ * for it ahead of the one programmed now.
++ */
++static bool hifi_trim_frac_only(struct hifi_trim *t, unsigned long target)
++{
++	struct meson_clk_pll_data *pll = t->pll->data;
++	const struct pll_params_table *e;
++	struct clk_hw *parent;
++	unsigned long prate, lo, hi, r, margin;
++	unsigned int m, n, od;
++	bool found = false;
++
++	parent = clk_hw_get_parent(&t->pll->hw);
++	if (!parent || !pll->table)
++		return false;
++	prate = clk_hw_get_rate(parent);
++
++	m = meson_parm_read(t->pll->map, &pll->m);
++	n = meson_parm_read(t->pll->map, &pll->n);
++	od = meson_parm_read(t->pll->map, &pll->od);
++
++	lo = hifi_trim_entry_rate(pll, prate, m, n, od);
++	hi = hifi_trim_entry_rate(pll, prate, m + 1, n, od);
++	margin = (hi - lo) / 1000;
++	if (!lo || target <= lo + margin || target >= hi - margin)
++		return false;
++
++	for (e = pll->table; e->m; e++) {
++		r = hifi_trim_entry_rate(pll, prate, e->m, e->n, e->od);
++		if (e->m == m && e->n == n && e->od == od) {
++			found = true;
++			continue;
++		}
++		/* round-down selection: a nearer entry below target wins */
++		if (r > lo && r <= target)
++			return false;
++		/* an earlier entry at the same rate wins the tie */
++		if (r == lo && !found)
++			return false;
++	}
++
++	return found;
++}
++
++static int hifi_trim_notify(struct notifier_block *nb, unsigned long event,
++			    void *data)
++{
++	struct hifi_trim *t = container_of(nb, struct hifi_trim, nb);
++	struct clk_notifier_data *ndata = data;
++
++	if (READ_ONCE(hifi_trim_task) != current)
++		return NOTIFY_DONE;
++
++	switch (event) {
++	case PRE_RATE_CHANGE:
++		/* registers are stable here, so check the move again */
++		if (ndata->old_rate != t->expect ||
++		    !hifi_trim_frac_only(t, t->target))
++			return NOTIFY_BAD;
++		/* stays the answer if the rate turns out not to change */
++		t->seen = ndata->old_rate;
++		return NOTIFY_OK;
++	case POST_RATE_CHANGE:
++		t->seen = ndata->new_rate;
++		return NOTIFY_OK;
++	default:
++		return NOTIFY_DONE;
++	}
++}
++
++/* Called with hifi_trim_mutex held. Forgets the trim if it was overwritten. */
++static bool hifi_trim_lost(struct hifi_trim *t)
++{
++	if (!t->held || clk_get_rate(t->clk) == t->expect)
++		return false;
++
++	t->held = false;
++	pr_warn("%s: audio trim was overwritten, forgetting it\n",
++		clk_hw_get_name(&t->pll->hw));
++
++	return true;
++}
++
++/*
++ * Works out and checks the move to @steps, recording it for hifi_trim_apply().
++ * What is recorded before a later PLL fails its check is harmless: target is
++ * only used by apply, base only while held, and expect is set to the rate in
++ * force only when nothing is held.
++ */
++/*
++ * Refuse to move a PLL that something other than audio is running from. The
++ * audio clocks are provided by a different controller, so any clock in this
++ * provider currently parented on the PLL - a pixel, VPU, decoder or card clock -
++ * would be dragged along by the trim.
++ */
++static bool hifi_trim_busy(struct hifi_trim *t)
++{
++	unsigned int i;
++
++	for (i = 0; i < s7d_hw_onecell_data.num; i++) {
++		struct clk_hw *hw = s7d_hw_onecell_data.hws[i];
++
++		if (!hw || hw == &t->pll->hw)
++			continue;
++		if (clk_hw_get_parent(hw) == &t->pll->hw)
++			return true;
++	}
++
++	return false;
++}
++
++static int hifi_trim_check(struct hifi_trim *t, int steps)
++{
++	unsigned long base;
++
++	/* Clearing a trim is always allowed, so a stuck trim can be undone. */
++	if (steps && hifi_trim_busy(t))
++		return -EBUSY;
++
++	base = t->held ? t->base : clk_get_rate(t->clk);
++	t->target = base + div_s64((s64)base * HIFI_TRIM_PPM * steps, 1000000);
++
++	/*
++	 * The base is checked as well when a trim is taken, so that writing zero
++	 * can always go back to it.
++	 */
++	if (!hifi_trim_frac_only(t, t->target) ||
++	    (!t->held && !hifi_trim_frac_only(t, base)))
++		return -ERANGE;
++
++	if (!t->held)
++		t->expect = base;
++	t->base = base;
++
++	return 0;
++}
++
++static int hifi_trim_apply(struct hifi_trim *t, int steps)
++{
++	long rate;
++	int ret;
++
++	t->seen = 0;
++	WRITE_ONCE(hifi_trim_task, current);
++	ret = clk_set_rate(t->clk, t->target);
++	WRITE_ONCE(hifi_trim_task, NULL);
++
++	if (ret) {
++		/*
++		 * Refused by the notifier because the rate moved under the
++		 * check, or by a rate protection; either way only a rate that
++		 * really moved forgets the trim.
++		 */
++		if (ret == -EBUSY)
++			hifi_trim_lost(t);
++		return ret;
++	}
++
++	/*
++	 * Nothing notified means the framework found the rate already at the
++	 * rounded target and returned early. Rounding depends only on the
++	 * parent rate and the table, so it can be asked again here.
++	 */
++	if (!t->seen) {
++		rate = clk_round_rate(t->clk, t->target);
++		t->seen = rate > 0 ? rate : clk_get_rate(t->clk);
++	}
++
++	t->expect = t->seen;
++	t->applied = steps;
++	t->held = steps != 0;
++
++	return 0;
++}
++
++static int hifi_trim_set(const char *val, const struct kernel_param *kp)
++{
++	int steps, ret, err = 0, i;
++	bool use[ARRAY_SIZE(hifi_trims)], any = false;
++	struct hifi_trim *t;
++
++	ret = kstrtoint(val, 0, &steps);
++	if (ret)
++		return ret;
++
++	if (steps < -HIFI_TRIM_MAX || steps > HIFI_TRIM_MAX)
++		return -ERANGE;
++
++	mutex_lock(&hifi_trim_mutex);
++
++	for (i = 0; i < ARRAY_SIZE(hifi_trims); i++) {
++		t = &hifi_trims[i];
++		if (t->clk && hifi_trim_lost(t))
++			err = -EBUSY;
++	}
++	if (err)
++		goto out;
++
++	/* Check every PLL to be moved first, so a refusal moves none of them. */
++	for (i = 0; i < ARRAY_SIZE(hifi_trims); i++) {
++		t = &hifi_trims[i];
++		use[i] = t->clk && (t->held || (steps &&
++				    clk_hw_is_enabled(&t->pll->hw)));
++		if (!use[i])
++			continue;
++		any = true;
++		err = hifi_trim_check(t, steps);
++		if (err)
++			goto out;
++	}
++	if (!any && steps)
++		err = -ENODEV;
++
++	/*
++	 * Every move was checked above, so a failure here means the rate was
++	 * changed by someone else in between; the PLLs already moved keep
++	 * their trim and report it.
++	 */
++	for (i = 0; i < ARRAY_SIZE(hifi_trims); i++) {
++		if (!use[i])
++			continue;
++		ret = hifi_trim_apply(&hifi_trims[i], steps);
++		if (ret && !err)
++			err = ret;
++	}
++out:
++	mutex_unlock(&hifi_trim_mutex);
++
++	return err;
++}
++
++static int hifi_trim_get(char *buf, const struct kernel_param *kp)
++{
++	int steps = 0, i;
++	bool present = false;
++	struct hifi_trim *t;
++
++	mutex_lock(&hifi_trim_mutex);
++	for (i = 0; i < ARRAY_SIZE(hifi_trims); i++) {
++		t = &hifi_trims[i];
++		if (!t->clk)
++			continue;
++		present = true;
++		if (!hifi_trim_lost(t) && t->held && !steps)
++			steps = t->applied;
++	}
++	mutex_unlock(&hifi_trim_mutex);
++
++	if (!present)
++		return -ENODEV;
++
++	return sysfs_emit(buf, "%d\n", steps);
++}
++
++static const struct kernel_param_ops hifi_trim_ops = {
++	.set = hifi_trim_set,
++	.get = hifi_trim_get,
++};
++
++module_param_cb(audio_sdm_trim, &hifi_trim_ops, NULL, 0644);
++MODULE_PARM_DESC(audio_sdm_trim,
++		 "HIFI PLL frac steps, positive is faster audio (15ppm each)");
++
++static void hifi_trim_release(void *data)
++{
++	struct hifi_trim *t = data;
++
++	mutex_lock(&hifi_trim_mutex);
++	t->clk = NULL;
++	t->held = false;
++	mutex_unlock(&hifi_trim_mutex);
++}
++
++static void hifi_trim_init(struct device *dev)
++{
++	struct hifi_trim *t;
++	struct clk *clk;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(hifi_trims); i++) {
++		t = &hifi_trims[i];
++		clk = devm_clk_hw_get_clk(dev, &t->pll->hw, "audio_sdm_trim");
++		if (IS_ERR(clk))
++			continue;
++		t->nb.notifier_call = hifi_trim_notify;
++		if (devm_clk_notifier_register(dev, clk, &t->nb))
++			continue;
++		mutex_lock(&hifi_trim_mutex);
++		t->clk = clk;
++		mutex_unlock(&hifi_trim_mutex);
++		/* runs before the clk and notifier above are released */
++		devm_add_action_or_reset(dev, hifi_trim_release, t);
++	}
++}
++
+ static int meson_s7d_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -2129,8 +2506,14 @@
+ #endif
+ 	}
+ 
+-	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
+-					   (void *)hw_onecell_data);
++	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
++					  (void *)hw_onecell_data);
++	if (ret)
++		return ret;
++
++	hifi_trim_init(dev);
++
++	return 0;
+ }
+ 
+ static const struct of_device_id clkc_match_table[] = {

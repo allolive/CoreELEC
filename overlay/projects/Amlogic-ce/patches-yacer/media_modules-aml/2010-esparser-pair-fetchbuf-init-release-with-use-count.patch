@@ -1,0 +1,69 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] esparser: pair fetchbuf init/release with the use count
+
+esparser_init() calls stbuf_fetch_init() only when esparser_use_count
+goes 0 -> 1, but esparser_release() called stbuf_fetch_release() on
+every release, outside the atomic_dec_and_test() block. With two
+concurrent amstream ES users (a video ES port plus an ES audio or
+subtitle port) the first close drops fetchbuf_cnt 1 -> 0, freeing the
+64K fetchbuf and NULLing it while the other user is still writing;
+esparser_stbuf_write() reads the global fetchbuf without
+esparser_mutex, so it then fails with -EFAULT or writes into freed
+pages, and fetchbuf_cnt goes negative. Conversely an ES subtitle
+release returns before the old call site, so a subtitle-only session
+never freed the buffer.
+
+Move stbuf_fetch_release() into the atomic_dec_and_test() block beside
+the other last-user teardown, and in esparser_init() set first_use only
+after stbuf_fetch_init() succeeds, releasing on Err_1/Err_2 when it is
+set, so a failed init no longer leaks the reference.
+
+Not fixed here: esparser_stbuf_write() still touches the global fetchbuf
+without esparser_mutex, so a write racing the final close of its own
+stream can still see a freed pointer.
+
+Reached only with a second concurrent amstream ES user, which Kodi never
+opens; code-reviewed and built, not exercised on hardware.
+--- a/drivers/stream_input/parser/esparser.c
++++ b/drivers/stream_input/parser/esparser.c
+@@ -403,13 +403,12 @@
+ 	buf->flag |= BUF_FLAG_PARSER;
+ 
+ 	if (atomic_add_return(1, &esparser_use_count) == 1) {
+-		first_use = true;
+-
+ 		if (stbuf_fetch_init()) {
+ 			pr_info("%s: no fetchbuf\n", __func__);
+ 			r = -ENOMEM;
+ 			goto Err_1;
+ 		}
++		first_use = true;
+ 
+ 		if (search_pattern == NULL) {
+ 			search_pattern = kcalloc(1,
+@@ -605,6 +604,8 @@
+ 	pts_stop(pts_type);
+ 
+ Err_1:
++	if (first_use)
++		stbuf_fetch_release();
+ 	atomic_dec(&esparser_use_count);
+ 	buf->flag &= ~BUF_FLAG_PARSER;
+ 	mutex_unlock(&esparser_mutex);
+@@ -699,6 +700,8 @@
+ 			kfree(search_pattern);
+ 			search_pattern = NULL;
+ 		}
++
++		stbuf_fetch_release();
+ 	}
+ 
+ 	if (has_hevc_vdec() && (buf->type == BUF_TYPE_HEVC))
+@@ -715,7 +718,6 @@
+ 
+ 	buf->flag &= ~BUF_FLAG_PARSER;
+ 	pts_stop(pts_type);
+-	stbuf_fetch_release();
+ }
+ EXPORT_SYMBOL(esparser_release);
+ 

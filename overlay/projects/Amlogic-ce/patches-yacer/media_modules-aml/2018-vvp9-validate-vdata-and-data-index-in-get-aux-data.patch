@@ -1,0 +1,57 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vvp9: guard vdata and vdec_data_index before reading HDR10+ aux data
+
+vvp9_event_cb() handles VFRAME_EVENT_RECEIVER_GET_AUX_DATA by reading
+vdec->vdata->data[pic->vdec_data_index].hdr10p_buf_size and .hdr10p_data_buf
+without checking either. vdec->vdata stays NULL when vdec_data_get() finds
+all VDEC_DATA_MAX_INSTANCE_NUM slots taken and on the v4l path, and
+init_pic_list()/config_pic() leave vdec_data_index at -1 (and aux_data_buf
+NULL) whenever the slot allocation failed. The HDR10+ and Dolby Vision
+paths send this event during ordinary VP9 playback, so a failed allocation
+means a NULL deref or a data[-1] read under lock_buffer_pool().
+
+Gate both the event handler and the HDR10+ branch of set_frame_info() on
+vdata being non-NULL and vdec_data_index >= 0, and gate the SEI copy on a
+non-NULL source and aux_data_buf; size starts at 0 so the degraded case
+reports no aux data, which the receivers already handle. When allocation
+succeeded - the normal case - behaviour is unchanged.
+
+Needs a failed vdata slot allocation to trigger; not exercised on hardware.
+The same pattern in the front-back decoder (vp9_fb/vvp9_fb.c) is left alone.
+
+--- a/drivers/frame_provider/decoder/vp9/vvp9.c
++++ b/drivers/frame_provider/decoder/vp9/vvp9.c
+@@ -7991,7 +7991,8 @@
+ 	}
+ 
+ 	if ((pbi->chunk != NULL) && (pbi->chunk->hdr10p_data_buf != NULL) && (pbi->chunk->hdr10p_data_size > 0) &&
+-		(pbi->chunk->hdr10p_data_size < HDR10P_BUF_SIZE) && (pic->hdr10p_data_buf != NULL)) {
++		(pbi->chunk->hdr10p_data_size < HDR10P_BUF_SIZE) && (pic->hdr10p_data_buf != NULL) &&
++		hw_to_vdec(pbi)->vdata && (pic->vdec_data_index >= 0)) {
+ 		struct vdec_s *vdec = hw_to_vdec(pbi);
+ 		memcpy(pic->hdr10p_data_buf, pbi->chunk->hdr10p_data_buf,
+ 			pbi->chunk->hdr10p_data_size);
+@@ -8239,14 +8240,18 @@
+ 		req->dv_enhance_exist = 0;
+ 
+ 		if (index != 0xff
+-			&& index < pbi->used_buf_num) {
+-			int size;
++			&& index < pbi->used_buf_num
++			&& vdec->vdata) {
++			int size = 0;
+ 			char *p = NULL;
+ 			pic = &pool->frame_bufs[index].buf;
+-			size = vdec->vdata->data[pic->vdec_data_index].hdr10p_buf_size;
+-			p = vdec->vdata->data[pic->vdec_data_index].hdr10p_data_buf;
++			if (pic->vdec_data_index >= 0) {
++				size = vdec->vdata->data[pic->vdec_data_index].hdr10p_buf_size;
++				p = vdec->vdata->data[pic->vdec_data_index].hdr10p_data_buf;
++			}
+ 
+-			if (size > 0 && size + 12 <= SEI_BUF_SIZE) {
++			if (size > 0 && size + 12 <= SEI_BUF_SIZE &&
++			    p && pic->aux_data_buf) {
+ 				pic->aux_data_buf[0] = ((size + 4) >> 24) & 0xff;
+ 				pic->aux_data_buf[1] = ((size + 4) >> 16) & 0xff;
+ 				pic->aux_data_buf[2] = ((size + 4) >>  8) & 0xff;

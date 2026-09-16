@@ -1,0 +1,34 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh266: bound slice segment index to SLICE_MAX_NUM
+
+Picture.slices[] is a fixed array of SLICE_MAX_NUM (= 1000) Slice pointers,
+but m_uiSliceSegmentIdx is never bounded against it, and the upstream VTM
+CHECK() guards are inert here (CHECK(a,b) expands to nothing). A malformed
+stream with more than 1000 slice segments in one picture walks the index past
+the array: index 1000 aliases the AML-added buf_cfg field, and beyond that
+the accesses leave the malloc(sizeof(Picture)) allocation - a stream-driven
+out-of-bounds kernel heap read and write.
+
+xDecodeSlice() now returns -1 on the non-first-slice path once the index has
+reached SLICE_MAX_NUM, ahead of every unguarded slices[] access; 0..999 still
+pass, the most slices any VVC level permits. It stops the overflow but does
+not reset the index, so such a stream keeps failing slices until the instance
+is torn down. Only S7D (S905X5) has VVC hardware, so this is inert on g12b;
+not exercised on S905X5 hardware - none available here.
+
+--- a/drivers/frame_provider/decoder/h266/h266_bufmgr.c
++++ b/drivers/frame_provider/decoder/h266/h266_bufmgr.c
+@@ -2978,6 +2978,13 @@
+ 	if (p_declib->m_bFirstSliceInPicture) {
+ 		p_declib->m_uiSliceSegmentIdx = 0;
+ 	} else {
++		/* Picture.slices[] holds SLICE_MAX_NUM entries */
++		if (p_declib->m_uiSliceSegmentIdx >= SLICE_MAX_NUM) {
++			hevc_print(p_declib->hw, H266_DEBUG_BUFMGR,
++				"Err: slice segment idx %u exceeds %d slices per picture\n",
++				p_declib->m_uiSliceSegmentIdx, SLICE_MAX_NUM);
++			return -1;
++		}
+ 		//CHECK(nalu.m_nalUnitType != m_pcPic->slices[m_uiSliceSegmentIdx - 1]->m_eNalUnitType && !m_pcPic->cs->pps->m_mixedNaluTypesInPicFlag, "If pps_mixed_nalu_types_in_pic_flag is equal to 0, the value of NAL unit type shall be the same for all coded slice NAL units of a picture");
+ 		copySliceInfo(p_declib->m_apcSlicePilot, p_declib->m_pcPic->slices[p_declib->m_uiSliceSegmentIdx-1], true);
+ 	}

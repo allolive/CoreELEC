@@ -1,0 +1,61 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] di_multi: di_que_list: drain a local kfifo copy
+
+di_que_list() snapshots a queue by memcpy'ing the live struct kfifo header
+of fifo[qtype] into the per-channel fifo[QUE_DBG], then drains that copy
+with an unbounded while (kfifo_out()) loop.
+
+After the first call fifo[QUE_DBG].data aliases fifo[qtype].data, so the
+buffer di_que_alloc() gave QUE_DBG leaks and di_que_release() later
+kfifo_free()s the same buffer twice. fifo[QUE_DBG] is also unlocked shared
+state: a debug lister racing the DI task can retear in/out mid-drain and
+run the loop past the caller's arr[MAX_FIFO_SIZE + 1] on the stack.
+
+Copy the header into a local struct kfifo, drain that, stop at
+MAX_FIFO_SIZE entries, and report *rsize as the count actually copied.
+With no concurrent writer the output is identical to before.
+
+Not exercised on hardware.
+
+--- a/drivers/media/di_multi/di_que.c
++++ b/drivers/media/di_multi/di_que.c
+@@ -186,6 +186,7 @@
+ {
+ 	struct di_ch_s *pch = get_chdata(ch);
+ /*	unsigned int tmp[MAX_FIFO_SIZE + 1];*/
++	struct kfifo tmp_fifo;
+ 	int i;
+ 	unsigned int index;
+ 	bool ret = false;
+@@ -201,8 +202,11 @@
+ 	}
+ 
+ 	ret = true;
+-	memcpy(&pch->fifo[QUE_DBG], &pch->fifo[qtype],
+-	       sizeof(pch->fifo[qtype]));
++	/*
++	 * drain a local copy: fifo[QUE_DBG] owns its own buffer and
++	 * would be shared by concurrent listers
++	 */
++	tmp_fifo = pch->fifo[qtype];
+ 
+ #ifdef MARK_HIS
+ 	if (kfifo_is_empty(&pbm->fifo[QUE_DBG]))
+@@ -212,13 +216,15 @@
+ 	i = 0;
+ 	*rsize = 0;
+ 
+-	while (kfifo_out(&pch->fifo[QUE_DBG], &index, sizeof(unsigned int))
++	while (i < MAX_FIFO_SIZE &&
++	       kfifo_out(&tmp_fifo, &index, sizeof(unsigned int))
+ 		== sizeof(unsigned int)) {
+ 		outbuf[i] = index;
+ 		/*pr_info("%d->%d\n",i,index);*/
+ 		i++;
+ 	}
+-	*rsize = di_que_list_count(ch, qtype);
++	/* entries actually copied, never more than outbuf holds */
++	*rsize = i;
+ 	#ifdef MARK_HIS	/*debug only*/
+ 	que_dbg("%s: size[%d]\n", di_name_new_que[qtype], *rsize);
+ 	for (i = 0; i < *rsize; i++)

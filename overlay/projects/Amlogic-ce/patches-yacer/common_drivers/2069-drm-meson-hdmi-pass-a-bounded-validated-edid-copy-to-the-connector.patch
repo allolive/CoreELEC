@@ -1,0 +1,88 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: hdmi: pass a bounded EDID copy to the connector
+
+meson_hdmitx_get_modes() and the two cec_notifier_set_phys_addr_from_edid()
+calls passed the raw hdmitx buffer tx_comm->EDID_buf, a fixed
+EDID_MAX_BLOCK * 128 = 1024 byte array inside struct hdmitx_common. Both
+consumers size the EDID as EDID_LENGTH * (1 + edid->extensions) without
+validating it, so an extension count of 8..255 in byte 0x7e makes DRM read
+up to 32 KB from that 1024 byte field and copy the excess - rxcap, mutexes,
+the rest of the device structure - into the connector EDID blob, readable
+by any DRM client via GETPROPBLOB. It takes a malformed sink EDID, a
+corrupted DDC read, or a root write to the sysfs edid "load" attribute.
+
+Use the copy hdmitx_common_read_edid() already builds: it holds valid_mutex
+and returns at most the blocks the buffer holds. Clamp edid->extensions to
+that, fixing the block 0 checksum, and free the copy after use. Only the
+size is bounded; a concurrent DDC re-read can still leave the content
+inconsistent, which needs a separate change. Not exercised on hardware.
+--- a/drivers/drm/meson_hdmi.c
++++ b/drivers/drm/meson_hdmi.c
+@@ -538,6 +538,29 @@
+ 	return ret;
+ }
+ 
++static struct edid *meson_hdmitx_get_edid_copy(void)
++{
++	u8 *buf = NULL;
++	struct edid *edid;
++	int len;
++	u8 max_ext;
++
++	len = hdmitx_common_read_edid(&buf);
++	if (len < EDID_LENGTH) {
++		kfree(buf);
++		return NULL;
++	}
++
++	edid = (struct edid *)buf;
++	max_ext = len / EDID_LENGTH - 1;
++	if (edid->extensions > max_ext) {
++		edid->checksum += edid->extensions - max_ext;
++		edid->extensions = max_ext;
++	}
++
++	return edid;
++}
++
+ int meson_hdmitx_get_modes(struct drm_connector *connector)
+ {
+ 	u32 vrr_cap = 0;
+@@ -558,11 +591,12 @@
+ 		return count;
+ 	}
+ 
+-	edid = (struct edid *)hdmitx_get_raw_edid(tx_comm);
++	edid = meson_hdmitx_get_edid_copy();
+ 
+ 	am_hdmitx->sequence_id = hdmitx_get_hpd_hw_sequence_id(tx_comm);
+ 
+ 	drm_connector_update_edid_property(connector, edid);
++	kfree(edid);
+ 
+ 	vrr_list = kcalloc(MAX_VRR_GROUP_VIC_NUM, sizeof(int),  GFP_KERNEL);
+ 	tmp = kcalloc(MAX_VRR_GROUP_VIC_NUM, sizeof(int),  GFP_KERNEL);
+@@ -2579,9 +2613,10 @@
+ #ifdef CONFIG_CEC_NOTIFIER
+ 	if (hdmitx_get_hpd_state(tx_comm)) {
+ 		DRM_DEBUG("%s[%d]\n", __func__, __LINE__);
+-		pedid = (struct edid *)hdmitx_get_raw_edid(tx_comm);
++		pedid = meson_hdmitx_get_edid_copy();
+ 		cec_notifier_set_phys_addr_from_edid(am_hdmi->cec_notifier,
+ 						     pedid);
++		kfree(pedid);
+ 		if (mode_config.suspend_state)
+ 			drm_mode_config_helper_resume(drm);
+ 	} else {
+@@ -2739,9 +2774,10 @@
+ #ifdef CONFIG_CEC_NOTIFIER
+ 	if (hdmitx_get_hpd_state(tx_comm)) {
+ 		DRM_DEBUG("%s[%d]\n", __func__, __LINE__);
+-		pedid = (struct edid *)hdmitx_get_raw_edid(tx_comm);
++		pedid = meson_hdmitx_get_edid_copy();
+ 		cec_notifier_set_phys_addr_from_edid(am_hdmi->cec_notifier,
+ 						     pedid);
++		kfree(pedid);
+ 	} else {
+ 		cec_notifier_set_phys_addr(am_hdmi->cec_notifier,
+ 					   CEC_PHYS_ADDR_INVALID);

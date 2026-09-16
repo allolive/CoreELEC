@@ -1,0 +1,81 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vav1: NULL-check film grain reference frame before use
+
+config_film_grain_reg() takes the film grain reference slot index from
+HEVC_FG_STATUS bits 10:8 (0-7, REF_FRAMES is 8), fetches
+buf = cm->ref_frame_map[idx] and reads buf->film_grain_reg_valid. The only
+guard is a loop checking the index appears in cm->remapped_ref_idx[], which
+says nothing about the slot being populated: ref_frame_map[] entries are
+NULL until a frame refreshes them, reset_ref_frame_map() clears all eight on
+resync, and the port's aom_internal_error() does not longjmp, so the
+"nonexistent reference" path only logs and still stores remapped_ref_idx[i].
+A stream joined mid-sequence can reach the read with buf == NULL, and the
+function runs in the hard-IRQ handler, so that is an oops in interrupt
+context. Fold the NULL test into the existing validity check so such a
+request takes the early return the "register data invalid" case already takes.
+
+Applied identically to all five AV1 front ends: decoder/vav1, decoder/vav1_fb,
+decoder_v4l/vav1, decoder_v4l/vav1_fb, decoder_v4l/vav1_t5d. In the _fb
+variants front_back_mode == 1 skips the remapped_ref_idx loop entirely, so
+this is the only check there. Deliberately left alone: the unchecked
+pic->cur_frame dereference earlier in the _fb copies.
+
+Not exercised on hardware - g12b has no AV1 hardware decode and never enters
+this path; whether the ucode raises an FGS request for an empty reference slot
+cannot be determined from this tree.
+
+--- a/drivers/frame_provider/decoder_v4l/vav1_fb/vav1_fb_v4l.c
++++ b/drivers/frame_provider/decoder_v4l/vav1_fb/vav1_fb_v4l.c
+@@ -7442,7 +7442,7 @@
+ #else
+ 	buf = cm->ref_frame_map[film_grain_params_ref_idx];
+ #endif
+-	if (buf->film_grain_reg_valid == 0) {
++	if (!buf || buf->film_grain_reg_valid == 0) {
+ 		av1_print(hw, AOM_DEBUG_HW_MORE,
+ 			"%s Error, film grain register data invalid for reference idx %d\n",
+ 			__func__, film_grain_params_ref_idx);
+--- a/drivers/frame_provider/decoder_v4l/vav1_t5d/vav1_t5d.c
++++ b/drivers/frame_provider/decoder_v4l/vav1_t5d/vav1_t5d.c
+@@ -6572,7 +6572,7 @@
+ 	}
+ 	buf = cm->ref_frame_map[film_grain_params_ref_idx];
+ 
+-	if (buf->film_grain_reg_valid == 0) {
++	if (!buf || buf->film_grain_reg_valid == 0) {
+ 		av1_print(hw, AOM_DEBUG_HW_MORE,
+ 			"%s Error, film grain register data invalid for reference idx %d\n",
+ 			__func__, film_grain_params_ref_idx);
+--- a/drivers/frame_provider/decoder_v4l/vav1/vav1.c
++++ b/drivers/frame_provider/decoder_v4l/vav1/vav1.c
+@@ -7488,7 +7488,7 @@
+ 	}
+ 	buf = cm->ref_frame_map[film_grain_params_ref_idx];
+ 
+-	if (buf->film_grain_reg_valid == 0) {
++	if (!buf || buf->film_grain_reg_valid == 0) {
+ 		av1_print(hw, AOM_DEBUG_HW_MORE,
+ 			"%s Error, film grain register data invalid for reference idx %d\n",
+ 			__func__, film_grain_params_ref_idx);
+--- a/drivers/frame_provider/decoder/vav1_fb/vav1_fb.c
++++ b/drivers/frame_provider/decoder/vav1_fb/vav1_fb.c
+@@ -8002,7 +8002,7 @@
+ #else
+ 	buf = cm->ref_frame_map[film_grain_params_ref_idx];
+ #endif
+-	if (buf->film_grain_reg_valid == 0) {
++	if (!buf || buf->film_grain_reg_valid == 0) {
+ 		av1_print(hw, AOM_DEBUG_HW_MORE,
+ 			"%s Error, film grain register data invalid for reference idx %d\n",
+ 			__func__, film_grain_params_ref_idx);
+--- a/drivers/frame_provider/decoder/vav1/vav1.c
++++ b/drivers/frame_provider/decoder/vav1/vav1.c
+@@ -7546,7 +7546,7 @@
+ 	}
+     buf = cm->ref_frame_map[film_grain_params_ref_idx];
+ 
+-    if (buf->film_grain_reg_valid == 0) {
++    if (!buf || buf->film_grain_reg_valid == 0) {
+ 	    av1_print(hw, AOM_DEBUG_HW_MORE,
+ 			"%s Error, film grain register data invalid for reference idx %d\n",
+ 			__func__, film_grain_params_ref_idx);

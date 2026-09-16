@@ -1,0 +1,124 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: serialise DV_IOC_SET_DV_CONFIG_DATA buffer swap
+
+DV_IOC_SET_DV_CONFIG_DATA rebuilt the global cfg_data/bin_data buffers with
+no serialisation: it vfree()d the old buffer, vmalloc()ed a new one into the
+global, then copy_from_user()ed into it. amdolby_vision_ioctl() takes no lock
+and any number of opens are allowed, so two threads on /dev/amdolby_vision
+can double-free the same pointer, or one can sleep in copy_from_user() while
+the other frees that buffer underneath it. cfg_size/bin_size are separate
+globals, so a reader can pair one thread's size with another's buffer.
+
+Allocate and copy into a local pointer first, then swap pointer and size
+under a new dv_config_data_lock mutex, freeing the old buffer there. The lock
+also covers the only consumer, cp_dv_pq_config_data(). A failed vmalloc or
+copy now leaves the previous configuration intact; no uapi, command number,
+size limit or return code changes. Needs a privileged local caller with two
+concurrent threads to trigger; not exercised on hardware.
+
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -458,6 +458,8 @@
+ char *bin_data;
+ int cfg_size;
+ int bin_size;
++/* serialises DV_IOC_SET_DV_CONFIG_DATA updates of the buffers above */
++static DEFINE_MUTEX(dv_config_data_lock);
+ 
+ static unsigned int atsc_sei = 1;
+ module_param(atsc_sei, uint, 0664);
+@@ -15615,6 +15617,9 @@
+ 	case DV_IOC_SET_DV_CONFIG_DATA:
+ 		if (copy_from_user(&config_data, argp,
+ 				   sizeof(struct dv_config_data_s)) == 0) {
++			char *new_data = NULL;
++			int new_size = 0;
++
+ 			if (config_data.file_name == 0) {
+ 				/*check cfg size copy_from_user*/
+ 				if (config_data.file_size > MAX_CFG_SIZE ||
+@@ -15623,20 +15628,13 @@
+ 					pr_dv_dbg("common cfg size check fail!!\n");
+ 					break;
+ 				}
+-				cfg_size = config_data.file_size * sizeof(char);
+-				if (cfg_data) {
+-					vfree(cfg_data);
+-					cfg_data = NULL;
+-				}
+-				cfg_data = vmalloc(cfg_size);
+-				if (!cfg_data) {
++				new_size = config_data.file_size * sizeof(char);
++				new_data = vmalloc(new_size);
++				if (!new_data) {
+ 					ret = -EFAULT;
+-					pr_dv_dbg("bin_data malloc fail!\n");
++					pr_dv_dbg("cfg_data malloc fail!\n");
+ 					break;
+ 				}
+-				argp = (void __user *)config_data.file_data;
+-				if (copy_from_user(cfg_data, argp, cfg_size))
+-					ret = -EFAULT;
+ 			}
+ 			if (config_data.file_name == 1) {
+ 				/*check bin size copy_from_user*/
+@@ -15646,25 +15644,43 @@
+ 					pr_dv_dbg("common bin size check fail!!\n");
+ 					break;
+ 				}
+-				bin_size = config_data.file_size * sizeof(char);
+-				if (bin_data) {
+-					vfree(bin_data);
+-					bin_data = NULL;
+-				}
+-				bin_data = vmalloc(bin_size);
+-				if (!bin_data) {
++				new_size = config_data.file_size * sizeof(char);
++				new_data = vmalloc(new_size);
++				if (!new_data) {
+ 					ret = -EFAULT;
+ 					pr_dv_dbg("bin_data malloc fail!\n");
+ 					break;
+ 				}
++			}
++			if (new_data) {
+ 				argp = (void __user *)config_data.file_data;
+-				if (copy_from_user(bin_data, argp, bin_size))
++				if (copy_from_user(new_data, argp, new_size)) {
++					vfree(new_data);
+ 					ret = -EFAULT;
++					break;
++				}
++			}
++			/* publish the new buffer and consume it atomically */
++			mutex_lock(&dv_config_data_lock);
++			if (new_data) {
++				char *old_data;
++
++				if (config_data.file_name == 0) {
++					old_data = cfg_data;
++					cfg_data = new_data;
++					cfg_size = new_size;
++				} else {
++					old_data = bin_data;
++					bin_data = new_data;
++					bin_size = new_size;
++				}
++				vfree(old_data);
+ 			}
+ 			if (!cfg_data || !bin_data) {
+ 				if (debug_dolby & 0x200)
+ 					pr_info("[DV]: set config fail, cfg_size=%d, bin_size=%d\n",
+ 					cfg_size, bin_size);
++				mutex_unlock(&dv_config_data_lock);
+ 				return ret;
+ 			}
+ 			if (is_aml_tm2_tvmode() ||
+@@ -15677,6 +15693,7 @@
+ 			if (debug_dolby & 0x200)
+ 				pr_info("[DV]: set config success, cfg_size=%d, bin_size=%d\n",
+ 					cfg_size, bin_size);
++			mutex_unlock(&dv_config_data_lock);
+ 		} else {
+ 			ret = -EFAULT;
+ 		}

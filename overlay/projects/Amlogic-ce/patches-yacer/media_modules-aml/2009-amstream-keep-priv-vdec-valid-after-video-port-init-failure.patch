@@ -1,0 +1,63 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amstream: return -ENODEV once a failed video port frees the vdec
+
+video_port_init()'s error path frees the vdec and sets priv->vdec = NULL,
+but the fd stays open. port_get_inited() then reports the video port "not
+inited" precisely because priv->vdec is NULL, so the next write() re-runs
+amstream_port_init(), passes the NULL vdec to vdec_resource_checking()
+and oopses; ~40 ioctl sites dereference priv->vdec unchecked too.
+vdec_init() fails for ordinary reasons (CMA allocation at 4K, probe
+-ENODEV, is_res_locked() -EBUSY), so this is a plain retry-after-failure
+oops; error3 reaches the same state via video_port_release().
+
+Refuse the fd instead: port_vdec_gone() is true when a PORT_TYPE_VIDEO
+port has no vdec (open() fails if vdec_create() does, so only an init
+failure can clear it), and the write() re-init plus both ioctl entries
+return -ENODEV. The gate is blanket - vdec-independent ioctls on that fd
+get -ENODEV too. priv->vdec is still read unlocked, so a thread racing on
+a shared fd can pass the guard; not addressed here. Not exercised on
+hardware - reaching the state needs a forced vdec_init() failure.
+--- a/drivers/stream_input/amports/amstream.c
++++ b/drivers/stream_input/amports/amstream.c
+@@ -511,6 +511,12 @@
+ 	reset_canuse_bufferlevel(10000);
+ }
+ 
++/* A failed video port init frees priv->vdec; the fd is unusable afterwards. */
++static bool port_vdec_gone(struct port_priv_s *priv)
++{
++	return (priv->port->type & PORT_TYPE_VIDEO) && !priv->vdec;
++}
++
+ static bool port_get_inited(struct port_priv_s *priv)
+ {
+ 	struct stream_port_s *port = priv->port;
+@@ -854,6 +860,9 @@
+ 	struct stream_port_s *port = priv->port;
+ 	struct vdec_s *vdec = priv->vdec;
+ 
++	if (port_vdec_gone(priv))
++		return -ENODEV;
++
+ 	r = vdec_resource_checking(vdec);
+ 	if (r < 0)
+ 		return r;
+@@ -3556,7 +3565,7 @@
+ 	struct port_priv_s *priv = (struct port_priv_s *)file->private_data;
+ 	struct stream_port_s *this = priv->port;
+ 
+-	if (!this)
++	if (!this || port_vdec_gone(priv))
+ 		return -ENODEV;
+ 
+ 	return amstream_do_ioctl(priv, cmd, arg);
+@@ -3695,6 +3704,9 @@
+ 	s32 r = 0;
+ 	struct port_priv_s *priv = (struct port_priv_s *)file->private_data;
+ 
++	if (port_vdec_gone(priv))
++		return -ENODEV;
++
+ 	switch (cmd) {
+ 	case AMSTREAM_IOC_GET_VERSION:
+ 	case AMSTREAM_IOC_GET:

@@ -1,0 +1,46 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] gpu-aml: mali mpgpu: reject mpgpucmd writes with no argument
+
+mpgpu_write() splits the written string with strsep(&cprt, " "). A write
+containing no space leaves cprt NULL, and every command except "preheat"
+then uses it unchecked: the mpl2 branch calls strlen(cprt), and the
+scmpp, bstgpu, bstpp and lmt branches pass NULL to kstrtouint(), which
+reads s[0]. Either way the kernel oopses in the sysfs write path.
+
+The node is 0644, so this needs root, but GPU tuning scripts write it.
+On valhall/r44p0 the commands are matched by prefix, so "echo mpl2 >
+/sys/class/mpgpu/mpgpucmd" suffices; bifrost/r44p0 compares MAX_TOKEN
+(20) bytes and needs echo -n.
+
+Add a branch after the preheat case - the only argument-less command -
+that goes to the existing quit label when cprt is NULL. Well-formed
+writes are unaffected; a rejected write still returns count, as the
+other quit paths do. Only the bifrost/r44p0 and valhall/r44p0 copies
+built by package.mk are patched; the other in-tree copies share the bug
+but are not compiled. Not exercised on hardware - the pre-patch
+reproducer is itself an oops.
+
+--- a/bifrost/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
++++ b/bifrost/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
+@@ -81,6 +81,9 @@
+ 		if (pmali_plat->plat_preheat) {
+ 			pmali_plat->plat_preheat();
+ 		}
++	} else if (!cprt) {
++		/* all remaining commands need an argument */
++		goto quit;
+ 	} else if (!strncmp(pstart, PLL2_CMD, MAX_TOKEN)) {
+ 		int base = 10;
+ 		if ((strlen(cprt) > 2) && (cprt[0] == '0') &&
+--- a/valhall/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
++++ b/valhall/r44p0/kernel/drivers/gpu/arm/midgard/platform/devicetree/mpgpu.c
+@@ -80,6 +80,9 @@
+ 		if (pmali_plat->plat_preheat) {
+ 			pmali_plat->plat_preheat();
+ 		}
++	} else if (!cprt) {
++		/* all remaining commands need an argument */
++		goto quit;
+ 	} else if (!strncmp(pstart, PLL2_CMD, strlen(PLL2_CMD))) {
+ 		int base = 10;
+ 		if ((strlen(cprt) > 2) && (cprt[0] == '0') &&

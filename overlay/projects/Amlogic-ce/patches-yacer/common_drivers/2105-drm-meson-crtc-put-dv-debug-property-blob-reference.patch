@@ -1,0 +1,37 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: crtc: put dv_debug property blob reference
+
+meson_crtc_atomic_set_property() looks the dv_debug blob up with
+drm_property_lookup_blob(), which returns a reference the caller must
+drop with drm_property_blob_put(). The dv_debug branch never does, on
+either exit: it returns 0 after the kmalloc failure and again after
+copying the string out. The reference DRM core takes for the property
+value is a separate, balanced one.
+
+The property is attached to every CRTC with no SoC condition. Kodi hits
+it routinely - AMLCodec sets enable_fel/enable_mel on open and
+enable_fel 0, enable_mel 0 and force_unmap on close, one fresh blob per
+call - so each call strands a blob plus its data for the life of the
+device. A few dozen bytes a few times per playback: slow growth, no
+corruption, no crash.
+
+Drop the reference on both paths; blob->data is only read by the memcpy
+that precedes the put. Not compiled or run here.
+--- a/drivers/drm/meson_crtc.c
++++ b/drivers/drm/meson_crtc.c
+@@ -437,11 +437,14 @@
+ 
+ 		/* blob->data is not null‑terminated */
+ 		str = kmalloc(blob->length + 1, GFP_KERNEL);
+-		if (!str)
++		if (!str) {
++			drm_property_blob_put(blob);
+ 			return 0;
++		}
+ 
+ 		memcpy(str, blob->data, blob->length);
+ 		str[blob->length] = '\0';
++		drm_property_blob_put(blob);
+ 		amdv_debug_store(str);
+ 
+ 		kfree(str);

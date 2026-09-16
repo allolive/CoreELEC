@@ -1,0 +1,30 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: read canvases before programming 3D MIF addresses
+
+canvas_update_for_3d() declares cs0/cs1/cs2[2] as uninitialised stack
+arrays. When the vframe passes the right-eye picture as canvas indices
+(vf->canvas1Addr != -1), only the [1] entries are filled by canvas_read().
+With cur_dev->mif_linear set, the function still hands &cs0[0]/&cs1[0]/
+&cs2[0] to set_vd_mif_linear_cs(..., 1), so stack garbage reaches the
+field-1 base-address and stride registers of the VD MIF: garbage picture
+in field modes, or a bus fault on a secure region. Reaching it needs a
+mif_linear SoC, layer 0 in MVC/3D mode, and a decoder passing canvas
+indices rather than canvas configs; no shipped S7D decoder does that
+today. g12b has mif_linear=0 and is unaffected.
+
+Fill the [0] entries from cur_canvas_tbl[0..2], the left-eye planes that
+canvas_update_for_mif() just wrote, and the same planes the canvas-config
+branch already programs into field 1. Untested on hardware: no S905X5
+here, and g12b never enters the block.
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -9709,6 +9709,9 @@
+ 		canvas_read(cur_canvas_tbl[4], &cs1[1]);
+ 		canvas_read(cur_canvas_tbl[5], &cs2[1]);
+ 		if (cur_dev->mif_linear) {
++			canvas_read(cur_canvas_tbl[0], &cs0[0]);
++			canvas_read(cur_canvas_tbl[1], &cs1[0]);
++			canvas_read(cur_canvas_tbl[2], &cs2[0]);
+ 			if (is_mvc) {
+ 				set_vd_mif_linear_cs(&vd_layer[1],
+ 					&cs0[1], &cs1[1], &cs2[1],

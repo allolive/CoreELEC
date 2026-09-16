@@ -1,0 +1,52 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: fix swapped try_free_keep_vdx() parameter order
+
+try_free_keep_vdx() is declared as (int flags, u8 layer_id), but every call
+site passes the keeper slot first and the flag word second.  Both parameters
+are integer types, so this compiles silently; the vendor left a /* FIXME */ on
+two of the calls.  The callers have it right: they pass keep_frame_id (0, 1, 2
+or 0xff), and 0xff only makes sense against the MAX_VD_LAYER guard.  Worst
+case, _videopip_set_disable() with 0xff arrives as flags=0xff, layer=0: it
+unmasks VD1's keep ids and calls free_alloced_keep_buffer() on memory VD1 may
+still be scanning out.  Swap the parameters instead of editing ten call sites,
+and reorder try_free_keep_video(), the one caller written for the old order;
+its own behaviour is unchanged, so media_modules-aml is unaffected.  Locking
+and the MAX_VD_LAYER guard are untouched.  Not fixed: layer{1,2,3}_used is
+computed regardless of layer_id.  Read and reasoned only, not soaked.
+--- a/drivers/media/video_sink/video_keeper.c
++++ b/drivers/media/video_sink/video_keeper.c
+@@ -780,12 +780,13 @@
+ #endif
+ 
+ /*
++ *layer_id: keeper slot (a layer's keep_frame_id).
+  *flags,used per bit:
+  *default free alloced keeper buffer.
+  *0x1: free scatters keeper..
+  *0x2:
+  */
+-void try_free_keep_vdx(int flags, u8 layer_id)
++void try_free_keep_vdx(u8 layer_id, int flags)
+ {
+ 	int free_scatter_keeper = flags & 0x1;
+ 	bool layer1_used = false;
+@@ -850,7 +851,7 @@
+ 
+ void try_free_keep_video(int flags)
+ {
+-	try_free_keep_vdx(flags, 0);
++	try_free_keep_vdx(0, flags);
+ }
+ EXPORT_SYMBOL(try_free_keep_video);
+ 
+--- a/include/linux/amlogic/media/video_sink/video_keeper.h
++++ b/include/linux/amlogic/media/video_sink/video_keeper.h
+@@ -10,7 +10,7 @@
+ 
+ void video_keeper_new_frame_notify(u8 layer_id);
+ void try_free_keep_video(int flags);
+-void try_free_keep_vdx(int flags, u8 layer_id);
++void try_free_keep_vdx(u8 layer_id, int flags);
+ int video_keeper_init(void);
+ void video_keeper_exit(void);
+ unsigned int vf_keep_current

@@ -1,0 +1,40 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: free the layer reservation in amvideo_release
+
+amvideo_release() only cleared file->private_data. A client that takes a
+layer with AMSTREAM_IOC_ALLOC_LAYER and then exits or crashes without
+calling AMSTREAM_IOC_FREE_LAYER leaks the reservation: alloc_layer() is the
+only place LAYERn_BUSY is set in the static layer_cap, and free_layer(),
+reached only from AMSTREAM_IOC_FREE_LAYER, the only place it is cleared.
+Every later ALLOC_LAYER for that layer then returns -EBUSY and QUERY_LAYER
+keeps reporting it taken, until reboot.
+
+Free it from release(), which runs on the last fput and so covers both an
+orderly exit and a crash. private_data already holds &glayer_info[n], whose
+layer_id is initialised by vpp_disp_info_init(), so release() derives the id
+the same way FREE_LAYER does, under the same video_layer_mutex. A double
+free is harmless: free_layer() just returns -EINVAL.
+
+Nothing in CoreELEC issues ALLOC_LAYER (Kodi leaves private_data NULL), so
+the leak needs an HWC-style client and this was reviewed, not run on
+hardware. video_cut.c has the same defect but is arm32-only and is left
+alone.
+
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -6177,7 +6177,15 @@
+ 
+ static int amvideo_release(struct inode *inode, struct file *file)
+ {
++	struct disp_info_s *layer;
++
++	/* drop a layer taken with AMSTREAM_IOC_ALLOC_LAYER and never freed */
++	mutex_lock(&video_layer_mutex);
++	layer = (struct disp_info_s *)file->private_data;
++	if (layer)
++		free_layer(layer->layer_id);
+ 	file->private_data = NULL;
++	mutex_unlock(&video_layer_mutex);
+ 	return 0;
+ }
+ 

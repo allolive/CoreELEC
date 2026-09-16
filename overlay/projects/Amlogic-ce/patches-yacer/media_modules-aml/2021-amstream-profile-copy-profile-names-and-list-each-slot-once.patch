@@ -1,0 +1,72 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amstream_profile: copy profile names, list each slot once
+
+vcodec_profile_register_v2() stored the caller's string pointer in the
+shared driver_profile[] slot, so the name in
+/sys/class/amstream/vcodec_profile aliases rodata of whichever decoder
+module registered it; the decoder modules never unregister on exit, so
+after rmmod that pointer dangles. vcodec_profile_register() also appended
+the same slot to vcodec_profile[] once per registering module, so a slot
+shared by a decoder and its _fb counterpart was listed twice.
+
+Copy the name into a static PROFILE_NAME_LEN (32) buffer per slot, and skip
+a slot already present in the list. On an AM6B Plus the hevc_fb, vp9_fb,
+av1_fb and avs2_fb lines now appear once instead of twice. The last module
+to register a (vformat, is_v4l) slot still wins the name; that and the
+missing unregistration on rmmod need their own patches.
+
+--- a/drivers/frame_provider/decoder/utils/amstream_profile.c
++++ b/drivers/frame_provider/decoder/utils/amstream_profile.c
+@@ -21,12 +21,17 @@
+ #include <linux/fs.h>
+ #include <linux/device.h>
+ #include <linux/interrupt.h>
++#include <linux/string.h>
+ #include <linux/amlogic/media/utils/amstream.h>
+ #include "../../../common/chips/decoder_cpu_ver_info.h"
+ #include "vdec.h"
+ 
++#define PROFILE_NAME_LEN 32
++
+ static const struct codec_profile_t *vcodec_profile[SUPPORT_VDEC_NUM] = { 0 };
+ static struct codec_profile_t driver_profile[VFORMAT_MAX * 2] = { 0 };
++/* private copy so the name outlives the registering module */
++static char driver_profile_name[VFORMAT_MAX * 2][PROFILE_NAME_LEN];
+ 
+ static int vcodec_profile_idx;
+ 
+@@ -50,6 +55,17 @@
+ 
+ int vcodec_profile_register(const struct codec_profile_t *vdec_profile)
+ {
++	int i;
++
++	/*
++	 * driver_profile[] slots are shared per format, e.g. by hevc and
++	 * hevc_fb: list each profile once.
++	 */
++	for (i = 0; i < vcodec_profile_idx; i++) {
++		if (vcodec_profile[i] == vdec_profile)
++			return 0;
++	}
++
+ 	if (vcodec_profile_idx < SUPPORT_VDEC_NUM) {
+ 		vcodec_profile[vcodec_profile_idx] = vdec_profile;
+ 		vcodec_profile_idx++;
+@@ -354,11 +370,14 @@
+ 		enum vformat_e vformat, int is_v4l)
+ {
+ 	struct codec_profile_t *vdec_profile = NULL;
++	int slot;
+ 
+ 	if ((vformat < VFORMAT_MAX) &&
+ 		(decoder_profile[vformat].codec_profile_reg != NULL)) {
+-		vdec_profile = &driver_profile[(vformat * 2) + is_v4l];
+-		vdec_profile->name = name;
++		slot = (vformat * 2) + is_v4l;
++		vdec_profile = &driver_profile[slot];
++		strscpy(driver_profile_name[slot], name, PROFILE_NAME_LEN);
++		vdec_profile->name = driver_profile_name[slot];
+ 		vdec_profile->profile = "";
+ 		decoder_profile[vformat].codec_profile_reg(vdec_profile);
+ 		vcodec_profile_register(vdec_profile);

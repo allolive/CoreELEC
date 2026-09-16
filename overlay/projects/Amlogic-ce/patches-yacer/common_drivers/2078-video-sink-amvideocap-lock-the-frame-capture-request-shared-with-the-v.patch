@@ -1,0 +1,181 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_sink: lock the amvideocap capture request against the vsync ISR
+
+amvideocap_capture_one_frame_wait() keeps `struct amvideocap_req req` on its
+own stack and publishes &req into vd_layer[0].capture_frame_req through
+ext_register_end_frame_callback(); the vsync hard-IRQ handler consumes it in
+ext_frame_capture_poll(). The only synchronisation is an unlocked
+atomic_read()/atomic_set() pair on capture_use_cnt, and the ISR reloads
+capture_frame_req three times (test, ->data, ->callback), so a concurrent
+clear can turn the last reload into a NULL dereference in hard IRQ context.
+Kodi's CScreenshotAML captures with a 40 ms deadline, so the timeout path is
+routine: the waiter withdraws the request and reuses that stack frame while
+the ISR may still hold &req or be inside the callback, and once userspace
+closes the fd amvideocap_release() kfree()s the privdata the ISR is writing.
+
+Add capture_req_lock, a spinlock taken with irqsave, around every access to
+capture_frame_req and capture_use_cnt: registration and withdrawal,
+consumption (now via a local snapshot of the request), and the layer on/off
+resets, which move out of the VIDEO_LAYER_ON()/VIDEO_LAYER_OFF() macros into
+ext_frame_capture_set_state(). The ISR holds the lock across the callback, so
+a withdrawal that returns proves the request is no longer in use. Lock order
+is video_onoff_lock -> capture_req_lock; the callback path does not sleep
+(canvas_pool uses a spinlock, ge2d queues with GFP_ATOMIC and does not wait).
+
+Two pre-existing hazards are left alone: the non-blocking GE2D blit can still
+finish after amvideocap_release() freed the CMA buffer, and
+AMVIDEOCAP_IOW_SET_CANCEL_CAPTURE still does not cancel.
+
+Not exercised on hardware yet.
+
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -1603,31 +1603,60 @@
+ 	return 0;
+ }
+ 
++/*
++ * capture_req_lock serialises vd_layer[0].capture_frame_req and
++ * capture_use_cnt between the amvideocap ioctl, the video layer on/off
++ * paths and the vsync ISR. The ISR holds it while it runs the capture
++ * callback, so a request the caller withdraws (or finds no longer
++ * registered) is guaranteed not to be in use once the call returns;
++ * Lock order: video_onoff_lock -> capture_req_lock; the capture callback
++ * must never take video_onoff_lock.
++ */
++static DEFINE_SPINLOCK(capture_req_lock);
++
+ int ext_register_end_frame_callback(struct amvideocap_req *req)
+ {
+ 	struct video_layer_s *layer = &vd_layer[0];
+-	enum video_capture_state capture_state = atomic_read(&layer->capture_use_cnt);
+-
+-	if (capture_state == CAPTURE_STATE_OFF)
+-	{
+-		return -ENODATA;
+-	}
+-	else if (capture_state == CAPTURE_STATE_CAPTURE)
+-	{
++	enum video_capture_state capture_state;
++	unsigned long flags;
++	int ret = 0;
++
++	spin_lock_irqsave(&capture_req_lock, flags);
++	capture_state = atomic_read(&layer->capture_use_cnt);
++	if (capture_state == CAPTURE_STATE_OFF) {
++		ret = -ENODATA;
++	} else if (capture_state == CAPTURE_STATE_CAPTURE) {
+ 		if (req && !req->callback) {
+ 			atomic_set(&layer->capture_use_cnt, CAPTURE_STATE_ON);
+ 			layer->capture_frame_req = NULL;
+ 		}
+-		return -EBUSY;
+-	}
+-	else if (capture_state == CAPTURE_STATE_ON && req && req->callback)
+-	{
++		ret = -EBUSY;
++	} else if (capture_state == CAPTURE_STATE_ON && req && req->callback) {
+ 		layer->capture_frame_req = req;
+ 		atomic_set(&layer->capture_use_cnt, CAPTURE_STATE_CAPTURE);
+-		return -EBUSY;
++		ret = -EBUSY;
+ 	}
++	spin_unlock_irqrestore(&capture_req_lock, flags);
+ 
+-	return 0;
++	return ret;
++}
++
++void ext_frame_capture_set_state(enum video_capture_state state)
++{
++	struct video_layer_s *layer = &vd_layer[0];
++	struct amvideocap_req_data *reqdata;
++	unsigned long flags;
++
++	spin_lock_irqsave(&capture_req_lock, flags);
++	if (state == CAPTURE_STATE_OFF && layer->capture_frame_req) {
++		reqdata = (struct amvideocap_req_data *)
++			layer->capture_frame_req->data;
++		if (reqdata && reqdata->privdata)
++			reqdata->privdata->state = 0xffff;
++	}
++	layer->capture_frame_req = NULL;
++	atomic_set(&layer->capture_use_cnt, state);
++	spin_unlock_irqrestore(&capture_req_lock, flags);
+ }
+ 
+ int ext_frame_capture_poll(struct vframe_s *vf)
+@@ -1635,21 +1665,30 @@
+ 	int ret = -EAGAIN;
+ 	static int capture_frame_toggle = 0;
+ 	struct video_layer_s *layer = &vd_layer[0];
++	struct amvideocap_req *req;
++	struct amvideocap_req_data *reqdata;
++	unsigned long flags;
+ 
+ 	if (capture_frame_toggle == 0 && vf) {
+ 		if (vf->duration > 0 && div_u64((u64)96000, vf->duration) > 30)
+ 			capture_frame_toggle = 1;
+-		if ((atomic_read(&layer->capture_use_cnt) == CAPTURE_STATE_CAPTURE) && layer->capture_frame_req) {
+-			struct amvideocap_req_data *reqdata =
+-				(struct amvideocap_req_data *)layer->capture_frame_req->data;
++		if (atomic_read(&layer->capture_use_cnt) != CAPTURE_STATE_CAPTURE)
++			return ret;
++
++		spin_lock_irqsave(&capture_req_lock, flags);
++		req = layer->capture_frame_req;
++		if (atomic_read(&layer->capture_use_cnt) == CAPTURE_STATE_CAPTURE &&
++		    req) {
+ 			int index = get_layer_display_canvas(0);
+ 
+-			if (layer->capture_frame_req && layer->capture_frame_req->callback && reqdata && reqdata->privdata)
+-				ret = layer->capture_frame_req->callback(reqdata->privdata, vf, index);
++			reqdata = (struct amvideocap_req_data *)req->data;
++			if (req->callback && reqdata && reqdata->privdata)
++				ret = req->callback(reqdata->privdata, vf, index);
+ 
+ 			layer->capture_frame_req = NULL;
+ 			atomic_set(&layer->capture_use_cnt, CAPTURE_STATE_ON);
+ 		}
++		spin_unlock_irqrestore(&capture_req_lock, flags);
+ 	}
+ 	else
+ 		capture_frame_toggle = 0;
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -320,8 +320,7 @@
+ 			VIDEO_ENABLE_STATE_ON_PENDING; \
+ 		vd_layer[0].enabled = 1; \
+ 		vd_layer[0].enabled_status_saved = 1; \
+-		vd_layer[0].capture_frame_req = NULL; \
+-		atomic_set(&vd_layer[0].capture_use_cnt, CAPTURE_STATE_ON); \
++		ext_frame_capture_set_state(CAPTURE_STATE_ON); \
+ 		spin_unlock_irqrestore(&video_onoff_lock, flags); \
+ 	} while (0)
+ 
+@@ -332,14 +331,7 @@
+ 		vd_layer[0].onoff_state = VIDEO_ENABLE_STATE_OFF_REQ; \
+ 		vd_layer[0].enabled = 0; \
+ 		vd_layer[0].enabled_status_saved = 0; \
+-		atomic_set(&vd_layer[0].capture_use_cnt, CAPTURE_STATE_OFF); \
+-		if (vd_layer[0].capture_frame_req && vd_layer[0].capture_frame_req->data) { \
+-			struct amvideocap_req_data *reqdata = \
+-				(struct amvideocap_req_data *)vd_layer[0].capture_frame_req->data; \
+-			if (reqdata && reqdata->privdata) \
+-				reqdata->privdata->state = 0xffff; \
+-		} \
+-		vd_layer[0].capture_frame_req = NULL; \
++		ext_frame_capture_set_state(CAPTURE_STATE_OFF); \
+ 		spin_unlock_irqrestore(&video_onoff_lock, flags); \
+ 	} while (0)
+ 
+--- a/drivers/media/video_sink/video_priv.h
++++ b/drivers/media/video_sink/video_priv.h
+@@ -1120,6 +1120,7 @@
+ int ext_put_video_frame(struct vframe_s *vf);
+ struct amvideocap_req;
+ int ext_register_end_frame_callback(struct amvideocap_req *req);
++void ext_frame_capture_set_state(enum video_capture_state state);
+ #endif
+ bool is_meson_tm2_revb(void);
+ bool video_is_meson_sc2_cpu(void);

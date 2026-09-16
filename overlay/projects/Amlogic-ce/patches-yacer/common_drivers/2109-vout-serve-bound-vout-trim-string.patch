@@ -1,0 +1,47 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vout_serve: vout_trim_string: handle empty and all-space strings
+
+vout_trim_string() tests str[len - 1] before checking len, and sets
+end = str + len - 1 and walks backwards over spaces with no lower bound.
+
+The sysfs mode stores reach it with user text. vout2_mode_store() has no
+disable_modesysfs gate, so "echo > /sys/class/display2/mode" passes "\n":
+the newline strip leaves len = 0, end points at mode[-1] on the caller's
+stack, and the loop reads that byte, zeroing it and walking further down
+if it happens to be 0x20. All-space input does the same once the spaces
+are cleared. The final strcpy() also copies between overlapping buffers.
+
+Only strip the newline when len > 0, let end point at the NUL, stop the
+trailing-space loop at start, and move the text with memmove(). Valid
+mode strings trim as before; empty and all-space input now give "",
+which the callers reject like any unknown mode. No sysfs ABI change.
+
+Checked against the old code in a userspace ASan harness; not run on
+hardware.
+
+--- a/drivers/media/vout/vout_serve/vout_func.c
++++ b/drivers/media/vout/vout_serve/vout_func.c
+@@ -110,18 +110,18 @@
+ 		return;
+ 
+ 	len = strlen(str);
+-	if ((str[len - 1] == '\n') || (str[len - 1] == '\r')) {
++	if (len && ((str[len - 1] == '\n') || (str[len - 1] == '\r'))) {
+ 		len--;
+ 		str[len] = '\0';
+ 	}
+ 
+ 	start = str;
+-	end = str + len - 1;
++	end = str + len;
+ 	while (*start && (*start == ' '))
+ 		start++;
+-	while (*end && (*end == ' '))
+-		*end-- = '\0';
+-	strcpy(str, start);
++	while (end > start && *(end - 1) == ' ')
++		*--end = '\0';
++	memmove(str, start, end - start + 1);
+ }
+ EXPORT_SYMBOL(vout_trim_string);
+ 

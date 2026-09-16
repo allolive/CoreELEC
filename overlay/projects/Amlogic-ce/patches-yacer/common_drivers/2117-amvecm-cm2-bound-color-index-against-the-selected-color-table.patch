@@ -1,0 +1,152 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amvecm: cm2: bound color index against the selected color table
+
+The AMVECM_IOC_S_CMS_LUMA / _SAT / _HUE / _HUE_HS handlers take the colour
+index from cm_9_color_md or cm_14_color_md depending on color_type, but bound
+both with "cm_color <= cm_14_ecm2colormode_max - 1". With the 9-colour table an
+index of 9..13 passes and cm2_luma()/sat()/hue()/hue_by_hs() hand it to
+color_adj() with the nine-entry color_key_pts[], reading up to five entries past
+the array into the adjacent color_start[]/color_end[] statics. The four cm2
+debug sysfs stores are worse: color_mode comes from kstrtoul() unbounded and is
+used directly as cm2_*_array[color_mode][0] = val, a write past a
+[cm_14_ecm2colormode_max][3] array (root only, as CoreELEC runs).
+
+Record the limit matching the selected table and compare against it in the
+ioctl handlers; reject an out-of-range colour mode in the sysfs stores via the
+existing kfree_buf path. color_adj() itself is unchanged. Not exercised on
+hardware.
+
+--- a/drivers/media/enhancement/amvecm/amvecm.c
++++ b/drivers/media/enhancement/amvecm/amvecm.c
+@@ -3367,6 +3367,7 @@
+ 	struct primary_s color_pr;
+ 	struct video_color_matrix gamut_mtx;
+ 	int cm_color = 0;
++	int cm_color_max;
+ 	struct ve_ble_whe_param_s ble_whe;
+ 	struct color_param_s ct_parm1;
+ 	struct color_tune_parm_s ct_param;
+@@ -4089,13 +4090,16 @@
+ 				   sizeof(struct cm_color_md))) {
+ 			ret = -EFAULT;
+ 		} else {
+-			if (cm_color_mode.color_type == cm_9_color)
++			if (cm_color_mode.color_type == cm_9_color) {
+ 				cm_color = cm_color_mode.cm_9_color_md;
+-			else
++				cm_color_max = ecm2colormode_max;
++			} else {
+ 				cm_color = cm_color_mode.cm_14_color_md;
++				cm_color_max = cm_14_ecm2colormode_max;
++			}
+ 
+ 			cm_cur_work_color_md = cm_color_mode.color_type;
+-			if (cm_color >= 0 && cm_color <= (cm_14_ecm2colormode_max - 1)) {
++			if (cm_color >= 0 && cm_color < cm_color_max) {
+ 				cm2_luma_array[cm_color][0] = cm_color_mode.color_value;
+ 				cm2_luma_array[cm_color][1] = 0;
+ 				cm2_luma_array[cm_color][2] = 1;
+@@ -4111,13 +4115,16 @@
+ 				   sizeof(struct cm_color_md))) {
+ 			ret = -EFAULT;
+ 		} else {
+-			if (cm_color_mode.color_type == cm_9_color)
++			if (cm_color_mode.color_type == cm_9_color) {
+ 				cm_color = cm_color_mode.cm_9_color_md;
+-			else
++				cm_color_max = ecm2colormode_max;
++			} else {
+ 				cm_color = cm_color_mode.cm_14_color_md;
++				cm_color_max = cm_14_ecm2colormode_max;
++			}
+ 
+ 			cm_cur_work_color_md = cm_color_mode.color_type;
+-			if (cm_color >= 0 && cm_color <= (cm_14_ecm2colormode_max - 1)) {
++			if (cm_color >= 0 && cm_color < cm_color_max) {
+ 				cm2_sat_array[cm_color][0] = cm_color_mode.color_value;
+ 				cm2_sat_array[cm_color][1] = 0;
+ 				cm2_sat_array[cm_color][2] = 1;
+@@ -4133,13 +4140,16 @@
+ 				   sizeof(struct cm_color_md))) {
+ 			ret = -EFAULT;
+ 		} else {
+-			if (cm_color_mode.color_type == cm_9_color)
++			if (cm_color_mode.color_type == cm_9_color) {
+ 				cm_color = cm_color_mode.cm_9_color_md;
+-			else
++				cm_color_max = ecm2colormode_max;
++			} else {
+ 				cm_color = cm_color_mode.cm_14_color_md;
++				cm_color_max = cm_14_ecm2colormode_max;
++			}
+ 
+ 			cm_cur_work_color_md = cm_color_mode.color_type;
+-			if (cm_color >= 0 && cm_color <= (cm_14_ecm2colormode_max - 1)) {
++			if (cm_color >= 0 && cm_color < cm_color_max) {
+ 				cm2_hue_array[cm_color][0] = cm_color_mode.color_value;
+ 				cm2_hue_array[cm_color][1] = 0;
+ 				cm2_hue_array[cm_color][2] = 1;
+@@ -4155,13 +4165,16 @@
+ 				   sizeof(struct cm_color_md))) {
+ 			ret = -EFAULT;
+ 		} else {
+-			if (cm_color_mode.color_type == cm_9_color)
++			if (cm_color_mode.color_type == cm_9_color) {
+ 				cm_color = cm_color_mode.cm_9_color_md;
+-			else
++				cm_color_max = ecm2colormode_max;
++			} else {
+ 				cm_color = cm_color_mode.cm_14_color_md;
++				cm_color_max = cm_14_ecm2colormode_max;
++			}
+ 
+ 			cm_cur_work_color_md = cm_color_mode.color_type;
+-			if (cm_color >= 0 && cm_color <= (cm_14_ecm2colormode_max - 1)) {
++			if (cm_color >= 0 && cm_color < cm_color_max) {
+ 				cm2_hue_by_hs_array[cm_color][0] =
+ 				cm_color_mode.color_value;
+ 				cm2_hue_by_hs_array[cm_color][1] = 0;
+@@ -9291,6 +9304,10 @@
+ 		{
+ 			if (kstrtoul(parm[2], 10, &val) < 0)
+ 				goto kfree_buf;
++			if (val < 0 ||
++			    val >= (cm_color_md_dbg.color_type == cm_9_color ?
++				    ecm2colormode_max : cm_14_ecm2colormode_max))
++				goto kfree_buf;
+ 			color_mode = val;
+ 			if (cm_color_md_dbg.color_type == cm_9_color) {
+ 				cm_color_md_dbg.cm_9_color_md = val;
+@@ -9375,6 +9392,10 @@
+ 		{
+ 			if (kstrtoul(parm[2], 10, &val) < 0)
+ 				goto kfree_buf;
++			if (val < 0 ||
++			    val >= (cm_color_md_dbg.color_type == cm_9_color ?
++				    ecm2colormode_max : cm_14_ecm2colormode_max))
++				goto kfree_buf;
+ 			color_mode = val;
+ 			if (cm_color_md_dbg.color_type == cm_9_color) {
+ 				cm_color_md_dbg.cm_9_color_md = val;
+@@ -9459,6 +9480,10 @@
+ 		{
+ 			if (kstrtoul(parm[2], 10, &val) < 0)
+ 				goto kfree_buf;
++			if (val < 0 ||
++			    val >= (cm_color_md_dbg.color_type == cm_9_color ?
++				    ecm2colormode_max : cm_14_ecm2colormode_max))
++				goto kfree_buf;
+ 			color_mode = val;
+ 			if (cm_color_md_dbg.color_type == cm_9_color) {
+ 				cm_color_md_dbg.cm_9_color_md = val;
+@@ -9543,6 +9568,10 @@
+ 		{
+ 			if (kstrtoul(parm[2], 10, &val) < 0)
+ 				goto kfree_buf;
++			if (val < 0 ||
++			    val >= (cm_color_md_dbg.color_type == cm_9_color ?
++				    ecm2colormode_max : cm_14_ecm2colormode_max))
++				goto kfree_buf;
+ 			color_mode = val;
+ 			if (cm_color_md_dbg.color_type == cm_9_color) {
+ 				cm_color_md_dbg.cm_9_color_md = val;

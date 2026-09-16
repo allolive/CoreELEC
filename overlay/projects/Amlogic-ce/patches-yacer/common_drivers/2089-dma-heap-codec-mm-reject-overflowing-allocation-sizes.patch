@@ -1,0 +1,52 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] dma-heap: codec_mm: reject sizes that overflow the page_cnt shift
+
+codec_mm_heap_do_allocate() passes PAGE_ALIGN(len) / PAGE_SIZE to
+codec_mm_alloc_for_dma() as an int page count, which calls
+codec_mm_alloc() with the int byte size page_cnt << PAGE_SHIFT. The
+dma-heap core only page-aligns len and rejects zero, so a root
+DMA_HEAP_IOCTL_ALLOC of 4GiB + 4KiB wraps the shift to 0x1000 and
+codec_mm returns one page while exp_info.size stays 4GiB + 4KiB. An
+importer that vmaps it runs codec_mm_heap_do_vmap() with
+npages = 1048577 over a pages[] array with one entry filled.
+
+Reject len > (INT_MAX & PAGE_MASK) (0x7ffff000) with -EINVAL before
+allocating, and return 0 from codec_mm_alloc_for_dma(_ex) for a
+negative or oversized page_cnt, before the shift. No in-tree or
+userspace caller asks for near 2GiB. Not compile-tested.
+
+--- a/drivers/media/common/codec_mm/codec_mm.c
++++ b/drivers/media/common/codec_mm/codec_mm.c
+@@ -1759,6 +1759,9 @@
+ {
+ 	struct codec_mm_s *mem;
+ 
++	if (page_cnt < 0 || page_cnt > (INT_MAX >> PAGE_SHIFT))
++		return 0;
++
+ 	mem = codec_mm_alloc(owner, page_cnt << PAGE_SHIFT, align2n, memflags);
+ 	if (!mem)
+ 		return 0;
+@@ -1775,6 +1778,9 @@
+ {
+ 	struct codec_mm_s *mem;
+ 
++	if (page_cnt < 0 || page_cnt > (INT_MAX >> PAGE_SHIFT))
++		return 0;
++
+ 	mem = codec_mm_alloc(owner, page_cnt << PAGE_SHIFT, align2n, memflags);
+ 	if (!mem)
+ 		return 0;
+--- a/drivers/media/common/dma-buf-heaps/amlogic_heap_codec_mm.c
++++ b/drivers/media/common/dma-buf-heaps/amlogic_heap_codec_mm.c
+@@ -396,6 +396,10 @@
+ 	int ret = -ENOMEM;
+ 	int memflags = CODEC_MM_FLAGS_DMA;
+ 
++	/* codec_mm sizes are int bytes and sg lengths are unsigned int */
++	if (len > (INT_MAX & PAGE_MASK))
++		return ERR_PTR(-EINVAL);
++
+ 	if (heap_flags & DMABUF_FLAG_EXTEND_PROTECTED)
+ 		memflags = CODEC_MM_FLAGS_TVP;
+ 

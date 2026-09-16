@@ -1,0 +1,52 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: bail out of async commit when swap_state fails
+
+meson_atomic_commit()'s async_update branch calls
+drm_atomic_helper_swap_state(state, true), throws the return value away,
+and runs meson_atomic_helper_async_commit() regardless. With stall=true
+swap_state() can return -ERESTARTSYS from its
+wait_for_completion_interruptible() loop, before anything is swapped, so
+plane->state is still the old state. meson_osd_plane_async_update() /
+meson_video_plane_async_update() then do "plane->state->fb =
+new_state->fb" - a self-assignment on the normal path, but here it stores
+the new fb into the live old state without a reference and drops the old
+fb's. The fb is later freed while the plane still points at it. Requires a
+signal to arrive during the ioctl.
+
+Check the return value: clean up the planes, drop the reenter count and
+return the error without touching plane->state. Also release the CRTC
+commit mutex on the prepare_planes() error return, which previously left
+it held for good (not reachable today: meson_plane_prepare_fb() always
+returns 0). The in-tree caller meson_async_atomic_ioctl() already
+propagates a non-zero result, so an interrupted async update now drops
+the frame instead of corrupting refcounts.
+
+The plane async_update hooks still assign rather than swap fb pointers;
+that is left alone. Nothing on CoreELEC issues MESON_ASYNC_ATOMIC, so
+this has not been exercised on hardware.
+--- a/drivers/drm/meson_atomic.c
++++ b/drivers/drm/meson_atomic.c
+@@ -492,10 +492,22 @@
+ 		meson_commit_reenter_inc(priv, crtc_index, ASYNC_MODE);
+ 		priv->pan_async_commit_ran = true;
+ 		ret = drm_atomic_helper_prepare_planes(dev, state);
+-		if (ret)
++		if (ret) {
++			meson_commit_reenter_dec(priv, crtc_index, ASYNC_MODE);
+ 			return ret;
++		}
+ 
+ 		ret = drm_atomic_helper_swap_state(state, true);
++		if (ret) {
++			/*
++			 * Nothing was swapped: plane->state is still the old
++			 * state, so the in-place async update must not run.
++			 */
++			drm_atomic_helper_cleanup_planes(dev, state);
++			meson_commit_reenter_dec(priv, crtc_index, ASYNC_MODE);
++			return ret;
++		}
++
+ 		meson_atomic_helper_async_commit(dev, state);
+ 		drm_atomic_helper_cleanup_planes(dev, state);
+ 		meson_commit_reenter_dec(priv, crtc_index, ASYNC_MODE);

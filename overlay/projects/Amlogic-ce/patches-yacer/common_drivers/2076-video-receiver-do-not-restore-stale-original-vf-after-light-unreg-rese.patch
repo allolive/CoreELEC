@@ -1,0 +1,43 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] video_receiver: drop stale original_vf after light unreg/reset
+
+common_vf_light_unreg_provider() handles PROVIDER_RESET and
+PROVIDER_LIGHT_UNREG: the provider has taken all its frames back. It
+copies the on-screen frame into ins->local_buf and points cur_buf at it,
+but unlike the full unreg path never clears original_vf, which still
+points at a reclaimed frame. On the next vsync with nothing queued,
+recv_common_dequeue_frame() takes the repeat-frame branch, which only
+tests cur_buf != original_vf, and hands the reclaimed vframe back to the
+layer; common_toggle_frame() then puts it, which can duplicate an entry
+in the decoder recycle queue. A decoder flush on seek reaches this.
+
+Clear original_vf on light unreg, and skip the repeat-frame restore
+while cur_buf is still the local copy; the layer code already has a
+"cur_buf == &local_buf -> keep frame" case. The !ins->active term leaves
+full-unreg behaviour (kept last frame dropped on stop) as is.
+
+Not hardware-tested: CoreELEC's Kodi uses the amvideo vfm map, so the
+video_render receivers are not exercised by normal playback here.
+--- a/drivers/media/video_sink/video_receiver.c
++++ b/drivers/media/video_sink/video_receiver.c
+@@ -389,6 +389,8 @@
+ 	if (ins->cur_buf) {
+ 		ins->local_buf = *ins->cur_buf;
+ 		ins->cur_buf = &ins->local_buf;
++		/* the provider has taken its frames back */
++		ins->original_vf = NULL;
+ 	}
+ 	spin_unlock_irqrestore(&ins->lock, flags);
+ 
+@@ -759,8 +761,9 @@
+ 			ins->cur_buf = toggle_vf->vf_ext;
+ 			toggle_vf = ins->cur_buf;
+ 		}
+-	} else if (ins->cur_buf) {
+-		/* repeat frame */
++	} else if (ins->cur_buf &&
++		   (ins->cur_buf != &ins->local_buf || !ins->active)) {
++		/* repeat frame, keep the local copy after reset/light unreg */
+ 		if (ins->switch_vf && ins->cur_buf->vf_ext &&
+ 		    (ins->cur_buf->flag & VFRAME_FLAG_DOUBLE_FRAM)) {
+ 			ins->cur_buf = ins->cur_buf->vf_ext;

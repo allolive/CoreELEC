@@ -1,0 +1,100 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] oe.py: time out download_file and reject truncated downloads
+
+download_file() treats a short read as a finished download and has no
+socket timeout, so a dropped or stalled connection during the ~200 MB
+update tar is either reported as success or hangs the update thread.
+
+http.client's HTTPResponse.read(amt) returns b'' rather than raising when
+the peer closes early, so a clean early close yields a truncated file that
+do_autoupdate moves into /storage/.update/ and offers a reboot for; the box
+then fails the image checks at boot. Content-Length was only passed to
+ProgressDialog.setSize(), never compared. urlopen() had no timeout and no
+default socket timeout is set, so a stall without a FIN blocks inside
+read(); the iscanceled()/abortRequested() checks only run between reads.
+
+Count the bytes written, compare with Content-Length after the cancel/abort
+check, and delete the destination and return None on a mismatch; pass
+timeout=30 to urlopen. On the error path close the dialog, response and file
+and remove the partial destination, each step guarded separately. Both new
+failure paths return None, which the caller already treats as "download
+failed". do_autoupdate still leaves update_in_progress set if the post-
+download move fails; not addressed here. Not exercised on hardware.
+--- a/src/oe.py
++++ b/src/oe.py
+@@ -581,19 +581,26 @@
+ 
+ 
+ def download_file(source, destination, silent=False):
++    local_file = None
++    response = None
++    progress = None
+     try:
+         local_file = open(destination, 'wb')
+ 
+-        response = urllib.request.urlopen(urllib.parse.quote(source, safe=':/'))
++        # Without a timeout a stalled connection blocks read() forever and the
++        # cancel/abort checks below never run again.
++        response = urllib.request.urlopen(urllib.parse.quote(source, safe=':/'), timeout=30)
+ 
+         progress = ProgressDialog()
+         if not silent:
+             progress.open()
+ 
++        total_size = int(response.getheader('Content-Length').strip())
+         progress.setSource(source)
+-        progress.setSize(int(response.getheader('Content-Length').strip()))
++        progress.setSize(total_size)
+ 
+         last_percent = 0
++        written = 0
+ 
+         while not (progress.iscanceled() or xbmcm.abortRequested()):
+             part = response.read(32768)
+@@ -609,6 +616,7 @@
+ 
+             if part:
+                 local_file.write(part)
++                written += len(part)
+             else:
+                 break
+ 
+@@ -620,10 +628,38 @@
+             os.remove(destination)
+             return None
+ 
++        # HTTPResponse.read() returns b'' instead of raising when the server
++        # closes the connection before Content-Length bytes were sent.
++        if written != total_size:
++            dbg_log('oe::download_file(' + source + ', ' + destination + ')', 'ERROR: incomplete download (%d of %d bytes)' % (written, total_size))
++            os.remove(destination)
++            return None
++
+         return destination
+ 
+     except Exception as e:
+         dbg_log('oe::download_file(' + source + ', ' + destination + ')', 'ERROR: (' + repr(e) + ')')
++        # Best-effort cleanup, each step on its own so one failure (e.g. the
++        # close() flush failing again on ENOSPC) does not skip the others.
++        if progress is not None:
++            try:
++                progress.close()
++            except Exception:
++                pass
++        if response is not None:
++            try:
++                response.close()
++            except Exception:
++                pass
++        if local_file is not None:
++            try:
++                local_file.close()
++            except Exception:
++                pass
++            try:
++                os.remove(destination)
++            except Exception:
++                pass
+ 
+ 
+ def copy_file(source, destination, silent=False):

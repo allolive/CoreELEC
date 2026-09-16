@@ -1,0 +1,136 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amvideocap: make the CMA capture buffer per-fd
+
+amvideocap_open() allocates a cma_max_size MB CMA block per open but
+stores it in the global getgctrl()->phyaddr; release() frees that global,
+i.e. the newest opener's block, not its own. With two overlapping opens
+of /dev/amvideocap0 (a grabber while Kodi screenshots), A's close frees
+B's block while B still captures into, reads and mmaps it; B's close
+double-frees it and A's 34 MB block leaks, eventually failing decoder
+allocation. The -EMFILE and kmalloc error paths leaked too.
+
+Keep phyaddr/vaddr only in priv, check the allocation for 0 (the old code
+did not), free on every error path, and free priv->phyaddr in release().
+All users already read priv, and a remap_pfn_range VMA holds a file
+reference, so a block is never freed while mapped. Not exercised with two
+concurrent openers on hardware. amvideocap_mmap() still does not bound
+vm_pgoff against the block size; that is left alone.
+--- a/drivers/media/video_sink/amvideocap.c
++++ b/drivers/media/video_sink/amvideocap.c
+@@ -112,54 +112,58 @@
+ static int amvideocap_open(struct inode *inode, struct file *file)
+ {
+ 	struct amvideocap_private *priv;
++	unsigned long phyaddr;
++	u8 *vaddr;
++
+ 	gLOCK();
+-#ifdef CONFIG_CMA
+-	if (use_cma && amvideocap_pdev) {
+-		unsigned long phybufaddr;
+-		phybufaddr = codec_mm_alloc_for_dma(CMA_NAME,
+-				cma_max_size * SZ_1M / PAGE_SIZE,
+-				4 + PAGE_SHIFT, CODEC_MM_FLAGS_CPU);
+-		/* pr_err("%s: codec_mm_alloc_for_dma:%p\n",
+-				__func__, (void *)phybufaddr);
+-		*/
+-		amvideocap_register_memory((unsigned char *)phybufaddr,
+-					cma_max_size * SZ_1M);
+-	}
+-#endif
+-	if (!getgctrl()->phyaddr) {
+-		gUNLOCK();
+-		pr_err("Error,no memory have register for amvideocap\n");
+-		return -ENOMEM;
+-	}
+-#ifdef CONFIG_CMA
+-	if (!getgctrl()->vaddr) {
+-		getgctrl()->vaddr = (unsigned long)codec_mm_phys_to_virt(
+-						getgctrl()->phyaddr);
+-		if (!getgctrl()->vaddr) {
+-			pr_err("%s: failed to remap y addr\n", __func__);
+-			gUNLOCK();
+-			return -ENOMEM;
+-		}
+-	}
+-#endif
+ 	if (getgctrl()->opened_cnt > AMCAP_MAX_OPEND) {
+ 		gUNLOCK();
+ 		pr_err("Too Many opend video cap files\n");
+ 		return -EMFILE;
+ 	}
+-	priv = kmalloc(sizeof(struct amvideocap_private), GFP_KERNEL);
++	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+ 	if (!priv) {
+ 		gUNLOCK();
+ 		pr_err("alloc memory failed for amvideo cap\n");
+ 		return -ENOMEM;
+ 	}
+-	memset(priv, 0, sizeof(struct amvideocap_private));
++#ifdef CONFIG_CMA
++	if (use_cma && amvideocap_pdev) {
++		phyaddr = codec_mm_alloc_for_dma(CMA_NAME,
++				cma_max_size * SZ_1M / PAGE_SIZE,
++				4 + PAGE_SHIFT, CODEC_MM_FLAGS_CPU);
++		if (!phyaddr) {
++			gUNLOCK();
++			kfree(priv);
++			pr_err("Error,no memory have register for amvideocap\n");
++			return -ENOMEM;
++		}
++		vaddr = codec_mm_phys_to_virt(phyaddr);
++		if (!vaddr) {
++			codec_mm_free_for_dma(CMA_NAME, phyaddr);
++			gUNLOCK();
++			kfree(priv);
++			pr_err("%s: failed to remap y addr\n", __func__);
++			return -ENOMEM;
++		}
++	} else
++#endif
++	{
++		phyaddr = getgctrl()->phyaddr;
++		vaddr = (u8 *)getgctrl()->vaddr;
++		if (!phyaddr) {
++			gUNLOCK();
++			kfree(priv);
++			pr_err("Error,no memory have register for amvideocap\n");
++			return -ENOMEM;
++		}
++	}
+ 	getgctrl()->opened_cnt++;
++	priv->phyaddr = phyaddr;
++	priv->vaddr = vaddr;
++	priv->want = getgctrl()->want;
+ 	gUNLOCK();
+ 	file->private_data = priv;
+-	priv->phyaddr = getgctrl()->phyaddr;
+-	priv->vaddr = (u8 *) getgctrl()->vaddr;
+-	priv->want = getgctrl()->want;
+ 	priv->src_rect.x = -1;
+ 	priv->src_rect.y = -1;
+ 	priv->src_rect.width = -1;
+@@ -170,19 +179,14 @@
+ static int amvideocap_release(struct inode *inode, struct file *file)
+ {
+ 	struct amvideocap_private *priv = file->private_data;
+-	kfree(priv);
++
+ #ifdef CONFIG_CMA
+-	if (use_cma && amvideocap_pdev) {
+-		codec_mm_free_for_dma(CMA_NAME, getgctrl()->phyaddr);
+-		/*
+-		   pr_err("%s: codec_mm_free_for_dma:%p\n", __func__,
+-		   (void *)getgctrl()->phyaddr);
+-		 */
+-	}
++	if (use_cma && amvideocap_pdev)
++		codec_mm_free_for_dma(CMA_NAME, priv->phyaddr);
+ #endif
++	kfree(priv);
+ 	gLOCK();
+ 	getgctrl()->opened_cnt--;
+-
+ 	gUNLOCK();
+ 	return 0;
+ }

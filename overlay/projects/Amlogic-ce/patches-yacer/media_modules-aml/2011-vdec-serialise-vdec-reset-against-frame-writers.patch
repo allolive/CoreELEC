@@ -1,0 +1,42 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amstream: serialise vdec_reset against frame writes
+
+AMSTREAM_IOC_VDEC_RESET and write() on the same /dev/amstream_vframe fd
+run with no lock between them. vdec_input_add_chunk caches a block and
+fills it via vframe_chunk_fill without input->lock, taking the lock only
+to publish the chunk. A racing vdec_reset runs vdec_input_release(),
+freeing every block (coherent DMA free plus kfree), then vdec_input_init().
+A writer caught in between copies user data into a freed DMA buffer and
+publishes a chunk pointing at it, and the decoder programs a freed
+physical address. Needs a race with a local privileged client.
+
+Take the existing per-fd priv->mutex on both sides - the lock the
+VDECSTAT/VDECINFO ioctl cases already use here. It is dropped before the
+msleep(20) retry, and nothing below either call takes priv->mutex or
+amstream_mutex, so the amstream_port_init nesting is not inverted. The
+decoder half of the race is left for a separate patch. Not exercised on
+hardware: nothing CoreELEC ships opens /dev/amstream_vframe.
+--- a/drivers/stream_input/amports/amstream.c
++++ b/drivers/stream_input/amports/amstream.c
+@@ -1095,7 +1095,10 @@
+ 	debug_file_write(buf, count);
+ #endif
+ 	do {
++		/* vdec_reset() frees the input blocks this write fills */
++		mutex_lock(&priv->mutex);
+ 		ret = vdec_write_vframe(priv->vdec, buf, count, NULL, NULL, NULL);
++		mutex_unlock(&priv->mutex);
+ 		if (file->f_flags & O_NONBLOCK) {
+ 			break;/*alway return for no block mode.*/
+ 		} else if (ret == -EAGAIN) {
+@@ -2987,7 +2990,10 @@
+ 		if (priv->vdec == NULL)
+ 			return -ENODEV;
+ 
++		/* serialise with amstream_vframe_write() */
++		mutex_lock(&priv->mutex);
+ 		r = vdec_reset(priv->vdec);
++		mutex_unlock(&priv->mutex);
+ 		break;
+ 
+ 	case AMSTREAM_IOC_TRICKMODE:

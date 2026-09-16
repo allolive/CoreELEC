@@ -1,0 +1,91 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] DVDVideoCodecAmlogic: apply drop request by pts range
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- G025 xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp:842: yacer 1101: the drop request is sampled when a packet goes in but applied to whichever picture comes out, so decoder latency marks the wrong frames
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -484,6 +484,7 @@
+ 
+   m_videobuffer.iFlags = 0;
+   m_dropRequested = false;
++  m_dropDtsBound = DVD_NOPTS_VALUE;
+ 
+   if (m_mpeg2_sequence)
+     delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
+@@ -504,8 +505,18 @@
+   // Enhancement-layer packets are sent with drop false, so taking the flag as it
+   // stands would clear the request halfway through a dual layer run.
+   if (!packet.isELPackage)
++  {
+     m_dropRequested = (m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0;
+ 
++    // The decoder returns pictures several packets after it takes them, so also
++    // keep the highest dts dropped (the player drops on dts < start) for the
++    // pictures still inside it when the request ends.
++    const double dts = packet.dts != DVD_NOPTS_VALUE ? packet.dts : packet.pts;
++    if (m_dropRequested && dts != DVD_NOPTS_VALUE &&
++        (m_dropDtsBound == DVD_NOPTS_VALUE || dts > m_dropDtsBound))
++      m_dropDtsBound = dts;
++  }
++
+   // Handle Input, add demuxer packet to input queue, we must accept it or
+   // it will be discarded as VideoPlayerVideo has no concept of "try again".
+ 
+@@ -804,6 +815,7 @@
+   m_mpeg2_sequence_pts = 0;
+   m_has_keyframe = false;
+   m_dropRequested = false;
++  m_dropDtsBound = DVD_NOPTS_VALUE;
+   m_metadataSequencer.Reset();
+   m_pendingMeta = m_streamMeta;
+   if (m_bitstream)
+@@ -841,6 +853,18 @@
+ 
+     if (m_dropRequested)
+       pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
++    else if (m_dropDtsBound != DVD_NOPTS_VALUE && pVideoPicture->pts != DVD_NOPTS_VALUE)
++    {
++      // A kept packet has pts >= dts >= start, so a picture at or below the bound came
++      // from a dropped one. Pictures leave in display order: the first one past the
++      // bound ends the run, as does one far below it (a timestamp jump back).
++      // The margin absorbs the rounding of pts that pass through 90 kHz.
++      if (pVideoPicture->pts <= m_dropDtsBound + DVD_MSEC_TO_TIME(1) &&
++          pVideoPicture->pts > m_dropDtsBound - DVD_SEC_TO_TIME(10))
++        pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
++      else
++        m_dropDtsBound = DVD_NOPTS_VALUE;
++    }
+ 
+     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
+     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
+@@ -878,7 +902,10 @@
+     m_codecControlFlags = flags;
+ 
+     if (flags & DVD_CODEC_CTRL_DRAIN)
++    {
+       m_dropRequested = false;
++      m_dropDtsBound = DVD_NOPTS_VALUE;
++    }
+ 
+     if (m_Codec)
+       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -125,6 +125,8 @@
+   double m_lastCommitPts{0.0};
+   //! The player's standing drop request, held across enhancement-layer packets.
+   bool m_dropRequested{false};
++  //! Highest decode timestamp the player asked to drop; pictures shown up to it are flagged.
++  double m_dropDtsBound{DVD_NOPTS_VALUE};
+   AMLFrameMetadata m_streamMeta;
+   AMLFrameMetadata m_pendingMeta;
+   AMLFrameMetadata m_lastMeta;

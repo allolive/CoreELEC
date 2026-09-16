@@ -1,0 +1,78 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] codec_mm: dmabuf_manage: fix double free on dma_buf_fd failure paths
+
+get_dmabuf() hands the dmabuf_manage_block to dma_buf_export() as
+exp_info.priv, after which dmabuf_manage_buf_release() owns it and frees
+it on the last put. Four ioctl paths free it a second time when
+dma_buf_fd() fails after a successful export:
+dmabuf_manage_alloc_dmabuf(), dmabuf_manage_extend_alloc_dmabuf(),
+dmabuf_manage_extend_export_dmabuf() and dmabuf_manage_register_channel()
+all fall through their own unwinding after dma_buf_put(). In ioctl
+context the put is deferred to task_work, so the ioctl frees first and
+the release callback frees the same memory again - a double kfree, a
+second codec_mm_free_for_dma() of a range that may already be reused,
+and in register_channel a release_channel() driven by a freed channel.
+Triggering it needs dma_buf_fd() to fail (in practice -EMFILE) in a
+process that can open /dev/secmem; normal playback never gets there.
+
+Clear dbuf->priv before the put on those four paths. The release
+callback guards every branch with "if (block)", so it becomes a no-op
+and the function's own unwinding stays the single owner. This also
+removes a self-deadlock in register_channel, which holds
+g_secure_pool_mutex across the put while release_channel() takes it.
+
+Two smaller fixes in the same paths: extend_alloc_dmabuf's error_alloc
+freed block->paddr, always 0 for an extend block, leaking the CMA
+allocation at block->extend_paddr; and extend_export_dmabuf returned 0
+from its dma_buf_fd() exit, which user space would read as fd 0.
+
+Code-level fix, not exercised on hardware. extend_export_dmabuf's two
+other failure exits still return 0; left alone here.
+
+--- a/drivers/media/common/codec_mm/dmabuf_manage.c
++++ b/drivers/media/common/codec_mm/dmabuf_manage.c
+@@ -970,10 +970,13 @@
+ 	fd = dma_buf_fd(dbuf, fd_flags);
+ 	if (fd < 0) {
+ 		pr_error("dma_buf_fd failed\n");
++		res = fd;
+ 		goto error_fd;
+ 	}
+ 	return fd;
+ error_fd:
++	/* the fd was never installed; keep release from freeing block too */
++	dbuf->priv = NULL;
+ 	dma_buf_put(dbuf);
+ error_alloc_object:
+ 	kfree(block->priv);
+@@ -1112,6 +1115,8 @@
+ 	}
+ 	return res;
+ error_fd:
++	/* the fd was never installed; keep release from freeing block too */
++	dbuf->priv = NULL;
+ 	dma_buf_put(dbuf);
+ error_alloc:
+ 	codec_mm_free_for_dma("dmabuf", block->paddr);
+@@ -1163,9 +1168,11 @@
+ 	}
+ 	return res;
+ error_fd:
++	/* the fd was never installed; keep release from freeing block too */
++	dbuf->priv = NULL;
+ 	dma_buf_put(dbuf);
+ error_alloc:
+-	codec_mm_free_for_dma("dmabuf", block->paddr);
++	codec_mm_free_for_dma("dmabuf", block->extend_paddr);
+ error_alloc_object:
+ 	kfree(block);
+ error_copy:
+@@ -1719,6 +1726,8 @@
+ 	mutex_unlock(&g_secure_pool_mutex);
+ 	return fd;
+ error_fd:
++	/* the fd was never installed; keep release from freeing block too */
++	dbuf->priv = NULL;
+ 	dma_buf_put(dbuf);
+ error_export:
+ 	kfree(block);

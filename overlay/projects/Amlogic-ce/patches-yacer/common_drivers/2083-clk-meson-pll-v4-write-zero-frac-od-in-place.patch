@@ -1,0 +1,49 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] clk: meson: pll_v4: write frac/od of 0 on in-place rate change
+
+When m, n and en already match the target, meson_clk_pll_v4_set_rate()
+updates frac and od in place and returns 0. It wrote frac only if the
+target frac was non-zero and od only if the target od was non-zero, so a
+request needing frac = 0 or od = 0 was dropped while set_rate still
+returned success; recalc_rate reads the hardware back, so the clock keeps
+reporting the old rate.
+
+S7D hifi_pll_table has {150, 0, 0} = 1800M and {150, 0, 2} = 450M, same m
+and n: from 450M, clk_set_rate(hifi_pll, 1800000000) leaves od at 2.
+
+Drop the !!frac and !!od guards. frac is written whenever it differs,
+behind MESON_PARM_APPLICABLE(&pll->frac) as the full path does; that also
+stops the old code reading the uninitialised local frac on v4 PLLs with
+no frac field. od is compared and written every time. No relock is added.
+
+Affects only meson_clk_pll_v4_ops users (S7D gp0/hifi/hifi1, S6 PLLs);
+g12b uses meson_clk_pll_ops. The S7D audio rates in use today (491.52M,
+451.584M, non-zero frac, od = 2) get identical register writes.
+
+Not tested on hardware; needs an S905X5 board to exercise.
+
+Left alone: meson_clk_pll_od_or_frac_correct() still compares only m, n
+and en, and meson_clk_pll_get_param_frac() can still return 1 << width.
+--- a/drivers/clk/meson/clk-pll.c
++++ b/drivers/clk/meson/clk-pll.c
+@@ -1549,12 +1549,16 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* only frac correct, only write frac register only */
++	/*
++	 * m/n unchanged: update frac/od in place. A target of 0 must be
++	 * written too, or the old value stays.
++	 */
+ 	if (meson_clk_pll_od_or_frac_correct(clk, pll, m, n)) {
+-		if (unlikely(!!frac) && frac != meson_parm_read(clk->map, &pll->frac))
++		if (MESON_PARM_APPLICABLE(&pll->frac) &&
++		    frac != meson_parm_read(clk->map, &pll->frac))
+ 			/* Clear frac bits and Update frac value */
+ 			meson_parm_write(clk->map, &pll->frac, frac);
+-		if (unlikely(!!od) && od != meson_parm_read(clk->map, &pll->od))
++		if (od != meson_parm_read(clk->map, &pll->od))
+ 			/* Clear od bits and Update od value */
+ 			meson_parm_write(clk->map, &pll->od, od);
+ 
+ 

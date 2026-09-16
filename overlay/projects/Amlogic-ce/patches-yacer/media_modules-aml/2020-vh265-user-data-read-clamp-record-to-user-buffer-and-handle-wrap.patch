@@ -1,0 +1,55 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh265: clamp user_data_read to the user buffer and handle ring wrap
+
+In vh265_user_data_read(), the branch for a record larger than the caller's
+buffer kept data_size = rec->rec_len instead of puserdata_para->buf_len, and
+did one flat copy_to_user() with no split at the end of the ring. buf_len and
+pbuf_addr arrive unvalidated from userspace via AMSTREAM_IOC_UD_BUF_READ, and
+records do wrap the 8 KB sei_user_data_buffer ring, so a small-buf_len read of
+a wrapped record copied up to 8 KB from inside the ring past its end: kernel
+heap disclosed to userspace, or usercopy_abort() with HARDENED_USERCOPY.
+
+Clamp data_size to buf_len and split the copy at data_buf_end, as
+vmpeg12_multi.c already does; reduce rec_start modulo the ring length so it
+cannot walk past the end across partial reads. Readers with a buffer smaller
+than a record must now loop. Untested on hardware: Kodi's AML codec never
+issues this ioctl. h265_fb and h266 carry the same defect, untouched here.
+--- a/drivers/frame_provider/decoder/h265/vh265.c
++++ b/drivers/frame_provider/decoder/h265/vh265.c
+@@ -8811,9 +8811,24 @@
+ 				hevc->userdata_info.read_index = 0;
+ 		}
+ 	} else {
+-		res = (u32)copy_to_user(dest_buf,
+-							(void *)rec_start,
+-							data_size);
++		/*
++		 * Record larger than the user buffer: hand out only buf_len
++		 * bytes and split the copy where the record wraps the ring.
++		 */
++		data_size = puserdata_para->buf_len;
++		if ((u8 *)(rec_start + data_size) > hevc->userdata_info.data_buf_end) {
++			u32 first_len = hevc->userdata_info.data_buf_end - (u8 *)rec_start;
++
++			res = copy_to_user(dest_buf, rec_start, first_len);
++			if (res)
++				res += data_size - first_len;
++			else
++				res = copy_to_user(dest_buf + first_len,
++					hevc->userdata_info.data_buf,
++					data_size - first_len);
++		} else {
++			res = copy_to_user(dest_buf, rec_start, data_size);
++		}
+ 		if (res) {
+ 			pr_info("%s[4], res %ld, request %d\n",
+ 				__func__, res, data_size);
+@@ -8822,6 +8837,8 @@
+ 
+ 		rec->rec_len -= data_size - res;
+ 		rec->rec_start += data_size - res;
++		if (rec->rec_start >= hevc->userdata_info.buf_len)
++			rec->rec_start -= hevc->userdata_info.buf_len;
+ 		puserdata_para->data_size = data_size - res;
+ 	}
+ 

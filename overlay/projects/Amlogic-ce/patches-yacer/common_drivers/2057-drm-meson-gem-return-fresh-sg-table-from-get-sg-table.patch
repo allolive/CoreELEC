@@ -1,0 +1,110 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: gem: return a fresh sg_table from prime_get_sg_table
+
+meson_gem_prime_get_sg_table() returned the gem's own table: for an is_dma
+gem that is &a->table inside the meson_dma_heap_attachment from
+dma_buf_map_attachment(). The DRM PRIME helpers own what this hook returns
+and drm_gem_unmap_dma_buf() calls sg_free_table() and kfree() on it, so
+exporting a dumb/MESON_GEM_CREATE buffer and letting another device attach
+and unmap frees the heap's scatterlist and kfree()s an interior pointer;
+the later detach then frees it again. The ION branch did copy, but with
+vmalloc() (the helper kfree()s) and sized by nents, not orig_nents.
+
+Add meson_gem_dup_sg_table(): kmalloc + sg_alloc_table(orig_nents), copying
+page/length/offset per entry. Use it on both branches. The unsupported path
+returns ERR_PTR(-EINVAL); drm_gem_map_dma_buf() only checks IS_ERR().
+
+Not exercised on hardware: stock Kodi imports heap-gfx buffers rather than
+exporting meson GEMs. UVM (afbc/secure) exports never reach this hook.
+--- a/drivers/drm/meson_gem.c
++++ b/drivers/drm/meson_gem.c
+@@ -457,53 +457,55 @@
+ 	return drm_gem_prime_export(obj, flags);
+ }
+ 
++/*
++ * The DRM PRIME helpers take ownership of the table returned here:
++ * drm_gem_map_dma_buf() maps it for the importing device and
++ * drm_gem_unmap_dma_buf() later does sg_free_table() and kfree() on it.
++ */
++static __maybe_unused struct sg_table *
++meson_gem_dup_sg_table(struct sg_table *src)
++{
++	struct sg_table *dst;
++	struct scatterlist *src_sg, *dst_sg;
++	int ret, i;
++
++	dst = kmalloc(sizeof(*dst), GFP_KERNEL);
++	if (!dst)
++		return ERR_PTR(-ENOMEM);
++
++	ret = sg_alloc_table(dst, src->orig_nents, GFP_KERNEL);
++	if (ret) {
++		kfree(dst);
++		return ERR_PTR(ret);
++	}
++
++	dst_sg = dst->sgl;
++	for_each_sgtable_sg(src, src_sg, i) {
++		sg_set_page(dst_sg, sg_page(src_sg), src_sg->length,
++			    src_sg->offset);
++		dst_sg = sg_next(dst_sg);
++	}
++
++	return dst;
++}
++
+ static struct sg_table *meson_gem_prime_get_sg_table(struct drm_gem_object *obj)
+ {
+ 	struct am_meson_gem_object *meson_gem_obj;
+-#ifdef CONFIG_AMLOGIC_ION
+-	struct sg_table *dst_table = NULL;
+-	struct scatterlist *dst_sg = NULL;
+-	struct sg_table *src_table = NULL;
+-	struct scatterlist *src_sg = NULL;
+-	int ret, i;
+-#endif
+ 
+ 	meson_gem_obj = to_am_meson_gem_obj(obj);
+ 	DRM_DEBUG("%s %p.\n", __func__, meson_gem_obj);
+ 
+ #if (defined CONFIG_AMLOGIC_HEAP_CMA) || (defined CONFIG_AMLOGIC_HEAP_CODEC_MM)
+ 	if (!meson_gem_obj->base.import_attach && meson_gem_obj->is_dma)
+-		return meson_gem_obj->sg;
++		return meson_gem_dup_sg_table(meson_gem_obj->sg);
+ #endif
+ #ifdef CONFIG_AMLOGIC_ION
+-	if (!meson_gem_obj->base.import_attach && meson_gem_obj->ionbuffer) {
+-		src_table = meson_gem_obj->ionbuffer->sg_table;
+-		dst_table = vmalloc(sizeof(*dst_table));
+-		if (!dst_table) {
+-			ret = -ENOMEM;
+-			return ERR_PTR(ret);
+-		}
+-
+-		ret = sg_alloc_table(dst_table, src_table->nents, GFP_KERNEL);
+-		if (ret) {
+-			vfree(dst_table);
+-			return ERR_PTR(ret);
+-		}
+-
+-		dst_sg = dst_table->sgl;
+-		src_sg = src_table->sgl;
+-		for (i = 0; i < src_table->nents; i++) {
+-			sg_set_page(dst_sg, sg_page(src_sg), src_sg->length, 0);
+-			sg_dma_address(dst_sg) = sg_phys(src_sg);
+-			sg_dma_len(dst_sg) = sg_dma_len(src_sg);
+-			dst_sg = sg_next(dst_sg);
+-			src_sg = sg_next(src_sg);
+-		}
+-		return dst_table;
+-	}
++	if (!meson_gem_obj->base.import_attach && meson_gem_obj->ionbuffer)
++		return meson_gem_dup_sg_table(meson_gem_obj->ionbuffer->sg_table);
+ #endif
+ 	DRM_ERROR("Not support import buffer from other driver.\n");
+-	return NULL;
++	return ERR_PTR(-EINVAL);
+ }
+ 
+ static int meson_gem_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map)

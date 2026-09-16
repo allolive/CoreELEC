@@ -1,0 +1,135 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vav1: bound aux data writes and reset aux sizes on buffer reuse
+
+set_aux_data() repacks the firmware aux ring into pic->aux_data_buf or
+hw->dv_data_buf without checking the destination size and never clamps
+aux_count against the aux region; the h265 copy has both guards. Four input
+words can become twelve output bytes, so a malformed aux image can write
+past the 16 KiB dv_data_buf or the 24 KiB SEI_BUF_SIZE picture buffer from
+the decoder ISR thread (replay reaches offsets 40850 and 49126). Pass the
+destination capacity in, skip the repack when aux_count exceeds aux_size >> 1
+or under twelve bytes remain, and check the space left before each record
+header and each four-byte group, dropping a record that does not fit. Also
+clear pic->aux_data_size and pic->hdr10p_data_size in get_free_fb() under the
+pool lock as v4l_get_free_fb() does, or a recycled buffer keeps the previous
+frame's T.35 record and parse_metadata() returns its stale Dolby Vision RPU.
+copy_dv_data() gains a SEI_BUF_SIZE check, since prefix_aux_buf_size is a
+writable module parameter. hw->dv_data_size is still not cleared for
+non-shown frames. Not exercised on hardware; g12b never runs this decoder.
+--- a/drivers/frame_provider/decoder/vav1/vav1.c
++++ b/drivers/frame_provider/decoder/vav1/vav1.c
+@@ -1782,6 +1782,8 @@
+ 			pic->spatial_id = (hw->aom_param.p.temporal_spatial_id >> 3) & 3;
+ 			pic->not_need_display = 0;
+ 			pic->fence_create = 0;
++			pic->aux_data_size = 0;
++			pic->hdr10p_data_size = 0;
+ 
+ 			av1_print(hw, AV1_DEBUG_OUT_PTS,
+ 				"%s, idx: %d, ts: %lld, pts %d, pts64 %lld temporal_spatial_id = 0x%x\n",
+@@ -2406,7 +2408,7 @@
+ * dv_meta_flag: 1, dolby meta (T35) only; 2, not include dolby meta (T35)
+ */
+ static void set_aux_data(struct AV1HW_s *hw,
+-	    char **aux_data_buf, int *aux_data_size,
++	    char **aux_data_buf, int *aux_data_size, int buf_size,
+ 	unsigned char suffix_flag,
+ 	unsigned char dv_meta_flag)
+ {
+@@ -2447,6 +2449,14 @@
+ 		av1_print(hw, 0, "%s:old size %d count %d,suf %d dv_flag %d\r\n",
+ 			__func__, *aux_data_size, aux_count, suffix_flag, dv_meta_flag);
+ 	}
++	/* aux_count is in 16-bit words, aux_size in bytes */
++	if (aux_count > (aux_size >> 1) ||
++		*aux_data_size < 0 || *aux_data_size + 12 > buf_size) {
++		av1_print(hw, AOM_DEBUG_AUX_DATA,
++			"%s: aux_count %d aux_size %d old size %d buf size %d, skip\n",
++			__func__, aux_count, aux_size, *aux_data_size, buf_size);
++		aux_count = 0;
++	}
+ 	if (aux_size > 0 && aux_count > 0) {
+ 		int heads_size = 0;
+ 
+@@ -2464,10 +2474,12 @@
+ 
+ 		if (*aux_data_buf) {
+ 			unsigned char valid_tag = 0;
++			unsigned char *end = *aux_data_buf + buf_size;
+ 			unsigned char *h = *aux_data_buf + *aux_data_size;
+ 			unsigned char *p = h + 8;
+ 			int len = 0;
+ 			int padding_len = 0;
++			bool overflow = false;
+ 
+ 			for (i = 0; i < aux_count; i += 4) {
+ 				int ii;
+@@ -2500,11 +2512,15 @@
+ 						h[7] = (padding_len)
+ 						& 0xff;
+ 						h += (len + 8);
+-						p += 8;
+ 						len = 0;
+ 						padding_len = 0;
+ 					}
+ 					if (valid_tag) {
++						if (end - h < 8) {
++							overflow = true;
++							break;
++						}
++						p = h + 8;
+ 						h[4] = tag;
+ 						h[5] = 0;
+ 						h[6] = 0;
+@@ -2512,6 +2528,11 @@
+ 					}
+ 				}
+ 				if (valid_tag) {
++					/* p == h + 8 + len, so this bounds the header too */
++					if (end - p < 4) {
++						overflow = true;
++						break;
++					}
+ 					for (ii = 0; ii < 4; ii++) {
+ 						unsigned short aa =
+ 							aux_adr[i + 3
+@@ -2524,7 +2545,12 @@
+ 					}
+ 				}
+ 			}
+-			if (len > 0) {
++			if (overflow) {
++				/* drop the record that did not fit */
++				av1_print(hw, AOM_DEBUG_AUX_DATA,
++					"%s: aux data truncated at size %d\n",
++					__func__, *aux_data_size);
++			} else if (len > 0) {
+ 				*aux_data_size += (len + 8);
+ 				h[0] = (len >> 24) & 0xff;
+ 				h[1] = (len >> 16) & 0xff;
+@@ -2551,7 +2577,7 @@
+ static void set_dv_data(struct AV1HW_s *hw)
+ {
+ 	set_aux_data(hw, &hw->dv_data_buf,
+-		&hw->dv_data_size, 0, 1);
++		&hw->dv_data_size, hw->aux_data_size, 0, 1);
+ }
+ 
+ static void set_pic_aux_data(struct AV1HW_s *hw,
+@@ -2561,7 +2587,7 @@
+ 	if (pic == NULL)
+ 		return;
+ 	set_aux_data(hw, &pic->aux_data_buf,
+-		&pic->aux_data_size, suffix_flag, dv_meta_flag);
++		&pic->aux_data_size, SEI_BUF_SIZE, suffix_flag, dv_meta_flag);
+ }
+ 
+ static void copy_dv_data(struct AV1HW_s *hw,
+@@ -2569,6 +2595,7 @@
+ {
+ 	if ((pic->aux_data_buf) &&
+ 		(pic->aux_data_size + hw->dv_data_size <= hw->aux_data_size) &&
++		(pic->aux_data_size + hw->dv_data_size <= SEI_BUF_SIZE) &&
+ 		(hw->dv_data_size > 0)) {
+ 		if (debug & AOM_DEBUG_AUX_DATA) {
+ 			av1_print(hw, 0, "%s: (size %d) pic index %d\n",

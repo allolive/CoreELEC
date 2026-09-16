@@ -1,0 +1,86 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: vid/aud mute store: update krefs atomically
+
+aud_mute_store() and vid_mute_store() copy hdev->kref_audio_mute or
+hdev->kref_video_mute into a local atomic_t, change the copy and write
+it back. kernfs only serialises writes on one open file, so two
+processes each writing '1' can both read 0 and both store 1, losing a
+mute reference.
+
+The count and the path mask could also disagree with no race: every
+'0' write called the unmute op, so after '1', '1', '0' the count was 1
+and vid_mute_show reported 1, but VIDEO_MUTE_PATH_1 was cleared and the
+output live; the next mode set then re-muted via restore_mute().
+
+Update the counters in hdev in place under a new file-static mutex per
+node, and unmute only when atomic_dec_if_positive() returns <= 0, as
+hdmitx20 does. N '1' writes now need N '0' writes to unmute. Node names
+and output formats are unchanged; nothing in CoreELEC or Kodi writes
+them. restore_mute() still reads the counts unlocked - pre-existing,
+and path 0 sets no mask bit. hdmitx20 (g12b/S922X) is untouched. Not
+run on S905X5 hardware yet.
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -2154,22 +2154,29 @@
+ 	return pos;
+ }
+ 
++/*
++ * Serialises the sysfs mute reference counts. Separate from aud_mute_mutex
++ * and vid_mute_mutex, which the mute ops take themselves.
++ */
++static DEFINE_MUTEX(aud_mute_store_mutex);
++static DEFINE_MUTEX(vid_mute_store_mutex);
++
+ static ssize_t aud_mute_store(struct device *dev,
+ 	struct device_attribute *attr, const char *buf, size_t count)
+ {
+ 	struct hdmitx_dev *hdev = dev_get_drvdata(dev);
+-	atomic_t kref_audio_mute = hdev->kref_audio_mute;
+ 
++	mutex_lock(&aud_mute_store_mutex);
+ 	if (buf[0] == '1') {
+-		atomic_inc(&kref_audio_mute);
++		atomic_inc(&hdev->kref_audio_mute);
+ 		hdmitx21_audio_mute_op(0, AUDIO_MUTE_PATH_2);
+ 	}
+ 	if (buf[0] == '0') {
+-		if (!(atomic_sub_and_test(0, &kref_audio_mute)))
+-			atomic_dec(&kref_audio_mute);
+-		hdmitx21_audio_mute_op(1, AUDIO_MUTE_PATH_2);
++		/* the path is a single bit: unmute only on the last reference */
++		if (atomic_dec_if_positive(&hdev->kref_audio_mute) <= 0)
++			hdmitx21_audio_mute_op(1, AUDIO_MUTE_PATH_2);
+ 	}
+-	hdev->kref_audio_mute = kref_audio_mute;
++	mutex_unlock(&aud_mute_store_mutex);
+ 
+ 	return count;
+ }
+@@ -2191,20 +2198,18 @@
+ 			      const char *buf, size_t count)
+ {
+ 	struct hdmitx_dev *hdev = dev_get_drvdata(dev);
+-	atomic_t kref_video_mute = hdev->kref_video_mute;
+ 
++	mutex_lock(&vid_mute_store_mutex);
+ 	if (buf[0] == '1') {
+-		atomic_inc(&kref_video_mute);
++		atomic_inc(&hdev->kref_video_mute);
+ 		hdmitx21_video_mute_op(0, VIDEO_MUTE_PATH_1);
+ 	}
+ 	if (buf[0] == '0') {
+-		if (!(atomic_sub_and_test(0, &kref_video_mute))) {
+-			atomic_dec(&kref_video_mute);
+-		}
+-		hdmitx21_video_mute_op(1, VIDEO_MUTE_PATH_1);
++		/* the path is a single bit: unmute only on the last reference */
++		if (atomic_dec_if_positive(&hdev->kref_video_mute) <= 0)
++			hdmitx21_video_mute_op(1, VIDEO_MUTE_PATH_1);
+ 	}
+-
+-	hdev->kref_video_mute = kref_video_mute;
++	mutex_unlock(&vid_mute_store_mutex);
+ 
+ 	return count;
+ }

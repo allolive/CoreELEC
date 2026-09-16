@@ -1,0 +1,65 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amstream: always use copy_{from,to}_user for native ioctl pointers
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- F088 drivers/stream_input/amports/amstream.c:3153: access_ok() fallback to memcpy on ioctl pointers gives kernel read/write (and oops) from native ioctls
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+diff --git a/drivers/stream_input/amports/amstream.c b/drivers/stream_input/amports/amstream.c
+index 29d5780..23f2d3a 100644
+
+--- a/drivers/stream_input/amports/amstream.c
++++ b/drivers/stream_input/amports/amstream.c
+@@ -3162,17 +3162,11 @@ static long amstream_do_ioctl_old(struct port_priv_s *priv,
+ 				struct vdec_s *vdec;
+ 
+ 				p_userdata_param = &param;
+-				if (access_ok((void*)arg, sizeof(struct userdata_param_t))) {
+-					if (copy_from_user(p_userdata_param,
+-						(void __user *)arg,
+-						sizeof(struct userdata_param_t))) {
+-						r = -EFAULT;
+-						break;
+-					}
+-				} else {
+-					memcpy(p_userdata_param,
+-							(void __user *)arg,
+-							sizeof(struct userdata_param_t));
++				if (copy_from_user(p_userdata_param,
++						   (void __user *)arg,
++						   sizeof(struct userdata_param_t))) {
++					r = -EFAULT;
++					break;
+ 				}
+ 				mutex_lock(&amstream_mutex);
+ 				if (vdec_get_debug_flags() & 0x10000000)
+@@ -3191,17 +3185,12 @@ static long amstream_do_ioctl_old(struct port_priv_s *priv,
+ 						break;
+ 					}
+ 
+-					if (access_ok((void*)arg, sizeof(struct userdata_param_t))) {
+-						if (copy_to_user((void __user *)arg,
+-							p_userdata_param,
+-							sizeof(struct userdata_param_t))) {
+-							r = -EFAULT;
+-							mutex_unlock(&amstream_mutex);
+-							break;
+-						}
+-					} else {
+-						memcpy((void*)arg, p_userdata_param,
+-							sizeof(struct userdata_param_t));
++					if (copy_to_user((void __user *)arg,
++							 p_userdata_param,
++							 sizeof(struct userdata_param_t))) {
++						r = -EFAULT;
++						mutex_unlock(&amstream_mutex);
++						break;
+ 					}
+ 				} else
+ 					r = -EINVAL;

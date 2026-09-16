@@ -1,0 +1,126 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] updates: serialise manual and auto update downloads
+
+The background update thread and the settings configuration window run in
+the same service process and drive the same updates instance, and both
+download into the one hard-coded temp path oe.TEMP + 'update_file'. With
+AutoUpdate=auto, check_updates_v2 sets update_in_progress and calls
+do_autoupdate, which streams the tar for minutes; do_manual_update never
+checked that flag, overwrote self.update_file and called do_autoupdate
+again, whose download_file reopens the same temp file with mode 'wb'. The
+first download is truncated, the destination name can come from the other
+thread's URL, and the second shutil.move raises FileNotFoundError into a
+swallowing except: wasted download, a half-written file in .update, an
+update that silently never happens. Not a bad flash - busybox init checks
+the KERNEL and SYSTEM md5 sums before applying.
+
+The URL is no longer instance state: do_manual_update and check_updates_v2
+pass it to do_autoupdate as a new url argument, which derives the
+destination name from it, and self.update_file is gone. A threading.Lock
+wraps makedirs/download/move/sync, acquired non-blocking so the window is
+never frozen behind a download it cannot start - a manual attempt during a
+background download logs and, when not silent, says so. The reboot prompt
+moved out from under the lock; the delattr of update_in_progress on a
+failed download gained a hasattr guard.
+
+The temp path is still shared and fixed; this serialises access rather than
+switching to tempfile.mkstemp. Pure Python, no SoC-specific code. Not
+exercised on hardware: the two-thread timing is the part only a real box
+can show.
+
+--- a/src/resources/lib/modules/updates.py
++++ b/src/resources/lib/modules/updates.py
+@@ -39,6 +39,7 @@
+         try:
+             oeMain.dbg_log('updates::__init__', 'enter_function', oeMain.LOGDEBUG)
+             self.oe = oeMain
++            self.download_lock = threading.Lock()
+             self.struct = {
+                 'update': {
+                     'order': 1,
+@@ -465,14 +466,14 @@
+                 else:
+                     version = self.oe.VERSION
+                 if self.struct['update']['settings']['Build']['value'] != '':
+-                    self.update_file = self.update_json[self.struct['update']['settings']['Channel']['value']]['url'] + self.get_available_builds(self.struct['update']['settings']['Build']['value'])
++                    update_url = self.update_json[self.struct['update']['settings']['Channel']['value']]['url'] + self.get_available_builds(self.struct['update']['settings']['Build']['value'])
+                     message = '%s: %s\n%s: %s\n%s' % (self.oe._(32188), version, self.oe._(32187), self.struct['update']['settings']['Build']['value'], self.oe._(32180))
+                     answer = xbmcDialog.yesno('CoreELEC Update', message)
+                     xbmcDialog = None
+                     del xbmcDialog
+                     if answer:
+                         self.update_in_progress = True
+-                        self.do_autoupdate()
++                        self.do_autoupdate(url=update_url)
+                 self.struct['update']['settings']['Build']['value'] = ''
+             self.oe.dbg_log('updates::do_manual_update', 'exit_function', self.oe.LOGDEBUG)
+         except Exception as e:
+@@ -601,41 +602,53 @@
+                 update_json = json.loads(update_json)
+                 self.last_update_check = time.time()
+                 if 'update' in update_json['data'] and 'folder' in update_json['data']:
+-                    self.update_file = self.UPDATE_DOWNLOAD_URL % (update_json['data']['host'], update_json['data']['folder'], update_json['data']['update'])
++                    update_url = self.UPDATE_DOWNLOAD_URL % (update_json['data']['host'], update_json['data']['folder'], update_json['data']['update'])
+                     if self.struct['update']['settings']['UpdateNotify']['value'] == '1':
+                         self.oe.notify(self.oe._(32363), self.oe._(32364))
+                     if self.struct['update']['settings']['AutoUpdate']['value'] == 'auto' and force == False:
+                         self.update_in_progress = True
+-                        self.do_autoupdate(None, True)
++                        self.do_autoupdate(None, True, update_url)
+                     else:
+                         if self.oe.BUILD == 'official':
+                             if self.struct['update']['settings']['UpdateNotify']['value'] == '1':
+                                 ceUpdate = xbmcgui.Dialog().yesno('CoreELEC', 'An update is available, would you like to download it now?')
+                                 if(ceUpdate):
+                                     self.update_in_progress = True
+-                                    self.do_autoupdate(None, True)
++                                    self.do_autoupdate(None, True, update_url)
+             self.oe.dbg_log('updates::check_updates_v2', 'exit_function', self.oe.LOGDEBUG)
+         except Exception as e:
+             self.oe.dbg_log('updates::check_updates_v2', 'ERROR: (' + repr(e) + ')')
+ 
+-    def do_autoupdate(self, listItem=None, silent=False):
++    def do_autoupdate(self, listItem=None, silent=False, url=None):
+         try:
+             self.oe.dbg_log('updates::do_autoupdate', 'enter_function', self.oe.LOGDEBUG)
+-            if hasattr(self, 'update_file'):
+-                if not os.path.exists(self.LOCAL_UPDATE_DIR):
+-                    os.makedirs(self.LOCAL_UPDATE_DIR)
+-                downloaded = self.oe.download_file(self.update_file, self.oe.TEMP + 'update_file', silent)
++            if not url is None:
++                # The background update thread and a manual update from the
++                # settings window run concurrently on this instance and both
++                # download into the same temp file: only one may do so.
++                if not self.download_lock.acquire(False):
++                    self.oe.dbg_log('updates::do_autoupdate', 'Download already in progress (exit)', self.oe.LOGINFO)
++                    if not silent:
++                        xbmcgui.Dialog().ok('CoreELEC Update', 'An update is already being downloaded, please try again later.')
++                    return
++                try:
++                    if not os.path.exists(self.LOCAL_UPDATE_DIR):
++                        os.makedirs(self.LOCAL_UPDATE_DIR)
++                    downloaded = self.oe.download_file(url, self.oe.TEMP + 'update_file', silent)
++                    if not downloaded is None:
++                        update_name = url.split('/')[-1]
++                        if self.struct['update']['settings']['UpdateNotify']['value'] == '1':
++                            self.oe.notify(self.oe._(32363), self.oe._(32366))
++                        shutil.move(self.oe.TEMP + 'update_file', self.LOCAL_UPDATE_DIR + update_name)
++                        subprocess.call('sync', shell=True, stdin=None, stdout=None, stderr=None)
++                    elif hasattr(self, 'update_in_progress'):
++                        delattr(self, 'update_in_progress')
++                finally:
++                    self.download_lock.release()
+                 if not downloaded is None:
+-                    self.update_file = self.update_file.split('/')[-1]
+-                    if self.struct['update']['settings']['UpdateNotify']['value'] == '1':
+-                        self.oe.notify(self.oe._(32363), self.oe._(32366))
+-                    shutil.move(self.oe.TEMP + 'update_file', self.LOCAL_UPDATE_DIR + self.update_file)
+-                    subprocess.call('sync', shell=True, stdin=None, stdout=None, stderr=None)
+                     ceReboot = xbmcgui.Dialog().yesno('CoreELEC', 'An update has been downloaded, would you like to reboot now to apply it?')
+                     if(ceReboot):
+                         xbmc.restart()
+-                else:
+-                    delattr(self, 'update_in_progress')
+ 
+             self.oe.dbg_log('updates::do_autoupdate', 'exit_function', self.oe.LOGDEBUG)
+         except Exception as e:

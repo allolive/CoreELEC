@@ -1,0 +1,40 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] vh265: fix pic_transfer allocation error paths
+
+Two allocation error paths around struct PIC_s are wrong.
+
+pic_alloc() jumps to the common "error:" label when the first
+aml_media_mem_alloc(sizeof(struct PIC_s)) returns NULL. That label calls
+pic_free(pic), which unconditionally reads pic->m_aiRefPOCList0/1 and
+m_aiRefPOCListData, so a failed kzalloc oopses instead of returning an
+error. Return NULL directly; the later failures are already safe.
+
+hevc_local_init() frees hevc->pic_transfer with vfree() when the
+aux_data_buf vzalloc fails, but pic_transfer came from kzalloc (struct
+PIC_s is well under SZ_8K), and the three m_aiRefPOC* lists are leaked
+with the field left dangling. Use pic_free() and clear the field. On
+5.15 the vfree() only WARNs and returns, so the bug today is a splat
+plus that leak, not a use-after-free. Both paths need a GFP_KERNEL
+failure during decoder init or reset; neither has been exercised.
+
+--- a/drivers/frame_provider/decoder/h265/vh265.c
++++ b/drivers/frame_provider/decoder/h265/vh265.c
+@@ -4107,7 +4107,7 @@
+ 
+ 	pic = aml_media_mem_alloc(sizeof(struct PIC_s), GFP_KERNEL);
+ 	if (!pic)
+-		goto error;
++		return NULL;
+ 	pic->m_aiRefPOCList0 = aml_media_mem_alloc(list_size, GFP_KERNEL);
+ 	if (!pic->m_aiRefPOCList0)
+ 		goto error;
+@@ -8448,7 +8448,8 @@
+ 			hevc->pic_transfer->aux_data_buf = vzalloc(hevc->prefix_aux_size);
+ 			if (!hevc->pic_transfer->aux_data_buf) {
+ 				pr_err("%s: failed to alloc for aux\n", __func__);
+-				vfree(hevc->pic_transfer);
++				pic_free(hevc->pic_transfer);
++				hevc->pic_transfer = NULL;
+ 				return -1;
+ 			}
+ 		}

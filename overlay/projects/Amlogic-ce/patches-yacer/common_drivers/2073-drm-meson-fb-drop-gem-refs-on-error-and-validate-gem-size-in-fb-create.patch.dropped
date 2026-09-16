@@ -1,0 +1,100 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: fb: drop GEM refs on error and validate GEM size in fb_create
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- F022 drivers/drm/meson_fb.c:106: am_meson_fb_create leaks GEM references on its error paths and never checks that the GEM is large enough for the framebuffer
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+--- a/drivers/drm/meson_fb.c
++++ b/drivers/drm/meson_fb.c
+@@ -92,22 +92,57 @@
+ 	struct am_meson_fb *meson_fb = 0;
+ 	struct drm_gem_object *obj = 0;
+ 	struct am_meson_gem_object *meson_gem;
++	const struct drm_format_info *info;
+ 	int ret, i;
+ 
++	info = drm_get_format_info(dev, mode_cmd);
++	if (!info)
++		return ERR_PTR(-EINVAL);
++
+ 	meson_fb = kzalloc(sizeof(*meson_fb), GFP_KERNEL);
+ 	if (!meson_fb)
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	/* support multi handle .*/
+-	for (i = 0; i < AM_MESON_GEM_OBJECT_NUM && mode_cmd->handles[i]; i++) {
++	for (i = 0; i < info->num_planes && mode_cmd->handles[i]; i++) {
++		unsigned int width = mode_cmd->width;
++		unsigned int height = mode_cmd->height;
++		u64 min_size;
++
+ 		obj = drm_gem_object_lookup(file_priv, mode_cmd->handles[i]);
+ 		if (!obj) {
+ 			dev_err(dev->dev, "Failed to lookup GEM handle\n");
+-			kfree(meson_fb);
+-			return ERR_PTR(-ENOMEM);
++			ret = -ENOMEM;
++			goto err_put;
+ 		}
+ 		meson_gem = container_of(obj, struct am_meson_gem_object, base);
+ 		meson_fb->bufp[i] = meson_gem;
++
++		/*
++		 * uvm objects (video plane/afbc/secure, or uvm dmabufs imported
++		 * from a decoder) need not be sized for the frame, and
++		 * compressed modifiers have no linear layout; only check plain
++		 * linear buffers.
++		 */
++		if (meson_gem->is_uvm ||
++		    (obj->import_attach &&
++		     dmabuf_is_uvm(obj->import_attach->dmabuf)) ||
++		    ((mode_cmd->flags & DRM_MODE_FB_MODIFIERS) &&
++		     mode_cmd->modifier[i] != DRM_FORMAT_MOD_LINEAR))
++			continue;
++
++		if (i) {
++			width = DIV_ROUND_UP(width, info->hsub);
++			height = DIV_ROUND_UP(height, info->vsub);
++		}
++		min_size = (u64)(height - 1) * mode_cmd->pitches[i] +
++			   drm_format_info_min_pitch(info, i, width) +
++			   mode_cmd->offsets[i];
++		if (obj->size < min_size) {
++			DRM_DEBUG_KMS("GEM object too small for plane %d\n", i);
++			ret = -EINVAL;
++			goto err_put;
++		}
+ 	}
+ 
+ 	drm_helper_mode_fill_fb_struct(dev, &meson_fb->base, mode_cmd);
+@@ -117,9 +152,7 @@
+ 		dev_err(dev->dev,
+ 			"Failed to initialize framebuffer: %d\n",
+ 			ret);
+-		drm_gem_object_put(obj);
+-		kfree(meson_fb);
+-		return ERR_PTR(ret);
++		goto err_put;
+ 	}
+ 	DRM_DEBUG("meson_fb[id:%d,ref:%d]=0x%px,meson_fb->bufp[%d-0]=0x%p\n",
+ 		  meson_fb->base.base.id,
+@@ -127,6 +160,12 @@
+ 		  meson_fb, i, meson_fb->bufp[0]);
+ 
+ 	return &meson_fb->base;
++
++err_put:
++	for (i = 0; i < AM_MESON_GEM_OBJECT_NUM && meson_fb->bufp[i]; i++)
++		drm_gem_object_put(&meson_fb->bufp[i]->base);
++	kfree(meson_fb);
++	return ERR_PTR(ret);
+ }
+ 
+ struct drm_framebuffer *

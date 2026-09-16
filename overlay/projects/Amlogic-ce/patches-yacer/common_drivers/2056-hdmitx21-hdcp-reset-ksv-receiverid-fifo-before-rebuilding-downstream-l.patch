@@ -1,0 +1,71 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: hdcp: reset KSV/ReceiverID cursor before rebuilding list
+
+The downstream KSV/ReceiverID list lives in one 640-byte buffer ((127 + 1)
+* sizeof(struct hdcp_ksv_t)); p_ksv_next is the write cursor and every
+writer advances it unchecked. ksv_reset_fifo() rewinds it on auth start,
+reset, auth failure and HDCP2.x REAUTH_REQ, but not where the list is
+rebuilt in place: each RPT_RCVID_CHANGED interrupt runs
+assemble_ds_ksv_lists(), appending dev_cnt * 5 + 5 bytes, and HDCP1.x
+REAUTH_RI_MISMATCH on a non-repeater sink appends 5 more. A downstream
+HDCP2.x repeater re-sends ReceiverID_List (RxStatus READY, no REAUTH_REQ)
+on every topology change of its own, so with a one-device list the 65th
+event writes past the allocation and corrupts the kmalloc-1k slab. Rewind
+the cursor in both places, clamp dev_cnt to HDCP2X_MAX_DEV, and clamp the
+HDCP1.x FIFO byte count to the remaining fifo_byte_counter, whose u16
+subtraction would otherwise wrap. Not exercised on hardware.
+
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_hdcp.c
+@@ -78,6 +78,7 @@
+ static void hdcptx_reset(struct hdcp_t *p_hdcp);
+ static void bksv_get_ds_list(struct hdcp_t *p_hdcp);
+ static void get_ds_rcv_id(struct hdcp_t *p_hdcp);
++static void ksv_reset_fifo(struct hdcp_t *p_hdcp);
+ static void hdcp_update_csm(struct hdcp_t *p_hdcp);
+ /*
+  * case1: upstream side update stream type
+@@ -461,6 +462,7 @@
+ 		p_hdcp->fail_type = HDCP_FAIL_NONE;
+ 		hdcptx_encryption_update(p_hdcp, true);
+ 		hdcp_topology_update(p_hdcp);
++		ksv_reset_fifo(p_hdcp);
+ 		bksv_get_ds_list(p_hdcp);
+ 		hdcp_check_ds_csm_status(p_hdcp);
+ 	} else if (p_hdcp->hdcp_type == HDCP_VER_HDCP2X) {
+@@ -471,6 +473,7 @@
+ 		hdcptx_encryption_update(p_hdcp, true);
+ 		p_hdcp->ds_repeater = false;
+ 		hdcp_topology_update(p_hdcp);
++		ksv_reset_fifo(p_hdcp);
+ 		get_ds_rcv_id(p_hdcp);
+ 		/* ds is hdcp2.2 TV */
+ 		set_hdcp2_topo(1);
+@@ -576,6 +579,8 @@
+ 
+ static void assemble_ds_ksv_lists(struct hdcp_t *p_hdcp)
+ {
++	/* the list is rebuilt from scratch on every topology update */
++	ksv_reset_fifo(p_hdcp);
+ 	if (p_hdcp->hdcp_type == HDCP_VER_HDCP1X) {
+ 		u8 ds_bstatus[2];
+ 		u8 ds_count;
+@@ -593,6 +598,8 @@
+ 	} else if (p_hdcp->hdcp_type == HDCP_VER_HDCP2X) {
+ 		u8 dev_cnt = hdcptx2_rpt_dev_cnt_get();
+ 
++		if (dev_cnt > HDCP2X_MAX_DEV)
++			dev_cnt = HDCP2X_MAX_DEV;
+ 		get_ds_rcvid_lists(p_hdcp, dev_cnt);
+ 		get_ds_rcv_id(p_hdcp);
+ 	}
+--- a/drivers/media/vout/hdmitx21/hw/hdcp.c
++++ b/drivers/media/vout/hdmitx21/hw/hdcp.c
+@@ -249,6 +249,7 @@
+ 		}
+ 		fifo_status = hdmitx21_rd_reg(TPI_KSV_FIFO_STAT_IVCTX);
+ 		bytes_to_read = fifo_status & BIT_TPI_KSV_FIFO_STAT_BYTES;
++		bytes_to_read = min(bytes_to_read, fifo_byte_counter);
+ 		/* printk("ksv_fifo_status: 0x%x\n", fifo_status); */
+ 		mdelay(1);
+ 	}

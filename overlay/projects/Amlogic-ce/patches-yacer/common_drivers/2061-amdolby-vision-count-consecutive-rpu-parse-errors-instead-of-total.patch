@@ -1,0 +1,59 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: count consecutive RPU parse errors, retry later
+
+parse_sei_and_meta_ext_v2() refuses to parse anything once
+dv_inst[dv_id].err_parse_cnt exceeds 10. multi_mp_process() failures
+raise it, but nothing lowers it except dv_inst_map(), so the limit
+counts total parser failures over a decoder session, not failures in a
+row. Eleven damaged RPUs anywhere in a long DV title (a bad splice, a
+remux error, a truncated TS segment) latch the gate for the rest of the
+session: every frame then reuses the previous md/comp sizes, dynamic
+L1/L2 tone mapping stays frozen, the parse-in-advance path falls back to
+SDR, and an unratelimited pr_err fires once per vsync.
+
+Zero the counter when the parser succeeds, and let one call through
+every DV_PARSE_RETRY_INTERVAL (30) frames while suspended so the state
+can recover. The per-call pr_err goes; the existing pr_dv_error at the
+failure site still reports each retry.
+
+Only the stb 2.6 v2 parser path has this latch; v1 and hw5 keep calling
+the parser after a failure. Triggering it needs deliberately damaged RPU
+payloads, so it has not been reproduced on hardware here.
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -5829,6 +5829,11 @@
+ 	return ret;
+ }
+ 
++/* consecutive RPU parser failures before parsing is suspended */
++#define DV_PARSE_ERR_LIMIT 10
++/* calls skipped while suspended before the parser is tried again */
++#define DV_PARSE_RETRY_INTERVAL 30
++
+ int parse_sei_and_meta_ext_v2(struct vframe_s *vf,
+ 					char *aux_buf,
+ 					int aux_size,
+@@ -5860,9 +5865,12 @@
+ 	if (!aux_buf || aux_size == 0 || !fmt || !md_buf || !comp_buf ||
+ 	    !total_comp_size || !total_md_size || !ret_flags)
+ 		return 1;
+-	if (dv_inst[dv_id].err_parse_cnt > 10) {
+-		pr_err("parser error count %d\n", dv_inst[dv_id].err_parse_cnt);
+-		return 1;
++	if (dv_inst[dv_id].err_parse_cnt > DV_PARSE_ERR_LIMIT) {
++		/* parser keeps failing: skip it, but retry periodically */
++		if (++dv_inst[dv_id].err_parse_cnt <=
++		    DV_PARSE_ERR_LIMIT + DV_PARSE_RETRY_INTERVAL)
++			return 1;
++		dv_inst[dv_id].err_parse_cnt = DV_PARSE_ERR_LIMIT;
+ 	}
+ 
+ 	p = aux_buf;
+@@ -6034,6 +6042,7 @@
+ 				ret = 3;
+ 				dv_inst[dv_id].err_parse_cnt += 1;
+ 			} else {
++				dv_inst[dv_id].err_parse_cnt = 0;
+ 				if (*total_comp_size + comp_size
+ 					< COMP_BUF_SIZE)
+ 					*total_comp_size += comp_size;

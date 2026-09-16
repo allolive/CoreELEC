@@ -1,0 +1,66 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] AMLCodec: a failed DV property read is not an enabled core
+
+CAMLCodec::CloseDecoder decided whether a Dolby Vision core has to be
+powered down from the raw result of aml_get_drmProperty("dv_enable").
+That returns -1 when the cached connector state is not connected, or
+when the property is absent, and -1 converts to true. The close then
+enters the loop that spins while dv_status != 0, which reads -1 for the
+same reason, so it runs for the whole m_decoder_timeout - five seconds
+by default, up to sixty - with the VideoPlayer thread asleep inside
+CloseStream. The writes after the wait are no-ops anyway, since
+aml_set_drmProperty is gated on the same connected check.
+
+m_decoder_timeout is only assigned by OpenDecoder, which runs lazily
+from AddData, but Close calls CloseDecoder on any non-null m_Codec, so a
+stop during caching or before the first keyframe reaches the loop with
+the member uninitialised and the bound indeterminate.
+
+Compare dv_enable and dv_status against > 0, so a failed read means
+"not enabled" / "stop waiting"; dv_video_on already compared == 1.
+Give m_decoder_timeout and the two buffer-level members default member
+initialisers. Valid values are unaffected: 1 stays enabled, 0 disabled.
+
+Reasoned from source; the standby trigger was not reproduced on
+hardware.
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 2c632c4..5c0a4fd 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2582,7 +2582,8 @@ void CAMLCodec::CloseDecoder()
+   auto* AmlDisplay =
+       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
+   int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
+-  bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC));
++  // A failed read (-1, e.g. connector not connected) is not an enabled core.
++  bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC) > 0);
+   CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
+ 
+   SetPollDevice(-1);
+@@ -2626,7 +2627,7 @@ void CAMLCodec::CloseDecoder()
+   {
+     // the transition needs a few display frames before the core powers down
+     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
+-    while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
++    while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) > 0 &&
+            (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
+       usleep(10000); // wait 10ms
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index b4a87ed..9c64ad3 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -148,9 +148,9 @@ private:
+   static double m_ttd;
+   CProcessInfo &m_processInfo;
+   CAMLGenlock      m_genlock;
+-  int m_decoder_timeout;
++  int m_decoder_timeout{0};
+   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
+ 
+-  bool            m_buffer_level_ready;
+-  float           m_minimum_buffer_level;
++  bool            m_buffer_level_ready{false};
++  float           m_minimum_buffer_level{0.0f};
+ };

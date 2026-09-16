@@ -1,0 +1,93 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: crtc: take present_fence.lock around the fence slot
+
+Each crtc has a single present-fence slot, amcrtc->present_fence.
+spin_lock_init() sets up present_fence.lock, but neither user holds it:
+the MESON_CREAT_PRESENT_FENCE ioctl (registered with flags 0, so
+drm_ioctl() takes no lock) and meson_drm_signal_present_fence() in the
+vsync handler. Two concurrent ioctl callers on one crtc both see a NULL
+slot, both install an fd, and the second store overwrites the first: the
+first fence's driver reference leaks and its waiters never wake. The
+handler also re-reads pre_fence->fence for the test, signal, put and
+clear, so a store in between can signal one fence and put another.
+
+Take the lock with spin_lock_irqsave in both paths, since the handler
+runs in hard-irq context. The ioctl claims the slot under the lock and
+only then calls fd_install(), which cannot be undone; a losing caller
+fputs the sync_file, releases the fd and returns -EEXIST as before. The
+handler takes the fence out and clears the slot under the lock, then
+signals and puts it after unlocking, because that lock is also the
+fence's own lock. Nothing sleeps under it and it never nests with
+event_lock.
+
+Not compiled and not run on hardware. The race needs two concurrent
+callers; Kodi does not use this ioctl. A fence left in the slot at
+unbind is still never signalled - pre-existing and not addressed here.
+
+--- a/drivers/drm/meson_crtc.c
++++ b/drivers/drm/meson_crtc.c
+@@ -271,6 +271,7 @@
+ 	struct drm_crtc *crtc;
+ 	struct dma_fence *fence;
+ 	struct sync_file *sync_file;
++	unsigned long flags;
+ 	int fd, ret;
+ 
+ 	if (arg->crtc_idx >= dev->num_crtcs)
+@@ -305,13 +306,22 @@
+ 		goto err_put_fd;
+ 	}
+ 
+-	fd_install(fd, sync_file->file);
+-	arg->fd = fd;
++	/* claim the slot before fd_install(), which cannot be undone */
++	spin_lock_irqsave(&pre_fence->lock, flags);
++	if (pre_fence->fence) {
++		spin_unlock_irqrestore(&pre_fence->lock, flags);
++		fput(sync_file->file);
++		ret = -EEXIST;
++		goto err_put_fd;
++	}
+ 	pre_fence->fd = fd;
+ 	pre_fence->fence = fence;
+ 	pre_fence->sync_file = sync_file;
+-	DRM_DEBUG("%s fd=%d, fence=%px\n", __func__,
+-		pre_fence->fd, pre_fence->fence);
++	spin_unlock_irqrestore(&pre_fence->lock, flags);
++
++	fd_install(fd, sync_file->file);
++	arg->fd = fd;
++	DRM_DEBUG("%s fd=%d, fence=%px\n", __func__, fd, fence);
+ 
+ 	return 0;
+ 
+--- a/drivers/drm/meson_vpu.c
++++ b/drivers/drm/meson_vpu.c
+@@ -124,13 +124,21 @@
+ static void meson_drm_signal_present_fence(struct am_meson_crtc *amcrtc)
+ {
+ 	struct am_meson_crtc_present_fence *pre_fence = &amcrtc->present_fence;
++	struct dma_fence *fence;
++	unsigned long flags;
++	u32 fd;
+ 
+-	if (pre_fence->fence) {
+-		DRM_DEBUG("%s fd=%d, fence=%px\n", __func__,
+-			pre_fence->fd, pre_fence->fence);
+-		dma_fence_signal(pre_fence->fence);
+-		dma_fence_put(pre_fence->fence);
+-		pre_fence->fence = NULL;
++	/* pre_fence->lock is also the fence lock taken by dma_fence_signal() */
++	spin_lock_irqsave(&pre_fence->lock, flags);
++	fence = pre_fence->fence;
++	fd = pre_fence->fd;
++	pre_fence->fence = NULL;
++	spin_unlock_irqrestore(&pre_fence->lock, flags);
++
++	if (fence) {
++		DRM_DEBUG("%s fd=%d, fence=%px\n", __func__, fd, fence);
++		dma_fence_signal(fence);
++		dma_fence_put(fence);
+ 	}
+ }
+ 

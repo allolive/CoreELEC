@@ -1,0 +1,184 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] AMLCodec: av1_parser_frame: accept all legal temporal unit layouts
+
+Fixes found by the S905X5/CoreELEC driver review:
+
+- G010 xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp:1206: av1_parser_frame's seen_frame_header state machine rejects legal temporal units, so whole TUs go to the decoder unframed
+
+See the review diary (S905X5-DRIVER-REVIEW-DIARY.md) for the defect
+analysis and the forum discussion.
+
+final judge sign-off did not run, so this patch still needs a human
+read before it is proposed upstream. Not yet exercised on S905X5 hardware.
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -1118,11 +1118,9 @@
+     uint32_t *frame_len,
+     uint8_t *meta_buf,
+     uint32_t *meta_len) {
+-    int frame_decoding_finished = 0;
+     uint32_t obu_size = 0;
+     ObuHeader obu_header;
+     memset(&obu_header, 0, sizeof(obu_header));
+-    int seen_frame_header = 0;
+     uint8_t header[20] = {
+         0x00, 0x00, 0x01, 0x54,
+         0xFF, 0xFF, 0xFE, 0xAB,
+@@ -1133,8 +1131,10 @@
+     uint8_t *p = NULL;
+     uint32_t rpu_size = 0;
+ 
+-    // decode frame as a series of OBUs
+-    while (!frame_decoding_finished) {
++    // Repack the packet as a series of OBUs, each behind an AML header. The
++    // decoder validates the frame structure itself, so any sequence of OBUs a
++    // temporal unit may legally hold is passed through as it is.
++    while (data < data_end) {
+         //      struct read_bit_buffer rb;
+         size_t payload_size = 0;
+         size_t header_size = 0;
+@@ -1144,37 +1144,53 @@
+         unsigned int i;
+         OBU_METADATA_TYPE meta_type;
+         uint64_t type;
+-
+-        if (bytes_available == 0 && !seen_frame_header) {
+-            break;
+-        }
++        uint8_t size_field[8];
++        size_t size_field_len = 0;
++        size_t obu_len = 0;
+ 
+         int status =
+             aom_read_obu_header_and_size(data, bytes_available, is_annexb,
+                 &obu_header, &payload_size, &bytes_read);
+ 
+-        if (status != 0) {
+-            return -1;
++        if (status == AOM_CODEC_UNSUP_BITSTREAM && !is_annexb) {
++            // AV1-ISOBMFF and Matroska let the last OBU of a sample omit
++            // obu_size, in which case it runs to the end of the buffer. Parse
++            // the header without the section 5 check and give the OBU a size
++            // field when it is written out below. A size-less OBU is always
++            // taken to be the last one in the packet.
++            if (aom_read_obu_header(data, bytes_available, &bytes_read,
++                                    &obu_header, 1) != AOM_CODEC_OK ||
++                obu_header.has_size_field ||
++                aom_uleb_encode(bytes_available - bytes_read, sizeof(size_field),
++                                size_field, &size_field_len) != 0) {
++                return -1;
++            }
++            payload_size = bytes_available - bytes_read;
++            obu_len = bytes_read + size_field_len + payload_size;
+         }
+-
+-        // Note: aom_read_obu_header_and_size() takes care of checking that this
+-        // doesn't cause 'data' to advance past 'data_end'.
+-
+-        if ((size_t)(data_end - data - bytes_read) < payload_size) {
++        else if (status != 0) {
+             return -1;
+         }
++        else {
++            // Note: aom_read_obu_header_and_size() takes care of checking that
++            // this doesn't cause 'data' to advance past 'data_end'.
++            if ((size_t)(data_end - data - bytes_read) < payload_size) {
++                return -1;
++            }
++            obu_len = bytes_read + payload_size;
++        }
+ 
+         CLog::Log(LOGDEBUG, "\tobu {} len {:d}+{:d}", obu_type_name[obu_header.type], bytes_read, payload_size);
+ 
+-        obu_size = bytes_read + payload_size + 4;
++        obu_size = obu_len + 4;
+ 
+         if (!is_annexb) {
+-            obu_size = bytes_read + payload_size + 4;
++            obu_size = obu_len + 4;
+             header_size = 20;
+             aom_uleb_encode_fixed_size(obu_size, 4, 4, header + 16, &bytes_written);
+         }
+         else {
+-            obu_size = bytes_read + payload_size;
++            obu_size = obu_len;
+             header_size = 16;
+         }
+         header[0] = ((obu_size + 4) >> 24) & 0xff;
+@@ -1187,60 +1203,25 @@
+         header[7] = header[3] ^ 0xff;
+         memcpy(dst_data, header, header_size);
+         dst_data += header_size;
+-        memcpy(dst_data, data, bytes_read + payload_size);
+-        dst_data += bytes_read + payload_size;
++        if (size_field_len) {
++            // The OBU header, with obu_has_size_field set, then its size.
++            memcpy(dst_data, data, bytes_read);
++            dst_data[0] |= 0x02;
++            dst_data += bytes_read;
++            memcpy(dst_data, size_field, size_field_len);
++            dst_data += size_field_len;
++            memcpy(dst_data, data + bytes_read, payload_size);
++            dst_data += payload_size;
++        }
++        else {
++            memcpy(dst_data, data, obu_len);
++            dst_data += obu_len;
++        }
+ 
+         data += bytes_read;
+-        *frame_len += 20 + bytes_read + payload_size;
++        *frame_len += 20 + obu_len;
+ 
+         switch (obu_header.type) {
+-        case OBU_TEMPORAL_DELIMITER:
+-            seen_frame_header = 0;
+-            break;
+-        case OBU_SEQUENCE_HEADER:
+-            // The sequence header should not change in the middle of a frame.
+-            if (seen_frame_header) {
+-                return -1;
+-            }
+-            break;
+-        case OBU_FRAME_HEADER:
+-            if (data_end == data + payload_size) {
+-                frame_decoding_finished = 1;
+-            }
+-            else {
+-                seen_frame_header = 1;
+-            }
+-            break;
+-        case OBU_REDUNDANT_FRAME_HEADER:
+-        case OBU_FRAME:
+-            if (obu_header.type == OBU_REDUNDANT_FRAME_HEADER) {
+-                if (!seen_frame_header) {
+-                    return -1;
+-                }
+-            }
+-            else {
+-                // OBU_FRAME_HEADER or OBU_FRAME.
+-                if (seen_frame_header) {
+-                    return -1;
+-                }
+-            }
+-            if (obu_header.type == OBU_FRAME) {
+-                if (data_end == data + payload_size) {
+-                    frame_decoding_finished = 1;
+-                    seen_frame_header = 0;
+-                }
+-            }
+-            break;
+-
+-        case OBU_TILE_GROUP:
+-            if (!seen_frame_header) {
+-                return -1;
+-            }
+-            if (data + payload_size == data_end)
+-                frame_decoding_finished = 1;
+-            if (frame_decoding_finished)
+-                seen_frame_header = 0;
+-            break;
+         case OBU_METADATA:
+             aom_uleb_decode(data, 8, &type, &bytes_read);
+             if (type < 6)

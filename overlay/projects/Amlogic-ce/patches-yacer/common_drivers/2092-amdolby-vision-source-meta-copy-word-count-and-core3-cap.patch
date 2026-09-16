@@ -1,0 +1,68 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amdolby_vision: source_meta_copy: fix reverse word count, cap core3
+
+reverse_dv_meta() computes the dword count as (byte_size + 3) / 4, but
+prepare_dv_meta() packs byte 0 into the first dword and the rest four per
+dword, so the count is 1 + (byte_size + 2) / 4. Whenever byte_size % 4 !=
+1 the last 1-3 bytes are not rebuilt; for a 70-72 byte core output that
+includes byte 69, and the fixed 70-byte memcpy then copies leftovers from
+the static reversed_meta_buffer. Fix the count and reject a zero size.
+The 128-dword and in->size limits still cap writes at 509 bytes of the
+512-byte buffer.
+
+source_meta_copy() only checked the reversed size was non-zero yet always
+copied ETSI_META_OFFSET (70) bytes; require at least that many.
+
+Source DM metadata of 814 bytes or more gives md_reg3.size > 204
+(MAX_CORE3_METADATA), after which dv_core3_set() drops every metadata
+register write for that frame and the TV keeps stale metadata. Skip the
+override in that case and keep the blob's own md_reg3; truncating the
+extension block list would break its framing. It needs an RPU with very
+many extension blocks to trigger. Not exercised on S905X5 hardware.
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -10720,6 +10720,8 @@
+ // 6.2.1, dm_metadata - bytes up to extension metadata blocks, excluding `num_ext_blocks`
+ #define ETSI_META_OFFSET 70
+ #define CORE_META_LENGTH 512
++/* core3 metadata register window 0x3324~0x33f0, must match MAX_CORE3_METADATA in amdv_hw.c */
++#define CORE3_META_MAX_DW 204
+ 
+ static unsigned char reversed_meta_buffer[CORE_META_LENGTH];
+ static unsigned char combo_meta_buffer[MD_BUF_SIZE];
+@@ -10732,9 +10734,16 @@
+ 
+ 	// Get original metadata size in bytes from first double word
+ 	size_t byte_size = (in->raw_metadata[0] & 0xffff00) >> 8;/*raw_metadata[0] bit 23:8 =>size*/
++	size_t dw_needed;
+ 
+-	// Calculate how many double words we need
+-	size_t dw_needed = (byte_size + 3) / 4;
++	if (byte_size == 0)
++		return 0;
++
++	/*
++	 * Calculate how many double words we need: prepare_dv_meta() puts
++	 * byte 0 in the first double word and the rest four per double word.
++	 */
++	dw_needed = 1 + (byte_size + 2) / 4;
+ 
+ 	// Validate against structure limits
+ 	if ((dw_needed > (CORE_META_LENGTH / 4)) || (dw_needed > in->size)) {
+@@ -10775,9 +10784,15 @@
+ 		return;
+ 	}
+ 
++	// The combined metadata must still fit the core3 register window
++	if (1 + (orig_meta_size + 2) / 4 > CORE3_META_MAX_DW) {
++		pr_dv_dbg("source_meta_copy: orig_meta_size (%zu) exceeds core3 limit\n", orig_meta_size);
++		return;
++	}
++
+ 	// reverse the metadata formatting from register format back to ETSI format.
+ 	reversed_meta_size = reverse_dv_meta(reversed_meta_buffer, core_meta);
+-	if (reversed_meta_size == 0) {
++	if (reversed_meta_size < ETSI_META_OFFSET) {
+ 		pr_err("source_meta_copy: Could not reverse dv metadata.\n");
+ 		return;
+ 	}

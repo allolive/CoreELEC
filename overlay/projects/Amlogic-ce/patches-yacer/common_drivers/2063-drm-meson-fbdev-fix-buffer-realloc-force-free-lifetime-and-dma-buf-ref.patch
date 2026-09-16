@@ -1,0 +1,440 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] drm/meson: fbdev: fix buffer lifetime and dma_buf refcounting
+
+The gem owns one dma_buf reference, but alloc_fb_gem() took another on every
+open past the first and nothing dropped it (fb0's 70778880-byte buffer on
+g12b reaches file count 6 as Kodi reopens /dev/fb0), and free_fb_gem() put
+it twice on the ION path, freeing the gem behind its refcount and leaking
+the vmap. set_par rewrote the fb geometry and screen_size before freeing and
+reallocating, so a failed oversized FBIOPUT_VSCREENINFO left fb_gem,
+bufp[0] and screen_base NULL under a valid geometry for a later mmap or
+FBIOGET_OSD_DMABUF to dereference; screen_size was a u32 product, so
+4096x1048576 wrapped to 0.
+
+Alloc, install and release are split out: set_par checks the format, sizes
+in u64 against fix.smem_len's u32 and allocates before touching the old
+buffer; release_gem() unmaps its own vmap, puts the dma_buf only on the ION
+path and uses drm_gem_object_put(); mmap() calls vma_set_file() so the
+mapping pins the dma_buf, as remap_pfn_range() takes no page references.
+The buffer pointers are swapped under info->mm_lock, which fbmem already
+holds across ->fb_mmap in the pinned kernel.
+
+Not exercised on S905X5 hardware.
+--- a/drivers/drm/meson_fbdev.c
++++ b/drivers/drm/meson_fbdev.c
+@@ -13,6 +13,8 @@
+ #include <linux/dma-buf.h>
+ #include <linux/amlogic/ion.h>
+ #include <linux/sysrq.h>
++#include <linux/console.h>
++#include <linux/overflow.h>
+ 
+ #include "meson_drv.h"
+ #include "meson_gem.h"
+@@ -31,14 +33,10 @@
+ static LIST_HEAD(kernel_fb_helper_list);
+ static DEFINE_MUTEX(kernel_fb_helper_lock);
+ 
+-static int am_meson_fbdev_alloc_fb_gem(struct fb_info *info)
++static int am_meson_fbdev_create_gem(struct drm_device *dev, size_t size,
++				     struct am_meson_gem_object **gem_out,
++				     void **vaddr_out)
+ {
+-	struct am_meson_fb *meson_fb;
+-	struct drm_fb_helper *helper = info->par;
+-	struct meson_drm_fbdev *fbdev = container_of(helper, struct meson_drm_fbdev, base);
+-	struct drm_framebuffer *fb = helper->fb;
+-	struct drm_device *dev = helper->dev;
+-	size_t size = info->screen_size;
+ 	struct am_meson_gem_object *meson_gem;
+ 	void *vaddr;
+ 	struct page **pages;
+@@ -47,49 +45,136 @@
+ 	pgprot_t pgprot;
+ 	int npages;
+ 
+-	if (!fbdev->fb_gem) {
+-		meson_gem = am_meson_gem_object_create(dev, 0, size);
+-		if (IS_ERR(meson_gem)) {
+-			DRM_ERROR("alloc memory %d fail\n", (u32)size);
++	meson_gem = am_meson_gem_object_create(dev, 0, size);
++	if (IS_ERR(meson_gem)) {
++		DRM_ERROR("alloc memory %d fail\n", (u32)size);
++		return -ENOMEM;
++	}
++
++	if (meson_gem->is_dma) {
++		npages = PAGE_ALIGN(meson_gem->base.size) / PAGE_SIZE;
++		pages = vmalloc(array_size(npages, sizeof(struct page *)));
++		tmp = pages;
++
++		if (!pages) {
++			drm_gem_object_put(&meson_gem->base);
+ 			return -ENOMEM;
+ 		}
+-		fbdev->fb_gem = &meson_gem->base;
+-		fb = helper->fb;
+-		meson_fb = container_of(fb, struct am_meson_fb, base);
+-		if (!meson_fb) {
+-			DRM_INFO("meson_fb is NULL!\n");
+-			return -EINVAL;
++
++		pgprot = pgprot_writecombine(PAGE_KERNEL);
++
++		for_each_sgtable_page(meson_gem->sg, &piter, 0) {
++			WARN_ON(tmp - pages >= npages);
++			*tmp++ = sg_page_iter_page(&piter);
+ 		}
+-		meson_fb->bufp[0] = meson_gem;
+-		if (meson_gem->is_dma) {
+-			npages = PAGE_ALIGN(meson_gem->base.size) / PAGE_SIZE;
+-			pages = vmalloc(array_size(npages, sizeof(struct page *)));
+-			tmp = pages;
+ 
+-			if (!pages)
+-				return -ENOMEM;
++		vaddr = vmap(pages, npages, VM_MAP, pgprot);
++		vfree(pages);
++		if (!vaddr) {
++			drm_gem_object_put(&meson_gem->base);
++			return -ENOMEM;
++		}
++	} else {
++		vaddr = ion_heap_map_kernel(meson_gem->ionbuffer->heap,
++					    meson_gem->ionbuffer);
++		if (IS_ERR(vaddr)) {
++			struct dma_buf *dmabuf = meson_gem->dmabuf;
++
++			/* the ion free path does not drop the dma_buf */
++			drm_gem_object_put(&meson_gem->base);
++			dma_buf_put(dmabuf);
++			return PTR_ERR(vaddr);
++		}
++	}
+ 
+-			pgprot = pgprot_writecombine(PAGE_KERNEL);
++	*gem_out = meson_gem;
++	*vaddr_out = vaddr;
++	return 0;
++}
+ 
+-			for_each_sgtable_page(meson_gem->sg, &piter, 0) {
+-				WARN_ON(tmp - pages >= npages);
+-				*tmp++ = sg_page_iter_page(&piter);
+-			}
++static void am_meson_fbdev_release_gem(struct am_meson_gem_object *meson_gem,
++				       void *vaddr)
++{
++	/*
++	 * vaddr is our own vmap() in both cases; for ion,
++	 * ion_heap_unmap_kernel() would unmap buffer->vaddr instead.
++	 */
++	vunmap(vaddr);
++	if (!meson_gem->is_dma) {
++		/* the ion free path does not drop the dma_buf */
++		dma_buf_put(meson_gem->dmabuf);
++	}
++	drm_gem_object_put(&meson_gem->base);
++}
+ 
+-			vaddr = vmap(pages, npages, VM_MAP, pgprot);
+-			vfree(pages);
+-		} else {
+-			vaddr = ion_heap_map_kernel(meson_gem->ionbuffer->heap,
+-						meson_gem->ionbuffer);
+-		}
+-		info->screen_base = (char __iomem *)vaddr;
++/*
++ * Install a new buffer, called with info->mm_lock held. The old buffer, if
++ * any, is returned through old_gem/old_vaddr and must be released by the
++ * caller after dropping the lock.
++ */
++static void am_meson_fbdev_swap_gem(struct fb_info *info,
++				    struct am_meson_gem_object *meson_gem,
++				    void *vaddr,
++				    struct am_meson_gem_object **old_gem,
++				    void **old_vaddr)
++{
++	struct drm_fb_helper *helper = info->par;
++	struct meson_drm_fbdev *fbdev = container_of(helper, struct meson_drm_fbdev, base);
++	struct am_meson_fb *meson_fb;
++
++	*old_gem = NULL;
++	*old_vaddr = NULL;
++	if (fbdev->fb_gem) {
++		*old_gem = container_of(fbdev->fb_gem,
++					struct am_meson_gem_object, base);
++		*old_vaddr = info->screen_base;
++	}
++
++	fbdev->fb_gem = meson_gem ? &meson_gem->base : NULL;
++	info->screen_base = (char __iomem *)vaddr;
++	if (meson_gem)
+ 		info->fix.smem_start = meson_gem->addr;
+ 
++	if (helper->fb) {
++		meson_fb = container_of(helper->fb, struct am_meson_fb, base);
++		meson_fb->bufp[0] = meson_gem;
++	} else {
++		DRM_ERROR("drm framebuffer is NULL!\n");
++	}
++}
++
++static int am_meson_fbdev_alloc_fb_gem(struct fb_info *info)
++{
++	struct drm_fb_helper *helper = info->par;
++	struct meson_drm_fbdev *fbdev = container_of(helper, struct meson_drm_fbdev, base);
++	struct am_meson_gem_object *meson_gem, *old_gem;
++	size_t size = info->screen_size;
++	void *vaddr, *old_vaddr;
++	int ret;
++
++	if (!fbdev->fb_gem) {
++		ret = am_meson_fbdev_create_gem(helper->dev, size,
++						&meson_gem, &vaddr);
++		if (ret)
++			return ret;
++
++		mutex_lock(&info->mm_lock);
++		if (fbdev->fb_gem) {
++			/* a concurrent set_par installed one meanwhile */
++			mutex_unlock(&info->mm_lock);
++			am_meson_fbdev_release_gem(meson_gem, vaddr);
++			return 0;
++		}
++		am_meson_fbdev_swap_gem(info, meson_gem, vaddr,
++					&old_gem, &old_vaddr);
++		mutex_unlock(&info->mm_lock);
++
+ 		MESON_DRM_FBDEV("alloc memory %d done\n", (u32)size);
+ 	} else {
+-		struct drm_gem_object *gem_obj = fbdev->fb_gem;
+-		meson_gem = container_of(gem_obj, struct am_meson_gem_object, base);
+-		get_dma_buf(meson_gem->dmabuf);
++		/*
++		 * The buffer is kept across opens and only released by
++		 * force_free_mem or a realloc, so no reference is taken here.
++		 */
+ 		MESON_DRM_FBDEV("no need repeate alloc memory %d\n", (u32)size);
+ 	}
+ 	return 0;
+@@ -97,43 +190,20 @@
+ 
+ static void am_meson_fbdev_free_fb_gem(struct fb_info *info)
+ {
+-	struct drm_fb_helper *helper = info->par;
+-	struct meson_drm_fbdev *fbdev;
+-	struct drm_framebuffer *fb;
+-	struct am_meson_fb *meson_fb;
++	struct am_meson_gem_object *old_gem;
++	void *old_vaddr;
+ 
+-	if (!helper) {
++	if (!info->par) {
+ 		DRM_ERROR("fb helper is NULL!\n");
+ 		return;
+ 	}
+ 
+-	fbdev = container_of(helper, struct meson_drm_fbdev, base);
+-	if (fbdev && fbdev->fb_gem) {
+-		struct drm_gem_object *gem_obj = fbdev->fb_gem;
+-		struct am_meson_gem_object *meson_gem = container_of(gem_obj,
+-					struct am_meson_gem_object, base);
+-
+-		dma_buf_put(meson_gem->dmabuf);
+-		if (!meson_gem->is_dma)
+-			ion_heap_unmap_kernel(meson_gem->ionbuffer->heap,
+-					meson_gem->ionbuffer);
+-
+-		info->screen_base = NULL;
+-
+-		meson_gem_object_free(fbdev->fb_gem);
+-		fbdev->fb_gem = NULL;
+-
+-		fb = helper->fb;
+-		if (fb) {
+-			meson_fb = container_of(fb, struct am_meson_fb, base);
+-			if (meson_fb)
+-				meson_fb->bufp[0] = NULL;
+-			else
+-				DRM_ERROR("meson_fb is NULL!\n");
+-		} else {
+-			DRM_ERROR("drm framebuffer is NULL!\n");
+-		}
++	mutex_lock(&info->mm_lock);
++	am_meson_fbdev_swap_gem(info, NULL, NULL, &old_gem, &old_vaddr);
++	mutex_unlock(&info->mm_lock);
+ 
++	if (old_gem) {
++		am_meson_fbdev_release_gem(old_gem, old_vaddr);
+ 		MESON_DRM_FBDEV("free memory done\n");
+ 	} else {
+ 		MESON_DRM_FBDEV("memory already free before\n");
+@@ -164,11 +234,25 @@
+ 	struct drm_fb_helper *helper = info->par;
+ 	struct meson_drm_fbdev *fbdev = container_of(helper, struct meson_drm_fbdev, base);
+ 	struct am_meson_gem_object *meson_gem;
++	int ret;
++
++	if (!fbdev->fb_gem)
++		return -ENODEV;
+ 
+ 	meson_gem = container_of(fbdev->fb_gem,
+ 				 struct am_meson_gem_object, base);
+ 
+-	return meson_gem_prime_mmap(fbdev->fb_gem, vma);
++	ret = meson_gem_prime_mmap(fbdev->fb_gem, vma);
++	if (ret)
++		return ret;
++
++	/*
++	 * The pages are mapped without taking page references. Let the
++	 * mapping hold the dma_buf file so a realloc or force_free_mem cannot
++	 * release the buffer while it is still mapped.
++	 */
++	vma_set_file(vma, meson_gem->dmabuf->file);
++	return 0;
+ }
+ 
+ static int am_meson_drm_fbdev_sync(struct fb_info *info)
+@@ -249,11 +333,25 @@
+ 
+ 	/*amlogic fbdev ioctl, used by gpu fbdev backend.*/
+ 	if (cmd == FBIOGET_OSD_DMABUF) {
++		struct dma_buf *dmabuf;
++
+ 		meson_fb = container_of(helper->fb, struct am_meson_fb, base);
+-		fbdma.fd = dma_buf_fd(meson_fb->bufp[0]->dmabuf, O_CLOEXEC);
++		/* serialise against a realloc on the console_lock-only paths */
++		mutex_lock(&info->mm_lock);
++		if (!meson_fb->bufp[0]) {
++			mutex_unlock(&info->mm_lock);
++			return -ENODEV;
++		}
++		dmabuf = meson_fb->bufp[0]->dmabuf;
++		get_dma_buf(dmabuf);
++		mutex_unlock(&info->mm_lock);
++		fbdma.fd = dma_buf_fd(dmabuf, O_CLOEXEC);
++		if (fbdma.fd < 0) {
++			dma_buf_put(dmabuf);
++			return fbdma.fd;
++		}
+ 		fbdma.flags = O_CLOEXEC;
+ 		ret = copy_to_user(argp, &fbdma, sizeof(fbdma)) ? -EFAULT : 0;
+-		get_dma_buf(meson_fb->bufp[0]->dmabuf);
+ 	} else if (cmd == FBIO_WAITFORVSYNC) {
+ 		if (plane->crtc) {
+ 			drm_wait_one_vblank(helper->dev, plane->crtc->index);
+@@ -385,7 +484,11 @@
+ 	struct drm_fb_helper_surface_size sizes;
+ 	struct drm_device *dev = fb_helper->dev;
+ 	struct drm_mode_fb_cmd2 mode_cmd = { 0 };
++	const struct drm_format_info *format;
++	struct am_meson_gem_object *new_gem, *old_gem;
+ 	unsigned int bytes_per_pixel;
++	u64 pitch, screen_size;
++	void *vaddr, *old_vaddr;
+ 	u32 xres_set = var->xres;
+ 	u32 yres_set = var->yres;
+ 	int depth;
+@@ -402,8 +505,7 @@
+ 	if (var->bits_per_pixel != fb->format->depth ||
+ 		var->xres_virtual != fb->width ||
+ 		var->yres_virtual != fb->height) {
+-		fbdev->vscreen_info_changed = true;
+-		/*realloc framebuffer, free old then alloc new gem*/
++		/*realloc framebuffer: alloc new gem, then free old*/
+ 		sizes.fb_height = var->yres_virtual;
+ 		sizes.fb_width = var->xres_virtual;
+ 		sizes.surface_width = sizes.fb_width;
+@@ -427,39 +529,60 @@
+ 		mode_cmd.width = sizes.surface_width;
+ 		mode_cmd.height = sizes.surface_height;
+ 		mode_cmd.pixel_format = drm_mode_legacy_fb_format(sizes.surface_bpp, depth);
+-		mode_cmd.pitches[0] = ALIGN(mode_cmd.width * bytes_per_pixel, 64);
+ 		MESON_DRM_FBDEV("DRM Pixel Format: %c%c%c%c\n",
+ 				(mode_cmd.pixel_format & 0xFF),
+ 				((mode_cmd.pixel_format >> 8) & 0xFF),
+ 				((mode_cmd.pixel_format >> 16) & 0xFF),
+ 				((mode_cmd.pixel_format >> 24) & 0xFF));
+ 
++		format = drm_get_format_info(dev, &mode_cmd);
++		if (!format)
++			return -EINVAL;
++
++		/* fix.smem_len is u32, so the buffer size must fit in it */
++		pitch = ALIGN((u64)sizes.fb_width * bytes_per_pixel, 64);
++		if (pitch > U32_MAX ||
++		    check_mul_overflow(pitch, (u64)sizes.fb_height, &screen_size) ||
++		    screen_size > U32_MAX) {
++			MESON_DRM_FBDEV("%s virtual size %ux%u too large\n",
++					__func__, sizes.fb_width, sizes.fb_height);
++			return -EINVAL;
++		}
++
++		/*
++		 * Allocate the new buffer before touching the old one or the fb
++		 * geometry, so a failed realloc leaves the fbdev usable.
++		 */
++		if (!fb_gem || fb_gem->size < screen_size) {
++			if (fb_gem)
++				MESON_DRM_FBDEV("GEM SIZE is not enough, re-allocate.\n");
++			if (am_meson_fbdev_create_gem(dev, screen_size,
++						      &new_gem, &vaddr)) {
++				DRM_ERROR("%s realloc fb fail\n", __func__);
++				return -ENOMEM;
++			}
++			mutex_lock(&info->mm_lock);
++			am_meson_fbdev_swap_gem(info, new_gem, vaddr,
++						&old_gem, &old_vaddr);
++			mutex_unlock(&info->mm_lock);
++			if (old_gem)
++				am_meson_fbdev_release_gem(old_gem, old_vaddr);
++			MESON_DRM_FBDEV("%s reallocate success.\n", __func__);
++		}
++
++		fbdev->vscreen_info_changed = true;
+ 		fb->width = sizes.fb_width;
+ 		fb->height = sizes.fb_height;
+-		fb->pitches[0] =  ALIGN(fb->width * bytes_per_pixel, 64);
+-		fb->format = drm_get_format_info(dev, &mode_cmd);
++		fb->pitches[0] = pitch;
++		fb->format = format;
+ 
+-		info->screen_size = fb->pitches[0] * fb->height;
++		info->screen_size = screen_size;
+ 		//info->fix.smem_len = info->screen_size;
+ 
+ 		drm_fb_helper_fill_info(info, fb_helper, &sizes);
+ 		/* fix some bug in drm_fb_helper_full_info */
+ 		var->xres = xres_set;
+ 		var->yres = yres_set;
+-
+-		if (fb_gem && fb_gem->size < info->screen_size) {
+-			MESON_DRM_FBDEV("GEM SIZE is not enough, no re-allocate.\n");
+-			am_meson_fbdev_free_fb_gem(info);
+-			fb_gem = NULL;
+-		}
+-
+-		if (!fb_gem) {
+-			if (am_meson_fbdev_alloc_fb_gem(info)) {
+-				DRM_ERROR("%s realloc fb fail\n", __func__);
+-				return -ENOMEM;
+-			}
+-			MESON_DRM_FBDEV("%s reallocate success.\n", __func__);
+-		}
+ 	}
+ 	DRM_INFO("fb_set_par: %s OUT\n", __func__);
+ 
+@@ -798,7 +921,11 @@
+ 	struct fb_info *fb_info = dev_get_drvdata(device);
+ 
+ 	if (strncmp("1", buf, 1) == 0) {
++		console_lock();
++		lock_fb_info(fb_info);
+ 		am_meson_fbdev_free_fb_gem(fb_info);
++		unlock_fb_info(fb_info);
++		console_unlock();
+ 		DRM_INFO("fb mem is freed !\n");
+ 	}
+ 	return count;
