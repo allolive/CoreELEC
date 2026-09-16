@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:27 -0400
 Subject: [PATCH] VideoDatabase: look up video settings for many files at once
 
 GetVideoSettings runs one query per file; the thumb loader calls it for
@@ -11,7 +13,7 @@ left out for per-file lookup. Shared code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index c415462..8b483c2 100644
+index c41546299a2394443eba28613e7ea1875609c3f6..8b483c279559b826454c9da89a1ffa3286de1d50 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -5428,6 +5428,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
@@ -68,7 +70,7 @@ index c415462..8b483c2 100644
  {
    int idFile = AddFile(item);
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index 1658417..c0ebd11 100644
+index 165841749b6725aa9607b194c081a393640371f7..c0ebd119edd7f70ff94a545224b57d14f899912e 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -19,6 +19,7 @@

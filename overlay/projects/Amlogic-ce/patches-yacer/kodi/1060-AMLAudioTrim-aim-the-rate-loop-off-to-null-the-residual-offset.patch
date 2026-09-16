@@ -1,4 +1,4 @@
-From 7047ef6d4bad0472409bf180ce004a436639a5c5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] AMLAudioTrim: remove leftover lip sync offset in passthrough
@@ -12,9 +12,10 @@ settle back.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 9f6793c913b6f1e320d2cfe79d7f8014afaa1e25..a47996555334bc9e37662a0242c5eb494edd1d22 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -9123,6 +9123,42 @@
+@@ -9123,6 +9123,42 @@ msgctxt "#14427"
  msgid "Player-Led"
  msgstr ""
  
@@ -58,6 +59,7 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 3e6bfe37de90ffa4372bb38450d42d1e4a6523a3..18ac0d708d646aed65011b95e5517723dd1e06ad 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -4056,6 +4056,25 @@
@@ -87,6 +89,7 @@ diff --git a/system/settings/settings.xml b/system/settings/settings.xml
      <category id="cache" label="439" help="36399">
        <visible>false</visible>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb827280318f46d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -10,10 +10,14 @@
@@ -104,7 +107,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
  
  namespace
  {
-@@ -25,9 +29,39 @@
+@@ -25,9 +29,39 @@ constexpr const char* TRIM_PATH =
  //! lands on the same divider half the time. Two always moves.
  constexpr int STEP = 2;
  
@@ -147,7 +150,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
  
  //! How long the error is averaged before a slope is taken from it. A minute of
  //! means differ by ~0.02ms while a minute of drift is ~1.2ms, so fifteen seconds
-@@ -149,8 +183,12 @@
+@@ -149,8 +183,12 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
      if (!path.Exists())
        return std::nullopt;
  
@@ -161,7 +164,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
        return std::nullopt;
  
      return got;
-@@ -161,6 +199,18 @@
+@@ -161,6 +199,18 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
    }
  }
  
@@ -180,7 +183,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
  bool CAMLAudioTrim::WriteLevel(int level)
  {
    try
-@@ -252,6 +302,58 @@
+@@ -252,6 +302,58 @@ void CAMLAudioTrim::Release()
    m_lastDither = 0.0;
  }
  
@@ -239,7 +242,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
  void CAMLAudioTrim::Settle(double reading)
  {
    // Kept as a small history and acted on by the middle value. A clock step too
-@@ -276,19 +378,46 @@
+@@ -276,19 +378,46 @@ void CAMLAudioTrim::Settle(double reading)
    // audio running fast, which wants a lower level. The sign is the measured one:
    // raising the level was seen to raise the rate on this hardware, whatever the
    // divider arithmetic suggests about which way round that ought to be.
@@ -290,7 +293,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
  
    // Held against its limit while the drift says nothing changed. The level has
    // been moved by its whole range and the measurement has not answered, so
-@@ -309,9 +438,12 @@
+@@ -309,9 +438,12 @@ void CAMLAudioTrim::Settle(double reading)
    // giving up would hand back the part it had. So the test is not "still
    // drifting" but "moved the level and nothing happened".
    const double moved = m_haveDriftAtZero ? std::abs(drift - m_driftAtZero) : 0.0;
@@ -305,7 +308,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
      ++m_clamped;
    else
      m_clamped = 0;
-@@ -324,19 +456,32 @@
+@@ -324,19 +456,32 @@ void CAMLAudioTrim::Settle(double reading)
                drift * 1e6, m_clamped);
      m_want = 0.0;
      m_dither = 0.0;
@@ -342,7 +345,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
    if (m_stopped)
      return;
  
-@@ -390,6 +535,48 @@
+@@ -390,6 +535,48 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
      return;
    }
  
@@ -391,7 +394,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
    if (error)
    {
      // A clock step moves the error without the audio rate having changed, and
-@@ -451,16 +638,17 @@
+@@ -451,16 +638,17 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
    // Sigma-delta: the fraction the level cannot express is carried and paid off
    // by the next slot that can, so the average over a few slots is the wanted
    // level even though every slot is a whole one.
@@ -415,7 +418,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
    // Against the register, not against what was last written to it. A remembered
    // value that the register no longer holds is a loop that has stopped driving
    // and cannot tell: it goes on integrating, reaches its limit, and leaves the
-@@ -473,6 +661,27 @@
+@@ -473,6 +661,27 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
      return;
  
    m_applied = *got;
@@ -444,9 +447,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/core
      WriteLevel(level);
  }
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189cd9fedd33 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
-@@ -43,12 +43,20 @@
+@@ -43,12 +43,20 @@ public:
      return trim;
    }
  
@@ -468,7 +472,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/
  
    //! \brief Give the clock back and forget everything. For a decoder closing:
    //! the level must not outlive the playback that asked for it.
-@@ -68,6 +76,17 @@
+@@ -68,6 +76,17 @@ private:
    CAMLAudioTrim& operator=(const CAMLAudioTrim&) = delete;
  
    bool Armed();
@@ -486,7 +490,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/
    void ForgetLocked();
    std::optional<int> ReadLevel() const;
    bool WriteLevel(int level);
-@@ -105,4 +124,12 @@
+@@ -105,4 +124,12 @@ private:
    mutable std::mutex m_mutex; //!< Release() comes from the player thread
  
    double m_lastDither{0.0};   //!< when the level was last put out
@@ -500,6 +504,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/
 +  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 46f801f70bbd7f63863c53bdcdbe46dbd577ad5e..e32929c3135009c60a8f60bd97a530f0969831ba 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -53,6 +53,11 @@
@@ -514,7 +519,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  std::mutex pollSyncMutex;
  
-@@ -2917,10 +2922,81 @@
+@@ -2910,10 +2915,81 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
    m_trimWasPassthrough = true;
  
@@ -598,9 +603,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 62005f0884465a1ea1ebffd51cbcc7a49929df69..aaaca14f7dce7866009c756040e210328b923827 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -110,6 +110,8 @@
+@@ -110,6 +110,8 @@ private:
    //! Whether the audio was a bitstream last frame, so the trim is given back
    //! once on the way out rather than on every frame after it.
    bool             m_trimWasPassthrough{false};
@@ -610,9 +616,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/Vide
    //! only what it actually took.
    bool             m_vfmMapOverridden{false};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad7300376ab35 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -46,6 +46,22 @@
+@@ -46,6 +46,22 @@ constexpr unsigned int AGREE_BEFORE_SETTLING = 8;
  // How often to report where the picture actually landed.
  constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
  
@@ -635,7 +642,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  // Opening a file drops frames on purpose to catch up with the clock, so the
  // check stands down until the picture has run clean for about this long. Given
  // in seconds and turned into refreshes, so it means the same at 24Hz and at 60.
-@@ -116,6 +132,8 @@
+@@ -116,6 +132,8 @@ void CAMLLatency::Rearm()
    m_audioReports = 0;
    m_audioSum = 0.0;
    m_leadSum = 0.0;
@@ -644,7 +651,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
    m_cadenceSeq = 0;
    m_ratioIsOne = false;
    m_classArmed = false;
-@@ -580,8 +598,59 @@
+@@ -613,8 +631,59 @@ void CAMLLatency::Update(
          m_audioMax = std::max(m_audioMax, audioSyncError);
        }
        m_audioSum += audioSyncError;
@@ -706,6 +713,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  
      if (absolute - m_since >= TIME_BETWEEN_REPORTS)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb228f623b00 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -9,6 +9,7 @@
@@ -716,7 +724,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
  
  class CDVDClock;
  
-@@ -91,6 +92,21 @@
+@@ -91,6 +92,21 @@ public:
                double audioSyncError,
                bool clockSync);
  
@@ -738,7 +746,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
    //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
    //! path it travels, so the measured answer still stands.
    void Restart();
-@@ -173,6 +189,11 @@
+@@ -177,6 +193,11 @@ private:
    double m_driftPrevAbsolute{0.0};  //!< the previous report, to catch a step
    double m_driftPrevClock{0.0};
    double m_lastAlign{0.0};   //!< the newest sample, not the window mean
@@ -751,9 +759,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
    double m_driftWalkUs{0.0};
    int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 691d3aebb5062c3d18221646ea9f2900a6dcf130..627e1e1e790bf81b428b3c759a3f74eab88dcdda 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -470,6 +470,7 @@
+@@ -470,6 +470,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
@@ -762,9 +771,10 @@ diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
    static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 7910cc4676bf484aca3f1694c63f3f8ccc6fbb51..752c900d4d7664d86a3ecf08e83b919ec2183084 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -420,6 +420,42 @@
+@@ -419,6 +419,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
                            videoDelay);
  }
  
@@ -808,9 +818,10 @@ diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
  {
    // Zero when the content outruns the display, which shows some frames and
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index dc16fd5f1ea469e3ddcdae8b3db26d73fa7a03b0..36de1f949b0f852a43ceefa46e9928f5f26db525 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
-@@ -91,6 +91,7 @@
+@@ -91,6 +91,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
  //! units, without the vblank term that only the frame loop can use. See
  //! CRenderManager::PrepareNextRender().
  double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
@@ -819,6 +830,7 @@ diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
  //! \brief How many times the display shows each frame of a stream at fps.
  //! Zero if either rate is unknown, or if the content outruns the display.
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 9522cc1eb3e321ca8b3554d0f261fa4d903bebcf..f427d3b96c19c6314bf8dac1c35614c1c26460d3 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -40,6 +40,7 @@
@@ -829,7 +841,7 @@ diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogi
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -493,6 +494,13 @@
+@@ -493,6 +494,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(sink_dv);
  

@@ -1,4 +1,4 @@
-From 78bb436a362bee0cac13733a620913fac5c9522c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
 Subject: [PATCH] AMLCodec: fix crashes on VC-1/WMV streams with odd headers
@@ -14,7 +14,7 @@ clamped size, and return empty when there is no header to write.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index b11f94c..10bcfec 100644
+index e399ad96db853bf4e99bb5f3e43c3bdeb5df1ade..c113ad8dfeaf60dd9438f4467e5fdef909d54fd0 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -1478,7 +1478,10 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)

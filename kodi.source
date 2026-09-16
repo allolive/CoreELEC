@@ -1,0 +1,53 @@
+branch be37d64212577179d9dd5244bf7032c9c53564d1
+kodi 1ef0e67a6a1b471308604ec56a75a363bfff51f6 b244790ad01e056569256c36e11b1b92e4c26466 -
+patch c0fc414c253821020c42696aaa75a693e120dd87 0010-ProcessInfo-publish-whether-the-video-codec-buffers.patch ProcessInfo: let a video decoder say it holds video of its own
+patch db2ce2cef6c71bb9c85194e8762721ac8ed68450 0011-FileCache-a-stalled-source-is-not-the-end-of-the-file.patch FileCache: don't stop playback when a network share stalls
+patch 21a7d5b7686e7edbdd7fda6368750b82cb1ac02d 0012-VideoPlayer-buffer-when-the-source-cache-runs-dry.patch VideoPlayer: show buffering when a network file runs dry
+patch 036f4dc25e46c073b188918b25a10ea0d7bb8a0a 0013-DVDVideoCodecAmlogic-publish-that-the-codec-buffers.patch DVDVideoCodecAmlogic: turn on the network buffering fix
+patch ed1d18cecd8a8b8f4d613d933fe1376c064db84d 0014-NFSFile-don-t-deadlock-the-main-thread-in-keep-alive.patch NFSFile: fix a rare freeze when an NFS file is closed
+patch 4d3badfc5534fb88027d3aa0d024aac5749f54d4 0015-NFSFile-don-t-send-NFSv3-keep-alives-from-the-main-thread.patch NFSFile: don't freeze Kodi when an NFS server stops answering
+patch c75c970f1bb4385468cfcf08f33107f390ccc3af 0016-GUIWindowVideo-don-t-wait-for-the-thumb-loader-when-a-window-closes.patch GUIWindowVideo: leave video views without waiting on artwork
+patch 4a76d1438b8f634f2ee4c042a04b65055219e994 0017-DVDDemuxFFmpeg-don-t-end-playback-when-a-network-share-is-slow.patch DVDDemuxFFmpeg: don't end playback when a network share is slow
+patch 6de6487e68fba4a820742cf8171bef64aded6e20 0020-VideoDatabase-read-a-stream-details-row-in-one-place.patch VideoDatabase: prepare for reading stream details in bulk
+patch fefef53be0831c57da08caaf6ab01be4981e8e7e 0021-VideoDatabase-look-up-the-art-of-many-items-at-once.patch VideoDatabase: look up artwork for many items at once
+patch 2ef6d63ccc9b17601d7f8ae95a10314712770b73 0022-VideoThumbLoader-read-the-art-of-a-list-500-items-at-a-time.patch VideoThumbLoader: load library artwork faster
+patch fda5fc9482b547521229e4a65f68ccf2dac2e32c 0023-VideoDatabase-look-up-the-stream-details-of-many-files-at-once.patch VideoDatabase: look up stream details for many files at once
+patch 58db0238f9a937981d53a14124f102bbd37bf6ff 0024-VideoThumbLoader-read-the-stream-details-of-a-list-500-items-at-a-time.patch VideoThumbLoader: load video, audio and subtitle info faster
+patch 7e6300b636edb9b3c10aef0422a8e098d01a4a77 0025-VideoDatabase-read-a-video-settings-row-in-one-place.patch VideoDatabase: prepare for reading video settings in bulk
+patch c57392bfd498e337601f86d59248410acd73f6cb 0026-VideoDatabase-look-up-the-video-settings-of-many-files-at-once.patch VideoDatabase: look up video settings for many files at once
+patch 4b475dc724ee6fb0be2a558f54e323ffec3d4f6a 0027-VideoThumbLoader-read-the-video-settings-of-a-list-100-items-at-a-time.patch VideoThumbLoader: check user-set 3D modes faster
+patch f9d3b3aee7190138acef4cccaf4c914bacb47fe9 0028-VideoThumbLoader-move-the-read-ahead-stream-details-onto-the-item.patch VideoThumbLoader: stop copying video details while loading lists
+patch 4745e410b1535196ece1f21484f69f7cf7c491e4 0029-VideoThumbLoader-ask-whether-an-item-needs-its-streams-before-CanExtract.patch VideoThumbLoader: skip a slow check when details are known
+patch 476b0008c03c72cf2dcca504783d6b6e09dae4d1 0030-StereoscopicsManager-compile-the-stereo-mode-patterns-once-per-thread.patch StereoscopicsManager: speed up 3D mode detection
+patch 7d940cdf594ba8441ebd89f645e2b5b795ccb32c 0031-StreamDetails-parse-each-subtitle-language-once-when-picking-the-best.patch StreamDetails: pick the preferred subtitle stream faster
+patch 653c35f920c0c1688844aa655f52087eaa5f81c6 1020-SysfsPath-value-initialise-the-extraction-target.patch SysfsPath: return a safe default when a value can't be read
+patch 2e81b62b712c804538fa29e9e47347b5ab41f0f1 1021-AMLUtils-ask-whether-the-amdv-wait-node-is-there.patch AMLUtils: don't wait on a Dolby Vision delay that isn't there
+patch f134c8ef257ca89ebbb0ba25b325054c88c66757 1022-AMLDisplay-take-the-default-on-the-sysfs-reads.patch AMLDisplay: don't crash when a display setting can't be read
+patch c046dd70a185f735c866d8fc60c249fd37472221 1023-AMLDisplay-serialise-DRM-object-access-against-the-d.patch AMLDisplay: fix a rare crash when the TV reconnects
+patch d095a19703afd26c0ce1f8807f8ce8d2b66e3a42 1024-WinSystemAmlogic-survive-a-failed-display-rebuild.patch WinSystemAmlogic: keep running if the display can't be set up
+patch 96e3e2e6bcdc91c0c0c67a2bb56746a448264245 1025-AMLCodec-bound-the-WMV-header-extradata-copies.patch AMLCodec: fix crashes on VC-1/WMV streams with odd headers
+patch 3dae215136ad6533cc5b01510f4761b96ac41fc5 1026-AMLCodec-don-t-busy-spin-write_header-on-EAGAIN.patch AMLCodec: don't hog a CPU core while the decoder is full
+patch e3f2ec4892916e22cbceca6a3ae23efee6a6e677 1027-AMLCodec-check-the-OpenDecoder-config-allocation.patch AMLCodec: don't crash if memory runs out opening the decoder
+patch e2f33785738a939125139a8262ab0654b6b1017a 1028-AMLCodec-guard-m_amlVideoFile-against-the-close-race.patch AMLCodec: fix a rare crash when playback stops
+patch ff17af7f7efb993d60673ea3e41b8e18bf217758 1029-AMLCodec-restore-the-vfm-map-that-was-actually-taken.patch AMLCodec: restore the system video path correctly after playback
+patch 0e4db0d53379c92e2494b41ec3dc7ce249a40b79 1030-AMLCodec-size-the-AV1-repack-buffer-for-the-worst-ca.patch AMLCodec: fix a buffer overrun on some AV1 streams
+patch 782384dc88a17e50317719604b277c2dc00f7562 1031-DVDVideoCodecAmlogic-propagate-OpenDecoder-failure.patch DVDVideoCodecAmlogic: don't keep feeding a decoder that failed to open
+patch ede61b1ccfcb79351aa6b39130921880c8bcf30d 1032-AMLCodec-a-drain-that-stalls-is-still-the-end-of-the.patch AMLCodec: don't hang when moving on to the next file
+patch 08220739eb258004fda5c5182349b1d45a180d63 1050-AMLUtils-share-the-frame-start-and-refresh-ratio-re.patch AMLUtils: add shared display timing helpers
+patch 4e78eef884a6a5cb1f536d9a575f8e52d753aff6 1051-WinSystemAmlogic-report-the-measured-display-latenc.patch WinSystemAmlogic: time pictures against the real display delay
+patch ace4b25c50e2a666f2590ac8fdee3391bf884dbc 1052-AMLGenlock-tick-the-clock-in-step-with-the-display.patch AMLGenlock: line up playback with the display refresh
+patch 2cb71527e2b682b0e3e80b6a366f7762b31e93fd 1053-AMLDisplay-publish-the-crtc-id-instead-of-the-pointer.patch AMLDisplay: don't keep display data a TV reconnect may replace
+patch aed482ac109778b769111d20b7b2e09b1e31cad4 1054-AMLLatency-report-where-the-audio-sits-against-the-clock.patch AMLLatency: add lip sync to the playback timing log
+patch 7aaa50bff6d1b8f9ba5000cd105e7a375ae548f2 1055-AMLLatency-settle-the-pipeline-figure-and-say-which.patch AMLLatency: keep picture timing the same between playbacks
+patch 98e70b2476e09d0e5b8dcdb555eb74488315d675 1056-AMLLatency-say-when-the-clock-was-stepped.patch AMLLatency: log when the playback clock jumps
+patch d2232ffe23d22b38b1ad70185f774605ec000afe 1057-VideoPlayerAudio-step-the-clock-by-the-error-that-was-measured.patch VideoPlayerAudio: fully correct TrueHD lip sync errors
+patch c0b196efa11df4c647df2af4db9505107da554f6 1058-VideoPlayerAudio-correct-once-after-every-resynchronisation.patch VideoPlayerAudio: remove leftover lip sync offset after a resync
+patch 937436af959877967c6ca5d7868375e0bc448c0c 1059-AMLAudioTrim-hold-the-audio-clock-in-step-with-the-master-clock.patch AMLAudioTrim: stop passthrough audio drifting from the picture
+patch 3a297ba31798299f0c7eb5c6a819638ab15ad242 1060-AMLAudioTrim-aim-the-rate-loop-off-to-null-the-residual-offset.patch AMLAudioTrim: remove leftover lip sync offset in passthrough
+patch ba04397c3171717869137cf42de933c9abc62c86 1061-ActiveAE-a-window-across-a-sink-re-open-is-not-a-measurement.patch ActiveAE: ignore sync readings taken across an audio reopen
+patch 050df56f00c154164d7d123cc279a290f06f37d8 1062-ActiveAE-credit-the-sync-error-in-the-domain-it-is-measured-in.patch ActiveAE: don't cut TrueHD sync corrections short
+patch eade06f0fd498a27af6057d367fad2d1721e942a 1063-ActiveAE-resynchronise-the-streams-across-a-display-reset.patch ActiveAE: resync audio after a TV mode change
+patch 8ddcbdad35bd7e0bcf7a3e40fecb0780e5cbd99c 1064-ActiveAE-judge-the-sync-band-in-real-time-too.patch ActiveAE: don't leave TrueHD sync error behind
+patch 7ba5ce831b0cc212d1ae36a245fdd77fc8c19387 1100-hdr10plus-to-dolby-vision-conversion.patch AML: play HDR10+ videos as Dolby Vision
+patch f3ac51c09664d61562fbb6f1035d88ee9143b98b 1101-DVDVideoCodecAmlogic-mark-the-pictures-the-player-a.patch DVDVideoCodecAmlogic: catch up faster after a seek
+patch db556f233c6202ccae6ddd194eb40029a03295e1 1103-AEStreamInfo-defeat-dialogue-normalisation-in-passthrough.patch AEStreamInfo: stop receivers turning dialogue down in passthrough

@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:27 -0400
 Subject: [PATCH] VideoThumbLoader: load library artwork faster
 
 FillLibraryArt queries each item's own art on its own; only parent art is
@@ -12,7 +14,7 @@ Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 004db46..cee70e5 100644
+index 004db464f4665d499d67110db8245d8ec41a51d9..cee70e5e502f7b39ff139b210f70161fdc1aeefd 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -38,11 +38,20 @@
@@ -165,7 +167,7 @@ index 004db46..cee70e5 100644
                                                               const int id)
  {
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index 1458762..fd6b537 100644
+index 145876291d382a1293c1f04f2780ed44cb0641c0..fd6b5379bfe39793b941b40e6afb90ce9cbc390e 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -13,6 +13,8 @@

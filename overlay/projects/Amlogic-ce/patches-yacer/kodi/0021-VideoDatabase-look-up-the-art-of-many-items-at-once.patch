@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] VideoDatabase: look up artwork for many items at once
 
 GetArtForItem runs one query per item and the thumb loader calls it for
@@ -11,7 +13,7 @@ chunk; ids are integers, never item text. Shared code, no AML counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 0f4fddd..d9a7ed3 100644
+index 0f4fddda43d5debae0a4c654079de98da63a71d9..d9a7ed3bf342432f23675c1ba056906f2cd67cc1 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -73,6 +73,7 @@
@@ -115,7 +117,7 @@ index 0f4fddd..d9a7ed3 100644
                                      ArtFallbackOptions fallback,
                                      KODI::ART::Artwork& art)
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index 49be8e8..ce8cab4 100644
+index 49be8e8ea2d61054282660b84f86878a57703708..ce8cab4e91cc136ef622eb5b5381cc4dcd62b8ff 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -864,6 +864,20 @@ public:

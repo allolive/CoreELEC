@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] DVDDemuxFFmpeg: don't end playback when a network share is slow
+Date: Wed, 16 Sep 2026 10:06:26 -0400
+Subject: [PATCH] DVDDemuxFFmpeg: don't end playback when a network share is
+ slow
 
 Files the player reads from a share or http now wait out a stalled read
 until Stop instead of passing EAGAIN on, which Matroska takes mid-element
@@ -9,9 +12,9 @@ is logged once. Shared code: the stall reaches ffmpeg through the generic
 file input and avio callback; only the factory knows playback's reads.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
+
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index e232671..0bfc9d3 100644
+index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e025be4673 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -14,6 +14,7 @@
@@ -84,7 +87,7 @@ index e232671..0bfc9d3 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
-index 631ca5f..2c26a0a 100644
+index 631ca5fc9615253e7a74cd1751b8e8f6947f6bd9..2c26a0a6bb0b619e548528d8621bf5c5f4e24dac 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
 @@ -117,6 +117,7 @@ public:
@@ -104,7 +107,7 @@ index 631ca5f..2c26a0a 100644
    // Due to limitations of ffmpeg, we only can detect a program change
    // with a packet. This struct saves the packet for the next read and
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
-index 368ae4a..c006ac6 100644
+index 368ae4aa2bd24f0af17367add304a3306036b6fe..c006ac68e9f84494229bba23968c433317ea212b 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
 @@ -179,8 +179,11 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
@@ -122,7 +125,7 @@ index 368ae4a..c006ac6 100644
  
  std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVideoPlayer* pPlayer, const CFileItem &fileitem, const std::vector<std::string>& filenames)
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index 67d6ecf..cb389d9 100644
+index 67d6ecf956835e930fd267a478a08d0560862830..cb389d9449599c99fcfaf451d681a54f84cb8818 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 @@ -97,6 +97,15 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
@@ -142,7 +145,7 @@ index 67d6ecf..cb389d9 100644
      return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
  
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
-index fc6d3ab..237ce79 100644
+index fc6d3abf3bab00911017cb725926516958e43730..237ce79857a2f8ba910313f5851e4140ee559d72 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
 @@ -10,6 +10,9 @@
@@ -173,7 +176,7 @@ index fc6d3ab..237ce79 100644
 +  std::atomic<uint32_t> m_stallCount{0};
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
-index b44ec5a..3df9953 100644
+index b44ec5a5aa03c271d52f747dc4dee132905bc288..3df9953c08e5ee976afd93d0ddee35a0833fb347 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
 @@ -28,6 +28,7 @@ CInputStreamMultiSource::~CInputStreamMultiSource()
@@ -194,7 +197,7 @@ index b44ec5a..3df9953 100644
    }
    return !m_InputStreams.empty();
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
-index 5242f6d..3496b37 100644
+index 5242f6d076c114584d8ee1f77b29cbc5eb910f7a..3496b37d460b5534c1d4931aa3013f68777eca81 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
 @@ -11,6 +11,7 @@
@@ -212,7 +215,7 @@ index 5242f6d..3496b37 100644
 +  std::atomic<bool> m_aborted{false};
  };
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 3bc3540..329a391 100644
+index 3bc3540e61c011125aef7b8f223609d810732644..329a391e96be2cb04ab9adfd79d0d90bc5bdb704 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -982,6 +982,10 @@ bool CVideoPlayer::OpenInputStream()
@@ -227,7 +230,7 @@ index 3bc3540..329a391 100644
  }
  
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index 53913e5..1d2e1dc 100644
+index 53913e53099f53dcbab16eac5b6022d9080e547f..1d2e1dc95bc4d5ad950a1e5c2638a99235977288 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -487,6 +487,11 @@ retry:
@@ -265,7 +268,7 @@ index 53913e5..1d2e1dc 100644
    int64_t iTarget = iFilePosition;
    if (iWhence == SEEK_END)
 diff --git a/xbmc/filesystem/FileCache.h b/xbmc/filesystem/FileCache.h
-index 214910e..2876f5a 100644
+index 214910e3784caf01ee5af9a91c44fe0115626319..2876f5ad9f5a63f8d3f041a72345b77cb6630790 100644
 --- a/xbmc/filesystem/FileCache.h
 +++ b/xbmc/filesystem/FileCache.h
 @@ -75,6 +75,7 @@ namespace XFILE

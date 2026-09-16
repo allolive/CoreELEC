@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:27 -0400
 Subject: [PATCH] VideoThumbLoader: check user-set 3D modes faster
 
 The second pass queries a user-set stereo mode per item. At its first item
@@ -11,7 +13,7 @@ read-ahead is a snapshot. Shared code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 2b4c945..18713fa 100644
+index 2b4c945f2ac18512368189843b9602d2ce2b0241..18713fad992e4280521e493d7733dfcbbb76ceb6 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -50,6 +50,16 @@ using namespace XFILE;
@@ -129,7 +131,7 @@ index 2b4c945..18713fa 100644
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index cb89b86..bd24502 100644
+index cb89b86b465a722e2ae75dd09576b84fbdb0484b..bd2450293de2232066667dddcc2ffa9493a36d21 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -10,10 +10,12 @@

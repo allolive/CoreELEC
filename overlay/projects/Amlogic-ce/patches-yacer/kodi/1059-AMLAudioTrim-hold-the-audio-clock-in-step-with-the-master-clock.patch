@@ -1,7 +1,8 @@
-From 0457150d64faae3c9c5a8823c863c7deece8eab8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLAudioTrim: stop passthrough audio drifting from the picture
+Subject: [PATCH] AMLAudioTrim: stop passthrough audio drifting from the
+ picture
 
 Passthrough audio is played at whatever rate mpll0's divider happens to give. On
 g12b that is about 20ppm slow - 72ms of lip sync an hour - while the picture holds
@@ -12,8 +13,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 new file mode 100644
+index 0000000000000000000000000000000000000000..792d873cfca5d8a042b807209c5ef39bde813856
 --- /dev/null
-xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -0,0 +1,478 @@
 +/*
@@ -496,8 +497,8 @@ xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 new file mode 100644
+index 0000000000000000000000000000000000000000..a0ec9fea15644f2568e37d7f47e684c8d5e0766f
 --- /dev/null
-xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 @@ -0,0 +1,108 @@
 +/*
@@ -609,6 +610,7 @@ xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 +  double m_lastDither{0.0};   //!< when the level was last put out
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46dbd577ad5e 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -9,6 +9,7 @@
@@ -619,7 +621,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  #include "AMLLatency.h"
  #include "DynamicDll.h"
  
-@@ -2533,6 +2534,7 @@
+@@ -2533,6 +2534,7 @@ void CAMLCodec::CloseDecoder()
    m_dll->codec_close(&am_private->vcodec);
    dumpfile_close(am_private);
    m_opened = false;
@@ -627,7 +629,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
    // After m_opened, so a frame still queued in the renderer cannot tick this
    // back to life: the measured path belongs to this decoder, and whatever plays
-@@ -2627,6 +2629,11 @@
+@@ -2620,6 +2622,11 @@ void CAMLCodec::Reset()
    CAMLLatency::GetInstance().Restart();
    m_genlock.Restart();
  
@@ -639,7 +641,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2877,12 +2884,43 @@
+@@ -2870,12 +2877,43 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
        clock->GetSpeedAdjust() != 0.0)
    {
      CAMLLatency::GetInstance().NoteClockDisturbed();
@@ -685,7 +687,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  }
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
-@@ -3055,6 +3093,7 @@
+@@ -3056,6 +3094,7 @@ void CAMLCodec::SetSpeed(int speed)
    // skipped the pause.
    CAMLLatency::GetInstance().NoteClockDisturbed();
    m_genlock.Restart();
@@ -694,9 +696,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 2f46fd09b3bfe15a0d577fe7ee9b87c15de787bc..62005f0884465a1ea1ebffd51cbcc7a49929df69 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -107,6 +107,9 @@
+@@ -107,6 +107,9 @@ private:
  
    DllLibAmCodec   *m_dll;
    bool             m_opened;
@@ -707,6 +710,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/Vide
    //! only what it actually took.
    bool             m_vfmMapOverridden{false};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 7a064643c9db7fbd532d188f72d2051ef6f24084..2b086c2a77d4a53ceec55fa77da222ac85aa2b25 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -7,6 +7,8 @@
@@ -718,7 +722,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  #include "cores/VideoPlayer/DVDClock.h"
  
  #include <algorithm>
-@@ -95,6 +97,10 @@
+@@ -95,6 +97,10 @@ void CAMLLatency::Forget()
    // further poll is guaranteed. The rest is the polling thread's.
    CAMLLatencyStore::GetInstance().Forget();
    m_forget.store(true, std::memory_order_relaxed);
@@ -730,9 +734,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  
  void CAMLLatency::Rearm()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+index 3f67ff9b669516bd92c313595e82727a66731d85..aa21f60c80187e03774d8e5aeb97c7ab02e99830 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-@@ -13,11 +13,13 @@
+@@ -13,11 +13,13 @@ if(TARGET ffmpeg::libpostproc)
  endif()
  
  if(TARGET ${APP_NAME_LC}::AML)
@@ -749,9 +754,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/
                        AMLLatency.h
                        DVDVideoCodecAmlogic.h)
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index 6880c1723a7094e970bf0ec3ef1204e6878a6f49..259a4c2d91e2433afde2a056feedfe4aeab785e3 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-@@ -439,6 +439,13 @@
+@@ -438,6 +438,13 @@ void CProcessInfo::ResetAudioCodecInfo()
    m_audioQueueDataLevel = 0;
    m_audioSyncError = DVD_NOPTS_VALUE;
  
@@ -766,9 +772,10 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPl
    {
      m_dataCache->SetAudioDecoderName(m_audioDecoderName);
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index 81615cca276327e449a5de2e58c7262787a43142..7d87b7ddba6bcc88724e0a33e67e5d1d7140f56b 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-@@ -99,6 +99,13 @@
+@@ -97,6 +97,13 @@ public:
    void SetAudioSyncError(double error) { m_audioSyncError.store(error); }
    double GetAudioSyncError() const { return m_audioSyncError.load(); }
  
@@ -782,7 +789,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlay
    virtual bool AllowDTSHDDecode();
    virtual bool WantsRawPassthrough() { return false; }
  
-@@ -192,6 +199,7 @@
+@@ -190,6 +197,7 @@ protected:
    int m_audioQueueLevel = 0;
    int m_audioQueueDataLevel = 0;
    std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
@@ -791,9 +798,10 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlay
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index e759572ce4b1d3df15506deddade8fc6d57cfce9..c1eb0323254b6f490dc13edbccae43c25b5e9f65 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -622,6 +622,7 @@
+@@ -622,6 +622,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
    // A saturated reading is withheld as well as refused: it is the clamp, not a
    // measurement, and a reader that acted on it would be acting on the same
    // figure the correction above declines to use.

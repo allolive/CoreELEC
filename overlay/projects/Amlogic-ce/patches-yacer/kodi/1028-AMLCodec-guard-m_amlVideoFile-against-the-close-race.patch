@@ -1,4 +1,4 @@
-From 17bd08486d0718842bc853cb965b28b1e7b84dc9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
 Subject: [PATCH] AMLCodec: fix a rare crash when playback stops
@@ -15,7 +15,7 @@ reached from the video thread and is left alone.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e58c4a3..f523b20 100644
+index 61643e51ec629938d1dbe977492d4ef969be9f9f..bca6c02e180a708433ce8c8c4a998c2f265aab01 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2399,7 +2399,10 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
@@ -30,7 +30,7 @@ index e58c4a3..f523b20 100644
    m_defaultVfmMap = GetVfmMap("default");
  
    return true;
-@@ -2553,12 +2556,17 @@ void CAMLCodec::CloseDecoder()
+@@ -2546,12 +2549,17 @@ void CAMLCodec::CloseDecoder()
  
  void CAMLCodec::CloseAmlVideo()
  {
@@ -51,7 +51,7 @@ index e58c4a3..f523b20 100644
  }
  
  void CAMLCodec::Reset()
-@@ -2805,7 +2813,12 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+@@ -2798,7 +2806,12 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
    vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
    vbuf.index = index;
  
@@ -65,7 +65,7 @@ index e58c4a3..f523b20 100644
      return 0;
  
    if (drop)
-@@ -2813,7 +2826,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+@@ -2806,7 +2819,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  
    CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
  
@@ -75,7 +75,7 @@ index e58c4a3..f523b20 100644
    return ret;
  }
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index c0b6d70..60c3fe3 100644
+index c0b6d707a8fdef3b9f8243b38f514e411d154a57..60c3fe369c2836f4623748dea8429de49b34c89c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -17,6 +17,7 @@

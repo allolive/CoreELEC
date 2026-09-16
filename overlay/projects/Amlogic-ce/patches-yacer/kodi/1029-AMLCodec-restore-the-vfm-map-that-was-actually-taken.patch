@@ -1,7 +1,8 @@
-From 8f3aa746eefa9457f70ac9cb4311f634c8c70165 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLCodec: restore the system video path correctly after playback
+Subject: [PATCH] AMLCodec: restore the system video path correctly after
+ playback
 
 Single-mode decode replaces the global "default" vfm chain and restores it
 on close, but GetVfmMap never matched (it ignored the "[NN]" slot index),
@@ -13,7 +14,7 @@ restore only what was taken: nothing if unread or empty.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index f523b20..6c6a04e 100644
+index bca6c02e180a708433ce8c8c4a998c2f265aab01..dc0adc90bb780e498e7c9c738eca9ce62d6502c0 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -43,6 +43,7 @@
@@ -72,7 +73,7 @@ index f523b20..6c6a04e 100644
  
    return sectionMap;
  }
-@@ -2565,8 +2586,26 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2558,8 +2579,26 @@ void CAMLCodec::CloseAmlVideo()
    // the same point as before. A frame still in flight holds its own reference.
    closing.reset();
  
@@ -102,7 +103,7 @@ index f523b20..6c6a04e 100644
  
  void CAMLCodec::Reset()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 60c3fe3..379c1fa 100644
+index 60c3fe369c2836f4623748dea8429de49b34c89c..379c1fa45f76206846fb49e235f8e9b97e96d55e 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -104,6 +104,9 @@ private:

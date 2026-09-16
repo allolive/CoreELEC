@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] VideoPlayer: show buffering when a network file runs dry
 
 The buffering handler waits for both demux queues to drain to half, and
@@ -11,7 +13,7 @@ Shared player code: only CVideoPlayer can pause the clock and read cache.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index ce7efb7..3bc3540 100644
+index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d810732644 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1819,6 +1819,15 @@ void CVideoPlayer::Process()
@@ -230,7 +232,7 @@ index ce7efb7..3bc3540 100644
    if (m_pInputStream && m_pInputStream->GetCacheStatus(&status))
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 27f65ef..a8713a9 100644
+index 27f65efde7438678fd0d6f0a690875e441acc240..a8713a9527b699547e5f3e3567a856fa47fda907 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -263,6 +263,8 @@ struct CacheInfo

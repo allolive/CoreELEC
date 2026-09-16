@@ -1,4 +1,4 @@
-From 27316d14ce382302fd641b91415c8d35bd6cedb4 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 19:21:53 -0400
 Subject: [PATCH] VideoThumbLoader: skip a slow check when details are known
@@ -10,12 +10,9 @@ that first; all three tests only read the item and the settings, so the
 outcome is unchanged.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
- xbmc/video/VideoThumbLoader.cpp | 4 ++--
- 1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 4329650..2b16710 100644
+index 4329650e669cf02eb97ae9947560ddb0eea72e17..2b16710236fa1ac10c179dd2a66836798052f551 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -370,8 +370,8 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
@@ -29,6 +26,3 @@ index 4329650..2b16710 100644
      {
        // No tag or no details set, so extract them
        CLog::LogF(LOGDEBUG, "trying to extract filestream details from video file {}",
--- 
-2.53.0
-

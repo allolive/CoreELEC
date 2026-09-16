@@ -1,7 +1,8 @@
-From 3ef2379b6947f9d81a01c0f8c7b9bb717f6e0a75 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] VideoPlayerAudio: remove leftover lip sync offset after a resync
+Subject: [PATCH] VideoPlayerAudio: remove leftover lip sync offset after a
+ resync
 
 The engine calls a stream synchronised once its averaged error is inside 30ms, and
 in passthrough the only thing it can move the audio by is a whole IEC frame - 20ms
@@ -12,7 +13,7 @@ stays for the title. Correct once more after each resynchronisation.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index 8fe1387..aec6c42 100644
+index 8fe1387e215e380283145f82c9c20ff1922269c3..aec6c422a7805a5892211fcfe5f58d4e07e205d8 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 @@ -99,6 +99,8 @@ void CAudioSinkAE::Destroy(bool finish)
@@ -60,7 +61,7 @@ index 8fe1387..aec6c42 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-index 0d1c2c8..626d6ed 100644
+index 0d1c2c8263a91eae07227b06589e21906c273046..df831c4be6140813760edca33370c3573ef6c88e 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
 @@ -56,6 +56,27 @@ public:
@@ -101,7 +102,7 @@ index 0d1c2c8..626d6ed 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index a89f22e..f7baeca 100644
+index 367162b9f95c02be040a5a303a2be58a3917571f..e759572ce4b1d3df15506deddade8fc6d57cfce9 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,6 +31,63 @@
@@ -272,7 +273,7 @@ index a89f22e..f7baeca 100644
          m_disconAdjustCounter++;
          CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio:: sync error correctiom:{:.3f}", correction / DVD_TIME_BASE);
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index d424ebc..e5b2b2d 100644
+index d424ebcb5f8575470cbc18ff622d2259d0d3e4d7..e5b2b2df372c8c5787d20c0e7a06665c3ab558b1 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 @@ -106,6 +106,12 @@ protected:

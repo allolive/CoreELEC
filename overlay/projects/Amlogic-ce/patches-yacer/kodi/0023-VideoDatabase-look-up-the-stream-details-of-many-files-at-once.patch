@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:27 -0400
 Subject: [PATCH] VideoDatabase: look up stream details for many files at once
 
 GetStreamDetails runs one query per file, once per library row in the
@@ -12,7 +14,7 @@ code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index d9a7ed3..869aeda 100644
+index d9a7ed3bf342432f23675c1ba056906f2cd67cc1..869aeda41eb313c9893a712bbe54bd947c48f332 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -4788,6 +4788,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
@@ -73,7 +75,7 @@ index d9a7ed3..869aeda 100644
  {
    if (tag.m_iFileId < 0)
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index ce8cab4..1658417 100644
+index ce8cab4e91cc136ef622eb5b5381cc4dcd62b8ff..165841749b6725aa9607b194c081a393640371f7 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -524,6 +524,19 @@ public:

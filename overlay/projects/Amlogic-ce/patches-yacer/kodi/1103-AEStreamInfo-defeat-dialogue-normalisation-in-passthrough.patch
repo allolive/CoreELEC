@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] AEStreamInfo: stop receivers turning dialogue down in passthrough
+Date: Wed, 16 Sep 2026 10:06:30 -0400
+Subject: [PATCH] AEStreamInfo: stop receivers turning dialogue down in
+ passthrough
 
 Rewrite dialnorm to 0 dB attenuation in passthrough AC-3, E-AC-3, TrueHD
 Atmos (16ch presentation) and DTS / DTS-HD / DTS:X frames, fixing the CRCs.
@@ -14,10 +17,81 @@ This is shared audio-engine code with no Amlogic hook, so it cannot live in Amlo
 Co-authored-by: jamal2362 <15986930+jamal2362@users.noreply.github.com>
 Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index a88552819b41cf9e9dbd7840a474e9ec8cd27832..79b0b3620577c71fe86778a3a5b47f0d4ac9d8e9 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25706,3 +25706,34 @@ msgstr ""
+ msgctxt "#40804"
+ msgid "{0:.1f} dB"
+ msgstr ""
++
++#. Setting label for dialogue normalisation defeat
++#: system/settings/settings.xml
++msgctxt "#55001"
++msgid "Dialogue normalisation defeat (0 dB)"
++msgstr ""
++
++#. Setting help for dialogue normalisation defeat
++#: system/settings/settings.xml
++msgctxt "#55002"
++msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
++msgstr ""
++
++#. Dialogue normalisation defeat format: AC-3 and E-AC-3
++#: system/settings/settings.xml
++msgctxt "#55003"
++msgid "AC-3 / E-AC-3"
++msgstr ""
++
++#. Dialogue normalisation defeat format: TrueHD Atmos
++#: system/settings/settings.xml
++msgctxt "#55004"
++msgid "TrueHD Atmos"
++msgstr ""
++
++#. Dialogue normalisation defeat format: DTS family
++#: system/settings/settings.xml
++msgctxt "#55011"
++msgid "DTS / DTS-HD / DTS:X"
++msgstr ""
++
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 990e05b81ae524f606f03476b8d4c7ce85dee82d..6ec9860e68abbe19a943ce14c7f0dd3744eada71 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -4113,6 +4113,25 @@
+           </dependencies>
+           <control type="list" format="string" />
+         </setting>
++        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="55001" help="55002">
++          <level>2</level>
++          <constraints>
++            <options>
++              <option label="55003">0</option> <!-- AC-3 / E-AC-3 -->
++              <option label="55004">1</option> <!-- TrueHD Atmos -->
++              <option label="55011">2</option> <!-- DTS -->
++            </options>
++            <delimiter>,</delimiter>
++            <minimumitems>0</minimumitems>
++          </constraints>
++          <default>0,1,2</default>
++          <dependencies>
++            <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
++          </dependencies>
++          <control type="list" format="string">
++            <multiselect>true</multiselect>
++          </control>
++        </setting>
+       </group>
+     </category>
+     <category id="cache" label="439" help="36399">
+diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
+index d30cf8e0f0f9dacefb3de381b2392caa3a9fc03c..876c2b275113b4a2d28a9bcb4efdc7fa2a1a519d 100644
 --- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
-@@ -218,6 +218,18 @@
+@@ -218,6 +218,18 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
      if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE)
        size = m_coreSize;
  
@@ -36,7 +110,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      // make sure the buffer is allocated and big enough
      if (!*buffer || !bufferSize || *bufferSize < size)
      {
-@@ -292,6 +304,454 @@
+@@ -292,6 +304,454 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
    return possible ? possible : skipped;
  }
  
@@ -491,7 +565,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  bool CAEStreamParser::TrySyncAC3(uint8_t* data,
                                   unsigned int size,
                                   bool resyncing,
-@@ -789,6 +1249,19 @@
+@@ -789,6 +1249,19 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
        if (((data[4 + major_sync_size - 1] << 8) | data[4 + major_sync_size - 2]) != crc)
          continue;
  
@@ -511,9 +585,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        // get the sample rate and substreams, we have a valid master audio unit
        m_info.m_sampleRate = (rate & 0x8 ? 44100 : 48000) << (rate & 0x7);
        m_substreams = (data[20] & 0xF0) >> 4;
+diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
+index acfa77d98719478ce008ae8376f498e901102c1f..562e5b61c9ff95cfc8e2b15eb4d96a9b94b1b426 100644
 --- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
 +++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
-@@ -58,6 +58,9 @@
+@@ -58,6 +58,9 @@ public:
    int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
  
    void SetCoreOnly(bool value) { m_coreOnly = value; }
@@ -523,7 +599,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    unsigned int IsValid() const { return m_hasSync; }
    unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
    unsigned int GetChannels() const { return m_info.m_channels; }
-@@ -80,6 +83,9 @@
+@@ -80,6 +83,9 @@ private:
  
    CAEStreamInfo m_info;
    bool m_coreOnly = false;
@@ -533,7 +609,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    unsigned int m_needBytes = 0;
    ParseFunc m_syncFunc;
    bool m_hasSync = false;
-@@ -91,6 +97,8 @@
+@@ -91,6 +97,8 @@ private:
    AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
  
    void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
@@ -542,6 +618,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    unsigned int DetectType(uint8_t *data, unsigned int size);
    bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
    unsigned int SyncAC3(uint8_t *data, unsigned int size);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+index 7636e3a80c6f2c352f30f570f53b4eb319cfd815..f4ab89854ca5d1bb4733ac31f624feb3a61791c2 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 @@ -9,7 +9,11 @@
@@ -556,7 +634,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "utils/log.h"
  
  #include <algorithm>
-@@ -48,6 +52,26 @@
+@@ -48,6 +52,26 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
  {
    m_hints = hints;
    m_parser.SetCoreOnly(false);
@@ -583,9 +661,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    switch (m_format.m_streamInfo.m_type)
    {
      case CAEStreamInfo::STREAM_TYPE_AC3:
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index c5313619c6d3542e1e243005f010e21d950e53e9..19c2386e1f72f2c60fb5314e321991def0b12de6 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -424,6 +424,7 @@
+@@ -424,6 +424,7 @@ public:
    static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";
@@ -593,68 +673,3 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    static constexpr auto SETTING_AUDIOOUTPUT_VOLUMESTEPS = "audiooutput.volumesteps";
    static constexpr auto SETTING_AUDIOOUTPUT_LOWLATENCY = "audiooutput.lowlatency";
    static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";
---- a/system/settings/settings.xml
-+++ b/system/settings/settings.xml
-@@ -4113,6 +4113,25 @@
-           </dependencies>
-           <control type="list" format="string" />
-         </setting>
-+        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="55001" help="55002">
-+          <level>2</level>
-+          <constraints>
-+            <options>
-+              <option label="55003">0</option> <!-- AC-3 / E-AC-3 -->
-+              <option label="55004">1</option> <!-- TrueHD Atmos -->
-+              <option label="55011">2</option> <!-- DTS -->
-+            </options>
-+            <delimiter>,</delimiter>
-+            <minimumitems>0</minimumitems>
-+          </constraints>
-+          <default>0,1,2</default>
-+          <dependencies>
-+            <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
-+          </dependencies>
-+          <control type="list" format="string">
-+            <multiselect>true</multiselect>
-+          </control>
-+        </setting>
-       </group>
-     </category>
-     <category id="cache" label="439" help="36399">
---- a/addons/resource.language.en_gb/resources/strings.po
-+++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25700,3 +25700,34 @@
- msgctxt "#40804"
- msgid "{0:.1f} dB"
- msgstr ""
-+
-+#. Setting label for dialogue normalisation defeat
-+#: system/settings/settings.xml
-+msgctxt "#55001"
-+msgid "Dialogue normalisation defeat (0 dB)"
-+msgstr ""
-+
-+#. Setting help for dialogue normalisation defeat
-+#: system/settings/settings.xml
-+msgctxt "#55002"
-+msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
-+msgstr ""
-+
-+#. Dialogue normalisation defeat format: AC-3 and E-AC-3
-+#: system/settings/settings.xml
-+msgctxt "#55003"
-+msgid "AC-3 / E-AC-3"
-+msgstr ""
-+
-+#. Dialogue normalisation defeat format: TrueHD Atmos
-+#: system/settings/settings.xml
-+msgctxt "#55004"
-+msgid "TrueHD Atmos"
-+msgstr ""
-+
-+#. Dialogue normalisation defeat format: DTS family
-+#: system/settings/settings.xml
-+msgctxt "#55011"
-+msgid "DTS / DTS-HD / DTS:X"
-+msgstr ""
-+

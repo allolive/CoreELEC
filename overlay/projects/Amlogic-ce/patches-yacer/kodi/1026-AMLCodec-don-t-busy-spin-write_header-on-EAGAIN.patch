@@ -1,4 +1,4 @@
-From 05f032b252c1a9c6a57b12e4d524d5a635f47e8b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
 Subject: [PATCH] AMLCodec: don't hog a CPU core while the decoder is full
@@ -14,7 +14,7 @@ attempts and a cap instead.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 10bcfec..3790225 100644
+index c113ad8dfeaf60dd9438f4467e5fdef909d54fd0..f0004e3318561a83c2256ec60d22beda35fd7565 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -651,6 +651,7 @@ static int write_header(am_private_t *para, am_packet_t *pkt)

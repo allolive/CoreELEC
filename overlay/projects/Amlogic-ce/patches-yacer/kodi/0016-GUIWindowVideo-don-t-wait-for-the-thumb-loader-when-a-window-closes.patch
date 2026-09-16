@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] GUIWindowVideo: leave video views without waiting on artwork
 
 Leaving a video window called StopThread() on the thumb loader, joining it
@@ -11,7 +13,7 @@ itself, so it changes too. Shared GUI code with no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/windows/GUIWindowVideoBase.cpp b/xbmc/video/windows/GUIWindowVideoBase.cpp
-index 2584ba7..fbc7654 100644
+index 2584ba7256955a6c858e29eb5820f82f490fed40..fbc76542044899e9027ffd54e92781f9f48470e5 100644
 --- a/xbmc/video/windows/GUIWindowVideoBase.cpp
 +++ b/xbmc/video/windows/GUIWindowVideoBase.cpp
 @@ -131,8 +131,16 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
@@ -33,7 +35,7 @@ index 2584ba7..fbc7654 100644
      break;
  
 diff --git a/xbmc/video/windows/GUIWindowVideoNav.cpp b/xbmc/video/windows/GUIWindowVideoNav.cpp
-index c240fee..3985bfb 100644
+index c240fee5b18188d559edec5bc9a7f4cf86f0dae7..3985bfb9d6e98eaf644e0d801b7aa22454dc01af 100644
 --- a/xbmc/video/windows/GUIWindowVideoNav.cpp
 +++ b/xbmc/video/windows/GUIWindowVideoNav.cpp
 @@ -14,6 +14,7 @@

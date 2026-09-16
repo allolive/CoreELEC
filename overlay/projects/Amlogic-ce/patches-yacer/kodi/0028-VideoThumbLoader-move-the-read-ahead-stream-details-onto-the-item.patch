@@ -1,7 +1,8 @@
-From ca98c2f06a142a75732e3c01c3298d49d71d7693 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 20:01:48 -0400
-Subject: [PATCH] VideoThumbLoader: stop copying video details while loading lists
+Subject: [PATCH] VideoThumbLoader: stop copying video details while loading
+ lists
 
 The first pass copied read-ahead stream details onto the item, and the
 CStreamDetails copy reallocates every stream and reruns
@@ -12,15 +13,9 @@ subtitle language is now the one at read time. Shared CStreamDetails had
 to change: the copy is inside it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
- xbmc/utils/StreamDetails.cpp    | 27 +++++++++++++++++++++++++++
- xbmc/utils/StreamDetails.h      |  2 ++
- xbmc/video/VideoDatabase.cpp    |  2 +-
- xbmc/video/VideoThumbLoader.cpp |  2 +-
- 4 files changed, 31 insertions(+), 2 deletions(-)
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index e61220a..1c7d25c 100644
+index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76cb6a6231 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -19,6 +19,7 @@
@@ -65,7 +60,7 @@ index e61220a..1c7d25c 100644
  {
    item->m_pParent = this;
 diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
-index 27434f2..69dc2c6 100644
+index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad752fb93b5 100644
 --- a/xbmc/utils/StreamDetails.h
 +++ b/xbmc/utils/StreamDetails.h
 @@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
@@ -79,7 +74,7 @@ index 27434f2..69dc2c6 100644
    bool operator !=(const CStreamDetails &that) const;
  
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 8b483c2..46ba19f 100644
+index 8b483c279559b826454c9da89a1ffa3286de1d50..46ba19fc57cc3f0d96c645079b19609940ac2be6 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -4826,7 +4826,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
@@ -92,7 +87,7 @@ index 8b483c2..46ba19f 100644
        const auto it =
            node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 18713fa..4329650 100644
+index 18713fad992e4280521e493d7733dfcbbb76ceb6..4329650e669cf02eb97ae9947560ddb0eea72e17 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -219,7 +219,7 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
@@ -104,6 +99,3 @@ index 18713fa..4329650 100644
          if (tag.m_streamDetails.GetVideoDuration() > 0)
            tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
          pItem->SetInvalid();
--- 
-2.53.0
-

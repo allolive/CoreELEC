@@ -1,4 +1,4 @@
-From b48f2ac71e0d6935418cbd7fa2016e5d9c3b78af Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
 Subject: [PATCH] ActiveAE: resync audio after a TV mode change
@@ -11,10 +11,10 @@ hundred milliseconds or more. Resynchronise them.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index a1b7c32..5d6e7f8 100644
+index 3dfd7a40f3c4bb3157c72ed9845cb047d18e03de..31e9c9fb986a7613bc940a533936481b4f21c38e 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -928,6 +928,19 @@
+@@ -928,6 +928,19 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
              ValidateOutputDevices(false);
            }
            Configure();
@@ -34,5 +34,3 @@ index a1b7c32..5d6e7f8 100644
            if (!displayReset)
              msg->Reply(CActiveAEControlProtocol::ACC);
            if (!m_extError)
--- 
-2.43.0

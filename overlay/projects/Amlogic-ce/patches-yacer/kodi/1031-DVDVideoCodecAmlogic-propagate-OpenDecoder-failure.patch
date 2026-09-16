@@ -1,7 +1,8 @@
-From 4e78cb463717cb108e3cde42b725173a9703e06a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
-Subject: [PATCH] DVDVideoCodecAmlogic: don't keep feeding a decoder that failed to open
+Subject: [PATCH] DVDVideoCodecAmlogic: don't keep feeding a decoder that
+ failed to open
 
 A failed CAMLCodec::OpenDecoder was only logged, and the player kept feeding a
 decoder that never started, leaving playback wedged. Close and drop the codec on
@@ -11,10 +12,10 @@ cannot retry-spin) and guard Reset() against the half-open state.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 1a79460..1fe2753 100644
+index b5437241cf825e786fc6140bf6c64a8a2ac35fea..c6c644108db56179e0ba445c826db34068bbc668 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -646,7 +646,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -648,7 +648,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
        CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
        if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL))
@@ -26,7 +27,7 @@ index 1a79460..1fe2753 100644
  
        m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
  
-@@ -654,6 +658,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -656,6 +660,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      }
    }
  
@@ -36,7 +37,7 @@ index 1a79460..1fe2753 100644
    if (packet.pSideData && packet.iSideDataElems > 0)
    {
      const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
-@@ -758,7 +765,8 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
+@@ -760,7 +767,8 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
  
  void CDVDVideoCodecAmlogic::Reset(void)
  {

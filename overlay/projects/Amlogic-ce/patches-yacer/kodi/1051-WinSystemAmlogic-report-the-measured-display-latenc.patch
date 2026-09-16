@@ -1,7 +1,8 @@
-From a79dc3f4bc97b1a87af608b30ef3b7b708d87112 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] WinSystemAmlogic: time pictures against the real display delay
+Subject: [PATCH] WinSystemAmlogic: time pictures against the real display
+ delay
 
 GetDisplayLatency() falls back to (NoOfBuffers() + 1) / fps, which at 23.976 is
 166.8ms, and NoOfBuffers() has exactly one caller in the tree - that expression.
@@ -11,7 +12,7 @@ against it. Report what the pipeline actually measures.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 239877e..d019c35 100644
+index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d24c48abc 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -8,6 +8,8 @@
@@ -31,7 +32,7 @@ index 239877e..d019c35 100644
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
    SetSpeed(m_speed);
-@@ -2516,6 +2519,11 @@ void CAMLCodec::CloseDecoder()
+@@ -2531,6 +2534,11 @@ void CAMLCodec::CloseDecoder()
    dumpfile_close(am_private);
    m_opened = false;
  
@@ -43,7 +44,7 @@ index 239877e..d019c35 100644
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
    free(am_private->hdr_buf.data);
-@@ -2593,6 +2601,8 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2609,6 +2617,8 @@ void CAMLCodec::CloseAmlVideo()
  
  void CAMLCodec::Reset()
  {
@@ -52,7 +53,7 @@ index 239877e..d019c35 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2828,6 +2838,28 @@ void CAMLCodec::SetPollDevice(int dev)
+@@ -2844,6 +2854,28 @@ void CAMLCodec::SetPollDevice(int dev)
    m_pollDevice = dev;
  }
  
@@ -81,7 +82,7 @@ index 239877e..d019c35 100644
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
    int ret;
-@@ -2973,6 +3005,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -2989,6 +3021,7 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -90,7 +91,7 @@ index 239877e..d019c35 100644
  
    // update internal vars regardless
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 379c1fa..7051b81 100644
+index 379c1fa45f76206846fb49e235f8e9b97e96d55e..7051b816032a5e325858b821463111052cc19513 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -84,6 +84,7 @@ public:
@@ -112,7 +113,7 @@ index 379c1fa..7051b81 100644
    uint32_t         m_bufferIndex;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 new file mode 100644
-index 0000000..4d2ea07
+index 0000000000000000000000000000000000000000..26a739fafaf7d0ef6bf850ae599f5b2b610865a8
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -0,0 +1,711 @@
@@ -829,7 +830,7 @@ index 0000000..4d2ea07
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 new file mode 100644
-index 0000000..54e78cd
+index 0000000000000000000000000000000000000000..8784594ac97130cf1f6a1496ec57c254d6c54716
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -0,0 +1,217 @@
@@ -1051,7 +1052,7 @@ index 0000000..54e78cd
 +};
 +
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 6e8283c..8716bfa 100644
+index 6e8283c395f8773d633cdbe600edf5ef2ef3362a..8716bfa275c2731586d2855c891f2996096dfefd 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -14,8 +14,10 @@ endif()
@@ -1066,10 +1067,10 @@ index 6e8283c..8716bfa 100644
  endif()
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 1fe2753..c2119e6 100644
+index c6c644108db56179e0ba445c826db34068bbc668..5df8e1424e006495f547a0f681fdd0768360b421 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -731,8 +731,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+@@ -733,8 +733,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
    const double latencyTweak = static_cast<double>(
        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
            refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
@@ -1083,7 +1084,7 @@ index 1fe2753..c2119e6 100644
    return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                            videoDelay -
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 4181606..962f41f 100644
+index 41816065ffc5baa6b4a39a4425a7988d660a891c..962f41f6436189d54163626713966d5a31ec5da3 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -9,6 +9,7 @@
@@ -1125,7 +1126,7 @@ index 4181606..962f41f 100644
        m_prevVPts = pts;
      }
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index ceb23e3..7d6ab54 100644
+index 020c6d1dcd6a9e17079ecfdb7b566ebf2b21d460..9522cc1eb3e321ca8b3554d0f261fa4d903bebcf 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -11,10 +11,14 @@
@@ -1151,7 +1152,7 @@ index ceb23e3..7d6ab54 100644
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -580,6 +585,121 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -557,6 +562,121 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
@@ -1274,7 +1275,7 @@ index ceb23e3..7d6ab54 100644
  {
    std::unique_lock<CCriticalSection> lock(m_resourceSection);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 2522e44..dfa0406 100644
+index 233ef9bb47217e19f9558097a53169451a47fd77..88e5bf6c15642a5b6fa6c5cf90a9bc90398a188e 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -18,7 +18,10 @@

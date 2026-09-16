@@ -1,4 +1,4 @@
-From 90df136250ce00880a4c0da13ae8a8568e128127 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] AMLLatency: keep picture timing the same between playbacks
@@ -11,9 +11,10 @@ running.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index b717a63e25611c09bad341a80ccf408f58b7bdf3..f42d6be7418d6f9e3bcaca8d048050f9d4d07f38 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2881,7 +2881,8 @@
+@@ -2874,7 +2874,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
  
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
@@ -24,9 +25,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 00905bb5a52e9fe47e99d16fc3ea59cb727cb7a8..4c2451922c5bd841235dfa5af95b6d4ae843050c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -35,6 +35,12 @@
+@@ -35,6 +35,12 @@ constexpr uint64_t MAX_VBLANKS = 4;
  // A lower answer than the one standing has to be seen this many times running.
  constexpr unsigned int AGREE_BEFORE_PUBLISHING = 2;
  
@@ -39,7 +41,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  // How often to report where the picture actually landed.
  constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
  
-@@ -95,6 +101,7 @@
+@@ -95,6 +101,7 @@ void CAMLLatency::Rearm()
  {
    m_candidate = 0;
    m_agreed = 0;
@@ -47,7 +49,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
    m_armed = false;
    m_haveShown = false;
    m_pollValid = false;
-@@ -425,13 +432,31 @@
+@@ -425,13 +432,31 @@ void CAMLLatency::Poll()
            ++m_agreed;
          }
  
@@ -80,7 +82,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
        }
        m_armed = false;
      }
-@@ -451,10 +476,18 @@
+@@ -451,10 +476,18 @@ void CAMLLatency::Poll()
    m_haveShown = true;
  }
  
@@ -101,9 +103,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
    // Decided on every presented frame. Settled once per report instead, it would
    // spend the first minute of every file false - so the check would never run,
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+index aad2d1d5c2a21b220f91266f9142b8cba7f3fe68..2401f6da270ccc2fe43148cdb6baeb184ec55355 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-@@ -83,7 +83,13 @@
+@@ -83,7 +83,13 @@ public:
    //! over. Arms the matcher and reports where the picture landed.
    //! \param audioSyncError where the audio leaving the sink sits against the
    //! same clock, from CProcessInfo, or DVD_NOPTS_VALUE when nothing measured it
@@ -118,7 +121,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
  
    //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
    //! path it travels, so the measured answer still stands.
-@@ -132,6 +138,8 @@
+@@ -132,6 +138,8 @@ private:
    uint64_t m_lastN{0};      //!< the answer standing
    uint64_t m_candidate{0};  //!< a lower one, not yet believed
    unsigned int m_agreed{0}; //!< how many times running it has turned up

@@ -1,4 +1,4 @@
-From ab2183c342b91ef55bbbfe38350f9e748bc58a02 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 20:03:01 -0400
 Subject: [PATCH] StreamDetails: pick the preferred subtitle stream faster
@@ -11,12 +11,9 @@ with CStreamDetailSubtitle::IsWorseThan, so the result is identical.
 Shared code: the comparison and its loop both live in StreamDetails.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
- xbmc/utils/StreamDetails.cpp | 46 ++++++++++++++++++++++++++----------
- 1 file changed, 34 insertions(+), 12 deletions(-)
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index 1c7d25c..c46ae54 100644
+index 1c7d25c3151e61eaf951a1d1f3242d76cb6a6231..c46ae546722c275b111d7aefcc8ec7a247d2791d 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -23,6 +23,21 @@
@@ -93,6 +90,3 @@ index 1c7d25c..c46ae54 100644
      default:
        champion = NULL;
      }  /* switch type */
--- 
-2.53.0
-

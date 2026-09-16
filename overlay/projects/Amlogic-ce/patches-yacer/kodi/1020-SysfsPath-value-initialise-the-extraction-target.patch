@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Sun, 7 Sep 2026 18:00:00 -0400
+Date: Mon, 7 Sep 2026 18:00:00 -0400
 Subject: [PATCH] SysfsPath: return a safe default when a value can't be read
 
 Get<T>() returns `T value;` after `file >> value`. If the read never runs - the
@@ -13,7 +13,7 @@ test covers a missing node and an empty one.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/platform/linux/SysfsPath.h b/xbmc/platform/linux/SysfsPath.h
-index 037329b..4cfb027 100644
+index 037329b71387b746ebf704d9442f656152b6da54..4cfb027ee3cd100fc48907616b868df46126598e 100644
 --- a/xbmc/platform/linux/SysfsPath.h
 +++ b/xbmc/platform/linux/SysfsPath.h
 @@ -35,7 +35,10 @@ public:
@@ -29,7 +29,7 @@ index 037329b..4cfb027 100644
        file >> value;
  
 diff --git a/xbmc/platform/linux/test/TestSysfsPath.cpp b/xbmc/platform/linux/test/TestSysfsPath.cpp
-index dd5df2f..2f0f209 100644
+index dd5df2f2934be5bf2a36acc46a7d9bea7cdd5f1f..2f0f20963c21b4f63de0bbed54e45f6d32da366c 100644
 --- a/xbmc/platform/linux/test/TestSysfsPath.cpp
 +++ b/xbmc/platform/linux/test/TestSysfsPath.cpp
 @@ -105,3 +105,20 @@ TEST_F(TestSysfsPath, SysfsPathTestPathDoesNotExist)

@@ -1,4 +1,4 @@
-From 5868a6cdd34525b193664651b919c0970805b53a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] AMLUtils: add shared display timing helpers
@@ -11,7 +11,7 @@ any of them is written, rather than letting three copies grow and disagree.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index c6e8d7d..f574986 100644
+index 68dbe6e68b79e5b450ac031b72c53675fc935c0c..7910cc4676bf484aca3f1694c63f3f8ccc6fbb51 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -10,9 +10,18 @@
@@ -45,7 +45,7 @@ index c6e8d7d..f574986 100644
  
  int aml_get_cpufamily_id()
  {
-@@ -310,3 +321,120 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
+@@ -300,3 +311,120 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
      CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
    }
  }
@@ -167,7 +167,7 @@ index c6e8d7d..f574986 100644
 +  return displayRate / fps;
 +}
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index cc135d0..d30f533 100644
+index cc135d04da6540b0b69134af2a49f130a4f8c75b..dc16fd5f1ea469e3ddcdae8b3db26d73fa7a03b0 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
 @@ -8,6 +8,8 @@
@@ -215,10 +215,10 @@ index cc135d0..d30f533 100644
 +//! Callers apply their own tolerance; CheckEnableClockSync() uses 0.0005.
 +double aml_refreshes_per_frame(double displayRate, double fps);
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 84c2790..1f64bbf 100644
+index afc9fde4eab3e12f8defec6316b4f0a5de963435..4cbd58837ec50200fb958c01e2741b0df030f01e 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
-@@ -86,6 +86,7 @@ public:
+@@ -85,6 +85,7 @@ public:
    virtual ~CAMLDRMUtils();
  
    int aml_get_drmDevice_handle() const { return m_fd; }
@@ -226,7 +226,7 @@ index 84c2790..1f64bbf 100644
    void aml_init_drmDevice();
    void aml_drmDevice_vsync();
    std::string aml_get_drmDevice_mode();
-@@ -153,6 +154,7 @@ public:
+@@ -152,6 +153,7 @@ public:
  
    void aml_refresh_display_caps();
    int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }

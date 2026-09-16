@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:27 -0400
 Subject: [PATCH] VideoThumbLoader: load video, audio and subtitle info faster
 
 Library lists come without stream details, so LoadItemCached sent one
@@ -12,7 +14,7 @@ Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index cee70e5..2b4c945 100644
+index cee70e5e502f7b39ff139b210f70161fdc1aeefd..2b4c945f2ac18512368189843b9602d2ce2b0241 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
@@ -108,7 +110,7 @@ index cee70e5..2b4c945 100644
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index fd6b537..cb89b86 100644
+index fd6b5379bfe39793b941b40e6afb90ce9cbc390e..cb89b86b465a722e2ae75dd09576b84fbdb0484b 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -11,10 +11,12 @@

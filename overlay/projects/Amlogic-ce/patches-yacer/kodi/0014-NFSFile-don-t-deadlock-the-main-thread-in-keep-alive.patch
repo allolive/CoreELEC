@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] NFSFile: fix a rare freeze when an NFS file is closed
 
 The keep-alive (main thread) takes keepAliveLock then the connection lock;
@@ -10,7 +12,7 @@ Shared filesystem code: the locks live here and nowhere else.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 3242b96..fc3e02f 100644
+index 3242b9693d693b466dd59d8b196657fd46662ce4..fc3e02ff7cb8d6ab1bf1a8eaaddffcca4dfa7ca7 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
 @@ -473,11 +473,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF

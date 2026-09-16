@@ -1,4 +1,4 @@
-From c535ffa25d87e7a578302ea0c78bb7d9e306f8b9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 19:22:44 -0400
 Subject: [PATCH] StereoscopicsManager: speed up 3D mode detection
@@ -11,12 +11,9 @@ that fails to compile is retried and logged as before. Shared code: the
 compile is inside the function.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
----
- xbmc/guilib/StereoscopicsManager.cpp | 58 ++++++++++++++++++++--------
- 1 file changed, 42 insertions(+), 16 deletions(-)
 
 diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
-index 400b9b8..788e541 100644
+index 400b9b8eaa678cad687ca4bb9aba548783f613b5..788e541256763079bfba75afdd0769e42933a435 100644
 --- a/xbmc/guilib/StereoscopicsManager.cpp
 +++ b/xbmc/guilib/StereoscopicsManager.cpp
 @@ -42,6 +42,7 @@
@@ -115,6 +112,3 @@ index 400b9b8..788e541 100644
      stereoMode = "top_bottom";
  
    return stereoMode;
--- 
-2.53.0
-

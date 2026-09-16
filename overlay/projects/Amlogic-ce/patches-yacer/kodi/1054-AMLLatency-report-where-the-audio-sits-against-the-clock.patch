@@ -1,4 +1,4 @@
-From 99d2d3d50138c474c2dca637d01e196976f547f7 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] AMLLatency: add lip sync to the playback timing log
@@ -11,7 +11,7 @@ its averaged error is under 30ms. Measure and report the audio too.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index f94b6b8..6bbdcb0 100644
+index d155eea0a1f8b6c62962056f399417b1630da138..b136f24f806bf5892801cfbb4eb5360f429d8960 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 @@ -26,6 +26,7 @@
@@ -60,7 +60,7 @@ index f94b6b8..6bbdcb0 100644
        info.errortime = str.m_errorTime;
        info.state = str.m_syncState;
        info.rr = str.m_resampleRatio;
-@@ -1571,6 +1582,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
+@@ -1586,6 +1597,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
    stream->m_paused = false;
    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
    stream->m_syncError.Flush();
@@ -68,7 +68,7 @@ index f94b6b8..6bbdcb0 100644
    stream->ResetFreeBuffers();
  
    // Reset Logic State Variables to revive Servo
-@@ -2086,10 +2098,15 @@ bool CActiveAE::RunStages()
+@@ -2101,10 +2113,15 @@ bool CActiveAE::RunStages()
          double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
          double error = playingPts - (*it)->m_pClock->GetClock();
  
@@ -85,7 +85,7 @@ index f94b6b8..6bbdcb0 100644
  
          if (error > maxError)
          {
-@@ -2102,6 +2119,7 @@ bool CActiveAE::RunStages()
+@@ -2117,6 +2134,7 @@ bool CActiveAE::RunStages()
            error = -maxError;
          }
          (*it)->m_syncError.Add(error);
@@ -93,7 +93,7 @@ index f94b6b8..6bbdcb0 100644
        }
      }
  
-@@ -2485,6 +2503,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2500,6 +2518,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
    {
      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
      stream->m_syncError.Flush(100ms);
@@ -101,7 +101,7 @@ index f94b6b8..6bbdcb0 100644
      stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
      stream->m_resampleIntegral = 0;
      CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
-@@ -2507,6 +2526,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2522,6 +2541,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                                            ? 100ms
                                            : stream->GetErrorInterval();
    bool newerror = stream->m_syncError.Get(error, timeout);
@@ -110,7 +110,7 @@ index f94b6b8..6bbdcb0 100644
  
    if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
    {
-@@ -2568,11 +2589,13 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2583,11 +2604,13 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
              ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
  
            stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
@@ -124,7 +124,7 @@ index f94b6b8..6bbdcb0 100644
            error -= framesToDelay*1000/ret->pkt->config.sample_rate;
            for(int i=0; i<ret->pkt->planes; i++)
            {
-@@ -2606,6 +2629,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2621,6 +2644,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
          {
            stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
@@ -132,7 +132,7 @@ index f94b6b8..6bbdcb0 100644
            error += stream->m_format.m_streamInfo.GetDuration();
            buf->pkt->nb_samples = 0;
          }
-@@ -2620,6 +2644,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2635,6 +2659,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          }
          buf->pkt->nb_samples -= framesToSkip;
          stream->m_syncError.Correction((double)framesToSkip * 1000 / buf->pkt->config.sample_rate);
@@ -140,7 +140,7 @@ index f94b6b8..6bbdcb0 100644
          error += (double)framesToSkip * 1000 / buf->pkt->config.sample_rate;
        }
        CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
-@@ -2631,6 +2656,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2646,6 +2671,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
        {
          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
          stream->m_syncError.Flush(100ms);
@@ -148,7 +148,7 @@ index f94b6b8..6bbdcb0 100644
          CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
                    error, stream->m_lastSyncError);
          stream->m_lastSyncError = error;
-@@ -2639,6 +2665,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2654,6 +2680,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
        {
          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
          stream->m_syncError.Flush(1000ms);
@@ -156,7 +156,7 @@ index f94b6b8..6bbdcb0 100644
          stream->m_resampleIntegral = 0;
          stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
          CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
-@@ -2664,7 +2691,10 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2679,7 +2706,10 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
      stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
    }
  
@@ -169,10 +169,10 @@ index f94b6b8..6bbdcb0 100644
    return ret;
  }
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
-index 996c1cb..4d1b5be 100644
+index 6c69f2aabef88eaff76d14d3475bfd6d210c46be..cff932f50cbc2066716a7b86587fb477950d1557 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
-@@ -222,6 +222,8 @@ protected:
+@@ -223,6 +223,8 @@ protected:
      double m_bufferedTime;
      double m_resampleRatio;
      double m_syncError;
@@ -182,7 +182,7 @@ index 996c1cb..4d1b5be 100644
      CAESyncInfo::AESyncState m_syncState;
    };
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-index 82a9220..6b59cef 100644
+index 82a922085f415c1fd91bf0dadbfc91db98361909..6b59cefe962e212defb8fff992f11bdc54125ab6 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -39,6 +39,7 @@ public:
@@ -252,7 +252,7 @@ index 82a9220..6b59cef 100644
    CAESyncInfo::AESyncState m_syncState;
  };
 diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
-index c0f20f6..741c09b 100644
+index c0f20f68bcaafe397ae34c812c345e6b4d0fae59..741c09b3621fcdcde923c48123b8e9facb1c0584 100644
 --- a/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 +++ b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 @@ -44,6 +44,17 @@ public:
@@ -274,7 +274,7 @@ index c0f20f6..741c09b 100644
  
  /**
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index b38d13a..34fb277 100644
+index b38d13ab55710e661add5373f5a4c5db06251fe9..34fb277444e839c69ecaa6289529d8b13a1b9e82 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 @@ -90,6 +90,13 @@ void CAudioSinkAE::Destroy(bool finish)
@@ -329,7 +329,7 @@ index b38d13a..34fb277 100644
  
  double CAudioSinkAE::GetResampleRatio()
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-index e2aff52..f28801d 100644
+index e2aff528aa1146ee3eb1f48d6e002067075d71dd..f28801d5fc2066ee6e13338d81c4c80f27535969 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
 @@ -46,6 +46,16 @@ public:
@@ -359,10 +359,10 @@ index e2aff52..f28801d 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 2b59745..3fb32ec 100644
+index 7c8375e43e9f546adfbdcf836c77aa69556ee63a..b717a63e25611c09bad341a80ccf408f58b7bdf3 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2855,7 +2855,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2873,7 +2873,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
      return;
    }
  
@@ -373,7 +373,7 @@ index 2b59745..3fb32ec 100644
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 4d2ea07..10bff90 100644
+index 26a739fafaf7d0ef6bf850ae599f5b2b610865a8..00905bb5a52e9fe47e99d16fc3ea59cb727cb7a8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -100,6 +100,9 @@ void CAMLLatency::Rearm()
@@ -465,7 +465,7 @@ index 4d2ea07..10bff90 100644
        m_cadenceRefreshes = 0;
      }
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index 54e78cd..86a8469 100644
+index 8784594ac97130cf1f6a1496ec57c254d6c54716..aad2d1d5c2a21b220f91266f9142b8cba7f3fe68 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -81,7 +81,9 @@ public:
@@ -502,10 +502,10 @@ index 54e78cd..86a8469 100644
  };
  
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-index d7d8c43..5053905 100644
+index 1587512286af9376d7298a1ef77b6ff9cff8e683..6880c1723a7094e970bf0ec3ef1204e6878a6f49 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-@@ -419,6 +419,7 @@ void CProcessInfo::ResetAudioCodecInfo()
+@@ -436,6 +436,7 @@ void CProcessInfo::ResetAudioCodecInfo()
    m_audioLiveBitRate = 0;
    m_audioQueueLevel = 0;
    m_audioQueueDataLevel = 0;
@@ -514,7 +514,7 @@ index d7d8c43..5053905 100644
    if (m_dataCache)
    {
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-index 0c5f4f2..8827ca9 100644
+index f1a3663f88d644a1ad5143d94956ab163d505703..81615cca276327e449a5de2e58c7262787a43142 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -9,6 +9,7 @@
@@ -525,7 +525,7 @@ index 0c5f4f2..8827ca9 100644
  #include "cores/VideoPlayer/VideoRenderers/RenderInfo.h"
  #include "cores/VideoSettings.h"
  #include "threads/CriticalSection.h"
-@@ -86,6 +87,14 @@ public:
+@@ -88,6 +89,14 @@ public:
    int GetAudioQueueLevel();
    void SetAudioQueueDataLevel(int level);
    int GetAudioQueueDataLevel();
@@ -540,7 +540,7 @@ index 0c5f4f2..8827ca9 100644
    virtual bool AllowDTSHDDecode();
    virtual bool WantsRawPassthrough() { return false; }
  
-@@ -177,6 +186,7 @@ protected:
+@@ -180,6 +189,7 @@ protected:
    int m_audioLiveBitRate = 0;
    int m_audioQueueLevel = 0;
    int m_audioQueueDataLevel = 0;
@@ -549,7 +549,7 @@ index 0c5f4f2..8827ca9 100644
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index c75e572..894d442 100644
+index c75e572bf6f2d29f1666043a0b113e1447d26f37..bc0d7dcc938953f6ce1b673a056abe4e9839a080 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -163,6 +163,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)

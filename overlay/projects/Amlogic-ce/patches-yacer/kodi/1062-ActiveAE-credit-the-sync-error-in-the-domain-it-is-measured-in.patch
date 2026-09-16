@@ -1,4 +1,4 @@
-From 7c1a4e0b93d2415a8f0c6e2d1b5a83f7c40e91d6 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 7 Sep 2026 12:00:00 -0400
 Subject: [PATCH] ActiveAE: don't cut TrueHD sync corrections short
@@ -12,10 +12,10 @@ measured in.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 8d989de..a1b7c32 100644
+index 78188cba4d332c0a7a6411701a87b7cffb71f27e..3dfd7a40f3c4bb3157c72ed9845cb047d18e03de 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -2640,14 +2640,19 @@
+@@ -2640,14 +2640,19 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          ret->pkt->nb_samples = framesToDelay;
          if (m_mode == MODE_RAW)
          {
@@ -39,7 +39,7 @@ index 8d989de..a1b7c32 100644
          }
          else
          {
-@@ -2683,11 +2688,14 @@
+@@ -2683,11 +2688,14 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
        }
        if (m_mode == MODE_RAW)
        {
@@ -58,5 +58,3 @@ index 8d989de..a1b7c32 100644
            buf->pkt->nb_samples = 0;
          }
        }
--- 
-2.43.0

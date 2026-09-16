@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] NFSFile: don't freeze Kodi when an NFS server stops answering
 
 The keep-alive does a real NFS read from ProcessSlow on the main thread;
@@ -11,7 +13,7 @@ Shared filesystem code: the keep-alive lives here and nowhere else.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index fc3e02f..44901b3 100644
+index fc3e02ff7cb8d6ab1bf1a8eaaddffcca4dfa7ca7..44901b39a370bbbd9a74e8d70c04e001c25b73d2 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
 @@ -479,6 +479,12 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF

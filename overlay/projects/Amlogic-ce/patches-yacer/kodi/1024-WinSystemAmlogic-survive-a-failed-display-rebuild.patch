@@ -1,4 +1,4 @@
-From 6b0261055361f7d9023e512a6ffc4c08d7ac6a90 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:51:04 -0400
 Subject: [PATCH] WinSystemAmlogic: keep running if the display can't be set up
@@ -12,7 +12,7 @@ dark until the next hotplug. Relies on the previous change's locking.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 8bcec8a..7fc6fcd 100644
+index 8bcec8a44f0a1092c3d805b7ef55d3dbac512770..7fc6fcdcc705afd5a832ebb9ea9c741594c70ffc 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -737,6 +737,10 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
@@ -38,7 +38,7 @@ index 8bcec8a..7fc6fcd 100644
          set_drmProp(id, name, obj_type, value, NULL);
          [[fallthrough]];
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 155b43b..020c6d1 100644
+index 155b43b705a1286e8acdeef6287e806748954f33..020c6d1dcd6a9e17079ecfdb7b566ebf2b21d460 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -10,6 +10,7 @@

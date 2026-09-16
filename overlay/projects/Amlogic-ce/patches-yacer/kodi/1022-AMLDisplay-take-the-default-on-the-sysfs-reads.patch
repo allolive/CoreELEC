@@ -1,4 +1,4 @@
-From 7ad0eed0a4a7ca6e86e468dee5d1a1d7c19fab70 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:57 -0400
 Subject: [PATCH] AMLDisplay: don't crash when a display setting can't be read
@@ -15,10 +15,10 @@ amhdmitx nodes and /proc/cmdline, which do not fail.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index b08d8d1..49bd9fe 100644
+index 56f89bae29511e8a4bb9a539f5f0ea3bb9c56bff..00221a12c2008e0d9c5eef04f261113c651b0b88 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
-@@ -1017,7 +1017,7 @@ void CAMLDisplay::aml_refresh_display_caps()
+@@ -1026,7 +1026,7 @@ void CAMLDisplay::aml_refresh_display_caps()
  
    if (edid.Exists())
    {
@@ -27,7 +27,7 @@ index b08d8d1..49bd9fe 100644
      size_t pos = valstr.find("Physical size(mm):");
      if (pos != std::string::npos)
      {
-@@ -1040,7 +1040,7 @@ void CAMLDisplay::aml_refresh_display_caps()
+@@ -1049,7 +1049,7 @@ void CAMLDisplay::aml_refresh_display_caps()
    bool support_3d = false;
    CSysfsPath amhdmitx0_support_3d{"/sys/class/amhdmitx/amhdmitx0/support_3d"};
    if (amhdmitx0_support_3d.Exists())
@@ -36,7 +36,7 @@ index b08d8d1..49bd9fe 100644
  
    m_support_3d = support_3d;
  }
-@@ -1077,7 +1077,8 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
+@@ -1086,7 +1086,8 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
    {
      CSysfsPath _kernel_stereo_mode{"/sys/class/amhdmitx/amhdmitx0/stereo_mode"};
      if (_kernel_stereo_mode.Exists())
@@ -46,7 +46,7 @@ index b08d8d1..49bd9fe 100644
    }
  
    if (m_stereo_mode != stereo_mode)
-@@ -1139,7 +1140,7 @@ std::string CAMLDisplay::aml_get_preferred_mode()
+@@ -1148,7 +1149,7 @@ std::string CAMLDisplay::aml_get_preferred_mode()
    CSysfsPath cmdline{"/proc/cmdline"};
    if (cmdline.Exists())
    {
@@ -55,7 +55,7 @@ index b08d8d1..49bd9fe 100644
  
      for (std::vector<std::string>::const_reverse_iterator item = cmdlinestr.rbegin(); item != cmdlinestr.rend(); ++item)
      {
-@@ -1307,7 +1308,7 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
+@@ -1316,7 +1317,7 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
      CSysfsPath vesa_cap{"/sys/class/amhdmitx/amhdmitx0/vesa_cap"};
      if (vesa_cap.Exists())
      {
@@ -64,7 +64,7 @@ index b08d8d1..49bd9fe 100644
        valstr += "\n" + addstr;
      }
    }
-@@ -1320,12 +1321,12 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
+@@ -1329,12 +1330,12 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
        CSysfsPath dcapfile3d{"/sys/class/amhdmitx/amhdmitx0/disp_cap_3d"};
        if (dcapfile3d.Exists())
        {

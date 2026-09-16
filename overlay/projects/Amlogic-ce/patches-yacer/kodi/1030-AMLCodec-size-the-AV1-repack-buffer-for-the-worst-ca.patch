@@ -1,4 +1,4 @@
-From ad737aaa732d0681e8e8727d15a97eb60af9e863 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:52 -0400
 Subject: [PATCH] AMLCodec: fix a buffer overrun on some AV1 streams
@@ -13,10 +13,10 @@ doesn't run on the AM6B Plus, but the bug is real on AV1-capable Amlogic.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e3cd400..662ac57 100644
+index dc0adc90bb780e498e7c9c738eca9ce62d6502c0..c3fbd94387cc8ca81207316ddd0f5f71cceac28d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -1315,7 +1315,13 @@ int av1_add_frame_dec_info(am_private_t *para)
+@@ -1316,7 +1316,13 @@ int av1_add_frame_dec_info(am_private_t *para)
    am_packet_t *pkt = &para->am_pkt;
  
    unsigned int dst_frame_size = 0;

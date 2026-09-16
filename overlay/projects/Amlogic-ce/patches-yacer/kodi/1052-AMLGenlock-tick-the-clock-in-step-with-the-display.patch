@@ -1,4 +1,4 @@
-From b44b7ce4d09a269c812ade6e47315d8925ec31dd Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] AMLGenlock: line up playback with the display refresh
@@ -12,10 +12,10 @@ catch up, repeated again. Hold the phase away from the edge.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 073b7df..2b59745 100644
+index b83c65768f8ac3b2eaf78c471d5ace2d24c48abc..7c8375e43e9f546adfbdcf836c77aa69556ee63a 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2600,6 +2600,7 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2618,6 +2618,7 @@ void CAMLCodec::CloseAmlVideo()
  void CAMLCodec::Reset()
  {
    CAMLLatency::GetInstance().Restart();
@@ -23,7 +23,7 @@ index 073b7df..2b59745 100644
  
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
-@@ -2857,6 +2858,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2875,6 +2876,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
  }
  
@@ -57,7 +57,7 @@ index 073b7df..2b59745 100644
  
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
-@@ -3003,6 +3031,11 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3021,6 +3049,11 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -70,7 +70,7 @@ index 073b7df..2b59745 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 7051b81..2f46fd0 100644
+index 7051b816032a5e325858b821463111052cc19513..2f46fd09b3bfe15a0d577fe7ee9b87c15de787bc 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -99,7 +99,7 @@ index 7051b81..2f46fd0 100644
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 new file mode 100644
-index 0000000..464c95d
+index 0000000000000000000000000000000000000000..464c95dc99a07262535f6d046bfedb8ef3831beb
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 @@ -0,0 +1,156 @@
@@ -261,7 +261,7 @@ index 0000000..464c95d
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
 new file mode 100644
-index 0000000..3dba542
+index 0000000000000000000000000000000000000000..9e794d5d607baa02d4af4d1755ae35b3c61835a4
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
 @@ -0,0 +1,76 @@
@@ -342,7 +342,7 @@ index 0000000..3dba542
 +  double m_period{0.0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 8716bfa..3f67ff9 100644
+index 8716bfa275c2731586d2855c891f2996096dfefd..3f67ff9b669516bd92c313595e82727a66731d85 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -14,9 +14,11 @@ endif()
@@ -358,7 +358,7 @@ index 8716bfa..3f67ff9 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 962f41f..57e220b 100644
+index 962f41f6436189d54163626713966d5a31ec5da3..57e220ba09362057db70bc4e21e79ef436ce0b18 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -205,6 +205,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int

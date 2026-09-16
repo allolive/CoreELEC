@@ -1,4 +1,4 @@
-From 45a953d24715d2ecd69aa5129684844b2e5aeed3 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:08:54 -0400
 Subject: [PATCH] AMLUtils: don't wait on a Dolby Vision delay that isn't there
@@ -12,7 +12,7 @@ Check the node first and return 0 if it is not there.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 78af639..f035a3d 100644
+index 78af6395e30553687f459607a4324eec165e6d40..68dbe6e68b79e5b450ac031b72c53675fc935c0c 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -277,7 +277,11 @@ int aml_amdv_wait(StreamHdrType hdrType)

@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] FileCache: don't stop playback when a network share stalls
 
 A stalled share ended playback: the file cache reported the stall as end
@@ -10,8 +12,65 @@ code: FileCache, the input stream and the demuxer are not AML-reachable.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
+diff --git a/xbmc/addons/interfaces/Filesystem.cpp b/xbmc/addons/interfaces/Filesystem.cpp
+index 4bf0cf040019f6267cac8dbd61273fe4f0dcadda..612158976e34f3c08d323536f805f28bb690018f 100644
+--- a/xbmc/addons/interfaces/Filesystem.cpp
++++ b/xbmc/addons/interfaces/Filesystem.cpp
+@@ -833,7 +833,10 @@ ssize_t Interface_Filesystem::read_file(void* kodiBase, void* file, void* ptr, s
+     return -1;
+   }
+ 
+-  return static_cast<CFile*>(file)->Read(ptr, size);
++  // The ABI documents -1 for any error, so do not let an internal error value
++  // through - the file cache reports a stalled source as one.
++  const ssize_t ret = static_cast<CFile*>(file)->Read(ptr, size);
++  return ret < 0 ? -1 : ret;
+ }
+ 
+ bool Interface_Filesystem::read_file_string(void* kodiBase,
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 2e1500854601d1ffb78e04a3cf7a351dbea38c94..e232671f79356025df1e900ed8d5a919b5dd367d 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -1094,7 +1094,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+     {
+       // assume we are not eof
+       if (m_pFormatContext->pb)
++      {
+         m_pFormatContext->pb->eof_reached = 0;
++        // ffmpeg latches a stalled read next to the eof flag and hands it back on
++        // every later read. Only that one is cleared; a real error still stands.
++        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
++          m_pFormatContext->pb->error = 0;
++      }
+ 
+       // check for saved packet after a program change
+       if (m_pkt.result < 0)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
+index a129064892b5eb255675f2e22b86e16bcd7d3afd..67d6ecf956835e930fd267a478a08d0560862830 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
+@@ -14,6 +14,8 @@
+ #include "utils/log.h"
+ #include "video/VideoFileItemClassify.h"
+ 
++#include <cerrno>
++
+ using namespace KODI;
+ using namespace XFILE;
+ 
+@@ -95,6 +97,9 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
+ 
+   ssize_t ret = m_pFile->Read(buf, buf_size);
+ 
++  if (ret == -EAGAIN)
++    return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
++
+   if (ret < 0)
+     return -1; // player will retry read in case of error until playback is stopped
+ 
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index 94fed40..53913e5 100644
+index 94fed404e9c57e26c5f389a3d955d42aabc90477..53913e53099f53dcbab16eac5b6022d9080e547f 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -24,6 +24,7 @@
@@ -58,60 +117,3 @@ index 94fed40..53913e5 100644
    }
  
    if (iRc == CACHE_RC_TIMEOUT)
-diff --git a/xbmc/addons/interfaces/Filesystem.cpp b/xbmc/addons/interfaces/Filesystem.cpp
-index 4bf0cf0..6121589 100644
---- a/xbmc/addons/interfaces/Filesystem.cpp
-+++ b/xbmc/addons/interfaces/Filesystem.cpp
-@@ -833,7 +833,10 @@ ssize_t Interface_Filesystem::read_file(void* kodiBase, void* file, void* ptr, s
-     return -1;
-   }
- 
--  return static_cast<CFile*>(file)->Read(ptr, size);
-+  // The ABI documents -1 for any error, so do not let an internal error value
-+  // through - the file cache reports a stalled source as one.
-+  const ssize_t ret = static_cast<CFile*>(file)->Read(ptr, size);
-+  return ret < 0 ? -1 : ret;
- }
- 
- bool Interface_Filesystem::read_file_string(void* kodiBase,
-diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index a129064..67d6ecf 100644
---- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-@@ -14,6 +14,8 @@
- #include "utils/log.h"
- #include "video/VideoFileItemClassify.h"
- 
-+#include <cerrno>
-+
- using namespace KODI;
- using namespace XFILE;
- 
-@@ -95,6 +97,9 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
- 
-   ssize_t ret = m_pFile->Read(buf, buf_size);
- 
-+  if (ret == -EAGAIN)
-+    return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
-+
-   if (ret < 0)
-     return -1; // player will retry read in case of error until playback is stopped
- 
-diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 2e15008..e232671 100644
---- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -1094,7 +1094,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
-     {
-       // assume we are not eof
-       if (m_pFormatContext->pb)
-+      {
-         m_pFormatContext->pb->eof_reached = 0;
-+        // ffmpeg latches a stalled read next to the eof flag and hands it back on
-+        // every later read. Only that one is cleared; a real error still stands.
-+        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
-+          m_pFormatContext->pb->error = 0;
-+      }
- 
-       // check for saved packet after a program change
-       if (m_pkt.result < 0)

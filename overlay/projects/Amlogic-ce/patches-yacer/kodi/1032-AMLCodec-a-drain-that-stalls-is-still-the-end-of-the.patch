@@ -1,6 +1,6 @@
-From ac15a28187407f5571ad9c8eb67c35262567fa33 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Thu, 11 Sep 2026 23:55:00 -0400
+Date: Fri, 11 Sep 2026 23:55:00 -0400
 Subject: [PATCH] AMLCodec: don't hang when moving on to the next file
 
 CVideoPlayerVideo drains in a loop that neither waits nor reads its own message
@@ -14,10 +14,10 @@ next arm already uses.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e399ad9..6d7aedd 100644
+index c3fbd94387cc8ca81207316ddd0f5f71cceac28d..5a0126f09bf42402b46a379ff100c03250a3a68a 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2871,8 +2871,16 @@
+@@ -2961,8 +2961,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
  
      return CDVDVideoCodec::VC_PICTURE;
    }

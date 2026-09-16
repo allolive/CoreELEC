@@ -1,4 +1,4 @@
-From a1c31be2a9414cd889006d0b47ae067b359d4897 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 16:07:26 -0400
 Subject: [PATCH] AMLDisplay: fix a rare crash when the TV reconnects
@@ -13,7 +13,7 @@ each other). The render path shares the rebuild thread and is left alone.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 00221a1..8bcec8a 100644
+index 00221a12c2008e0d9c5eef04f261113c651b0b88..8bcec8a44f0a1092c3d805b7ef55d3dbac512770 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -257,6 +257,7 @@ void CAMLDRMUtils::CleanAndClose()
@@ -97,7 +97,7 @@ index 00221a1..8bcec8a 100644
    drmModeModeInfoPtr drmDevicemode = NULL;
    drmModeModeInfo syntheticMode = {};
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 0f6a410..afc9fde 100644
+index 0f6a410ce91c54821b8ed1100c6dfe572e2c500b..afc9fde4eab3e12f8defec6316b4f0a5de963435 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -14,6 +14,7 @@

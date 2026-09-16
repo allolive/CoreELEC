@@ -1,4 +1,4 @@
-From 2f909adadf628ac582671bffebb344dea1b7dfae Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 3 Sep 2026 12:00:00 -0400
 Subject: [PATCH] VideoPlayerAudio: fully correct TrueHD lip sync errors
@@ -12,7 +12,7 @@ the threshold and try again. Step by the error that was measured.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 6bbdcb0..d0df7e7 100644
+index b136f24f806bf5892801cfbb4eb5360f429d8960..94990dda3a310fd07b0bb42bd0a5cbccd9aa09f1 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 @@ -152,6 +152,8 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
@@ -33,7 +33,7 @@ index 6bbdcb0..d0df7e7 100644
        info.errortime = str.m_errorTime;
        info.state = str.m_syncState;
        info.rr = str.m_resampleRatio;
-@@ -2101,6 +2105,7 @@ bool CActiveAE::RunStages()
+@@ -2116,6 +2120,7 @@ bool CActiveAE::RunStages()
          // Kept before the scaling and clamped on its own, so a report reading it
          // gets what the pipeline is doing rather than what the sync loop was
          // asked to believe. Never read back here.
@@ -41,7 +41,7 @@ index 6bbdcb0..d0df7e7 100644
          double errorRaw = std::clamp(error, -maxError, maxError);
  
          // underestimate error for TrueHD passthrough
-@@ -2108,6 +2113,17 @@ bool CActiveAE::RunStages()
+@@ -2123,6 +2128,17 @@ bool CActiveAE::RunStages()
          if (isTrueHDPassthrough)
            error *= TRUEHD_SYNC_ERROR_SCALE;
  
@@ -60,10 +60,10 @@ index 6bbdcb0..d0df7e7 100644
          {
            CLog::Log(LOGWARNING, "ActiveAE - large audio sync error: {:f}", error);
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
-index 4d1b5be..149f392 100644
+index cff932f50cbc2066716a7b86587fb477950d1557..2f80c239098ef683b279948afdb0969024bedca6 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
-@@ -224,6 +224,8 @@ protected:
+@@ -225,6 +225,8 @@ protected:
      double m_syncError;
      double m_syncErrorRaw{0.0};
      bool m_syncErrorRawValid{false};
@@ -73,7 +73,7 @@ index 4d1b5be..149f392 100644
      CAESyncInfo::AESyncState m_syncState;
    };
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-index 6b59cef..c92a870 100644
+index 6b59cefe962e212defb8fff992f11bdc54125ab6..c92a870057351bf89af96cdb2fabf04c64d577cd 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -272,6 +272,8 @@ protected:
@@ -86,7 +86,7 @@ index 6b59cef..c92a870 100644
    CAESyncInfo::AESyncState m_syncState;
  };
 diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
-index 741c09b..5e68275 100644
+index 741c09b3621fcdcde923c48123b8e9facb1c0584..5e6827547bd4b3989477267efca021eb01d50a97 100644
 --- a/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 +++ b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 @@ -55,6 +55,16 @@ public:
@@ -107,7 +107,7 @@ index 741c09b..5e68275 100644
  
  /**
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index 34fb277..8fe1387 100644
+index 34fb277444e839c69ecaa6289529d8b13a1b9e82..8fe1387e215e380283145f82c9c20ff1922269c3 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 @@ -17,6 +17,7 @@
@@ -173,7 +173,7 @@ index 34fb277..8fe1387 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-index f28801d..0d1c2c8 100644
+index f28801d5fc2066ee6e13338d81c4c80f27535969..0d1c2c8263a91eae07227b06589e21906c273046 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
 @@ -56,6 +56,11 @@ public:
@@ -198,7 +198,7 @@ index f28801d..0d1c2c8 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 894d442..a89f22e 100644
+index bc0d7dcc938953f6ce1b673a056abe4e9839a080..367162b9f95c02be040a5a303a2be58a3917571f 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -562,18 +562,46 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
