@@ -1,0 +1,25 @@
+Say that systemd is built without the bpf framework
+
+systemd 261.3 looks for libbpf, and where it finds one it goes on to version
+check clang and bpftool. A bpftool that is present but answers with an error -
+Ubuntu installs a wrapper that does exactly that when the kernel's tools are not
+there - stops the configure with "Command `/usr/sbin/bpftool --version` failed
+with status 2", so the build turns on whether the machine it runs on happens to
+carry working bpf tooling.
+
+The framework is already out of the image either way: it takes libbpf, which is
+not built for the target, so meson reports bpf-framework among the disabled
+features on a build that succeeds. Say so, and the dependency is not looked for
+at all, which is where the version checks hang off.
+
+diff --git a/packages/sysutils/systemd/package.mk b/packages/sysutils/systemd/package.mk
+--- a/packages/sysutils/systemd/package.mk
++++ b/packages/sysutils/systemd/package.mk
+@@ -44,6 +44,7 @@
+                        -Dzstd=disabled \
+                        -Dxkbcommon=disabled \
+                        -Dpcre2=disabled \
++                       -Dbpf-framework=disabled \
+                        -Dglib=disabled \
+                        -Ddbus=disabled \
+                        -Ddefault-dnssec=no \
