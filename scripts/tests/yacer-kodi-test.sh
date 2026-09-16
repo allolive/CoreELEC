@@ -566,6 +566,35 @@ s_partial_merge() {
   refs > "$ROOT/before"
   sync_ci
   check '[ "$RESULT" = conflict ] && grep -q "partly merged" <<<"$SLOG" && grep -q "DVDDemuxFFmpeg" <<<"$SLOG" && refs | cmp -s - "$ROOT/before"'
+  check 'grep -q "keeping upstream.s version where they overlap" <<<"$SLOG"'
+}
+
+# upstream took one hunk of a patch: resolving locally leaves the rest, and the
+# regenerated file records which upstream commits took the other part
+s_partly_upstream() {
+  restore boot
+  local pp out p1
+  pp=$(kodi_up pinP aml "Demux: second half of the slow-share fix" xbmc/Demux.cpp 30 "Demux line 30 ours")
+  ce_up "$pp"
+  sync_ci
+  check '[ "$RESULT" = conflict ]'
+  cy_update
+  out=$(yk start --upstream 2>&1); echo "$out" >> "$LOG"
+  check 'grep -q "changed beyond context" <<<"$out" && grep -q "keeping upstream.s version where they overlap" <<<"$out"'
+  out=$(yk land -m "kodi: rebase onto pinP" 2>&1); echo "$out" >> "$LOG"
+  check 'grep -q "recorded Partly-upstream" <<<"$out"'
+  git -C "$XB" push -q origin yacer-kodi
+  sync_ci
+  check '[ "$RESULT" = ok ] && mirror_is_upstream && stack_matches_names'
+  check '[ "$(ce_show "yacer:$Y/0017-DVDDemuxFFmpeg-slow-share.patch" | grep -c "^Partly-upstream: ")" -eq 1 ]'
+  check 'ce_show "yacer:$Y/0017-DVDDemuxFFmpeg-slow-share.patch" | grep -q "^Partly-upstream: ${pp:0:7}"'
+  check '! ce_show "yacer:$Y/0017-DVDDemuxFFmpeg-slow-share.patch" | grep -q "Demux line 30"'
+  check 'ce_show "yacer:$Y/0017-DVDDemuxFFmpeg-slow-share.patch" | grep -q "Demux line 10 ours"'
+  p1=$(kodi_up pinP2 pinP "Video: unrelated upstream work" xbmc/Video.cpp 35 "Video line 35 upstream")
+  ce_up "$p1"
+  sync_ci
+  check '[ "$RESULT" = ok ] && [ "$(ce_show "yacer:$Y/0017-DVDDemuxFFmpeg-slow-share.patch" | grep -c "^Partly-upstream: ")" -eq 1 ]'
+  check 'stack_matches_names'
 }
 
 s_disable_conflicting() {
@@ -984,7 +1013,7 @@ s_workflows() {
 
 ALL=(s_bootstrap s_clean_bump s_deploy_key s_conflict_bump s_held_mirror_fallback s_start_upstream s_hand_continue
      s_not_provable_hand_skip s_landed_then_conflict s_internal_error s_fail_no_fallback s_pending_land_then_disable s_fallback_needs_same_base s_reword_mid_rebase s_land_twice s_fully_merged
-     s_partial_merge s_disable_conflicting s_enable_after_bumps s_enable_paths s_insert_consecutive s_reorder
+     s_partial_merge s_partly_upstream s_disable_conflicting s_enable_after_bumps s_enable_paths s_insert_consecutive s_reorder
      s_reword_and_edit s_subject_chars s_replay_restores s_attribution s_missed_bumps s_coreelec_only
      s_pin_sideways_backwards s_push_races s_push_validation s_hand_edits s_git_rm s_all_disabled s_tip_moved
      s_pr_merged_with_changes s_config_isolation s_guard_local s_screening s_rej s_unique_subjects s_local_config

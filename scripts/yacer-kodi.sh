@@ -24,6 +24,7 @@ ME=allolive
 MAIL=160342668+allolive@users.noreply.github.com
 SOB="Signed-off-by: $ME <$MAIL>"
 ATTR='co-authored-by: claude|anthropic|claude-session|generated with'
+PARTLY_HINT="resolve by keeping upstream's version where they overlap; what remains is the part they did not take - if nothing remains, mark the file .patch.merged"
 Y=overlay/projects/Amlogic-ce/patches-yacer/kodi
 KPKG=projects/Amlogic-ce/packages/mediacenter/kodi
 K1=$KPKG/patches
@@ -99,6 +100,22 @@ gitpath() { git rev-parse --path-format=absolute --git-path "$1"; }
 busy()    { [ -d "$(gitpath rebase-merge)" ] || [ -d "$(gitpath rebase-apply)" ]; }
 subj()    { git log -1 --format=%s "$1"; }
 sha_ok()  { [[ $1 =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; }
+
+# upstream_commits <old pin> <new pin> <file>...: $T/uplog, the new upstream kodi
+# commits on those files. Upstream rebases its kodi branch, so the list is capped
+# and says so: some entries only look new.
+upstream_commits() {
+  local old=$1 new=$2 n
+  shift 2
+  : > "$T/uplog"
+  [ $# -gt 0 ] || return 0
+  git log --oneline --cherry-pick --right-only --no-merges "$old...$new" -- "$@" > "$T/uplog.all"
+  n=$(wc -l < "$T/uplog.all")
+  [ "$n" -gt 0 ] || return 0
+  head -n 10 "$T/uplog.all" > "$T/uplog"
+  [ "$n" -le 10 ] || echo "... and $((n - 10)) more" >> "$T/uplog"
+  echo "(upstream rebases its kodi branch, so some of these may only look new)" >> "$T/uplog"
+}
 
 # reverse_applies <tree-ish> <patch file>: the change is already in that tree
 reverse_applies() {
@@ -377,7 +394,9 @@ report_conflict() {
     echo "conflicting files:"
     printf '  %s\n' "${files[@]}"
     echo "new upstream kodi commits on them (${OLDPIN:0:12} -> ${PIN:0:12}):"
-    [ ${#files[@]} -eq 0 ] || git log --oneline --cherry-pick --right-only --no-merges "$OLDPIN...$PIN" -- "${files[@]}" | sed 's/^/  /'
+    upstream_commits "$OLDPIN" "$PIN" ${files[@]+"${files[@]}"}
+    sed 's/^/  /' "$T/uplog"
+    [ ! -s "$T/uplog" ] || echo "$PARTLY_HINT"
   } > "$T/report"
   report_block "### kodi patch does not apply" "$T/report"
   git -C "$CEREPO" diff --stat "$MIR" "$TGT" -- "$KPKG/package.mk" "$K1" "$K2" "$K3" > "$T/cestat"
@@ -419,7 +438,10 @@ loop() {
     [ "$now" != "$last" ] || die "no progress in the rebase"; last=$now
     if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
       report_conflict
-      [ -z "$(git rerere remaining 2>/dev/null || true)" ] || say "rerere replayed where it could: review, git add, start"
+      { git rerere status 2>/dev/null || true; } | sort > "$T/rr.known"
+      { git rerere remaining 2>/dev/null || true; } | sort > "$T/rr.left"
+      [ -z "$(comm -23 "$T/rr.known" "$T/rr.left")" ] \
+        || say "rerere replayed an old resolution in some of these: review it, git add, then start"
       needs_human "resolve the conflicts in real code, git add, then run start again"
     elif git rev-parse -q --verify REBASE_HEAD >/dev/null && git diff --cached --quiet; then
       git diff REBASE_HEAD^ REBASE_HEAD > "$T/rh.diff"
@@ -478,6 +500,52 @@ post_asserts() {
     i=$((i + 1))
   done
   check_subjects "$1" HEAD
+}
+
+# shrank <old commit> <new commit>: the new change is a strict subset of the old
+# one - upstream took part of the patch and the rest was kept
+shrank() {
+  git show --format= -U0 "$1" | { grep -E '^[-+]' || true; } | { grep -vE '^(\+\+\+|---) ' || true; } | sort -u > "$T/sh.old"
+  git show --format= -U0 "$2" | { grep -E '^[-+]' || true; } | { grep -vE '^(\+\+\+|---) ' || true; } | sort -u > "$T/sh.new"
+  [ -z "$(comm -13 "$T/sh.old" "$T/sh.new")" ] && [ -n "$(comm -23 "$T/sh.old" "$T/sh.new")" ]
+}
+
+# partly_upstream <old base> <old stack> <new base> <new stack>: add or refresh a
+# Partly-upstream trailer on every commit whose change shrank in the rebase, so the
+# regenerated patch says which upstream commits took the rest. Prints the new stack
+# tip (the old one when there is nothing to record).
+partly_upstream() {
+  local c s o n parent=$3 an ae ad shas
+  local -A trailer=()
+  local -a files
+  git log --format='%H %s' "$1..$2" > "$T/pu.old"
+  git log --reverse --format=%H "$3..$4" > "$T/pu.new"
+  while read -r c; do
+    s=$(subj "$c")
+    o=$(commit_with_subject "$T/pu.old" "$s")
+    [ -n "$o" ] || continue
+    shrank "$o" "$c" || continue
+    git diff -z --name-only "$c^" "$c" > "$T/pu.files"
+    mapfile -d '' -t files < "$T/pu.files"
+    upstream_commits "$(git rev-parse "$1^")" "$(git rev-parse "$3^")" ${files[@]+"${files[@]}"}
+    shas=$(head -n 5 "$T/uplog" | cut -d' ' -f1 | { grep -E '^[0-9a-f]{7,}$' || true; } | paste -sd' ')
+    [ -n "$shas" ] || continue
+    trailer[$s]=$shas
+  done < "$T/pu.new"
+  [ ${#trailer[@]} -gt 0 ] || { echo "$4"; return 0; }
+  while read -r c; do
+    s=$(subj "$c")
+    git log -1 --format=%B "$c" > "$T/pu.msg"
+    if [ -n "${trailer[$s]:-}" ]; then
+      git interpret-trailers --if-exists replace --trailer "Partly-upstream: ${trailer[$s]}" "$T/pu.msg" > "$T/pu.msg2"
+      mv "$T/pu.msg2" "$T/pu.msg"
+      say "recorded Partly-upstream ${trailer[$s]} on '$s'"
+    fi
+    IFS=$'\t' read -r an ae ad < <(git log -1 --format='%an%x09%ae%x09%aI' "$c")
+    n=$(GIT_AUTHOR_NAME=$an GIT_AUTHOR_EMAIL=$ae GIT_AUTHOR_DATE=$ad git commit-tree "$c^{tree}" -p "$parent" -F "$T/pu.msg")
+    parent=$n
+  done < "$T/pu.new"
+  echo "$parent"
 }
 
 # ----------------------------------------------------------- names/regen
@@ -732,6 +800,7 @@ attempt() {
   if [ "$NB" != "$OB" ]; then
     partial "$OB" "$R" "$NB" "$R2" > "$T/partial"
     if [ -s "$T/partial" ]; then
+      echo "$PARTLY_HINT" >> "$T/partial"
       report_block "### partly merged upstream, needs review:" "$T/partial"
       needs_human "a patch changed beyond its context in the rebase: resolve it with yacer-kodi.sh start --upstream"
     fi
@@ -769,8 +838,7 @@ attempt() {
   if [ "$NB" != "$OB" ]; then
     git diff -z --name-only "$NB" "$R2" > "$T/touched"
     mapfile -d '' -t files < "$T/touched"
-    : > "$T/uplog"
-    [ ${#files[@]} -eq 0 ] || git log --oneline --cherry-pick --right-only --no-merges "$OLDPIN...$PIN" -- "${files[@]}" > "$T/uplog"
+    upstream_commits "$OLDPIN" "$PIN" ${files[@]+"${files[@]}"}
     [ ! -s "$T/uplog" ] || report_block "new upstream kodi commits on files our patches touch:" "$T/uplog"
   fi
   [ ! -s "$T/changes" ] || report_block "yacer files:" "$T/changes"
@@ -835,7 +903,12 @@ plan_body() {
     if [ "$stackkodi" = "$(kodiid "$YR" "$M")" ]; then
       report "### upstream does not fit; landing pending changes on the held mirror ${M:0:12}"
       set +e; ( set -e; attempt "$M" mirror ); rc=$?; set -e
-      if [ $rc -eq 0 ]; then emit_attempt mirror; else report "the held-mirror attempt failed too (exit $rc); nothing lands"; fi
+      if [ $rc -ne 0 ]; then
+        report "the held-mirror attempt failed too (exit $rc); nothing lands"
+      else
+        emit_attempt mirror
+        grep -qE '^(xbmc|yacer)=' "$PLAN" || report "nothing was pending; the mirror stays at ${M:0:12}"
+      fi
     else
       report "### held-mirror fallback skipped: yacer-kodi is already on another CoreELEC kodi than the mirror (a landed rebase waits for upstream)"
     fi
@@ -1015,7 +1088,7 @@ after_loop() {
   say "old base ${OB:0:12}, new base ${NB:0:12}"
   if [ "$NB" != "$OB" ]; then
     partial "$OB" "$R" "$NB" HEAD > "$T/partial"
-    [ ! -s "$T/partial" ] || say "changed beyond context by the rebase - review:"$'\n'"$(sed 's/^/    /' "$T/partial")"
+    [ ! -s "$T/partial" ] || say "changed beyond context by the rebase - review:"$'\n'"$(sed 's/^/    /' "$T/partial")"$'\n'"  $PARTLY_HINT"
   fi
   git --no-pager range-diff "$OB..$R" "$NB..HEAD" >&2 || true
   say "next: review, then yacer-kodi.sh land -m <message>"
@@ -1100,7 +1173,7 @@ cmd_enable() {
 }
 
 cmd_land() {
-  local msg R R2 OB NB T2 start old
+  local msg R R2 OB NB T2 T3 start old
   [ "${1:-}" = -m ] && [ -n "${2:-}" ] || die "usage: land -m <message>"
   msg=$2
   local_env
@@ -1124,6 +1197,10 @@ cmd_land() {
   [ "$R2" != "$R" ] || die "nothing to land: the stack is unchanged"
   OB=$(obof "$R"); NB=$(obof "$R2")
   [ -z "$(git rev-list --merges "$NB..$R2")" ] || die "the stack has merge commits"
+  if [ "$NB" != "$OB" ]; then
+    T3=$(partly_upstream "$OB" "$R" "$NB" "$R2")
+    if [ "$T3" != "$R2" ]; then git reset -q --hard "$T3"; R2=$T3; fi
+  fi
   check_subjects "$NB" "$R2"
   git log --reverse --format=%H "$NB..$R2" > "$T/commits"
   mkdir -p "$T/cy"; git -C "$CY" archive HEAD "$Y" | tar -x -C "$T/cy"
@@ -1134,7 +1211,7 @@ cmd_land() {
   say "$(sed 's/^/    /' "$T/changes")"
   if [ "$NB" != "$OB" ]; then
     partial "$OB" "$R" "$NB" "$R2" > "$T/partial"
-    [ ! -s "$T/partial" ] || say "changed beyond context - make sure this is intended:"$'\n'"$(sed 's/^/    /' "$T/partial")"
+    [ ! -s "$T/partial" ] || say "changed beyond context - make sure this is intended:"$'\n'"$(sed 's/^/    /' "$T/partial")"$'\n'"  $PARTLY_HINT"
   fi
   replay "$NB" "$R2" "$T/cy/$Y" yacer-kodi-work
   [ "$NB" = "$R2" ] || identity $(git rev-list "$NB..$R2")
@@ -1239,9 +1316,16 @@ cmd_import() {
     git -C "$XB" update-ref refs/heads/yacer-kodi "$T0" ""
     say "yacer-kodi ${T0:0:12}: $(wc -l < "$T/commits") patch commit(s) on base ${NB:0:12} (kodi ${PIN:0:12})"
     [ ! -s "$T/changes" ] || say "$(cat "$T/changes")"
+    local fmt=0
     for f in "$T/names"/*.patch; do
-      cmp -s "$f" "$T/src/$Y/${f##*/}" || say "  regenerated differs: ${f##*/}"
+      cmp -s "$f" "$T/src/$Y/${f##*/}" && continue
+      if [ "$(git patch-id --stable < "$f" | cut -d' ' -f1)" = "$(git patch-id --stable < "$T/src/$Y/${f##*/}" | cut -d' ' -f1)" ]; then
+        fmt=$((fmt + 1))
+      else
+        say "  regenerated with a different change: ${f##*/} - check it before pushing"
+      fi
     done
+    [ "$fmt" -eq 0 ] || say "  $fmt file(s) differ in formatting only (zero From line, full index lines, hunk offsets)"
   )
   rc=$?
   set -e
