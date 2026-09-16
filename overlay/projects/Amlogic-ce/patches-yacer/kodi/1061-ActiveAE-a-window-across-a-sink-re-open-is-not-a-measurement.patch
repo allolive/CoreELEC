@@ -11,10 +11,10 @@ different pipelines reported as one figure. Drop the window instead.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 94990dda3a310fd07b0bb42bd0a5cbccd9aa09f1..78188cba4d332c0a7a6411701a87b7cffb71f27e 100644
+index 94990dda3a310fd07b0bb42bd0a5cbccd9aa09f1..73cd5ecadd04f0d31d4be14ec6451e2355ef8b23 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -1237,6 +1237,31 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
+@@ -1237,6 +1237,32 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
        m_currDevice.compare(dev.name) != 0 || m_settings.driver.compare(dev.driver) != 0)
    {
      FlushEngine();
@@ -41,12 +41,13 @@ index 94990dda3a310fd07b0bb42bd0a5cbccd9aa09f1..78188cba4d332c0a7a6411701a87b7cf
 +                                : stream->GetErrorInterval();
 +      stream->m_syncError.Flush(interval);
 +      stream->m_syncErrorRaw.Flush(interval);
++      m_stats.UpdateStream(stream);
 +    }
 +
      if (!InitSink())
        return;
      m_settings.driver = dev.driver;
-@@ -1245,6 +1270,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
+@@ -1245,6 +1271,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
          requestedDefaultDevice || !IsSameDevice(m_openedDriver, m_openedDevice, dev);
      initSink = true;
      m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);

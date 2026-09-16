@@ -13,10 +13,10 @@ Shared filesystem code: the keep-alive lives here and nowhere else.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index fc3e02ff7cb8d6ab1bf1a8eaaddffcca4dfa7ca7..44901b39a370bbbd9a74e8d70c04e001c25b73d2 100644
+index 4399b2b9e173d52d930ca8d2ceee43a87c2250eb..0e0e1c6105434d9d5f3040f9b932e4137d9743c6 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
-@@ -479,6 +479,12 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -508,6 +508,12 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
    if (!lock.owns_lock())
      return;
  

@@ -12,10 +12,10 @@ Shared filesystem code: the locks live here and nowhere else.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 3242b9693d693b466dd59d8b196657fd46662ce4..fc3e02ff7cb8d6ab1bf1a8eaaddffcca4dfa7ca7 100644
+index 01197464bab44a59337a19add57853ef6b37554a..4399b2b9e173d52d930ca8d2ceee43a87c2250eb 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
-@@ -473,11 +473,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -502,11 +502,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
    if (!pContext)// this should normally never happen - paranoia
      pContext = m_pNfsContext;
  

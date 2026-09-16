@@ -9,6 +9,10 @@ each holds its own offset perfectly, which is a rate loop doing exactly its job
 and no more. Aim it off centre until the standing offset is gone, then let it
 settle back.
 
+Off keeps measuring with the ceiling at zero, so the stand-down watchdog counts
+only while the ceiling permits a write: an unwritten level cannot show whether
+the clock answers.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
@@ -89,7 +93,7 @@ index e3a9fba2c159dd02fb6471a5627b80e669cd2baf..edde0440b5d22cd151ceed4aa2a8cd5a
      <category id="cache" label="439" help="36399">
        <visible>false</visible>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
-index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb827280318f46d 100644
+index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b61cf7c9d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -10,10 +10,14 @@
@@ -293,22 +297,26 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb82728
  
    // Held against its limit while the drift says nothing changed. The level has
    // been moved by its whole range and the measurement has not answered, so
-@@ -309,9 +438,12 @@ void CAMLAudioTrim::Settle(double reading)
+@@ -309,9 +438,15 @@ void CAMLAudioTrim::Settle(double reading)
    // giving up would hand back the part it had. So the test is not "still
    // drifting" but "moved the level and nothing happened".
    const double moved = m_haveDriftAtZero ? std::abs(drift - m_driftAtZero) : 0.0;
 -  const bool answered = moved > 0.5 * MAX_LEVEL * STEP_RATE;
-+  const bool answered = moved > 0.5 * MAX_LEVEL_RATE * STEP_RATE;
- 
+-
 -  if (std::abs(m_want) >= MAX_LEVEL && std::abs(drift) > ANSWERED && !answered)
++  const bool answered = moved > 0.5 * MAX_LEVEL_RATE * STEP_RATE;
++
 +  // Against err and not drift. Walking an offset out means deliberately holding
 +  // a large rate error, and a level sitting at its limit doing exactly what it
 +  // was told is not a knob that has stopped listening.
-+  if (std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED && !answered)
++  // A level the ceiling never let reach the clock says nothing about whether the
++  // clock listens, so this only counts while a write is permitted.
++  if (m_levelMax > 0.0 && std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED &&
++      !answered)
      ++m_clamped;
    else
      m_clamped = 0;
-@@ -324,19 +456,32 @@ void CAMLAudioTrim::Settle(double reading)
+@@ -324,19 +459,32 @@ void CAMLAudioTrim::Settle(double reading)
                drift * 1e6, m_clamped);
      m_want = 0.0;
      m_dither = 0.0;
@@ -345,7 +353,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb82728
    if (m_stopped)
      return;
  
-@@ -390,6 +535,48 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -390,6 +538,48 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
      return;
    }
  
@@ -394,7 +402,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb82728
    if (error)
    {
      // A clock step moves the error without the audio rate having changed, and
-@@ -451,16 +638,17 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -451,16 +641,17 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
    // Sigma-delta: the fraction the level cannot express is carried and paid off
    // by the next slot that can, so the average over a few slots is the wanted
    // level even though every slot is a whole one.
@@ -418,7 +426,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..f6f88d08c302edcb3a15a14e4bb82728
    // Against the register, not against what was last written to it. A remembered
    // value that the register no longer holds is a loop that has stopped driving
    // and cannot tell: it goes on integrating, reaches its limit, and leaves the
-@@ -473,6 +661,27 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -473,6 +664,27 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
      return;
  
    m_applied = *got;

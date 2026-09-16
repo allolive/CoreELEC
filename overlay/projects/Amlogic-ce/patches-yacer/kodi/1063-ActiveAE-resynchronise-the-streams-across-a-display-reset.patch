@@ -11,10 +11,10 @@ hundred milliseconds or more. Resynchronise them.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 3dfd7a40f3c4bb3157c72ed9845cb047d18e03de..31e9c9fb986a7613bc940a533936481b4f21c38e 100644
+index 21dde9257ed2889f4ed0dd0c8185374b81293c69..d941256c8dace2cbc43a24165860c27f33949288 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -928,6 +928,19 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
+@@ -928,6 +928,22 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
              ValidateOutputDevices(false);
            }
            Configure();
@@ -29,7 +29,10 @@ index 3dfd7a40f3c4bb3157c72ed9845cb047d18e03de..31e9c9fb986a7613bc940a533936481b
 +            // enters the state machine, so marking it would strand it here.
 +            for (auto& stream : m_streams)
 +              if (stream->m_pClock)
++              {
 +                stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
++                m_stats.UpdateStream(stream);
++              }
 +          }
            if (!displayReset)
              msg->Reply(CActiveAEControlProtocol::ACC);

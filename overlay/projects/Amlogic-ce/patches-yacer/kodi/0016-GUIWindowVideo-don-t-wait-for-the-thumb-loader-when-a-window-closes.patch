@@ -3,64 +3,69 @@ From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] GUIWindowVideo: leave video views without waiting on artwork
 
-Leaving a video window called StopThread() on the thumb loader, joining it
-on the GUI thread until a slow share answered. Ask it to stop without
-joining, as before playback; the next Load() joins it. The window is only
-deactivated and ignores the loader's results; shutdown still joins, as the
-texture cache is torn down first. CGUIWindowVideoNav stops the loader
-itself, so it changes too. Shared GUI code with no Amlogic counterpart.
+Leaving a video window asks the thumb loader to stop without joining it, so a
+slow share cannot hold the GUI thread; the next Load() joins it. A forced
+resource unload joins it, before the texture cache is torn down, and covers
+windows that were never deactivated. Shared GUI code with no Amlogic
+counterpart.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/windows/GUIWindowVideoBase.cpp b/xbmc/video/windows/GUIWindowVideoBase.cpp
-index 2584ba7256955a6c858e29eb5820f82f490fed40..fbc76542044899e9027ffd54e92781f9f48470e5 100644
+index 2584ba7256955a6c858e29eb5820f82f490fed40..e07cda18ad1b9beae6d7b90c64c1174097720979 100644
 --- a/xbmc/video/windows/GUIWindowVideoBase.cpp
 +++ b/xbmc/video/windows/GUIWindowVideoBase.cpp
-@@ -131,8 +131,16 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
+@@ -104,6 +104,14 @@ CGUIWindowVideoBase::CGUIWindowVideoBase(int id, const std::string &xmlFile)
+ 
+ CGUIWindowVideoBase::~CGUIWindowVideoBase() = default;
+ 
++void CGUIWindowVideoBase::FreeResources(bool forceUnload)
++{
++  if (forceUnload)
++    m_thumbLoader.StopThread();
++
++  CGUIMediaWindow::FreeResources(forceUnload);
++}
++
+ bool CGUIWindowVideoBase::OnAction(const CAction &action)
+ {
+   if (action.GetID() == ACTION_SCAN_ITEM)
+@@ -131,8 +139,9 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
    switch ( message.GetMessage() )
    {
    case GUI_MSG_WINDOW_DEINIT:
-+    // Don't wait for the item being loaded: on a slow share that read can take tens
-+    // of seconds. The window stays alive, and the loader is joined before reuse. At
-+    // shutdown it has to finish now, before the services it uses are torn down.
-     if (m_thumbLoader.IsLoading())
+-    if (m_thumbLoader.IsLoading())
 -      m_thumbLoader.StopThread();
-+    {
-+      if (g_application.IsStopping())
-+        m_thumbLoader.StopThread();
-+      else
-+        m_thumbLoader.StopAsync();
-+    }
++    // Don't wait for the item being loaded: on a slow share that read can take tens
++    // of seconds. A forced resource unload joins it before the texture cache goes.
++    m_thumbLoader.StopAsync();
      m_database.Close();
      break;
  
+diff --git a/xbmc/video/windows/GUIWindowVideoBase.h b/xbmc/video/windows/GUIWindowVideoBase.h
+index d28757d5a8e89629f202b65f8805eeb63d737cb7..55adf8e46ab5200526f33f3c226e0ff1bc4c7ee6 100644
+--- a/xbmc/video/windows/GUIWindowVideoBase.h
++++ b/xbmc/video/windows/GUIWindowVideoBase.h
+@@ -18,6 +18,7 @@ class CGUIWindowVideoBase : public CGUIMediaWindow, public IBackgroundLoaderObse
+ public:
+   CGUIWindowVideoBase(int id, const std::string &xmlFile);
+   ~CGUIWindowVideoBase(void) override;
++  void FreeResources(bool forceUnload = false) override;
+   bool OnMessage(CGUIMessage& message) override;
+   bool OnAction(const CAction &action) override;
+   bool OnPopupMenu(int iItem) override;
 diff --git a/xbmc/video/windows/GUIWindowVideoNav.cpp b/xbmc/video/windows/GUIWindowVideoNav.cpp
-index c240fee5b18188d559edec5bc9a7f4cf86f0dae7..3985bfb9d6e98eaf644e0d801b7aa22454dc01af 100644
+index c240fee5b18188d559edec5bc9a7f4cf86f0dae7..f7985b31464ce1a08d7e2924cbe4c9730483f85f 100644
 --- a/xbmc/video/windows/GUIWindowVideoNav.cpp
 +++ b/xbmc/video/windows/GUIWindowVideoNav.cpp
-@@ -14,6 +14,7 @@
- #include "PartyModeManager.h"
- #include "ServiceBroker.h"
- #include "Util.h"
-+#include "application/Application.h"
- #include "dialogs/GUIDialogMediaSource.h"
- #include "dialogs/GUIDialogYesNo.h"
- #include "filesystem/Directory.h"
-@@ -112,8 +113,16 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
+@@ -111,10 +111,6 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
+   case GUI_MSG_WINDOW_RESET:
      m_vecItems->SetPath("");
      break;
-   case GUI_MSG_WINDOW_DEINIT:
-+    // Don't wait for the item being loaded: on a slow share that read can take tens
-+    // of seconds. The window stays alive, and the loader is joined before reuse. At
-+    // shutdown it has to finish now, before the services it uses are torn down.
-     if (m_thumbLoader.IsLoading())
+-  case GUI_MSG_WINDOW_DEINIT:
+-    if (m_thumbLoader.IsLoading())
 -      m_thumbLoader.StopThread();
-+    {
-+      if (g_application.IsStopping())
-+        m_thumbLoader.StopThread();
-+      else
-+        m_thumbLoader.StopAsync();
-+    }
-     break;
+-    break;
    case GUI_MSG_WINDOW_INIT:
      {
+       /* We don't want to show Autosourced items (ie removable pendrives, memorycards) in Library mode */

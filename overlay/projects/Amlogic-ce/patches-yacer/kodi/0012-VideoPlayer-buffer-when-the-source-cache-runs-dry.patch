@@ -3,17 +3,19 @@ From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] VideoPlayer: show buffering when a network file runs dry
 
-The buffering handler waits for both demux queues to drain to half, and
-the video queue never does once the picture stops. Where the codec keeps
-its own compressed buffer (Amlogic), buffer on the source cache instead,
-reading nothing during the hold (a stalled read can end demuxing), until
-2 s is cached, the cache is full or holds the rest, or the source is slow.
-Shared player code: only CVideoPlayer can pause the clock and read cache.
+A source that stops keeping up drained the demux queues and played on with
+nothing behind them. Watch the forward cache, and hold playback in the caching
+state while it is short, reading nothing during the hold so a read cannot stall
+part way through a demuxer element.
+
+The cache says when its source has no more to give, which ends the hold: a
+source that stops early never reaches the length it advertised, and nothing
+reads during a hold to find the end of the file.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64be2cf9ca1 100644
+index a2135da1ab7778caa320ae7299b26f74c8185963..a0a0d31dd3d2af53e4f543b5880ee5206fd4009a 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1789,6 +1789,15 @@ void CVideoPlayer::Process()
@@ -56,7 +58,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
  CacheInfo CVideoPlayer::GetCachingTimes()
  {
    CacheInfo info{};
-@@ -2198,6 +2224,11 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2198,6 +2224,12 @@ CacheInfo CVideoPlayer::GetCachingTimes()
    info.level = 0.0;
    info.offset = (cached + queued) / length;
    info.time = 0.0;
@@ -65,10 +67,11 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
 +  info.forwardTime =
 +      (play_sbp > 0.0) ? (static_cast<double>(cached) * play_sbp / DVD_TIME_BASE) : -1.0;
 +  info.endCached = (cached >= static_cast<uint64_t>(remain));
++  info.endOfInput = status.endOfInput;
    info.valid = true;
  
    if (currate == 0)
-@@ -2223,6 +2254,59 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2223,6 +2255,59 @@ CacheInfo CVideoPlayer::GetCachingTimes()
    return info;
  }
  
@@ -105,7 +108,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
 +  const bool settling = !m_syncTimer.IsTimePast() || !m_srcUnderrunCooldown.IsTimePast();
 +
 +  const CacheInfo cache = GetCachingTimes();
-+  if (!cache.valid || cache.endCached || cache.forwardTime < 0.0 ||
++  if (!cache.valid || cache.endCached || cache.endOfInput || cache.forwardTime < 0.0 ||
 +      cache.forwardTime > SRC_UNDERRUN_TIME || cache.level < 0.0 ||
 +      cache.level >= SRC_RESUME_LEVEL || (settling && cache.forwardTime > SRC_EMPTY_TIME))
 +    return false;
@@ -128,7 +131,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
  void CVideoPlayer::HandlePlaySpeed()
  {
    const bool isInMenu = IsInMenuInternal();
-@@ -2232,7 +2316,29 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2232,7 +2317,32 @@ void CVideoPlayer::HandlePlaySpeed()
    if (tolerateStall && m_caching != CACHESTATE_DONE)
      SetCaching(CACHESTATE_DONE);
  
@@ -144,8 +147,11 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
 +    // on a cache that may still be short in seconds, so they keep the cooldown, or
 +    // the hold would be taken again within a second, over and over.
 +    const bool recovered = cache.valid && cache.forwardTime >= SRC_RESUME_TIME;
-+    const bool stopWaiting =
-+        !cache.valid || cache.endCached || cache.level < 0.0 || cache.level >= SRC_RESUME_LEVEL;
++    // endOfInput as well as endCached: a source that stops early never reaches the
++    // length it advertised, and nothing reads during a hold, so without this the
++    // wait is for bytes that are never coming.
++    const bool stopWaiting = !cache.valid || cache.endCached || cache.endOfInput ||
++                             cache.level < 0.0 || cache.level >= SRC_RESUME_LEVEL;
 +
 +    if (recovered || stopWaiting)
 +    {
@@ -159,7 +165,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
    {
      CacheInfo cache = GetCachingTimes();
      if (cache.valid)
-@@ -2308,6 +2414,11 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2308,6 +2418,11 @@ void CVideoPlayer::HandlePlaySpeed()
    {
      if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
      {
@@ -171,7 +177,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
        // take action if audio or video stream is stalled
        if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
             (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
-@@ -3613,6 +3724,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3613,6 +3728,7 @@ void CVideoPlayer::HandleMessages()
  
        m_playSpeed = speed;
  
@@ -179,7 +185,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
        m_caching = CACHESTATE_DONE;
        m_clock.SetSpeed(speed);
        m_VideoPlayerAudio->SetSpeed(speed);
-@@ -3700,6 +3812,18 @@ void CVideoPlayer::HandleMessages()
+@@ -3700,6 +3816,18 @@ void CVideoPlayer::HandleMessages()
  
  void CVideoPlayer::SetCaching(ECacheState state)
  {
@@ -198,7 +204,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
    if(state == CACHESTATE_FLUSH)
    {
      CacheInfo cache = GetCachingTimes();
-@@ -3707,6 +3831,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
+@@ -3707,6 +3835,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
        state = CACHESTATE_FULL;
      else
        state = CACHESTATE_INIT;
@@ -210,7 +216,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
    }
  
    if(m_caching == state)
-@@ -5927,6 +6056,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -5927,6 +6060,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
    double queueTime = GetQueueTime();
    CacheInfo cache = GetCachingTimes();
  
@@ -220,7 +226,7 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
    if (cache.valid)
    {
      state.cache_level = std::max(0.0, std::min(1.0, cache.level));
-@@ -5940,6 +6072,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -5940,6 +6076,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
      state.cache_time = queueTime / 1000.0;
    }
  
@@ -232,19 +238,20 @@ index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64b
    if (m_pInputStream && m_pInputStream->GetCacheStatus(&status))
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 27f65efde7438678fd0d6f0a690875e441acc240..a8713a9527b699547e5f3e3567a856fa47fda907 100644
+index 27f65efde7438678fd0d6f0a690875e441acc240..91319b183f5152b19f4a380a6eed1595bdb2974c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -263,6 +263,8 @@ struct CacheInfo
+@@ -263,6 +263,9 @@ struct CacheInfo
    double level; // current cache level
    double offset; // percentage of file ahead of current position
    double time; // estimated playback time of current cached bytes
 +  double forwardTime; // seconds of content cached ahead, at the file's average bitrate
 +  bool endCached; // the rest of the file is already cached
++  bool endOfInput; // the source has no more data to give
    bool valid;
  };
  
-@@ -481,6 +483,7 @@ protected:
+@@ -481,6 +484,7 @@ protected:
  
    void HandleMessages();
    void HandlePlaySpeed();
@@ -252,7 +259,7 @@ index 27f65efde7438678fd0d6f0a690875e441acc240..a8713a9527b699547e5f3e3567a856fa
    bool IsInMenuInternal() const;
    void SynchronizeDemuxer();
    void QueueAutoSceneSkip(std::chrono::milliseconds seekTime);
-@@ -563,6 +566,11 @@ protected:
+@@ -563,6 +567,11 @@ protected:
  
    ECacheState  m_caching;
    XbmcThreads::EndTime<> m_cachingTimer;
@@ -264,3 +271,27 @@ index 27f65efde7438678fd0d6f0a690875e441acc240..a8713a9527b699547e5f3e3567a856fa
  
    std::unique_ptr<CProcessInfo> m_processInfo;
  
+diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
+index 768132d8ebe52a6b5692f3b69b923f8b0aa81593..9735cc26244953a7a4cf8486f09eef5714104491 100644
+--- a/xbmc/filesystem/FileCache.cpp
++++ b/xbmc/filesystem/FileCache.cpp
+@@ -742,6 +742,7 @@ int CFileCache::IoControl(IOControl request, void* param)
+     status->maxrate = m_writeRate;
+     status->currate = m_writeRateActual;
+     status->lowrate = m_writeRateLowSpeed;
++    status->endOfInput = m_pCache->IsEndOfInput();
+     m_writeRateLowSpeed = 0; // Reset low speed condition
+     return 0;
+   }
+diff --git a/xbmc/filesystem/IFileTypes.h b/xbmc/filesystem/IFileTypes.h
+index ba0eec0cb1aa11efd3b6ceecc69550a8ba0ec8eb..00ecaf8782934016ef3ece10ba2e16aaf12964bd 100644
+--- a/xbmc/filesystem/IFileTypes.h
++++ b/xbmc/filesystem/IFileTypes.h
+@@ -55,6 +55,7 @@ struct SCacheStatus
+   uint32_t maxrate; /**< maximum allowed read(fill) rate (bytes/second) */
+   uint32_t currate; /**< average read rate (bytes/second) since last position change */
+   uint32_t lowrate; /**< low speed read rate (bytes/second) (if any, else 0) */
++  bool endOfInput{false}; /**< the source has no more data to give */
+ };
+ 
+ enum class CacheBufferMode

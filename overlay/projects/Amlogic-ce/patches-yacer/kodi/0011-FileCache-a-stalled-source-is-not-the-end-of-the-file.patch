@@ -3,31 +3,20 @@ From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Wed, 16 Sep 2026 10:06:26 -0400
 Subject: [PATCH] FileCache: don't stop playback when a network share stalls
 
-A stalled share ended playback: the file cache reported the stall as end
-of file. Retry a failed read, return EAGAIN while the input has not ended
-and pass it through, and wait 1 s instead of 10 so the player can buffer.
-A stall mid-Matroska-element can still end demuxing until the next seek.
-On every platform a failing read now retries until the user stops. Shared
-code: FileCache, the input stream and the demuxer are not AML-reachable.
+A stalled source returned no bytes, which the cache reported as the end of the
+file and the player acted on by stopping.
+
+NFSFile now separates the RPC layer's verdict from the file's own: a transport
+failure, a cancelled call, a jukebox reply or a dead socket can all succeed on a
+later read, and say so with -EAGAIN. The cache retries that whatever length the
+source advertised, so a live or chunked stream is covered too, and leaves every
+other failure to the stock test rather than retrying a permanent error forever.
+A read that finds nothing cached reports the stall through errno, as the other
+failures here do, and the player's own input stream turns it into the -EAGAIN
+ffmpeg understands.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/addons/interfaces/Filesystem.cpp b/xbmc/addons/interfaces/Filesystem.cpp
-index 4bf0cf040019f6267cac8dbd61273fe4f0dcadda..612158976e34f3c08d323536f805f28bb690018f 100644
---- a/xbmc/addons/interfaces/Filesystem.cpp
-+++ b/xbmc/addons/interfaces/Filesystem.cpp
-@@ -833,7 +833,10 @@ ssize_t Interface_Filesystem::read_file(void* kodiBase, void* file, void* ptr, s
-     return -1;
-   }
- 
--  return static_cast<CFile*>(file)->Read(ptr, size);
-+  // The ABI documents -1 for any error, so do not let an internal error value
-+  // through - the file cache reports a stalled source as one.
-+  const ssize_t ret = static_cast<CFile*>(file)->Read(ptr, size);
-+  return ret < 0 ? -1 : ret;
- }
- 
- bool Interface_Filesystem::read_file_string(void* kodiBase,
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 index 5a3e21b394b13e35356458e1776733db184a73a1..559b3bfb097c9e84a9a9cd26a5f1985ec2c0fefb 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
@@ -47,7 +36,7 @@ index 5a3e21b394b13e35356458e1776733db184a73a1..559b3bfb097c9e84a9a9cd26a5f1985e
        // check for saved packet after a program change
        if (m_pkt.result < 0)
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index a129064892b5eb255675f2e22b86e16bcd7d3afd..67d6ecf956835e930fd267a478a08d0560862830 100644
+index a129064892b5eb255675f2e22b86e16bcd7d3afd..0684c0dcb420b61c11abfa8d5adaae464ef81c36 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 @@ -14,6 +14,8 @@
@@ -59,18 +48,21 @@ index a129064892b5eb255675f2e22b86e16bcd7d3afd..67d6ecf956835e930fd267a478a08d05
  using namespace KODI;
  using namespace XFILE;
  
-@@ -95,6 +97,9 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
- 
+@@ -96,7 +98,12 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
    ssize_t ret = m_pFile->Read(buf, buf_size);
  
-+  if (ret == -EAGAIN)
-+    return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
-+
    if (ret < 0)
++  {
++    if (errno == EAGAIN)
++      return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
++
      return -1; // player will retry read in case of error until playback is stopped
++  }
  
+   /* we currently don't support non completing reads */
+   if (ret == 0)
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index f9f8b521d70062a33677965d7718aab38f3cc1ce..a0f3131cd90412a9a330991632a7af353b5e539c 100644
+index f9f8b521d70062a33677965d7718aab38f3cc1ce..768132d8ebe52a6b5692f3b69b923f8b0aa81593 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -25,6 +25,7 @@
@@ -81,19 +73,20 @@ index f9f8b521d70062a33677965d7718aab38f3cc1ce..a0f3131cd90412a9a330991632a7af35
  #include <inttypes.h>
  #include <memory>
  #include <stdexcept>
-@@ -410,8 +411,9 @@ void CFileCache::Process()
+@@ -410,8 +411,10 @@ void CFileCache::Process()
        iRead = m_source->Read(buffer.get(), maxSourceRead);
      if (iRead <= 0)
      {
 -      // Check for actual EOF and retry as long as we still have data in our cache
 -      if (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0)
-+      // A failed read before the end of the file is a stall, so retry it even once the
-+      // player has caught up.
-+      if (m_writePos < m_fileSize && (iRead < 0 || m_pCache->WaitForData(0, 0ms) > 0))
++      // A source that can answer a later read says so with -EAGAIN, whatever length
++      // it advertised, so a stalled live or chunked stream is retried too. Anything
++      // else is the source's own answer and keeps the stock test.
++      if (iRead == -EAGAIN || (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0))
        {
          CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                    __FUNCTION__, m_sourcePath, iRead);
-@@ -566,15 +568,26 @@ retry:
+@@ -566,15 +569,27 @@ retry:
        return -1;
      }
  
@@ -117,8 +110,71 @@ index f9f8b521d70062a33677965d7718aab38f3cc1ce..a0f3131cd90412a9a330991632a7af35
 +    {
 +      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read", __FUNCTION__,
 +                m_sourcePath);
-+      return -EAGAIN;
++      SetLastError(EAGAIN);
++      return -1;
 +    }
    }
  
    if (iRc == CACHE_RC_TIMEOUT)
+diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
+index 3242b9693d693b466dd59d8b196657fd46662ce4..01197464bab44a59337a19add57853ef6b37554a 100644
+--- a/xbmc/filesystem/NFSFile.cpp
++++ b/xbmc/filesystem/NFSFile.cpp
+@@ -21,6 +21,7 @@
+ #include "utils/URIUtils.h"
+ #include "utils/log.h"
+ 
++#include <cerrno>
+ #include <inttypes.h>
+ #include <mutex>
+ 
+@@ -58,6 +59,34 @@ constexpr auto IDLE_TIMEOUT = 30s; // close fast unused contexts when no active
+ 
+ constexpr int NFS4ERR_EXPIRED = -11; // client session expired due idle time greater than lease_time
+ 
++// libnfs hands back the RPC layer's verdict: a transport failure as -EFAULT, a
++// cancelled call as -EINTR, NFS3ERR_JUKEBOX as -EAGAIN, and a server that stopped
++// answering as one of the socket errors. A later read can succeed after any of
++// them; the file's own answers stand.
++bool IsTransientReadError(ssize_t err)
++{
++  switch (-err)
++  {
++    case EAGAIN:
++    case EINTR:
++    case EFAULT:
++    case EIO:
++    case EPIPE:
++    case ETIMEDOUT:
++    case ECONNRESET:
++    case ECONNABORTED:
++    case ECONNREFUSED:
++    case ENETDOWN:
++    case ENETRESET:
++    case ENETUNREACH:
++    case EHOSTDOWN:
++    case EHOSTUNREACH:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ constexpr auto SETTING_NFS_VERSION = "nfs.version";
+ constexpr auto SETTING_NFS_CHUNKSIZE = "nfs.chunksize";
+ } // unnamed namespace
+@@ -764,9 +793,14 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
+ 
+   //something went wrong ...
+   if (numberOfBytesRead < 0)
++  {
+     CLog::Log(LOGERROR, "{} - Error( {}, {} )", __FUNCTION__, (int64_t)numberOfBytesRead,
+               nfs_get_error(m_pNfsContext));
+ 
++    if (IsTransientReadError(numberOfBytesRead))
++      return -EAGAIN;
++  }
++
+   return numberOfBytesRead;
+ }
+ 

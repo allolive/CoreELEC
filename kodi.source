@@ -1,13 +1,13 @@
-branch 4eaf79a54ef7cbe7a4fd0e5f265ff43317d8a3b6
+branch fd1dbc690ce80fc647b3665b5a336cdd96e429e4
 kodi 8d5280da98d3ec93981127776300abfab2e23d7f b244790ad01e056569256c36e11b1b92e4c26466 -
 patch c0fc414c253821020c42696aaa75a693e120dd87 0010-ProcessInfo-publish-whether-the-video-codec-buffers.patch ProcessInfo: let a video decoder say it holds video of its own
-patch 10deee25ddb02add755dd324ae069f4ed7b8b457 0011-FileCache-a-stalled-source-is-not-the-end-of-the-file.patch FileCache: don't stop playback when a network share stalls
-patch ff505df338c3ed6cbc2d6d93c08c610d4aac2e84 0012-VideoPlayer-buffer-when-the-source-cache-runs-dry.patch VideoPlayer: show buffering when a network file runs dry
+patch 3365e1df08a2a73afe089228fcd5e4df5dfe5981 0011-FileCache-a-stalled-source-is-not-the-end-of-the-file.patch FileCache: don't stop playback when a network share stalls
+patch 68571d6ae56ac721fa05f5ff54c9b6bd3795c697 0012-VideoPlayer-buffer-when-the-source-cache-runs-dry.patch VideoPlayer: show buffering when a network file runs dry
 patch 036f4dc25e46c073b188918b25a10ea0d7bb8a0a 0013-DVDVideoCodecAmlogic-publish-that-the-codec-buffers.patch DVDVideoCodecAmlogic: turn on the network buffering fix
-patch ed1d18cecd8a8b8f4d613d933fe1376c064db84d 0014-NFSFile-don-t-deadlock-the-main-thread-in-keep-alive.patch NFSFile: fix a rare freeze when an NFS file is closed
-patch 4d3badfc5534fb88027d3aa0d024aac5749f54d4 0015-NFSFile-don-t-send-NFSv3-keep-alives-from-the-main-thread.patch NFSFile: don't freeze Kodi when an NFS server stops answering
-patch c75c970f1bb4385468cfcf08f33107f390ccc3af 0016-GUIWindowVideo-don-t-wait-for-the-thumb-loader-when-a-window-closes.patch GUIWindowVideo: leave video views without waiting on artwork
-patch 9516b63efa245f232e9c4560bddfab03de87e28a 0017-DVDDemuxFFmpeg-don-t-end-playback-when-a-network-share-is-slow.patch DVDDemuxFFmpeg: don't end playback when a network share is slow
+patch 5bcb320a56aaf2c0bb6b5203dffec46996cdbb28 0014-NFSFile-don-t-deadlock-the-main-thread-in-keep-alive.patch NFSFile: fix a rare freeze when an NFS file is closed
+patch 1dea0d7ffe8ac77ad66e9e26be8d58d6d9b9e5ac 0015-NFSFile-don-t-send-NFSv3-keep-alives-from-the-main-thread.patch NFSFile: don't freeze Kodi when an NFS server stops answering
+patch a902383ac4da7e1b6e4389f849346ae20f426f20 0016-GUIWindowVideo-don-t-wait-for-the-thumb-loader-when-a-window-closes.patch GUIWindowVideo: leave video views without waiting on artwork
+patch 57f38afcc24d48b8cbb083b19cee71cdbc35258f 0017-DVDDemuxFFmpeg-don-t-end-playback-when-a-network-share-is-slow.patch DVDDemuxFFmpeg: don't end playback when a network share is slow
 patch e8d3393903e8ceaec146b06eb9e4fe6e9fe6ea02 0020-VideoDatabase-read-a-stream-details-row-in-one-place.patch VideoDatabase: prepare for reading stream details in bulk
 patch 484e915b8602d8241d6a03331b21a51b4ac0d7c3 0021-VideoDatabase-look-up-the-art-of-many-items-at-once.patch VideoDatabase: look up artwork for many items at once
 patch 2ef6d63ccc9b17601d7f8ae95a10314712770b73 0022-VideoThumbLoader-read-the-art-of-a-list-500-items-at-a-time.patch VideoThumbLoader: load library artwork faster
@@ -35,11 +35,13 @@ patch 98e70b2476e09d0e5b8dcdb555eb74488315d675 1056-AMLLatency-say-when-the-cloc
 patch d2232ffe23d22b38b1ad70185f774605ec000afe 1057-VideoPlayerAudio-step-the-clock-by-the-error-that-was-measured.patch VideoPlayerAudio: fully correct TrueHD lip sync errors
 patch c0b196efa11df4c647df2af4db9505107da554f6 1058-VideoPlayerAudio-correct-once-after-every-resynchronisation.patch VideoPlayerAudio: remove leftover lip sync offset after a resync
 patch 2823dbef58f66ca128fb5ddc6f000d822d0eaac2 1059-AMLAudioTrim-hold-the-audio-clock-in-step-with-the-master-clock.patch AMLAudioTrim: stop passthrough audio drifting from the picture
-patch 1e82f293dec38f1e11e8313e21242543f57f2990 1060-AMLAudioTrim-aim-the-rate-loop-off-to-null-the-residual-offset.patch AMLAudioTrim: remove leftover lip sync offset in passthrough
-patch ba04397c3171717869137cf42de933c9abc62c86 1061-ActiveAE-a-window-across-a-sink-re-open-is-not-a-measurement.patch ActiveAE: ignore sync readings taken across an audio reopen
-patch 050df56f00c154164d7d123cc279a290f06f37d8 1062-ActiveAE-credit-the-sync-error-in-the-domain-it-is-measured-in.patch ActiveAE: don't cut TrueHD sync corrections short
-patch eade06f0fd498a27af6057d367fad2d1721e942a 1063-ActiveAE-resynchronise-the-streams-across-a-display-reset.patch ActiveAE: resync audio after a TV mode change
-patch 8ddcbdad35bd7e0bcf7a3e40fecb0780e5cbd99c 1064-ActiveAE-judge-the-sync-band-in-real-time-too.patch ActiveAE: don't leave TrueHD sync error behind
+patch ae08217a294ba810776b4d76313a319aad003afb 1060-AMLAudioTrim-aim-the-rate-loop-off-to-null-the-residual-offset.patch AMLAudioTrim: remove leftover lip sync offset in passthrough
+patch 887e9538f4a9c4e72ec514939638264c0931b343 1061-ActiveAE-a-window-across-a-sink-re-open-is-not-a-measurement.patch ActiveAE: ignore sync readings taken across an audio reopen
+patch efc602d4959616752321cc1d571a66c30ddf7bb2 1062-ActiveAE-credit-the-sync-error-in-the-domain-it-is-measured-in.patch ActiveAE: don't cut TrueHD sync corrections short
+patch 9662f7680c551140fe42461839c3681e1da348ee 1063-ActiveAE-resynchronise-the-streams-across-a-display-reset.patch ActiveAE: resync audio after a TV mode change
+patch 7ce4c7fb0463e16fd3ccf356cbacea9b5d912a8e 1064-ActiveAE-judge-the-sync-band-in-real-time-too.patch ActiveAE: don't leave TrueHD sync error behind
 patch 8832b5dbc77d34e37c5eacdb640314277b1efe3c 1100-hdr10plus-to-dolby-vision-conversion.patch AML: play HDR10+ videos as Dolby Vision
 patch f3ac51c09664d61562fbb6f1035d88ee9143b98b 1101-DVDVideoCodecAmlogic-mark-the-pictures-the-player-a.patch DVDVideoCodecAmlogic: catch up faster after a seek
 patch 0a3ab5172d67aebfe511c3ea3be907cc99995611 1103-AEStreamInfo-defeat-dialogue-normalisation-in-passthrough.patch AEStreamInfo: stop receivers turning dialogue down in passthrough
+patch 1953bf0253663b6a1887502a2368e069cda9e9a7 1104-AMLCodec-fix-a-rare-crash-when-playback-stops-during-drain.patch AMLCodec: fix a rare crash when playback stops during drain
+patch 4019598be2ea227d9b10d9f1895edc721b2dabfa 1105-AMLCodec-retire-the-timing-callbacks-with-the-decoder.patch AMLCodec: retire the timing callbacks with the decoder
