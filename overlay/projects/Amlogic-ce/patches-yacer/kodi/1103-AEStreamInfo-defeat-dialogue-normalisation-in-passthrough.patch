@@ -19,10 +19,10 @@ Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index a88552819b41cf9e9dbd7840a474e9ec8cd27832..79b0b3620577c71fe86778a3a5b47f0d4ac9d8e9 100644
+index 29d14f828b0faf9a1eefcc0c6604a7c59ce10935..6a2759e4836e7094d5596d1736f8c710e291032a 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25706,3 +25706,34 @@ msgstr ""
+@@ -25995,3 +25995,34 @@ msgstr ""
  msgctxt "#40804"
  msgid "{0:.1f} dB"
  msgstr ""
@@ -58,10 +58,10 @@ index a88552819b41cf9e9dbd7840a474e9ec8cd27832..79b0b3620577c71fe86778a3a5b47f0d
 +msgstr ""
 +
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 990e05b81ae524f606f03476b8d4c7ce85dee82d..6ec9860e68abbe19a943ce14c7f0dd3744eada71 100755
+index 6b2856bca4618523db7653aaa6c248ea4c7ffc68..d1e1888d6ea47f7d9642864287cca17b7088d849 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4113,6 +4113,25 @@
+@@ -4143,6 +4143,25 @@
            </dependencies>
            <control type="list" format="string" />
          </setting>
@@ -662,10 +662,10 @@ index 7636e3a80c6f2c352f30f570f53b4eb319cfd815..f4ab89854ca5d1bb4733ac31f624feb3
    {
      case CAEStreamInfo::STREAM_TYPE_AC3:
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index c5313619c6d3542e1e243005f010e21d950e53e9..19c2386e1f72f2c60fb5314e321991def0b12de6 100644
+index 97ff1f5dacf032e77ecf6ec5bcefa00473246033..afbcfd8a4d49dc880b8ba033cd8655c156f974af 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -424,6 +424,7 @@ public:
+@@ -425,6 +425,7 @@ public:
    static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";

@@ -610,7 +610,7 @@ index 0000000000000000000000000000000000000000..a0ec9fea15644f2568e37d7f47e684c8
 +  double m_lastDither{0.0};   //!< when the level was last put out
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46dbd577ad5e 100644
+index d268d9bfd500810cbc86e6a458f031502cd7e7ce..5b91298832af98e4898dcf159d22619c7303224b 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -9,6 +9,7 @@
@@ -621,7 +621,7 @@ index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46db
  #include "AMLLatency.h"
  #include "DynamicDll.h"
  
-@@ -2533,6 +2534,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2526,6 +2527,7 @@ void CAMLCodec::CloseDecoder()
    m_dll->codec_close(&am_private->vcodec);
    dumpfile_close(am_private);
    m_opened = false;
@@ -629,7 +629,7 @@ index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46db
  
    // After m_opened, so a frame still queued in the renderer cannot tick this
    // back to life: the measured path belongs to this decoder, and whatever plays
-@@ -2620,6 +2622,11 @@ void CAMLCodec::Reset()
+@@ -2609,6 +2611,11 @@ void CAMLCodec::Reset()
    CAMLLatency::GetInstance().Restart();
    m_genlock.Restart();
  
@@ -641,7 +641,7 @@ index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46db
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2870,12 +2877,43 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2859,12 +2866,43 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
        clock->GetSpeedAdjust() != 0.0)
    {
      CAMLLatency::GetInstance().NoteClockDisturbed();
@@ -687,7 +687,7 @@ index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46db
  }
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
-@@ -3056,6 +3094,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3060,6 +3098,7 @@ void CAMLCodec::SetSpeed(int speed)
    // skipped the pause.
    CAMLLatency::GetInstance().NoteClockDisturbed();
    m_genlock.Restart();
@@ -696,19 +696,19 @@ index f42d6be7418d6f9e3bcaca8d048050f9d4d07f38..46f801f70bbd7f63863c53bdcdbe46db
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 2f46fd09b3bfe15a0d577fe7ee9b87c15de787bc..62005f0884465a1ea1ebffd51cbcc7a49929df69 100644
+index cebb91752a4df2294ed8574e860fd4ba69c14a5d..78f41e417ac2b7abff35fb8a8c1c1e2e19574716 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -107,6 +107,9 @@ private:
+@@ -109,6 +109,9 @@ private:
  
    DllLibAmCodec   *m_dll;
    bool             m_opened;
 +  //! Whether the audio was a bitstream last frame, so the trim is given back
 +  //! once on the way out rather than on every frame after it.
 +  bool             m_trimWasPassthrough{false};
-   //! Whether this took the system default vfm chain away, so the close puts back
-   //! only what it actually took.
-   bool             m_vfmMapOverridden{false};
+   bool             m_drain = false;
+   am_private_t    *am_private;
+   CDVDStreamInfo   m_hints;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 index 7a064643c9db7fbd532d188f72d2051ef6f24084..2b086c2a77d4a53ceec55fa77da222ac85aa2b25 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp

@@ -12,7 +12,7 @@ against it. Report what the pipeline actually measures.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d24c48abc 100644
+index e4ce2c3ec8053f071fe60f094094a164392e2733..8cff097aef76435ecc34994b0e67fdd913c7be41 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -8,6 +8,8 @@
@@ -24,7 +24,7 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
  #include "DynamicDll.h"
  
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
-@@ -2394,6 +2396,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2392,6 +2394,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
    m_opened = true;
@@ -32,7 +32,7 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
    SetSpeed(m_speed);
-@@ -2531,6 +2534,11 @@ void CAMLCodec::CloseDecoder()
+@@ -2524,6 +2527,11 @@ void CAMLCodec::CloseDecoder()
    dumpfile_close(am_private);
    m_opened = false;
  
@@ -44,7 +44,7 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
    free(am_private->hdr_buf.data);
-@@ -2609,6 +2617,8 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2598,6 +2606,8 @@ void CAMLCodec::CloseAmlVideo()
  
  void CAMLCodec::Reset()
  {
@@ -53,7 +53,7 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2844,6 +2854,28 @@ void CAMLCodec::SetPollDevice(int dev)
+@@ -2833,6 +2843,28 @@ void CAMLCodec::SetPollDevice(int dev)
    m_pollDevice = dev;
  }
  
@@ -82,7 +82,7 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
    int ret;
-@@ -2989,6 +3021,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -2993,6 +3025,7 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -91,10 +91,10 @@ index 5a0126f09bf42402b46a379ff100c03250a3a68a..b83c65768f8ac3b2eaf78c471d5ace2d
  
    // update internal vars regardless
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 379c1fa45f76206846fb49e235f8e9b97e96d55e..7051b816032a5e325858b821463111052cc19513 100644
+index e8cd529ab1f4c8196faff8349b99cc6744282724..128003899da13f15b1c1e058d9abc7390f745694 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -84,6 +84,7 @@ public:
+@@ -86,6 +86,7 @@ public:
    static int    OMXDurationToNs(int duration);
    int           GetAmlDuration() const;
    int           ReleaseFrame(const uint32_t index, bool bDrop = false);
@@ -102,7 +102,7 @@ index 379c1fa45f76206846fb49e235f8e9b97e96d55e..7051b816032a5e325858b82146311105
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
-@@ -110,7 +111,7 @@ private:
+@@ -109,7 +110,7 @@ private:
    bool             m_drain = false;
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
@@ -1126,7 +1126,7 @@ index 41816065ffc5baa6b4a39a4425a7988d660a891c..962f41f6436189d54163626713966d5a
        m_prevVPts = pts;
      }
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 020c6d1dcd6a9e17079ecfdb7b566ebf2b21d460..9522cc1eb3e321ca8b3554d0f261fa4d903bebcf 100644
+index 91e7f5db058220b6e91285b68e22168831ce05b0..49f3baa0e9b96b9714a7ef30c822ea17fb7c9e67 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -11,10 +11,14 @@
@@ -1152,7 +1152,7 @@ index 020c6d1dcd6a9e17079ecfdb7b566ebf2b21d460..9522cc1eb3e321ca8b3554d0f261fa4d
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -557,6 +562,121 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -555,6 +560,121 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  

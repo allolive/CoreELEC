@@ -13,7 +13,7 @@ doesn't run on the AM6B Plus, but the bug is real on AV1-capable Amlogic.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index dc0adc90bb780e498e7c9c738eca9ce62d6502c0..c3fbd94387cc8ca81207316ddd0f5f71cceac28d 100644
+index a3ecbb3067a4d742428be3ea0b3272fcf1dbbfba..0e165b93863fd6dc6dd1606501818cb6715f22ed 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -1316,7 +1316,13 @@ int av1_add_frame_dec_info(am_private_t *para)

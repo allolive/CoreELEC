@@ -23,7 +23,7 @@ Co-authored-by: doppingkoala <doppingkoala@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index a47996555334bc9e37662a0242c5eb494edd1d22..a88552819b41cf9e9dbd7840a474e9ec8cd27832 100644
+index 73370184ff375f936f06a045d84070ac374b1d28..29d14f828b0faf9a1eefcc0c6604a7c59ce10935 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -8954,6 +8954,20 @@ msgctxt "#14304"
@@ -69,10 +69,10 @@ index a47996555334bc9e37662a0242c5eb494edd1d22..a88552819b41cf9e9dbd7840a474e9ec
  #: system/settings/settings.xml
  msgctxt "#14400"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 18ac0d708d646aed65011b95e5517723dd1e06ad..990e05b81ae524f606f03476b8d4c7ce85dee82d 100755
+index edde0440b5d22cd151ceed4aa2a8cd5a2059e847..6b2856bca4618523db7653aaa6c248ea4c7ffc68 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3990,6 +3990,11 @@
+@@ -4020,6 +4020,11 @@
          <setting id="coreelec.amlogic.noisereduction" type="boolean" label="14402" help="14403">
            <requirement>HAVE_AMCODEC</requirement>
            <level>3</level>
@@ -84,7 +84,7 @@ index 18ac0d708d646aed65011b95e5517723dd1e06ad..990e05b81ae524f606f03476b8d4c7ce
            <default>false</default>
            <control type="toggle" />
          </setting>
-@@ -3999,8 +4004,16 @@
+@@ -4029,8 +4034,16 @@
            <control type="toggle" />
            <dependencies>
              <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
@@ -103,7 +103,7 @@ index 18ac0d708d646aed65011b95e5517723dd1e06ad..990e05b81ae524f606f03476b8d4c7ce
            </dependencies>
          </setting>
          <setting id="coreelec.amlogic.hdr2sdr" type="boolean" label="14406" help="14407">
-@@ -4009,8 +4022,16 @@
+@@ -4039,8 +4052,16 @@
            <control type="toggle" />
            <dependencies>
              <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
@@ -122,7 +122,7 @@ index 18ac0d708d646aed65011b95e5517723dd1e06ad..990e05b81ae524f606f03476b8d4c7ce
            </dependencies>
          </setting>
          <setting id="coreelec.amlogic.sdr2dv" type="boolean" label="14310" help="14311">
-@@ -4030,13 +4051,27 @@
+@@ -4060,13 +4081,27 @@
            <dependencies>
              <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
              <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
@@ -153,7 +153,7 @@ index 18ac0d708d646aed65011b95e5517723dd1e06ad..990e05b81ae524f606f03476b8d4c7ce
          </setting>
          <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
            <requirement>HAVE_AMCODEC</requirement>
-@@ -4044,15 +4079,19 @@
+@@ -4074,15 +4109,19 @@
            <constraints>
              <options>dv_led_modes</options>
            </constraints>
@@ -1833,10 +1833,10 @@ index bea43af30a24f102f84ed8efe1a3ae30c90b59ca..0b4ce60a667ef3f14e5d7b0d8e39af81
    CBitstreamParser *m_bitparser;
    CBitstreamConverter *m_bitstream;
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 627e1e1e790bf81b428b3c759a3f74eab88dcdda..c5313619c6d3542e1e243005f010e21d950e53e9 100644
+index 79a910d12d73663a88f6036f43b4ab897f7bd054..97ff1f5dacf032e77ecf6ec5bcefa00473246033 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -476,6 +476,7 @@ public:
+@@ -477,6 +477,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISABLE = "coreelec.amlogic.disabledolbyvision";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
@@ -1845,7 +1845,7 @@ index 627e1e1e790bf81b428b3c759a3f74eab88dcdda..c5313619c6d3542e1e243005f010e21d
    static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
    static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 752c900d4d7664d86a3ecf08e83b919ec2183084..cb5e1a1919546edbec793f7456d0d0ceb2a156bd 100644
+index d14daa7bfd3fb02d0789e68da6982777108bf22f..b030c1ab541706552ae5a7cb7097f6024f60930a 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -265,10 +265,13 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
@@ -1865,10 +1865,10 @@ index 752c900d4d7664d86a3ecf08e83b919ec2183084..cb5e1a1919546edbec793f7456d0d0ce
    bool convert_to_dv = (!!aml_support_dolby_vision() &&
                          static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index f427d3b96c19c6314bf8dac1c35614c1c26460d3..be2e1aa27126bcb8f4ae2b7ae31341d94e947e1e 100644
+index 9fb1d613c3077b17624bc2b07c174e30b7ce087b..d16f6fb40c1151e93c0c41e6e1eb738ab61f39c4 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -315,8 +315,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -313,8 +313,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV, false);
      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV, false);
@@ -1879,7 +1879,7 @@ index f427d3b96c19c6314bf8dac1c35614c1c26460d3..be2e1aa27126bcb8f4ae2b7ae31341d9
    }
  
    CServiceBroker::GetSettingsComponent()->GetSettings()->
-@@ -486,6 +487,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -484,6 +485,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(device_dv);
  

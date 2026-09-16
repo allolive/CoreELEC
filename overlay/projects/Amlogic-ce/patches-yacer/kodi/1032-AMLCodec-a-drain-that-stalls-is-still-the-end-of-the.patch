@@ -5,8 +5,8 @@ Subject: [PATCH] AMLCodec: don't hang when moving on to the next file
 
 CVideoPlayerVideo drains in a loop that neither waits nor reads its own message
 queue, and takes VC_NONE as "ask again". While draining, the VC_EOF arm waits on
-a data_len that never reaches zero, so the video thread never gets back to its
-queue and the stream change for the next file is never read.
+a queued frame count that never reaches zero, so the video thread never gets back
+to its queue and the stream change for the next file is never read.
 
 End the drain when the hardware has produced nothing for the decoder timeout the
 next arm already uses.
@@ -14,21 +14,22 @@ next arm already uses.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index c3fbd94387cc8ca81207316ddd0f5f71cceac28d..5a0126f09bf42402b46a379ff100c03250a3a68a 100644
+index 0e165b93863fd6dc6dd1606501818cb6715f22ed..e4ce2c3ec8053f071fe60f094094a164392e2733 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2961,8 +2961,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+@@ -2964,8 +2964,17 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
  
      return CDVDVideoCodec::VC_PICTURE;
    }
--  else if (m_drain && m_buffer_level_ready && data_len == 0)
+-  else if (m_drain && m_buffer_level_ready && (queued_frames == 0))
 +  // the caller's drain loop neither waits nor reads its message queue
 +  else if (m_drain && m_buffer_level_ready &&
-+           (data_len == 0 || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
++           (queued_frames == 0 ||
++            elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
 +  {
-+    if (data_len)
-+      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} bytes left after {:d}ms",
-+        data_len, elapsed_since_last_frame.count());
++    if (queued_frames)
++      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} frames left after {:d}ms",
++        queued_frames, elapsed_since_last_frame.count());
 +
      return CDVDVideoCodec::VC_EOF;
 +  }

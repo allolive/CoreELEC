@@ -359,10 +359,10 @@ index e2aff528aa1146ee3eb1f48d6e002067075d71dd..f28801d5fc2066ee6e13338d81c4c80f
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 7c8375e43e9f546adfbdcf836c77aa69556ee63a..b717a63e25611c09bad341a80ccf408f58b7bdf3 100644
+index b5fe3f28c787be3985f66b8964016ba1725a29aa..91d2562e1b65e0045b4a05f6e2aa7df8346806c7 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2873,7 +2873,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2862,7 +2862,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
      return;
    }
  

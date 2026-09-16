@@ -11,7 +11,7 @@ across a hotplug that frees it and takes another. Publish the id instead.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 7fc6fcdcc705afd5a832ebb9ea9c741594c70ffc..edfa43916f3a010aaa061c2794c2d39d42317d75 100644
+index 8514c5247437c1a4c6cc8f12028034debd15ce84..98c13d4543ac7986731fd9f1fe1710c1818d977b 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -236,6 +236,7 @@ void CAMLDRMUtils::CleanAndClose()
@@ -41,7 +41,7 @@ index 7fc6fcdcc705afd5a832ebb9ea9c741594c70ffc..edfa43916f3a010aaa061c2794c2d39d
  
    int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 4cbd58837ec50200fb958c01e2741b0df030f01e..7b23f352c039fdd75562548a78d6367d9418f8e8 100644
+index cf46c19dd90cebc672fc278d7e971826f7247b55..7977a1c3249448fefb808341dfc9e68818e59179 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -8,6 +8,7 @@
@@ -68,11 +68,11 @@ index 4cbd58837ec50200fb958c01e2741b0df030f01e..7b23f352c039fdd75562548a78d6367d
    void aml_init_drmDevice();
    void aml_drmDevice_vsync();
    std::string aml_get_drmDevice_mode();
-@@ -138,6 +146,7 @@ private:
+@@ -139,6 +147,7 @@ private:
    drmModeConnection m_connection{DRM_MODE_DISCONNECTED};
    drmModeEncoderPtr m_encoder{nullptr};
    drmModeCrtcPtr m_crtc{nullptr};
 +  std::atomic<uint32_t> m_crtcId{0};
    drmModeCrtcPtr m_orig_crtc{nullptr};
    drmModePlanePtr m_plane{nullptr};
-   CCriticalSection m_drmSection;
+ 

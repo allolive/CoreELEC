@@ -14,7 +14,7 @@ file input and avio callback; only the factory knows playback's reads.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e025be4673 100644
+index 559b3bfb097c9e84a9a9cd26a5f1985ec2c0fefb..928dbb8f5494a58a4d692b0fb583c9d682cbcab8 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -14,6 +14,7 @@
@@ -33,7 +33,7 @@ index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e0
  #include <map>
  #include <memory>
  #include <mutex>
-@@ -184,8 +186,14 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
+@@ -178,8 +180,14 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
    int len = pInputStream->Read(buf, size);
    if (len == 0)
      return AVERROR_EOF;
@@ -50,7 +50,7 @@ index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e0
  }
  /*
  static int dvd_file_write(URLContext* h, uint8_t* buf, int size)
-@@ -234,9 +242,18 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
+@@ -228,9 +236,18 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
  
  bool CDVDDemuxFFmpeg::Aborted()
  {
@@ -70,7 +70,7 @@ index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e0
    std::shared_ptr<CDVDInputStreamFFmpeg> input = std::dynamic_pointer_cast<CDVDInputStreamFFmpeg>(m_pInput);
    if (input && input->Aborted())
      return true;
-@@ -260,6 +277,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool
+@@ -254,6 +271,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool
      return false;
  
    m_pInput = pInput;
@@ -78,7 +78,7 @@ index e232671f79356025df1e900ed8d5a919b5dd367d..0bfc9d32bd0a3974e87b9bafc31739e0
    strFile = m_pInput->GetFileName();
  
    if (!m_pInput->GetContent().empty())
-@@ -751,6 +769,7 @@ void CDVDDemuxFFmpeg::Dispose()
+@@ -745,6 +763,7 @@ void CDVDDemuxFFmpeg::Dispose()
  
    DisposeStreams();
  
@@ -215,10 +215,10 @@ index 5242f6d076c114584d8ee1f77b29cbc5eb910f7a..3496b37d460b5534c1d4931aa3013f68
 +  std::atomic<bool> m_aborted{false};
  };
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 3bc3540e61c011125aef7b8f223609d810732644..329a391e96be2cb04ab9adfd79d0d90bc5bdb704 100644
+index 486613bcff70ba590d5bcbb95944d64be2cf9ca1..cbcc714c53b4d71b8289acc8da6416d540787765 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -982,6 +982,10 @@ bool CVideoPlayer::OpenInputStream()
+@@ -952,6 +952,10 @@ bool CVideoPlayer::OpenInputStream()
    m_clock.Reset();
    m_dvd.Clear();
  
@@ -230,10 +230,10 @@ index 3bc3540e61c011125aef7b8f223609d810732644..329a391e96be2cb04ab9adfd79d0d90b
  }
  
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index 53913e53099f53dcbab16eac5b6022d9080e547f..1d2e1dc95bc4d5ad950a1e5c2638a99235977288 100644
+index a0f3131cd90412a9a330991632a7af353b5e539c..24a02d2c43bf3697f22c2538191b0a257af65346 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
-@@ -487,6 +487,11 @@ retry:
+@@ -556,6 +556,11 @@ retry:
    iRc = m_pCache->ReadFromCache((char *)lpBuf, uiBufSize);
    if (iRc > 0)
    {
@@ -245,7 +245,7 @@ index 53913e53099f53dcbab16eac5b6022d9080e547f..1d2e1dc95bc4d5ad950a1e5c2638a992
      m_readPos += iRc;
      return (int)iRc;
    }
-@@ -504,8 +509,10 @@ retry:
+@@ -584,8 +589,10 @@ retry:
      // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
      if (!m_pCache->IsEndOfInput())
      {
@@ -258,7 +258,7 @@ index 53913e53099f53dcbab16eac5b6022d9080e547f..1d2e1dc95bc4d5ad950a1e5c2638a992
        return -EAGAIN;
      }
    }
-@@ -537,6 +544,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
+@@ -624,6 +631,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
      return -1;
    }
  
@@ -268,10 +268,10 @@ index 53913e53099f53dcbab16eac5b6022d9080e547f..1d2e1dc95bc4d5ad950a1e5c2638a992
    int64_t iTarget = iFilePosition;
    if (iWhence == SEEK_END)
 diff --git a/xbmc/filesystem/FileCache.h b/xbmc/filesystem/FileCache.h
-index 214910e3784caf01ee5af9a91c44fe0115626319..2876f5ad9f5a63f8d3f041a72345b77cb6630790 100644
+index c5cb97a35af21607846a776c9ccbd7780f0eaad0..0a9de08698e4dbe0aff2f4ccc6e03202c02e3f39 100644
 --- a/xbmc/filesystem/FileCache.h
 +++ b/xbmc/filesystem/FileCache.h
-@@ -75,6 +75,7 @@ namespace XFILE
+@@ -109,6 +109,7 @@ public:
      int64_t m_forwardCacheSize = 0;
      int64_t m_maxForward = 0;
      bool m_bFilling = false;

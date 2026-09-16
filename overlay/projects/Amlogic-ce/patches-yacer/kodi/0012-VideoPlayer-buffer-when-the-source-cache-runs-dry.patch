@@ -13,10 +13,10 @@ Shared player code: only CVideoPlayer can pause the clock and read cache.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d810732644 100644
+index a2135da1ab7778caa320ae7299b26f74c8185963..486613bcff70ba590d5bcbb95944d64be2cf9ca1 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -1819,6 +1819,15 @@ void CVideoPlayer::Process()
+@@ -1789,6 +1789,15 @@ void CVideoPlayer::Process()
          m_pDemuxer->FillBuffer(fillBuffer);
      }
  
@@ -32,7 +32,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
      // if the queues are full, no need to read more
      if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
          (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
-@@ -2198,6 +2207,23 @@ void CVideoPlayer::ProcessAudioID3Data(CDemuxStream* pStream, DemuxPacket* pPack
+@@ -2168,6 +2177,23 @@ void CVideoPlayer::ProcessAudioID3Data(CDemuxStream* pStream, DemuxPacket* pPack
    m_VideoPlayerAudioID3->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
  }
  
@@ -56,7 +56,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
  CacheInfo CVideoPlayer::GetCachingTimes()
  {
    CacheInfo info{};
-@@ -2228,6 +2254,11 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2198,6 +2224,11 @@ CacheInfo CVideoPlayer::GetCachingTimes()
    info.level = 0.0;
    info.offset = (cached + queued) / length;
    info.time = 0.0;
@@ -68,7 +68,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
    info.valid = true;
  
    if (currate == 0)
-@@ -2253,6 +2284,59 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2223,6 +2254,59 @@ CacheInfo CVideoPlayer::GetCachingTimes()
    return info;
  }
  
@@ -128,7 +128,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
  void CVideoPlayer::HandlePlaySpeed()
  {
    const bool isInMenu = IsInMenuInternal();
-@@ -2262,7 +2346,29 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2232,7 +2316,29 @@ void CVideoPlayer::HandlePlaySpeed()
    if (tolerateStall && m_caching != CACHESTATE_DONE)
      SetCaching(CACHESTATE_DONE);
  
@@ -159,7 +159,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
    {
      CacheInfo cache = GetCachingTimes();
      if (cache.valid)
-@@ -2338,6 +2444,11 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2308,6 +2414,11 @@ void CVideoPlayer::HandlePlaySpeed()
    {
      if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
      {
@@ -171,7 +171,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
        // take action if audio or video stream is stalled
        if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
             (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
-@@ -3643,6 +3754,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3613,6 +3724,7 @@ void CVideoPlayer::HandleMessages()
  
        m_playSpeed = speed;
  
@@ -179,7 +179,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
        m_caching = CACHESTATE_DONE;
        m_clock.SetSpeed(speed);
        m_VideoPlayerAudio->SetSpeed(speed);
-@@ -3730,6 +3842,18 @@ void CVideoPlayer::HandleMessages()
+@@ -3700,6 +3812,18 @@ void CVideoPlayer::HandleMessages()
  
  void CVideoPlayer::SetCaching(ECacheState state)
  {
@@ -198,7 +198,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
    if(state == CACHESTATE_FLUSH)
    {
      CacheInfo cache = GetCachingTimes();
-@@ -3737,6 +3861,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
+@@ -3707,6 +3831,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
        state = CACHESTATE_FULL;
      else
        state = CACHESTATE_INIT;
@@ -210,7 +210,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
    }
  
    if(m_caching == state)
-@@ -5957,6 +6086,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -5927,6 +6056,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
    double queueTime = GetQueueTime();
    CacheInfo cache = GetCachingTimes();
  
@@ -220,7 +220,7 @@ index ce7efb7907950738cb08148fd7dd018b94c86424..3bc3540e61c011125aef7b8f223609d8
    if (cache.valid)
    {
      state.cache_level = std::max(0.0, std::min(1.0, cache.level));
-@@ -5970,6 +6102,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -5940,6 +6072,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
      state.cache_time = queueTime / 1000.0;
    }
  

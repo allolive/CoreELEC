@@ -13,10 +13,10 @@ left out for per-file lookup. Shared code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index c41546299a2394443eba28613e7ea1875609c3f6..8b483c279559b826454c9da89a1ffa3286de1d50 100644
+index f3187b591b9720a4ea3e8cb772e63e95421fe0ac..25d9cae4a896ea517e987fed4bb92a6b198bb3a0 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -5428,6 +5428,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
+@@ -5429,6 +5429,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
    return false;
  }
  

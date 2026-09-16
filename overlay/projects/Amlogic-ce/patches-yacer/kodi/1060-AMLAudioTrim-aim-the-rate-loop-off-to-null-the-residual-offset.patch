@@ -12,7 +12,7 @@ settle back.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 9f6793c913b6f1e320d2cfe79d7f8014afaa1e25..a47996555334bc9e37662a0242c5eb494edd1d22 100644
+index 2a846db9d34a5bcdc4d07b03830d32dbbc13b13b..73370184ff375f936f06a045d84070ac374b1d28 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -9123,6 +9123,42 @@ msgctxt "#14427"
@@ -59,10 +59,10 @@ index 9f6793c913b6f1e320d2cfe79d7f8014afaa1e25..a47996555334bc9e37662a0242c5eb49
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 3e6bfe37de90ffa4372bb38450d42d1e4a6523a3..18ac0d708d646aed65011b95e5517723dd1e06ad 100755
+index e3a9fba2c159dd02fb6471a5627b80e669cd2baf..edde0440b5d22cd151ceed4aa2a8cd5a2059e847 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4056,6 +4056,25 @@
+@@ -4086,6 +4086,25 @@
            <control type="toggle" />
          </setting>
        </group>
@@ -504,7 +504,7 @@ index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189c
 +  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 46f801f70bbd7f63863c53bdcdbe46dbd577ad5e..e32929c3135009c60a8f60bd97a530f0969831ba 100644
+index 5b91298832af98e4898dcf159d22619c7303224b..ac6cc5695536beef3bb6a72bd01926a3916c73ff 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -53,6 +53,11 @@
@@ -519,7 +519,7 @@ index 46f801f70bbd7f63863c53bdcdbe46dbd577ad5e..e32929c3135009c60a8f60bd97a530f0
  
  std::mutex pollSyncMutex;
  
-@@ -2910,10 +2915,81 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2899,10 +2904,81 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
    m_trimWasPassthrough = true;
  
@@ -603,18 +603,18 @@ index 46f801f70bbd7f63863c53bdcdbe46dbd577ad5e..e32929c3135009c60a8f60bd97a530f0
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 62005f0884465a1ea1ebffd51cbcc7a49929df69..aaaca14f7dce7866009c756040e210328b923827 100644
+index 78f41e417ac2b7abff35fb8a8c1c1e2e19574716..b4a87ed7d36c176267b6013b3f824aef8a84709d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -110,6 +110,8 @@ private:
+@@ -112,6 +112,8 @@ private:
    //! Whether the audio was a bitstream last frame, so the trim is given back
    //! once on the way out rather than on every frame after it.
    bool             m_trimWasPassthrough{false};
 +  double           m_lastAudioOffset{0.0};
 +  bool             m_offsetStoodDown{false};
-   //! Whether this took the system default vfm chain away, so the close puts back
-   //! only what it actually took.
-   bool             m_vfmMapOverridden{false};
+   bool             m_drain = false;
+   am_private_t    *am_private;
+   CDVDStreamInfo   m_hints;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad7300376ab35 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
@@ -759,10 +759,10 @@ index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb22
    double m_driftWalkUs{0.0};
    int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 691d3aebb5062c3d18221646ea9f2900a6dcf130..627e1e1e790bf81b428b3c759a3f74eab88dcdda 100644
+index 2b2da5d33933be562b7c30ce10b2816417b2ef5c..79a910d12d73663a88f6036f43b4ab897f7bd054 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -470,6 +470,7 @@ public:
+@@ -471,6 +471,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
@@ -771,10 +771,10 @@ index 691d3aebb5062c3d18221646ea9f2900a6dcf130..627e1e1e790bf81b428b3c759a3f74ea
    static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 7910cc4676bf484aca3f1694c63f3f8ccc6fbb51..752c900d4d7664d86a3ecf08e83b919ec2183084 100644
+index a0a13fbf2fd5c8fc86f35ac420628a9c51f4b133..d14daa7bfd3fb02d0789e68da6982777108bf22f 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -419,6 +419,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+@@ -416,6 +416,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
                            videoDelay);
  }
  
@@ -830,7 +830,7 @@ index dc16fd5f1ea469e3ddcdae8b3db26d73fa7a03b0..36de1f949b0f852a43ceefa46e9928f5
  //! \brief How many times the display shows each frame of a stream at fps.
  //! Zero if either rate is unknown, or if the content outruns the display.
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 9522cc1eb3e321ca8b3554d0f261fa4d903bebcf..f427d3b96c19c6314bf8dac1c35614c1c26460d3 100644
+index 49f3baa0e9b96b9714a7ef30c822ea17fb7c9e67..9fb1d613c3077b17624bc2b07c174e30b7ce087b 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -40,6 +40,7 @@
@@ -841,7 +841,7 @@ index 9522cc1eb3e321ca8b3554d0f261fa4d903bebcf..f427d3b96c19c6314bf8dac1c35614c1
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -493,6 +494,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -491,6 +492,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(sink_dv);
  

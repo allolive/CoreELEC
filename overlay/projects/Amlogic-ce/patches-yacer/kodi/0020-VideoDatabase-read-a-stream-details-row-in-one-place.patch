@@ -12,10 +12,10 @@ set a stream's source and version. Shared code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index f1ef419ae4456e89f315c0a42ad677833747957e..0f4fddda43d5debae0a4c654079de98da63a71d9 100644
+index 561f7629258b4542bbb901f81d3cb279879ccf24..54171480042ee63b274d0fa46e882612a00033d1 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -4633,6 +4633,59 @@ CVideoInfoTag CVideoDatabase::GetDetailsByTypeAndId(VideoDbContentType type, int
+@@ -4634,6 +4634,59 @@ CVideoInfoTag CVideoDatabase::GetDetailsByTypeAndId(VideoDbContentType type, int
    return {};
  }
  
@@ -75,7 +75,7 @@ index f1ef419ae4456e89f315c0a42ad677833747957e..0f4fddda43d5debae0a4c654079de98d
  bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
  {
    CVideoInfoTag tag;
-@@ -4684,57 +4737,8 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
+@@ -4685,57 +4738,8 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
  
      while (!pDS->eof())
      {

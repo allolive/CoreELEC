@@ -15,7 +15,7 @@ to change: the copy is inside it.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76cb6a6231 100644
+index 8b2f63d3537ff072046e13cc719ebe0cce63945f..8a857b81b4b73a59f506882a0bf34b79c9c8bff0 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -19,6 +19,7 @@
@@ -60,10 +60,10 @@ index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76
  {
    item->m_pParent = this;
 diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
-index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad752fb93b5 100644
+index 7954bb077f7d64e513e13227537f20d96e91bac8..e33f7a4c6359304f1a3543bd374e7c381a66d36d 100644
 --- a/xbmc/utils/StreamDetails.h
 +++ b/xbmc/utils/StreamDetails.h
-@@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
+@@ -139,7 +139,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
  public:
    CStreamDetails() { Reset(); }
    CStreamDetails(const CStreamDetails &that);
@@ -74,10 +74,10 @@ index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad7
    bool operator !=(const CStreamDetails &that) const;
  
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 8b483c279559b826454c9da89a1ffa3286de1d50..46ba19fc57cc3f0d96c645079b19609940ac2be6 100644
+index 25d9cae4a896ea517e987fed4bb92a6b198bb3a0..0f15a9c87fe58e89c881a44812da22cc33921241 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -4826,7 +4826,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+@@ -4827,7 +4827,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
      {
        if (details.contains(id))
          continue;

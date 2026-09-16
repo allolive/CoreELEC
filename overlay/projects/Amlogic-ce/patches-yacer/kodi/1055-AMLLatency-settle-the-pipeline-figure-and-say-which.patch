@@ -11,10 +11,10 @@ running.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index b717a63e25611c09bad341a80ccf408f58b7bdf3..f42d6be7418d6f9e3bcaca8d048050f9d4d07f38 100644
+index 91d2562e1b65e0045b4a05f6e2aa7df8346806c7..d268d9bfd500810cbc86e6a458f031502cd7e7ce 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2874,7 +2874,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2863,7 +2863,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
  
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),

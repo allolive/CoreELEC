@@ -29,10 +29,10 @@ index 4bf0cf040019f6267cac8dbd61273fe4f0dcadda..612158976e34f3c08d323536f805f28b
  
  bool Interface_Filesystem::read_file_string(void* kodiBase,
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 2e1500854601d1ffb78e04a3cf7a351dbea38c94..e232671f79356025df1e900ed8d5a919b5dd367d 100644
+index 5a3e21b394b13e35356458e1776733db184a73a1..559b3bfb097c9e84a9a9cd26a5f1985ec2c0fefb 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -1094,7 +1094,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+@@ -1088,7 +1088,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
      {
        // assume we are not eof
        if (m_pFormatContext->pb)
@@ -70,19 +70,19 @@ index a129064892b5eb255675f2e22b86e16bcd7d3afd..67d6ecf956835e930fd267a478a08d05
      return -1; // player will retry read in case of error until playback is stopped
  
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index 94fed404e9c57e26c5f389a3d955d42aabc90477..53913e53099f53dcbab16eac5b6022d9080e547f 100644
+index f9f8b521d70062a33677965d7718aab38f3cc1ce..a0f3131cd90412a9a330991632a7af353b5e539c 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
-@@ -24,6 +24,7 @@
+@@ -25,6 +25,7 @@
  
  #include <algorithm>
  #include <cassert>
 +#include <cerrno>
  #include <inttypes.h>
  #include <memory>
- 
-@@ -341,8 +342,9 @@ void CFileCache::Process()
-       iRead = m_source.Read(buffer.get(), maxSourceRead);
+ #include <stdexcept>
+@@ -410,8 +411,9 @@ void CFileCache::Process()
+       iRead = m_source->Read(buffer.get(), maxSourceRead);
      if (iRead <= 0)
      {
 -      // Check for actual EOF and retry as long as we still have data in our cache
@@ -93,18 +93,23 @@ index 94fed404e9c57e26c5f389a3d955d42aabc90477..53913e53099f53dcbab16eac5b6022d9
        {
          CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                    __FUNCTION__, m_sourcePath, iRead);
-@@ -491,10 +493,21 @@ retry:
+@@ -566,15 +568,26 @@ retry:
+       return -1;
+     }
  
-   if (iRc == CACHE_RC_WOULD_BLOCK)
-   {
 -    // just wait for some data to show up
 -    iRc = m_pCache->WaitForData(1, 10s);
-+    // Wait a second, not ten. The player decides whether to buffer between reads,
-+    // so a read that parks for ten seconds on a stalled source takes those
-+    // decisions with it. A read with data to return is unaffected.
++    // The player decides whether to buffer between reads, so a read that parks
++    // for ten seconds on a stalled source takes those decisions with it.
 +    iRc = m_pCache->WaitForData(1, 1s);
      if (iRc > 0)
        goto retry;
++
+     if (!m_sourcePositionValid)
+     {
+       SetLastError(m_seekError != 0 ? m_seekError : EIO);
+       return -1;
+     }
 +
 +    // Nothing arrived and the source has not reported the end of the file, so it
 +    // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
