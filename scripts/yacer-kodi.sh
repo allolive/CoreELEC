@@ -377,6 +377,28 @@ mktodo() {
 
 # needs_human <message>: a conflict or change only a person can judge. CI aborts
 # and records it ($NEEDS -> result=conflict); locally the state stays for the human.
+# adopt_onto_stack <yacer repo>: git am every patch added on yacer that the
+# branch does not carry yet, lowest file name first, so the stack ends up in the
+# order the build applies them in. place() then matches each file to its new
+# commit by patch id, and write_source records it: the file keeps its number and
+# gains the name the branch gives it. This is the counterpart of the drop a
+# patch removed on yacer already gets - yacer decides, the branch follows.
+adopt_onto_stack() {
+  local repo=$1 name
+  [ -s "$T/adopts" ] || return 0
+  while read -r name; do
+    [ -n "$name" ] || continue
+    git -C "$repo" show "HEAD:$Y/$name" > "$T/adopt.patch"
+    [ -n "$(mi_subject "$T/adopt.patch")" ] \
+      || needs_human "$name has no From/Subject header, so it cannot be adopted: write it through the branch instead"
+    # -s because a patch written straight into the overlay carries no sign-off,
+    # and identity() requires one on every commit the branch takes.
+    git am -3 -s --whitespace=nowarn "$T/adopt.patch" >&2 \
+      || needs_human "adopting $name does not apply to the stack: yacer-kodi.sh start, fix it, then land"
+    say "adopted $name"
+  done < "$T/adopts"
+}
+
 needs_human() {
   report "$*"
   if [ -n "$CIMODE" ]; then
@@ -794,6 +816,7 @@ attempt() {
   mktodo "$OB" "$R"
   rebase_onto "$NB" "$OB"
   loop
+  adopt_onto_stack "$YR"
   post_asserts "$NB"
   R2=$(git rev-parse HEAD)
   git log --reverse --format=%H "$NB..$R2" > "$T/commits"
@@ -873,15 +896,7 @@ plan_body() {
   git ls-remote "$URL_XBMC" refs/heads/yacer-kodi > "$T/lsremote"
   TIP=$(cut -f1 "$T/lsremote")
   sha_ok "$TIP" || die "no yacer-kodi on $URL_XBMC"
-  # Adopting a patch means applying it to the stack, which can conflict, so the
-  # sync will not do it unattended: say what is waiting and stop. Landing the
-  # adoption writes kodi.source, and the next push goes through on its own.
-  if [ -s "$T/adopts" ]; then
-    report "::error::$(wc -l < "$T/adopts") kodi patch(es) added on yacer are not on the branch yet - adopt them: yacer-kodi.sh adopt && yacer-kodi.sh land -m <message>"
-    emit result=fail
-    return
-  fi
-  if [ "$KU" = "$K" ] && [ "$TIP" = "$S" ] && [ ! -s "$T/drops" ]; then
+  if [ "$KU" = "$K" ] && [ "$TIP" = "$S" ] && [ ! -s "$T/drops" ] && [ ! -s "$T/adopts" ]; then
     [ "$U" = "$M" ] || { emit "mirror=$U" "lease=$M"; report "mirror ${M:0:12} -> ${U:0:12} (kodi unchanged)"; }
     emit result=ok
     return
@@ -1059,7 +1074,7 @@ cmd_guard() {
   done
   for name in "${!pblob[@]}"; do [ -n "${dblob[$name]:-}" ] || { result=skip; dels=1; }; done
   [ -z "$dels" ] || report "kodi patch removals are pending: the sync drops them and starts a build"
-  [ ${#adds[@]} -eq 0 ] || report "kodi patch additions are pending, adopt them onto the branch (yacer-kodi.sh adopt && yacer-kodi.sh land -m <message>): $(printf '%s ' "${adds[@]}")"
+  [ ${#adds[@]} -eq 0 ] || report "kodi patch additions are pending: the sync adopts them and starts a build ($(printf '%s ' "${adds[@]}"))"
   out "result=$result"
 }
 
@@ -1131,6 +1146,7 @@ fresh_body() {
   mktodo "$OB" "$R"
   rebase_onto "$NB" "$OB"
   loop
+  adopt_onto_stack "$CY"
   after_loop
 }
 
@@ -1187,7 +1203,7 @@ cmd_enable() {
   else (cmd_start); fi
   cd "$WT"; wt_paths
   before=$(git rev-parse HEAD)
-  git am -3 --whitespace=nowarn "$T/enable.patch" >&2 || rc=$?
+  git am -3 -s --whitespace=nowarn "$T/enable.patch" >&2 || rc=$?
   if [ $rc -eq 0 ]; then
     [ "$(git rev-parse HEAD)" != "$before" ] || { say "$f: no changes - already upstream, leave it as it is"; return; }
     say "enabled $(subj HEAD) on top of the stack; reorder with git rebase -i if needed, then land"
