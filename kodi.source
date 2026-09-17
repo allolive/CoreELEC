@@ -1,5 +1,5 @@
-branch 723d7bff9bee1ea08ddf4037efcaf9d958b91217
-kodi 8d5280da98d3ec93981127776300abfab2e23d7f b244790ad01e056569256c36e11b1b92e4c26466 -
+branch 65bc5762e19794f0872fc72b953492715d973377
+kodi 02adf15dbae8c8e12a6e4ed69cb2f979bc54ed25 b244790ad01e056569256c36e11b1b92e4c26466 -
 patch c0fc414c253821020c42696aaa75a693e120dd87 0010-ProcessInfo-publish-whether-the-video-codec-buffers.patch ProcessInfo: let a video decoder say it holds video of its own
 patch 3365e1df08a2a73afe089228fcd5e4df5dfe5981 0011-FileCache-a-stalled-source-is-not-the-end-of-the-file.patch FileCache: don't stop playback when a network share stalls
 patch 68571d6ae56ac721fa05f5ff54c9b6bd3795c697 0012-VideoPlayer-buffer-when-the-source-cache-runs-dry.patch VideoPlayer: show buffering when a network file runs dry
