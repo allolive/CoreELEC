@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] DVDVideoCodecAmlogic: pair dual-layer DV by timestamp and cap the queue
+Date: Thu, 17 Sep 2026 03:25:54 +0000
+Subject: [PATCH] DVDVideoCodecAmlogic: pair dual-layer DV by timestamp and cap
+ the queue
 
 AddData pairs base-layer and enhancement-layer packets purely by arrival
 order, and m_packages is unbounded. On a profile 7 dual-track title a
@@ -16,8 +19,10 @@ order. Freeing a queued half goes through one helper, taken on the
 keyframe-wait path too, and a failed AlignedMalloc now drops the packet
 instead of being memcpy'd through. Not tried on hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index f67513b..d2a9545 100644
+index f67513b75921749076f9ddfc393fd8e5a95b9a03..9a5a196a80695e32d047935109c0024193fec128 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -35,6 +35,11 @@ extern "C"
@@ -81,7 +86,7 @@ index f67513b..d2a9545 100644
            // convert bl and el package to single package
            DLDemuxPacket dual_layer_packet = m_packages.front();
            uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-@@ -594,14 +634,43 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -594,14 +631,43 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
                }
              }
            }
@@ -126,7 +131,7 @@ index f67513b..d2a9545 100644
            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
  
-@@ -622,6 +693,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -622,6 +688,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
          m_h10p.RollbackAu();
          m_pendingMeta = m_streamMeta;
@@ -135,7 +140,7 @@ index f67513b..d2a9545 100644
          return true;
        }
        pData = m_bitstream->GetConvertBuffer();
-@@ -676,7 +749,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -676,7 +744,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    }
  
    if (!m_Codec)
@@ -149,7 +154,7 @@ index f67513b..d2a9545 100644
  
    const bool converting = m_h10p.ConvertedThisAu();
    if (packet.pSideData && packet.iSideDataElems > 0 && !converting)
-@@ -723,12 +802,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -723,12 +797,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
    // pop package only from list if hardware decoder did accept the data
    if (data_added && dual_layer_converted)
@@ -163,7 +168,7 @@ index f67513b..d2a9545 100644
  
    if (!data_added && pData)
      m_h10p.RollbackAu();
-@@ -762,6 +836,12 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+@@ -762,6 +831,12 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
                            static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
  }
  
@@ -177,7 +182,7 @@ index f67513b..d2a9545 100644
  // for display. A miss keeps the last published values
  void CDVDVideoCodecAmlogic::DrainMetadataToClock()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index d2365fc..66fe392 100644
+index d2365fca6aa8a13b7874f14d279efc43f5b63876..66fe3925396ca009ec6c769e37a75afa50ac8d60 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -27,7 +27,8 @@ class CBitstreamConverter;

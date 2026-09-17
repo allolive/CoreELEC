@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] HevcSei: stop parsing on payload size exceeding remaining bits
+Date: Thu, 17 Sep 2026 03:25:53 +0000
+Subject: [PATCH] HevcSei: stop parsing on payload size exceeding remaining
+ bits
 
 HevcSei.cpp compares m_payloadSize, which is a byte count, against
 AvailableBits(), a bit count, so a payload up to 8x the remaining data
@@ -15,9 +18,13 @@ uint8_t to uint32_t to match m_payloadSize.
 
 Needs a malformed stream to trigger. Not exercised on hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/utils/BitstreamReader.h b/xbmc/utils/BitstreamReader.h
+index 1a3232992d0a9cfb39bb4ffd94da80f89c8dc61d..cd0ab10390003e4a880902f90dc81d8f768991cb 100644
 --- a/xbmc/utils/BitstreamReader.h
 +++ b/xbmc/utils/BitstreamReader.h
-@@ -18,7 +18,10 @@
+@@ -18,7 +18,10 @@ public:
    void       SkipBits(int nbits);
    uint32_t   GetBits(int nbits);
    unsigned int Position() { return m_posBits; }
@@ -29,9 +36,11 @@ Needs a malformed stream to trigger. Not exercised on hardware.
  
  private:
    const uint8_t *buffer, *start;
+diff --git a/xbmc/utils/HevcSei.cpp b/xbmc/utils/HevcSei.cpp
+index fc74e43045514f2c13b80f8613a7aecb4be661e4..0413c05b04ca530844d21b85254ff8004dc7fce5 100644
 --- a/xbmc/utils/HevcSei.cpp
 +++ b/xbmc/utils/HevcSei.cpp
-@@ -73,8 +73,8 @@
+@@ -73,8 +73,8 @@ int CHevcSei::ParseSeiMessage(CBitstreamReader& br, std::vector<CHevcSei>& messa
    sei.m_payloadSize += lastPayloadSizeByte;
    sei.m_payloadOffset = br.Position() / 8;
  
@@ -42,9 +51,11 @@ Needs a malformed stream to trigger. Not exercised on hardware.
      return 1;
  
    br.SkipBits(sei.m_payloadSize * 8);
+diff --git a/xbmc/utils/HevcSei.h b/xbmc/utils/HevcSei.h
+index b76d9e6f53fb6bd50bca61ac43cde03f4f6688bf..47a835b3b42d2fb9fa83433511e0db53f1f0f582 100644
 --- a/xbmc/utils/HevcSei.h
 +++ b/xbmc/utils/HevcSei.h
-@@ -30,7 +30,7 @@
+@@ -30,7 +30,7 @@ public:
    CHevcSei() = default;
    ~CHevcSei() = default;
  

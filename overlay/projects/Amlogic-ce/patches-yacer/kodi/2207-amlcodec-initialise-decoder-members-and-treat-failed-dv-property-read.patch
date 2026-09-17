@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:54 +0000
 Subject: [PATCH] AMLCodec: a failed DV property read is not an enabled core
 
 CAMLCodec::CloseDecoder decided whether a Dolby Vision core has to be
@@ -24,11 +26,13 @@ initialisers. Valid values are unaffected: 1 stays enabled, 0 disabled.
 Reasoned from source; the standby trigger was not reproduced on
 hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 2c632c4..5c0a4fd 100644
+index b324d2e876448f7355988af1e6b2c3cbabefc36c..39fe7cf82ba5ff2a24fc5ade824485cc58b5c9ac 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2582,7 +2582,8 @@ void CAMLCodec::CloseDecoder()
+@@ -2583,7 +2583,8 @@ void CAMLCodec::CloseDecoder()
    auto* AmlDisplay =
        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
    int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
@@ -38,7 +42,7 @@ index 2c632c4..5c0a4fd 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
  
    SetPollDevice(-1);
-@@ -2626,7 +2627,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2630,7 +2631,7 @@ void CAMLCodec::CloseDecoder()
    {
      // the transition needs a few display frames before the core powers down
      std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
@@ -48,10 +52,10 @@ index 2c632c4..5c0a4fd 100644
        usleep(10000); // wait 10ms
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index b4a87ed..9c64ad3 100644
+index ef56ec3332b99805d3fee5d1ca8cea6f848483e1..a0a0a443221177f182e800771a4ae830525fe44f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -148,9 +148,9 @@ private:
+@@ -150,9 +150,9 @@ private:
    static double m_ttd;
    CProcessInfo &m_processInfo;
    CAMLGenlock      m_genlock;

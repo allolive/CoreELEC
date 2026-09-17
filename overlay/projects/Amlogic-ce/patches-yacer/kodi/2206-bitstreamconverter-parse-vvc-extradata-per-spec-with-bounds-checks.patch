@@ -1,5 +1,8 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Subject: [PATCH] BitstreamConverter: parse VVC extradata per spec with bounds checks
+Date: Thu, 17 Sep 2026 03:25:54 +0000
+Subject: [PATCH] BitstreamConverter: parse VVC extradata per spec with bounds
+ checks
 
 BitstreamConvertInitVVC walked the VvcDecoderConfigurationRecord with no
 bounds checks and a layout that does not match ISO/IEC 14496-15: it assumed
@@ -22,8 +25,10 @@ here, and is dead on g12b and S7D today: hardening ahead of the S905X5 VVC
 decoder. Checked in a standalone harness against seven conformant vvcC
 records and fuzzed inputs under ASan/UBSan; not exercised on hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index fc3fd37..6d7eabf 100644
+index fc3fd37972862047fd98c210953f0316809f7fdc..ff1902ef00e3521d56e83340fd4ee46e9d06a0c4 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -541,7 +541,8 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,
@@ -224,7 +229,7 @@ index fc3fd37..6d7eabf 100644
        {
          av_free(out);
          return false;
-@@ -1288,8 +1341,6 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
+@@ -1288,8 +1340,6 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
        memcpy(out + total_size - unit_size, extradata, unit_size);
        extradata += unit_size;
      }

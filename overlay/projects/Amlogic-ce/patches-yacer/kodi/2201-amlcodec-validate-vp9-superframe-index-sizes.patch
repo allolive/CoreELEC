@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:53 +0000
 Subject: [PATCH] AMLCodec: validate VP9 superframe index sizes
 
 vp9_update_frame_header() parses the VP9 superframe index into a plain int
@@ -25,8 +27,10 @@ Checked by replaying the parser and rewrite loop standalone over random
 packets; valid superframes give identical offsets before and after. Not
 smoke-tested against real VP9 superframe content on hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index ac6cc56..86f4823 100644
+index f3badd8bea9a3f1fb8f1cd0ea3787f9be603fd7f..153471bc47852bc4be928ee7dc18d2442c03de9f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -1395,14 +1395,22 @@ int vp9_update_frame_header(am_packet_t *pkt)

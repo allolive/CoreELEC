@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:53 +0000
 Subject: [PATCH] AMLCodec: parse vvcC per ISO/IEC 14496-15 with bounds checks
 
 vvc_add_frame_dec_info() walked the VvcDecoderConfigurationRecord with no
@@ -17,8 +19,10 @@ in a host ASan harness - the old code overreads 2577 bytes on a valid
 vvcC from ff_vvcc_write(); not run on hardware, VVC being gated off on
 g12b and S7D (no FMT_H266 in either chip table).
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 86f4823..2c632c4 100644
+index 153471bc47852bc4be928ee7dc18d2442c03de9f..b324d2e876448f7355988af1e6b2c3cbabefc36c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -967,54 +967,100 @@ static int hevc_write_header(am_private_t *para, am_packet_t *pkt)
@@ -164,7 +168,7 @@ index 86f4823..2c632c4 100644
          if (!grown)
          {
            CLog::Log(LOGDEBUG, "[vvc_add_frame_dec_info] NOMEM!");
-@@ -1025,28 +1073,35 @@ int vvc_add_frame_dec_info(am_private_t *para)
+@@ -1025,28 +1071,35 @@ int vvc_add_frame_dec_info(am_private_t *para)
          }
          para->hdr_buf.data = grown;
          memcpy(para->hdr_buf.data + data_pos, nalu_header, 4);

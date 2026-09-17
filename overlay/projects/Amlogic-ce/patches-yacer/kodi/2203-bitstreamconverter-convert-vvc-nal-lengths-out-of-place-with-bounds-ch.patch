@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:53 +0000
 Subject: [PATCH] BitstreamConverter: bound and copy the VVC NAL length rewrite
 
 The VVC branch of Convert() rewrote the demuxer packet in place with no
@@ -17,8 +19,10 @@ dropped with a debug log. The VVC block is a CoreELEC addition only the AML
 codec reaches. Triggering needs a malformed stream; untested on hardware
 (no FMT_H266 on g12b or S7D, so the branch is unreachable there).
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index 3f9ff69..fc3fd37 100644
+index 3f9ff69b675d391f102404e52ab63effeae3478b..fc3fd37972862047fd98c210953f0316809f7fdc 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -766,49 +766,82 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)

@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:54 +0000
 Subject: [PATCH] AMLAudioTrim: pick the trim node by SoC, adding S7D and S6
 
 The trim loop hard-codes the g12a driver's mpll0 trim node,
@@ -14,8 +16,10 @@ appear whether or not the driver probed. STEP=2 and the limit of forty
 carry over to S6/S7D as an assumption. Needs the kernel patches adding the
 node (1112 for S6, 2084 for S7D); not exercised on S905X5 hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
-index e99b256..c498219 100644
+index 3757b86d5b3bf7dc99594bd79b1fc7441d957b88..f72c530ccaab21ec16ce2d68e907d2da62a323a5 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -22,11 +22,32 @@
@@ -55,7 +59,7 @@ index e99b256..c498219 100644
  constexpr int STEP = 2;
  
  //! What the level may reach while the loop is only nulling the rate. Sixty parts
-@@ -156,7 +177,7 @@
+@@ -156,7 +177,7 @@ CAMLAudioTrim::~CAMLAudioTrim()
  
    try
    {
@@ -64,7 +68,7 @@ index e99b256..c498219 100644
    }
    catch (...)
    {
-@@ -179,7 +200,7 @@
+@@ -179,7 +200,7 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
  {
    try
    {
@@ -73,7 +77,7 @@ index e99b256..c498219 100644
      if (!path.Exists())
        return std::nullopt;
  
-@@ -203,7 +224,7 @@
+@@ -203,7 +224,7 @@ bool CAMLAudioTrim::Supported()
  {
    try
    {
@@ -82,7 +86,7 @@ index e99b256..c498219 100644
    }
    catch (...)
    {
-@@ -215,7 +236,7 @@
+@@ -215,7 +236,7 @@ bool CAMLAudioTrim::WriteLevel(int level)
  {
    try
    {
@@ -91,7 +95,7 @@ index e99b256..c498219 100644
    }
    catch (...)
    {
-@@ -529,7 +550,7 @@
+@@ -528,7 +549,7 @@ void CAMLAudioTrim::Update(const std::optional<double>& error,
      m_checked = true;
      m_present = ReadLevel().has_value();
      if (!m_present)

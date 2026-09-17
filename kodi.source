@@ -1,4 +1,4 @@
-branch fd1dbc690ce80fc647b3665b5a336cdd96e429e4
+branch 723d7bff9bee1ea08ddf4037efcaf9d958b91217
 kodi 8d5280da98d3ec93981127776300abfab2e23d7f b244790ad01e056569256c36e11b1b92e4c26466 -
 patch c0fc414c253821020c42696aaa75a693e120dd87 0010-ProcessInfo-publish-whether-the-video-codec-buffers.patch ProcessInfo: let a video decoder say it holds video of its own
 patch 3365e1df08a2a73afe089228fcd5e4df5dfe5981 0011-FileCache-a-stalled-source-is-not-the-end-of-the-file.patch FileCache: don't stop playback when a network share stalls
@@ -45,3 +45,14 @@ patch f3ac51c09664d61562fbb6f1035d88ee9143b98b 1101-DVDVideoCodecAmlogic-mark-th
 patch 0a3ab5172d67aebfe511c3ea3be907cc99995611 1103-AEStreamInfo-defeat-dialogue-normalisation-in-passthrough.patch AEStreamInfo: stop receivers turning dialogue down in passthrough
 patch 1953bf0253663b6a1887502a2368e069cda9e9a7 1104-AMLCodec-fix-a-rare-crash-when-playback-stops-during-drain.patch AMLCodec: fix a rare crash when playback stops during drain
 patch 4019598be2ea227d9b10d9f1895edc721b2dabfa 1105-AMLCodec-retire-the-timing-callbacks-with-the-decoder.patch AMLCodec: retire the timing callbacks with the decoder
+patch cb33b4592ba8f545b2a10fa25d534f56aa60cbed 2201-amlcodec-validate-vp9-superframe-index-sizes.patch AMLCodec: validate VP9 superframe index sizes
+patch d1199a027dd29982157496b8ebb564d291a64b29 2202-hevcsei-stop-parsing-on-payload-size-exceeding-remaining-bits.patch HevcSei: stop parsing on payload size exceeding remaining bits
+patch b01d85ac343446f7a27591f25da7d8b51cfa24ef 2203-bitstreamconverter-convert-vvc-nal-lengths-out-of-place-with-bounds-ch.patch BitstreamConverter: bound and copy the VVC NAL length rewrite
+patch 6befbf5d791f3ed7c6c1ddd4cc4291eef5c87598 2204-amlcodec-parse-vvcc-per-iso-iec-14496-15-with-bounds-checks.patch AMLCodec: parse vvcC per ISO/IEC 14496-15 with bounds checks
+patch 2631e1d43c4e1e1a771cc90b3f6d50ffcafa0a80 2205-dvdvideocodecamlogic-pair-dv-bl-el-by-timestamp-and-cap-m-packages.patch DVDVideoCodecAmlogic: pair dual-layer DV by timestamp and cap the queue
+patch 729d281d3922f5ddd3d93933a0b8b834ec4c0a01 2206-bitstreamconverter-parse-vvc-extradata-per-spec-with-bounds-checks.patch BitstreamConverter: parse VVC extradata per spec with bounds checks
+patch 1eb6e81fd6f0705ecc6725127d010487996d2ebb 2207-amlcodec-initialise-decoder-members-and-treat-failed-dv-property-read.patch AMLCodec: a failed DV property read is not an enabled core
+patch 683cdb15d786866bcb0f5b5caa35e9958718862e 2211-amldisplay-destroy-drm-property-blob-after-use.patch AMLDisplay: destroy DRM property blob after use
+patch 888e98d322b85c4e847a16afdf8b3784620d1ca7 2214-amlaudiotrim-skip-settle-watchdog-when-audio-lead-is-0.patch AMLAudioTrim: don't integrate while the loop is switched off
+patch 1c0bb3af318065a70320ee21613483fde9546295 2215-nfsfile-look-up-keepalive-context-only-under-the-connection-lock.patch NFSFile: look up keep-alive context under the connection lock
+patch 246964540fa77a495bc08c0c44a1ffcc65c18aa3 2217-amlaudiotrim-pick-the-trim-node-by-soc-adding-s7d-and-s6.patch AMLAudioTrim: pick the trim node by SoC, adding S7D and S6

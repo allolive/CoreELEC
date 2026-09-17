@@ -1,4 +1,6 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:54 +0000
 Subject: [PATCH] NFSFile: look up keep-alive context under the connection lock
 
 CNfsConnection::keepAlive fetched the nfs_context with
@@ -19,11 +21,13 @@ Deinit still frees contexts that live CNFSFile objects point into; that
 is left alone here. Reproducing needs an NFSv4 share and a lease expiry,
 which has not been run on hardware.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 44901b3..b2bb90e 100644
+index 0e0e1c6105434d9d5f3040f9b932e4137d9743c6..4f7d71073879cf1f61f4f9bfe60af3610efc253c 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
-@@ -388,7 +388,8 @@ void CNfsConnection::Deinit()
+@@ -417,7 +417,8 @@ void CNfsConnection::Deinit()
      m_pNfsContext = NULL;
    }
    clearMembers();
@@ -33,7 +37,7 @@ index 44901b3..b2bb90e 100644
    m_KeepAliveTimeouts.clear();
  }
  
-@@ -464,6 +465,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -493,6 +494,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
  {
    uint64_t offset = 0;
    char buffer[32];
@@ -49,7 +53,7 @@ index 44901b3..b2bb90e 100644
    // this also refreshes the last accessed time for the context
    // true forces a cachehit regardless the context is timedout
    // on this call we are sure its not timedout even if the last accessed
-@@ -473,12 +483,6 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -502,12 +512,6 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
    if (!pContext)// this should normally never happen - paranoia
      pContext = m_pNfsContext;
  
