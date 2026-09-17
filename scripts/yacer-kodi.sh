@@ -304,8 +304,11 @@ name_for_subject() {
   local b n s
   while read -r b n s; do [ "$s" != "$1" ] || { echo "$n"; return 0; }; done < "$T/P"
 }
-# intent: $T/drops = subjects of kodi.source patches no longer active on yacer.
-# Dies on hand edits and on active files the sync did not write.
+# intent: $T/drops = subjects of kodi.source patches no longer active on yacer,
+# $T/adopts = active patch files on yacer that kodi.source does not know yet.
+# yacer is the control surface both ways: a patch removed there is dropped from
+# the branch, one added there is adopted onto it. Dies only on a hand edit of a
+# patch the branch already owns.
 intent() {
   local blob name subject bad="" inactive=0
   local -A dblob=() pname=()
@@ -317,15 +320,17 @@ intent() {
     elif [ -n "${dblob[$name]:-}" ]; then bad+="  $name edited by hand - port it to yacer-kodi"$'\n'
     else echo "$subject" >> "$T/drops"; fi
   done < "$T/P"
+  : > "$T/adopts"
   for name in "${!dblob[@]}"; do
     case "$name" in
-      *.patch) [ -n "${pname[$name]:-}" ] \
-        || bad+="  $name is not in kodi.source - add, reorder or re-enable through the branch (yacer-kodi.sh enable)"$'\n' ;;
+      *.patch) [ -n "${pname[$name]:-}" ] || echo "$name" >> "$T/adopts" ;;
       *) inactive=$((inactive + 1)) ;;
     esac
   done
+  sort -o "$T/adopts" "$T/adopts"
   [ -z "$bad" ] || die "kodi patches changed on yacer outside the branch:"$'\n'"$bad"
   [ ! -s "$T/drops" ] || log_block "dropping (removed on yacer):" "$T/drops"
+  [ ! -s "$T/adopts" ] || log_block "adopting (added on yacer):" "$T/adopts"
   [ "$inactive" -eq 0 ] || say "note: $inactive inactive patch file(s) on yacer are ignored"
 }
 
@@ -868,6 +873,14 @@ plan_body() {
   git ls-remote "$URL_XBMC" refs/heads/yacer-kodi > "$T/lsremote"
   TIP=$(cut -f1 "$T/lsremote")
   sha_ok "$TIP" || die "no yacer-kodi on $URL_XBMC"
+  # Adopting a patch means applying it to the stack, which can conflict, so the
+  # sync will not do it unattended: say what is waiting and stop. Landing the
+  # adoption writes kodi.source, and the next push goes through on its own.
+  if [ -s "$T/adopts" ]; then
+    report "::error::$(wc -l < "$T/adopts") kodi patch(es) added on yacer are not on the branch yet - adopt them: yacer-kodi.sh adopt && yacer-kodi.sh land -m <message>"
+    emit result=fail
+    return
+  fi
   if [ "$KU" = "$K" ] && [ "$TIP" = "$S" ] && [ ! -s "$T/drops" ]; then
     [ "$U" = "$M" ] || { emit "mirror=$U" "lease=$M"; report "mirror ${M:0:12} -> ${U:0:12} (kodi unchanged)"; }
     emit result=ok
@@ -1013,7 +1026,8 @@ cmd_push() {
 # ------------------------------------------------------------------ guard
 cmd_guard() {
   if [ "${1:-}" = --local ]; then guard_local "${2:-}"; return; fi
-  local mirror result=ok blob name subject cur tip
+  local mirror result=ok blob name subject cur tip dels=""
+  local -a adds=()
   local -A dblob=() pblob=()
   out() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "$1" >> "$GITHUB_OUTPUT"; echo "$1"; }
   gfail() {
@@ -1036,10 +1050,16 @@ cmd_guard() {
   while read -r blob name subject; do pblob[$name]=$blob; done < "$T/P"
   for name in "${!dblob[@]}"; do
     case "$name" in *.patch) ;; *) continue ;; esac
-    [ "${pblob[$name]:-}" = "${dblob[$name]}" ] || gfail "$name is not what the sync wrote - kodi patches change through yacer-kodi"
+    # Active on yacer but not in kodi.source: added here rather than through the
+    # branch. The sync adopts it, the same way it drops one removed here, so this
+    # is pending work and not a failure. A patch kodi.source does know must still
+    # match it byte for byte - that is a hand edit of a managed patch.
+    if [ -z "${pblob[$name]:-}" ]; then result=skip; adds+=("$name"); continue; fi
+    [ "${pblob[$name]}" = "${dblob[$name]}" ] || gfail "$name is not what the sync wrote - kodi patches change through yacer-kodi"
   done
-  for name in "${!pblob[@]}"; do [ -n "${dblob[$name]:-}" ] || result=skip; done
-  [ "$result" = ok ] || report "kodi patch removals are pending: the sync drops them and starts a build"
+  for name in "${!pblob[@]}"; do [ -n "${dblob[$name]:-}" ] || { result=skip; dels=1; }; done
+  [ -z "$dels" ] || report "kodi patch removals are pending: the sync drops them and starts a build"
+  [ ${#adds[@]} -eq 0 ] || report "kodi patch additions are pending, adopt them onto the branch (yacer-kodi.sh adopt && yacer-kodi.sh land -m <message>): $(printf '%s ' "${adds[@]}")"
   out "result=$result"
 }
 
@@ -1151,9 +1171,14 @@ cmd_enable() {
   f=${f##*/}
   local_env
   case "$f" in
-    *.patch) die "$f is already active" ;;
+    # An active patch the branch already owns has nothing to enable. One it does
+    # not know was written straight into the overlay, and adopting it onto the
+    # branch is exactly what makes it real: it is the same git am either way.
+    *.patch)
+      ! git -C "$CY" show HEAD:kodi.source 2>/dev/null | grep -q " $f " \
+        || die "$f is already active" ;;
     *.patch.disabled|*.patch.merged) ;;
-    *) die "$f is not a .patch.disabled or .patch.merged file" ;;
+    *) die "$f is not a .patch, .patch.disabled or .patch.merged file" ;;
   esac
   git -C "$CY" cat-file -e "HEAD:$Y/$f" 2>/dev/null || die "no $Y/$f in $CY HEAD"
   git -C "$CY" show "HEAD:$Y/$f" > "$T/enable.patch"
@@ -1170,6 +1195,23 @@ cmd_enable() {
   fi
   conflict_context
   loop
+}
+
+# adopt: git am every active patch on yacer that kodi.source does not know yet,
+# lowest file name first so the stack ends up in the order the build applies
+# them in. The counterpart of the drop a patch removed on yacer already gets.
+cmd_adopt() {
+  local n=0 f
+  local_env; local_intent
+  [ -s "$T/adopts" ] || { say "nothing to adopt: kodi.source knows every active patch"; return; }
+  cp "$T/adopts" "$T/adopts.run"
+  while read -r f; do
+    [ -n "$f" ] || continue
+    say "adopting $f"
+    cmd_enable "$f"
+    n=$((n + 1))
+  done < "$T/adopts.run"
+  say "adopted $n patch(es); check the order, then: yacer-kodi.sh land -m <message>"
 }
 
 cmd_land() {
@@ -1341,8 +1383,9 @@ case "${1:-}" in
   import) shift; cmd_import "$@" ;;
   start) shift; cmd_start "$@" ;;
   enable) shift; cmd_enable "$@" ;;
+  adopt) shift; cmd_adopt "$@" ;;
   land) shift; cmd_land "$@" ;;
   patches) shift; cmd_patches "$@" ;;
   abandon) shift; cmd_abandon "$@" ;;
-  *) die "usage: yacer-kodi.sh plan|push <plan>|guard [--local [file]]|import [<ce> [<yacer>]]|start [--upstream]|enable <file>|land -m <msg>|patches|abandon" ;;
+  *) die "usage: yacer-kodi.sh plan|push <plan>|guard [--local [file]]|import [<ce> [<yacer>]]|start [--upstream]|enable <file>|adopt|land -m <msg>|patches|abandon" ;;
 esac
