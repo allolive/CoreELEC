@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 16 Sep 2026 20:05:00 -0400
+Subject: [PATCH] device: reconnect a bonded LE device after a restart
+
+A bonded LE peripheral is answered only while it sits on the kernel's accept
+list: __hci_update_background_scan() runs the passive scan that picks up its
+advertisements while hdev->pend_le_conns holds it, and that list is filled by
+the MGMT Add Device command.
+
+Nothing puts it back there when the daemon starts. load_devices() reads the
+bond from storage and marks it non-temporary, but leaves auto connect off, and
+every path into the connect list - att_connect_cb(), att_disconnected_cb() -
+first tests device_get_auto_connect(). auto connect is turned on by Connect,
+by Pair and by use, none of which run at start up, and it is not stored. So a
+remote that is bonded, trusted and advertising is never connected until
+something asks for it by hand.
+
+Turn it on where the bearer is marked bonded. load_ltks() reaches here for
+every stored LE bond as the adapter comes up, and so does a fresh pairing.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/src/device.c
++++ b/src/device.c
+@@ -6962,6 +6962,15 @@
+ 
+ 	btd_device_set_temporary(device, false);
+ 
++	/* Put the peripheral back on the accept list. Reached from load_ltks()
++	 * for every stored bond as the adapter comes up, which is the one point
++	 * that runs both on a fresh bond and on every start; without it the
++	 * kernel is never asked to watch for the device and its advertisements
++	 * are ignored until something connects by hand.
++	 */
++	if (bdaddr_type != BDADDR_BREDR)
++		device_set_auto_connect(device, TRUE);
++
+ 	/* If the other bearer state was already true we don't need to
+ 	 * send any property signals.
+ 	 */
