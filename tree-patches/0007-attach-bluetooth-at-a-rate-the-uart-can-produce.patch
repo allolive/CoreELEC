@@ -1,0 +1,32 @@
+Attach bluetooth from userspace only where the kernel has not
+
+hciattach is told to take /dev/ttyS1 to 2000000 baud, and the controller obeys
+the vendor command and switches. The host cannot follow: the meson UART is
+clocked at 24 MHz, so base_baud is 24000000/16 = 1500000 and 2 Mbaud is above
+what it can generate. The two ends then run at different rates, which leaves
+short exchanges working while sustained traffic arrives corrupt. Take the
+ceiling from the port itself, so a UART clocked high enough still runs at
+2000000.
+
+Stand aside entirely on a board whose device tree gives the port a bluetooth
+child: hci_uart has bound the controller before this runs, and a second attach
+would fight it for the same tty.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/projects/Amlogic-ce/packages/linux-firmware/brcmfmac_sdio-firmware-aml/system.d/brcmfmac_sdio-firmware-aml.service
++++ b/projects/Amlogic-ce/packages/linux-firmware/brcmfmac_sdio-firmware-aml/system.d/brcmfmac_sdio-firmware-aml.service
+@@ -3,9 +3,12 @@
+ Wants=bluetooth.service
+ Before=bluetooth.service
+ After=dev-ttyS1.device
++# Where the device tree gives the port a bluetooth child, hci_uart has the
++# controller already; attaching again from userspace fights it for the tty.
++ConditionPathExistsGlob=!/sys/class/bluetooth/hci*
+ 
+ [Service]
+ Type=simple
+ ExecStartPre=/usr/sbin/rfkill unblock bluetooth
+-ExecStart=/usr/bin/hciattach -n -s 115200 /dev/ttyS1 bcm43xx 2000000
++ExecStart=/bin/sh -c 'clk=$$(cat /sys/class/tty/ttyS1/uartclk 2>/dev/null || echo 0); max=$$((clk / 16)); rate=2000000; [ "$$max" -gt 0 ] && [ "$$max" -lt "$$rate" ] && rate=$$max; exec /usr/bin/hciattach -n -s 115200 /dev/ttyS1 bcm43xx "$$rate"'
+ ExecStopPost=/usr/sbin/rfkill block bluetooth
