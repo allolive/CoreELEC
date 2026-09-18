@@ -11,10 +11,6 @@
 #   yacer-local.sh revert    take it back out
 #   yacer-local.sh status    say which state the checkout is in
 #
-# apply refuses when our kodi patches were not made for this checkout's kodi
-# (yacer-kodi.sh guard --local). YACER_KODI_PATCHES=<dir> builds the files that
-# yacer-kodi.sh patches wrote there instead of the branch's own kodi patches.
-#
 # Run from the root of the CoreELEC clone. The branch is taken from its own
 # working copy when one is checked out, so an edit can be built without being
 # committed first; otherwise it is read out of this repository. Either way apply
@@ -59,8 +55,7 @@ apply)
   fi
   if [ -n "$src" ]; then
     cp -a "$src/overlay" "$src/tree-patches" "$tmp"/ || die "cannot read $src"
-    [ ! -f "$src/kodi.source" ] || cp -p "$src/kodi.source" "$tmp"/
-    if git -C "$src" diff --quiet HEAD -- overlay tree-patches kodi.source 2>/dev/null; then
+    if git -C "$src" diff --quiet HEAD -- overlay tree-patches 2>/dev/null; then
       origin="$BRANCH @ ${commit:0:9}"
     else
       origin="$BRANCH @ ${commit:0:9} plus uncommitted edits"
@@ -93,21 +88,6 @@ apply)
       fi
     done < <(sed -n 's|^--- a/||p' "$p")
   done
-
-  # Our kodi patches are regenerated for one CoreELEC kodi; on any other the
-  # build would apply them with fuzz or fail half way through.
-  kodi=overlay/projects/Amlogic-ce/patches-yacer/kodi
-  if [ -n "${YACER_KODI_PATCHES:-}" ]; then
-    [ -f "$YACER_KODI_PATCHES/kodi.source" ] || die "no kodi.source in $YACER_KODI_PATCHES"
-    rm -rf "${tmp:?}/$kodi"; mkdir -p "$tmp/$kodi"
-    find "$YACER_KODI_PATCHES" -maxdepth 1 -name '*.patch' -exec cp -p {} "$tmp/$kodi"/ \;
-    cp -p "$YACER_KODI_PATCHES/kodi.source" "$tmp/kodi.source"
-    origin="$origin with kodi patches from $YACER_KODI_PATCHES"
-  fi
-  kodiscript=$(dirname "$0")/yacer-kodi.sh
-  [ -n "$src" ] && [ -f "$src/scripts/yacer-kodi.sh" ] && kodiscript=$src/scripts/yacer-kodi.sh
-  [ -z "$src" ] && [ -f "$tmp/scripts/yacer-kodi.sh" ] && kodiscript=$tmp/scripts/yacer-kodi.sh
-  bash "$kodiscript" guard --local "$tmp/kodi.source" || die "the kodi patches do not fit this checkout"
 
   # A patch of ours that is also sitting loose in the package's patch directory
   # would be applied twice, and the second time would fail.

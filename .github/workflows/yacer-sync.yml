@@ -7,21 +7,12 @@
 # Our own files live on the yacer branch, which shares no history with the
 # mirror and is never replayed onto it. The build copies them over a checkout
 # of the mirror instead, so an upstream rewrite can never conflict with us.
-#
-# The one exception is kodi: our kodi patches live as commits on allolive/xbmc
-# yacer-kodi and are rebased with git onto each new kodi pin before the mirror
-# moves. If they do not fit, the mirror stays where it is and this run fails
-# with the report in the job summary.
 name: YACER upstream sync
 
 on:
   schedule:
     - cron: '17 5 * * *'        # daily; every sync that lands changes starts a build
   workflow_dispatch:
-  push:
-    branches: [ yacer ]
-    paths:
-      - 'overlay/projects/Amlogic-ce/patches-yacer/kodi/**'
 
 concurrency:
   group: yacer-sync
@@ -35,36 +26,36 @@ jobs:
   sync:
     name: mirror upstream
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    environment: yacer-push
     steps:
       - uses: actions/checkout@v7
         with:
           ref: yacer
           fetch-depth: 1
-          persist-credentials: false
 
-      # everything that decides what to push; no secret and no credentials here
-      - name: Plan
-        id: plan
-        run: bash scripts/yacer-kodi.sh plan > "$RUNNER_TEMP/plan"
+      - name: Sync
+        id: sync
+        run: |
+          git remote add upstream https://github.com/CoreELEC/CoreELEC || true
+          git fetch --depth=1 upstream coreelec-22
+          git fetch --depth=1 origin coreelec-22:refs/remotes/origin/coreelec-22 || true
 
-      - name: Push
-        id: push
-        if: steps.plan.outcome == 'success'
-        env:
-          XBMC_DEPLOY_KEY: ${{ secrets.XBMC_DEPLOY_KEY }}
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/yacer-kodi.sh push "$RUNNER_TEMP/plan"
+          NEW=$(git rev-parse upstream/coreelec-22)
+          # --verify --quiet prints nothing when the ref is missing; plain
+          # rev-parse echoes the name itself, which is not a sha and not empty
+          OLD=$(git rev-parse --verify --quiet origin/coreelec-22^{commit} || true)
+
+          if [ "$NEW" = "$OLD" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "mirror already at ${NEW:0:10}"
+            exit 0
+          fi
+
+          git push --force origin "$NEW":refs/heads/coreelec-22
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "mirror ${OLD:0:10} -> ${NEW:0:10}"
 
       - name: Trigger a build
-        if: steps.push.outputs.changed == 'true'
+        if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer
-
-      - name: Result
-        if: always()
-        run: |
-          cat "$RUNNER_TEMP/plan" 2>/dev/null || true
-          grep -qx 'result=ok' "$RUNNER_TEMP/plan"

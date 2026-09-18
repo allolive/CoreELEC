@@ -44,41 +44,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # A build is coreelec-22 with our patches applied to it, and nothing decides
-  # whether that happens: a patch that does not apply fails the build, which is
-  # the same answer a local build gives. This job only reports how the kodi
-  # stack and the mirror line up - the sync is what acts on it - and names the
-  # exact mirror commit to build, so the tar matches what was checked. A
-  # continuation carries its own mirror instead, so it keeps the state it built.
-  guard:
-    name: report how the kodi patches fit the mirror
-    if: inputs.mirror == ''
-    runs-on: ubuntu-24.04
-    outputs:
-      result: ${{ steps.guard.outputs.result }}
-      mirror: ${{ steps.guard.outputs.mirror }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: coreelec-22
-          fetch-depth: 1
-          persist-credentials: false
-
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          path: .yacer
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Guard
-        id: guard
-        run: bash .yacer/scripts/yacer-kodi.sh guard
-
+  # A build is coreelec-22 with our patches applied to it. A patch that does not
+  # apply fails the build, which is the same answer a local build gives.
   build:
     name: build update tar
-    needs: guard
-    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350          # the hard job limit is 360
     env:
@@ -123,7 +92,7 @@ jobs:
       # change underneath us stops the build instead of being silently reverted.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.guard.outputs.mirror || inputs.mirror }}
+          ref: ${{ inputs.mirror || 'coreelec-22' }}
           fetch-depth: 1
           # nothing after the overlay uses git auth, and the build runs thousands
           # of third-party configure scripts in this workspace
