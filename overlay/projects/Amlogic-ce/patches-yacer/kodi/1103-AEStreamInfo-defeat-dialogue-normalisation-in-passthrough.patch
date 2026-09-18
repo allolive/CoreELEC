@@ -9,6 +9,14 @@ Atmos (16ch presentation) and DTS / DTS-HD / DTS:X frames, fixing the CRCs.
 AC-3 frames must pass their CRC first; E-AC-3 dependent substreams and DD+
 Atmos (JOC, from addbsi or the stream profile) are never touched; TrueHD and
 DTS EXSS are only rewritten after their CRC checks, DTS core DNG only for VERNUM 6/7.
+
+The E-AC-3 checksum is taken over the rewritten frame. Deriving it from the
+changed bits alone walked libavutil's table by hand, which is not ours to
+index: it produced a wrong checksum on every frame and receivers went silent
+on DD+. A frame that arrives with a bad checksum is corrected too, but only
+once its length is confirmed - the checksum is written at the end of the
+frame, so a misread length would corrupt a frame that was intact.
+
 One multi-select setting in the CoreELEC section picks the formats (read on
 codec open): AC-3/E-AC-3, TrueHD Atmos and DTS, all selected by default.
 Ported from pannal/xbmc 91e6499007..02169a0bd6 plus the dialnorm part of 451fecaadb.
@@ -110,7 +118,7 @@ index d30cf8e0f0f9dacefb3de381b2392caa3a9fc03c..876c2b275113b4a2d28a9bcb4efdc7fa
      // make sure the buffer is allocated and big enough
      if (!*buffer || !bufferSize || *bufferSize < size)
      {
-@@ -292,6 +304,454 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
+@@ -292,6 +304,457 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
    return possible ? possible : skipped;
  }
  
@@ -343,27 +351,30 @@ index d30cf8e0f0f9dacefb3de381b2392caa3a9fc03c..876c2b275113b4a2d28a9bcb4efdc7fa
 +      if (offset + frameBytes > size)
 +        break;
 +
++      // A frame whose own checksum is wrong is still worth correcting, but only
++      // once the frame really is this long: the checksum goes at the end of it,
++      // and writing that to a misread length corrupts a frame that was intact.
++      const bool framed = av_crc(crcTable, 0, frame + 2, frameBytes - 2) == 0 ||
++                          frameBytes == size ||
++                          (offset + frameBytes + 2 <= size && frame[frameBytes] == 0x0b &&
++                           frame[frameBytes + 1] == 0x77);
++
 +      // leave dependent substreams and DD+ Atmos (JOC) alone
 +      uint8_t dialnorm = ((frame[5] & 0x07) << 2) | (frame[6] >> 6);
-+      if (strmtyp != 1 && frameBytes >= 10 && dialnorm != 31 &&
++      if (strmtyp != 1 && frameBytes >= 10 && dialnorm != 31 && framed &&
 +          !EAC3HasJOC(frame, frameBytes))
 +      {
-+        const uint8_t delta[2] = {static_cast<uint8_t>(~frame[5] & 0x07),
-+                                  static_cast<uint8_t>(~frame[6] & 0xC0)};
 +        frame[5] |= 0x07;
 +        frame[6] |= 0xC0;
 +
-+        // CRC is linear: update the stored crc2 by the CRC of the changed bits
-+        uint32_t dcrc = av_crc(crcTable, 0, delta, 2);
-+        for (unsigned int i = 0; i < frameBytes - 9; i++)
-+          dcrc = crcTable[static_cast<uint8_t>(dcrc)] ^ (dcrc >> 8);
-+
-+        uint16_t crc2 = ((frame[frameBytes - 2] << 8) | frame[frameBytes - 1]) ^
-+                        AC3Bswap16(static_cast<uint16_t>(dcrc));
-+        if (crc2 == 0x0B77)
++        // the checksum covers the frame, so take it over the frame as it now is
++        uint16_t crc2 =
++            AC3Bswap16(static_cast<uint16_t>(av_crc(crcTable, 0, frame + 2, frameBytes - 4)));
++        while (crc2 == 0x0B77)
 +        {
 +          frame[frameBytes - 3] ^= 0x1;
-+          crc2 ^= 0x8005;
++          crc2 =
++              AC3Bswap16(static_cast<uint16_t>(av_crc(crcTable, 0, frame + 2, frameBytes - 4)));
 +        }
 +        frame[frameBytes - 2] = (crc2 >> 8) & 0xFF;
 +        frame[frameBytes - 1] = crc2 & 0xFF;
