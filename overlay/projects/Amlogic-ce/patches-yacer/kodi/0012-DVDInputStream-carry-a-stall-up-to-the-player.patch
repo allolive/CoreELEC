@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 17:00:00 -0400
+Subject: [PATCH] DVDInputStream: carry a stall up to the player
+
+Carry the stall up to the player rather than turning it into a short read,
+and let a stop unwind as an abort - including one made while the file is still
+opening.
+
+Only playback waits: a scan or a subtitle fetch still fails fast.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
+index fc6d3abf3bab00911017cb725926516958e43730..237ce79857a2f8ba910313f5851e4140ee559d72 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
+@@ -10,6 +10,9 @@
+ 
+ #include "DVDInputStream.h"
+ 
++#include <atomic>
++#include <cstdint>
++
+ class CDVDInputStreamFile : public CDVDInputStream
+ {
+ public:
+@@ -25,9 +28,16 @@ public:
+   int GetBlockSize() override;
+   void SetReadRate(uint32_t rate) override;
+   bool GetCacheStatus(XFILE::SCacheStatus *status) override;
++  void Abort() override { m_aborted = true; }
++  bool Aborted() const { return m_aborted; }
++  void SetWaitsForUser(bool waits) { m_waitsForUser = waits; }
++  uint32_t GetStallCount() const { return m_stallCount; }
+ 
+ protected:
+   XFILE::CFile* m_pFile = nullptr;
+   bool m_eof = false;
+   unsigned int m_flags = 0;
++  std::atomic<bool> m_aborted{false};
++  bool m_waitsForUser = false;
++  std::atomic<uint32_t> m_stallCount{0};
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
+index a129064892b5eb255675f2e22b86e16bcd7d3afd..3bef48af36ba806b1d4463d1c244bfe88a67a475 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
+@@ -14,6 +14,8 @@
+ #include "utils/log.h"
+ #include "video/VideoFileItemClassify.h"
+ 
++#include <cerrno>
++
+ using namespace KODI;
+ using namespace XFILE;
+ 
+@@ -95,8 +97,22 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
+ 
+   ssize_t ret = m_pFile->Read(buf, buf_size);
+ 
++  // Playback waits for a stalled source until stopped: a demuxer that meets the stall
++  // mid-element takes it for the end of the file.
++  if (ret < 0 && errno == EAGAIN && m_waitsForUser)
++  {
++    while (ret < 0 && errno == EAGAIN && !m_aborted)
++      ret = m_pFile->Read(buf, buf_size);
++    m_stallCount++;
++  }
++
+   if (ret < 0)
++  {
++    if (errno == EAGAIN)
++      return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
++
+     return -1; // player will retry read in case of error until playback is stopped
++  }
+ 
+   /* we currently don't support non completing reads */
+   if (ret == 0)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
+index 368ae4aa2bd24f0af17367add304a3306036b6fe..c006ac68e9f84494229bba23968c433317ea212b 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
+@@ -179,8 +179,11 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
+   }
+ 
+   // our file interface handles all these types of streams
+-  return std::make_shared<CDVDInputStreamFile>(finalFileitem,
+-                                               XFILE::READ_TRUNCATED | XFILE::READ_BITRATE);
++  auto stream = std::make_shared<CDVDInputStreamFile>(finalFileitem,
++                                                      XFILE::READ_TRUNCATED | XFILE::READ_BITRATE);
++  // Only playback has a user to stop it, so only its reads wait out a stalled source.
++  stream->SetWaitsForUser(pPlayer != nullptr);
++  return stream;
+ }
+ 
+ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVideoPlayer* pPlayer, const CFileItem &fileitem, const std::vector<std::string>& filenames)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
+index 5242f6d076c114584d8ee1f77b29cbc5eb910f7a..3496b37d460b5534c1d4931aa3013f68777eca81 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
+@@ -11,6 +11,7 @@
+ #include "DVDInputStream.h"
+ #include "InputStreamMultiStreams.h"
+ 
++#include <atomic>
+ #include <string>
+ #include <vector>
+ 
+@@ -39,4 +40,5 @@ public:
+ protected:
+   IVideoPlayer* m_pPlayer;
+   std::vector<std::string> m_filenames;
++  std::atomic<bool> m_aborted{false};
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
+index b44ec5a5aa03c271d52f747dc4dee132905bc288..3df9953c08e5ee976afd93d0ddee35a0833fb347 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
+@@ -28,6 +28,7 @@ CInputStreamMultiSource::~CInputStreamMultiSource()
+ 
+ void CInputStreamMultiSource::Abort()
+ {
++  m_aborted = true;
+   for (const auto& iter : m_InputStreams)
+     iter->Abort();
+ }
+@@ -119,6 +120,8 @@ bool CInputStreamMultiSource::Open()
+       CLog::Log(LOGERROR, "CDVDPlayer::OpenInputStream - error opening file [{}]", m_filenames[i]);
+       continue;
+     }
++    if (m_aborted)
++      inputstream->Abort();
+     m_InputStreams.push_back(inputstream);
+   }
+   return !m_InputStreams.empty();

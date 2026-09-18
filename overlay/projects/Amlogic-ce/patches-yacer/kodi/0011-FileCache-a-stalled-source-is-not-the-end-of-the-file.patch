@@ -1,68 +1,30 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:26 -0400
-Subject: [PATCH] FileCache: don't stop playback when a network share stalls
+Date: Fri, 18 Sep 2026 17:00:00 -0400
+Subject: [PATCH] FileCache: a stalled source is not the end of the file
 
-A stalled source returned no bytes, which the cache reported as the end of the
-file and the player acted on by stopping.
+A source that stops answering is turned into zero bytes here, and everything
+above reads that as the end of the file. Playback then ends on a share that is
+only slow.
 
-NFSFile now separates the RPC layer's verdict from the file's own: a transport
-failure, a cancelled call, a jukebox reply or a dead socket can all succeed on a
-later read, and say so with -EAGAIN. The cache retries that whatever length the
-source advertised, so a live or chunked stream is covered too, and leaves every
-other failure to the stock test rather than retrying a permanent error forever.
-A read that finds nothing cached reports the stall through errno, as the other
-failures here do, and the player's own input stream turns it into the -EAGAIN
-ffmpeg understands.
+Pass the stall on instead. Only a clean zero or a real error end the file now.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 5a3e21b394b13e35356458e1776733db184a73a1..559b3bfb097c9e84a9a9cd26a5f1985ec2c0fefb 100644
---- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -1088,7 +1088,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
-     {
-       // assume we are not eof
-       if (m_pFormatContext->pb)
-+      {
-         m_pFormatContext->pb->eof_reached = 0;
-+        // ffmpeg latches a stalled read next to the eof flag and hands it back on
-+        // every later read. Only that one is cleared; a real error still stands.
-+        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
-+          m_pFormatContext->pb->error = 0;
-+      }
- 
-       // check for saved packet after a program change
-       if (m_pkt.result < 0)
-diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index a129064892b5eb255675f2e22b86e16bcd7d3afd..0684c0dcb420b61c11abfa8d5adaae464ef81c36 100644
---- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-@@ -14,6 +14,8 @@
- #include "utils/log.h"
- #include "video/VideoFileItemClassify.h"
- 
-+#include <cerrno>
-+
- using namespace KODI;
- using namespace XFILE;
- 
-@@ -96,7 +98,12 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
-   ssize_t ret = m_pFile->Read(buf, buf_size);
- 
-   if (ret < 0)
-+  {
-+    if (errno == EAGAIN)
-+      return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
-+
-     return -1; // player will retry read in case of error until playback is stopped
-+  }
- 
-   /* we currently don't support non completing reads */
-   if (ret == 0)
+diff --git a/xbmc/filesystem/FileCache.h b/xbmc/filesystem/FileCache.h
+index c5cb97a35af21607846a776c9ccbd7780f0eaad0..0a9de08698e4dbe0aff2f4ccc6e03202c02e3f39 100644
+--- a/xbmc/filesystem/FileCache.h
++++ b/xbmc/filesystem/FileCache.h
+@@ -109,6 +109,7 @@ public:
+     int64_t m_forwardCacheSize = 0;
+     int64_t m_maxForward = 0;
+     bool m_bFilling = false;
++    bool m_readStalled = false;
+     std::atomic<int64_t> m_fileSize;
+     unsigned int m_flags;
+     CCriticalSection m_sync;
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index f9f8b521d70062a33677965d7718aab38f3cc1ce..768132d8ebe52a6b5692f3b69b923f8b0aa81593 100644
+index f9f8b521d70062a33677965d7718aab38f3cc1ce..105e8b318a762bf33eb9c704ef05a11aacce12a3 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -25,6 +25,7 @@
@@ -86,7 +48,19 @@ index f9f8b521d70062a33677965d7718aab38f3cc1ce..768132d8ebe52a6b5692f3b69b923f8b
        {
          CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                    __FUNCTION__, m_sourcePath, iRead);
-@@ -566,15 +569,27 @@ retry:
+@@ -554,6 +557,11 @@ retry:
+   iRc = m_pCache->ReadFromCache((char *)lpBuf, uiBufSize);
+   if (iRc > 0)
+   {
++    if (m_readStalled)
++    {
++      CLog::Log(LOGINFO, "CFileCache::{} - <{}> source resumed", __FUNCTION__, m_sourcePath);
++      m_readStalled = false;
++    }
+     m_readPos += iRc;
+     return (int)iRc;
+   }
+@@ -566,15 +574,29 @@ retry:
        return -1;
      }
  
@@ -108,73 +82,30 @@ index f9f8b521d70062a33677965d7718aab38f3cc1ce..768132d8ebe52a6b5692f3b69b923f8b
 +    // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
 +    if (!m_pCache->IsEndOfInput())
 +    {
-+      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read", __FUNCTION__,
-+                m_sourcePath);
++      if (!m_readStalled)
++        CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read",
++                  __FUNCTION__, m_sourcePath);
++      m_readStalled = true;
 +      SetLastError(EAGAIN);
 +      return -1;
 +    }
    }
  
    if (iRc == CACHE_RC_TIMEOUT)
-diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 3242b9693d693b466dd59d8b196657fd46662ce4..01197464bab44a59337a19add57853ef6b37554a 100644
---- a/xbmc/filesystem/NFSFile.cpp
-+++ b/xbmc/filesystem/NFSFile.cpp
-@@ -21,6 +21,7 @@
- #include "utils/URIUtils.h"
- #include "utils/log.h"
+@@ -611,6 +633,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
+     return -1;
+   }
  
-+#include <cerrno>
- #include <inttypes.h>
- #include <mutex>
- 
-@@ -58,6 +59,34 @@ constexpr auto IDLE_TIMEOUT = 30s; // close fast unused contexts when no active
- 
- constexpr int NFS4ERR_EXPIRED = -11; // client session expired due idle time greater than lease_time
- 
-+// libnfs hands back the RPC layer's verdict: a transport failure as -EFAULT, a
-+// cancelled call as -EINTR, NFS3ERR_JUKEBOX as -EAGAIN, and a server that stopped
-+// answering as one of the socket errors. A later read can succeed after any of
-+// them; the file's own answers stand.
-+bool IsTransientReadError(ssize_t err)
-+{
-+  switch (-err)
-+  {
-+    case EAGAIN:
-+    case EINTR:
-+    case EFAULT:
-+    case EIO:
-+    case EPIPE:
-+    case ETIMEDOUT:
-+    case ECONNRESET:
-+    case ECONNABORTED:
-+    case ECONNREFUSED:
-+    case ENETDOWN:
-+    case ENETRESET:
-+    case ENETUNREACH:
-+    case EHOSTDOWN:
-+    case EHOSTUNREACH:
-+      return true;
-+    default:
-+      return false;
-+  }
-+}
++  m_readStalled = false;
 +
- constexpr auto SETTING_NFS_VERSION = "nfs.version";
- constexpr auto SETTING_NFS_CHUNKSIZE = "nfs.chunksize";
- } // unnamed namespace
-@@ -764,9 +793,14 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
- 
-   //something went wrong ...
-   if (numberOfBytesRead < 0)
-+  {
-     CLog::Log(LOGERROR, "{} - Error( {}, {} )", __FUNCTION__, (int64_t)numberOfBytesRead,
-               nfs_get_error(m_pNfsContext));
- 
-+    if (IsTransientReadError(numberOfBytesRead))
-+      return -EAGAIN;
-+  }
-+
-   return numberOfBytesRead;
- }
- 
+   int64_t iCurPos = m_readPos;
+   int64_t iTarget = iFilePosition;
+   if (iWhence == SEEK_END)
+@@ -727,6 +751,7 @@ int CFileCache::IoControl(IOControl request, void* param)
+     status->maxrate = m_writeRate;
+     status->currate = m_writeRateActual;
+     status->lowrate = m_writeRateLowSpeed;
++    status->endOfInput = m_pCache->IsEndOfInput();
+     m_writeRateLowSpeed = 0; // Reset low speed condition
+     return 0;
+   }

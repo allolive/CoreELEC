@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 17:00:00 -0400
+Subject: [PATCH] AML: publish that the codec buffers its own video
+
+The buffering hold needs to know the codec keeps video of its own, because
+that is what hides the stall from the usual check.
+
+Publish it where the player can see it, and set it from the Amlogic codec.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index 0c5f4f2fae0ba998f607557d4a9f10a5fa409025..f1a3663f88d644a1ad5143d94956ab163d505703 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+@@ -36,6 +36,8 @@ public:
+   void SetVideoDecoderName(const std::string &name, bool isHw);
+   std::string GetVideoDecoderName();
+   bool IsVideoHwDecoder();
++  void SetVideoCodecBuffersData(bool buffersData);
++  bool GetVideoCodecBuffersData() const;
+   void SetVideoDeintMethod(const std::string &method);
+   std::string GetVideoDeintMethod();
+   void SetVideoPixelFormat(const std::string &pixFormat);
+@@ -149,6 +151,7 @@ protected:
+ 
+   // player video info
+   bool m_videoIsHWDecoder;
++  bool m_videoCodecBuffersData{false};
+   std::string m_videoDecoderName;
+   std::string m_videoDeintMethod;
+   std::string m_videoPixelFormat;
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index d7d8c431bbd80bd5a00605d5d93627c96997f166..1587512286af9376d7298a1ef77b6ff9cff8e683 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+@@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
+ //******************************************************************************
+ // video codec
+ //******************************************************************************
++void CProcessInfo::SetVideoCodecBuffersData(bool buffersData)
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  m_videoCodecBuffersData = buffersData;
++}
++
++bool CProcessInfo::GetVideoCodecBuffersData() const
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  return m_videoCodecBuffersData;
++}
++
+ void CProcessInfo::ResetVideoCodecInfo()
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = false;
+   m_videoDecoderName = "unknown";
+   m_videoDeintMethod = "unknown";
+@@ -104,6 +119,8 @@ void CProcessInfo::SetVideoDecoderName(const std::string &name, bool isHw)
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  // A codec that holds data of its own says so after naming itself.
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = isHw;
+   m_videoDecoderName = name;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 1a79460681241c15e81b77105c0871c0c35b180f..b5437241cf825e786fc6140bf6c64a8a2ac35fea 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -407,6 +407,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+   m_videobuffer.color_transfer = m_hints.colorTransferCharacteristic;
+ 
+   m_processInfo.SetVideoDecoderName(m_pFormatName, true);
++  // libamcodec keeps its own stream buffer.
++  m_processInfo.SetVideoCodecBuffersData(true);
+   m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
+   m_processInfo.SetVideoDeintMethod("hardware");
+   m_processInfo.SetVideoDAR(m_hints.aspect);
