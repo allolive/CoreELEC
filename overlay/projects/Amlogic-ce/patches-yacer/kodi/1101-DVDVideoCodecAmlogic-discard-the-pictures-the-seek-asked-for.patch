@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 19 Sep 2026 12:00:00 -0400
+Subject: [PATCH] DVDVideoCodecAmlogic: discard the pictures the seek asked for
+
+The drop request was read when a packet went in and applied to whichever
+picture came out, so the decoder's own latency decided which frames carried
+the flag: the first pictures of the run went unmarked and pictures after it
+were marked instead. Over a seek that is most of a preroll landing on screen.
+
+Remember how far the request reached instead. Take the highest timestamp
+among the packets accepted under it and discard every picture at or below
+that, and where the input carries no timestamp - the driver invents one, so
+it cannot identify the packet - count the pictures owed instead. A picture
+that is not owed clears the state, and a flush, drain or close resets it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
+@@ -0,0 +1,65 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <limits>
++#include <optional>
++
++class CAMLSeekPreroll
++{
++public:
++  void SetDrop(bool drop) { m_dropRequested = drop; }
++
++  void AcceptPacket(std::optional<double> pts)
++  {
++    if (!m_dropRequested)
++      return;
++
++    if (m_pendingPictures < std::numeric_limits<unsigned int>::max())
++      ++m_pendingPictures;
++    if (pts)
++    {
++      if (!m_dropUntilPts || *pts > *m_dropUntilPts)
++        m_dropUntilPts = pts;
++    }
++    else
++      m_usePictureCount = true;
++  }
++
++  bool ShouldDrop(std::optional<double> pts)
++  {
++    // The driver synthesizes PTS for untimestamped input. Count every preroll
++    // output once; its numeric timestamp cannot identify those input packets.
++    const bool beforeCutoff = m_dropUntilPts && (!pts || *pts <= *m_dropUntilPts);
++    const bool drop = m_dropRequested || beforeCutoff ||
++                      (m_usePictureCount && m_pendingPictures > 0);
++    if (drop)
++    {
++      if (m_pendingPictures > 0)
++        --m_pendingPictures;
++      if (m_pendingPictures == 0)
++        m_usePictureCount = false;
++    }
++    else
++    {
++      m_dropUntilPts.reset();
++      m_pendingPictures = 0;
++      m_usePictureCount = false;
++    }
++    return drop;
++  }
++
++  void Reset() { *this = {}; }
++
++private:
++  bool m_dropRequested{false};
++  std::optional<double> m_dropUntilPts;
++  unsigned int m_pendingPictures{0};
++  bool m_usePictureCount{false};
++};
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -483,6 +483,7 @@ void CDVDVideoCodecAmlogic::Close(void)
+     m_Codec->CloseDecoder(), m_Codec = nullptr;
+ 
+   m_videobuffer.iFlags = 0;
++  m_seekPreroll.Reset();
+ 
+   if (m_mpeg2_sequence)
+     delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
+@@ -500,6 +501,11 @@
+ 
+ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
++  // Enhancement-layer packets are sent with drop false, so taking the flag as it
++  // stands would clear the request halfway through a dual layer run.
++  if (!packet.isELPackage)
++    m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
++
+   // Handle Input, add demuxer packet to input queue, we must accept it or
+   // it will be discarded as VideoPlayerVideo has no concept of "try again".
+ 
+@@ -684,6 +690,11 @@
+ 
+   if (data_added && packet.pData)
+   {
++    // Decode timestamps cannot bound pictures reordered into presentation order.
++    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && packet.pts != DVD_NOPTS_VALUE
++                                  ? std::optional<double>{packet.pts}
++                                  : std::nullopt);
++
+     m_pendingMeta.Inherit(m_lastMeta);
+     m_lastMeta = m_pendingMeta;
+     if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
+@@ -797,6 +808,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
+ 
+   m_mpeg2_sequence_pts = 0;
+   m_has_keyframe = false;
++  m_seekPreroll.Reset();
+   m_metadataSequencer.Reset();
+   m_pendingMeta = m_streamMeta;
+   if (m_bitstream)
+@@ -832,6 +844,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+     pVideoPicture->videoBuffer = nullptr;
+     pVideoPicture->SetParams(m_videobuffer);
+ 
++    if (m_seekPreroll.ShouldDrop(m_videobuffer.pts != DVD_NOPTS_VALUE
++                                     ? std::optional<double>{m_videobuffer.pts}
++                                     : std::nullopt))
++      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
++
+     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
+     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
+      m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex());;
+@@ -867,10 +884,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
+     m_codecControlFlags = flags;
+ 
+-    if (flags & DVD_CODEC_CTRL_DROP)
+-      m_videobuffer.iFlags |= DVP_FLAG_DROPPED;
+-    else
+-      m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
++    if (flags & DVD_CODEC_CTRL_DRAIN)
++      m_seekPreroll.SetDrop(false);
+ 
+     if (m_Codec)
+       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -10,6 +10,7 @@
+ 
+ #include "AMLFrameMetadata.h"
+ #include "AMLHdr10PlusHook.h"
++#include "AMLSeekPreroll.h"
+ #include "DVDVideoCodec.h"
+ #include "DVDStreamInfo.h"
+ #include "threads/CriticalSection.h"
+@@ -123,6 +124,8 @@ private:
+   bool m_dualLayer{false};
+   int m_nalLengthSize{0};
+   double m_lastCommitPts{0.0};
++  //! Which decoded pictures still answer the player's drop request.
++  CAMLSeekPreroll m_seekPreroll;
+   AMLFrameMetadata m_streamMeta;
+   AMLFrameMetadata m_pendingMeta;
+   AMLFrameMetadata m_lastMeta;
