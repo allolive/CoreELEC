@@ -1,0 +1,269 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 16:07:52 -0400
+Subject: [PATCH] AMLCodec: parse and repack AV1 access units within explicit
+ bounds
+
+Replace the fixed-slack AV1 repack buffer with checked size calculations and a
+bounded OBU parser. Reject malformed LEB128 lengths and truncated OBUs, report
+allocation failures separately, and never advance or write beyond the supplied
+access unit and destination capacity.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb01af0190 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -44,6 +44,7 @@
+ #include <sys/poll.h>
+ #include <chrono>
+ #include <exception>
++#include <limits>
+ #include <thread>
+ #include "aom_integer.h"
+ #include "obu_util.h"
+@@ -1110,11 +1111,19 @@ int av1_parser_frame(
+     uint8_t *data,
+     const uint8_t *data_end,
+     uint8_t *dst_data,
+-    uint32_t *frame_len,
++    size_t dst_capacity,
++    size_t *frame_len,
+     uint8_t *meta_buf,
+-    uint32_t *meta_len) {
++    size_t meta_capacity,
++    size_t *meta_len) {
++    if (!data || !data_end || data > data_end || !dst_data || !frame_len)
++        return -1;
++
++    *frame_len = 0;
++    if (meta_len)
++        *meta_len = 0;
++
+     int frame_decoding_finished = 0;
+-    uint32_t obu_size = 0;
+     ObuHeader obu_header;
+     memset(&obu_header, 0, sizeof(obu_header));
+     int seen_frame_header = 0;
+@@ -1152,26 +1161,32 @@ int av1_parser_frame(
+             return -1;
+         }
+ 
+-        // Note: aom_read_obu_header_and_size() takes care of checking that this
+-        // doesn't cause 'data' to advance past 'data_end'.
+-
+-        if ((size_t)(data_end - data - bytes_read) < payload_size) {
++        if (bytes_read == 0 || bytes_read > bytes_available ||
++            payload_size > bytes_available - bytes_read) {
+             return -1;
+         }
+ 
+         CLog::Log(LOGDEBUG, "\tobu {} len {:d}+{:d}", obu_type_name[obu_header.type], bytes_read, payload_size);
+ 
+-        obu_size = bytes_read + payload_size + 4;
++        const size_t obu_data_size = bytes_read + payload_size;
++        size_t obu_size = obu_data_size;
+ 
+         if (!is_annexb) {
+-            obu_size = bytes_read + payload_size + 4;
++            obu_size += 4;
+             header_size = 20;
+-            aom_uleb_encode_fixed_size(obu_size, 4, 4, header + 16, &bytes_written);
++            if (aom_uleb_encode_fixed_size(obu_size, 4, 4, header + 16, &bytes_written) != 0 ||
++                bytes_written != 4) {
++                return -1;
++            }
+         }
+         else {
+-            obu_size = bytes_read + payload_size;
+             header_size = 16;
+         }
++        if (obu_size > std::numeric_limits<uint32_t>::max() - 4 ||
++            header_size > dst_capacity - *frame_len ||
++            obu_data_size > dst_capacity - *frame_len - header_size) {
++            return -1;
++        }
+         header[0] = ((obu_size + 4) >> 24) & 0xff;
+         header[1] = ((obu_size + 4) >> 16) & 0xff;
+         header[2] = ((obu_size + 4) >> 8) & 0xff;
+@@ -1180,13 +1195,12 @@ int av1_parser_frame(
+         header[5] = header[1] ^ 0xff;
+         header[6] = header[2] ^ 0xff;
+         header[7] = header[3] ^ 0xff;
+-        memcpy(dst_data, header, header_size);
+-        dst_data += header_size;
+-        memcpy(dst_data, data, bytes_read + payload_size);
+-        dst_data += bytes_read + payload_size;
++        memcpy(dst_data + *frame_len, header, header_size);
++        *frame_len += header_size;
++        memcpy(dst_data + *frame_len, data, obu_data_size);
++        *frame_len += obu_data_size;
+ 
+         data += bytes_read;
+-        *frame_len += 20 + bytes_read + payload_size;
+ 
+         switch (obu_header.type) {
+         case OBU_TEMPORAL_DELIMITER:
+@@ -1237,7 +1251,11 @@ int av1_parser_frame(
+                 seen_frame_header = 0;
+             break;
+         case OBU_METADATA:
+-            aom_uleb_decode(data, 8, &type, &bytes_read);
++        {
++            if (aom_uleb_decode(data, payload_size, &type, &bytes_read) != 0 ||
++                bytes_read > payload_size) {
++                return -1;
++            }
+             if (type < 6)
+                 meta_type = static_cast<OBU_METADATA_TYPE>(type);
+             else
+@@ -1247,15 +1265,23 @@ int av1_parser_frame(
+                       type < 6 ? meta_type_name[type] : "RESERVED", bytes_read,
+                       payload_size - bytes_read);
+ 
+-            if (meta_type == OBU_METADATA_TYPE_ITUT_T35 && meta_buf != NULL) {
++            const size_t metadata_size = payload_size - bytes_read;
++            if (meta_type == OBU_METADATA_TYPE_ITUT_T35 && meta_buf != NULL &&
++                meta_len != NULL) {
++                if (metadata_size < 7)
++                    break;
+                 if ((p[0] == 0xb5) /* country code */
+                     && ((p[1] == 0x00) && (p[2] == 0x3b)) /* terminal_provider_code */
+                     && ((p[3] == 0x00) && (p[4] == 0x00) && (p[5] == 0x08) && (p[6] == 0x00))) { /* terminal_provider_oriented_code */
+                     CLog::Log(LOGDEBUG, "\t\tdolbyvison rpu");
++                    if (metadata_size < 12 || meta_capacity < 5)
++                        return -1;
+                     meta_buf[0] = meta_buf[1] = meta_buf[2] = 0;
+                     meta_buf[3] = 0x01;    meta_buf[4] = 0x19;
+ 
+                     if (p[11] & 0x10) {
++                        if (metadata_size < 13)
++                            return -1;
+                         rpu_size = 0x100;
+                         rpu_size |= (p[11] & 0x0f) << 4;
+                         rpu_size |= (p[12] >> 4) & 0x0f;
+@@ -1263,6 +1289,8 @@ int av1_parser_frame(
+                             CLog::Log(LOGDEBUG, "\tmeta rpu in obu exceed 512 bytes");
+                             break;
+                         }
++                        if (rpu_size > metadata_size - 13 || rpu_size > meta_capacity - 5)
++                            return -1;
+                         for (i = 0; i < rpu_size; i++) {
+                             meta_buf[5 + i] = (p[12 + i] & 0x07) << 5;
+                             meta_buf[5 + i] |= (p[13 + i] >> 3) & 0x1f;
+@@ -1272,6 +1300,8 @@ int av1_parser_frame(
+                     else {
+                         rpu_size = (p[10] & 0x1f) << 3;
+                         rpu_size |= (p[11] >> 5) & 0x07;
++                        if (rpu_size > metadata_size - 12 || rpu_size > meta_capacity - 5)
++                            return -1;
+                         for (i = 0; i < rpu_size; i++) {
+                             meta_buf[5 + i] = (p[11 + i] & 0x0f) << 4;
+                             meta_buf[5 + i] |= (p[12 + i] >> 4) & 0x0f;
+@@ -1282,11 +1312,15 @@ int av1_parser_frame(
+                 }
+             }
+             else if (meta_type == OBU_METADATA_TYPE_HDR_CLL) {
++                if (metadata_size < 4)
++                    return -1;
+                 CLog::Log(LOGDEBUG, "\t\thdr10 cll:");
+                 CLog::Log(LOGDEBUG, "\t\tmax_cll = {:x}", (p[0] << 8) | p[1]);
+                 CLog::Log(LOGDEBUG, "\t\tmax_fall = {:x}", (p[2] << 8) | p[3]);
+             }
+             else if (meta_type == OBU_METADATA_TYPE_HDR_MDCV) {
++                if (metadata_size < 24)
++                    return -1;
+                 CLog::Log(LOGDEBUG, "\t\thdr10 primaries[r,g,b] =");
+                 for (i = 0; i < 3; i++) {
+                     CLog::Log(LOGDEBUG, "\t\t {:x}, {:x}",
+@@ -1297,7 +1331,8 @@ int av1_parser_frame(
+                 CLog::Log(LOGDEBUG, "\t\tmaxl = {:x}", (p[16] << 24) | (p[17] << 16) | (p[18] << 8) | p[19]);
+                 CLog::Log(LOGDEBUG, "\t\tminl = {:x}", (p[20] << 24) | (p[21] << 16) | (p[22] << 8) | p[23]);
+             }
+-                break;
++            break;
++        }
+         case OBU_TILE_LIST:
+             break;
+         case OBU_PADDING:
+@@ -1318,25 +1353,44 @@ int av1_add_frame_dec_info(am_private_t *para)
+   int ret;
+   am_packet_t *pkt = &para->am_pkt;
+ 
+-  unsigned int dst_frame_size = 0;
+-  uint8_t *dst_data = (uint8_t *)calloc(1, pkt->data_size + 4096);
+-  av1_parser_frame(0, pkt->data, pkt->data + pkt->data_size, dst_data, &dst_frame_size, NULL, NULL);
++  size_t dst_frame_size = 0;
++  // av1_parser_frame prepends a 20-byte header per OBU. The smallest OBU it will
++  // consume is two bytes - a header byte and a leb128 zero size, which is what a
++  // run of temporal delimiters looks like - so at most data_size/2 of them come
++  // out as data_size + 20 * data_size/2, eleven times the payload.
++  if (pkt->data_size <= 0 ||
++      static_cast<size_t>(pkt->data_size) > (SIZE_MAX - 4096) / 11)
++    return PLAYER_FAILED;
+ 
+-  if (dst_frame_size - pkt->data_size > 0)
++  const size_t dst_capacity = static_cast<size_t>(pkt->data_size) * 11 + 4096;
++  uint8_t *dst_data = (uint8_t *)calloc(1, dst_capacity);
++  if (!dst_data)
++    return PLAYER_NOMEM;
++  ret = av1_parser_frame(0, pkt->data, pkt->data + pkt->data_size, dst_data,
++                         dst_capacity, &dst_frame_size, NULL, 0, NULL);
++  if (ret != 0 || dst_frame_size > static_cast<size_t>(std::numeric_limits<int>::max()))
++  {
++    free(dst_data);
++    return PLAYER_FAILED;
++  }
++
++  if (dst_frame_size > static_cast<size_t>(pkt->data_size))
+   {
+     pkt->avpkt.data = pkt->data;
+     pkt->avpkt.size = pkt->data_size;
+ 
+     av_buffer_unref(&pkt->avpkt.buf);
+-    ret = av_grow_packet(&(pkt->avpkt), dst_frame_size - pkt->data_size);
++    ret = av_grow_packet(&(pkt->avpkt),
++                         static_cast<int>(dst_frame_size) - pkt->data_size);
+     if (ret < 0)
+     {
+       CLog::Log(LOGDEBUG, "ERROR!!! grow_packet for apk failed.!!!");
+-      return ret;
++      free(dst_data);
++      return PLAYER_NOMEM;
+     }
+ 
+     pkt->data = pkt->avpkt.data;
+-    pkt->data_size = dst_frame_size;
++    pkt->data_size = static_cast<int>(dst_frame_size);
+     memcpy(pkt->data, dst_data, dst_frame_size);
+   }
+   free(dst_data);
+@@ -1942,9 +1996,8 @@ int set_header_info(am_private_t *para)
+     else if (para->video_format == VFORMAT_VP9) {
+       vp9_update_frame_header(pkt);
+     }
+-    else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_AV1) {
+-      av1_add_frame_dec_info(para);
+-    }
++    else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_AV1)
++      return av1_add_frame_dec_info(para);
+     else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_MPEG12)
+       mpeg12_add_frame_dec_info(para);
+ 
+@@ -2807,7 +2887,14 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+   // some formats need header/data tweaks.
+   // the actual write occurs once in write_av_packet
+   // and is controlled by am_pkt.newflag.
+-  set_header_info(am_private);
++  const int prepareResult = set_header_info(am_private);
++  if (prepareResult != PLAYER_SUCCESS)
++  {
++    CLog::Log(LOGERROR, "CAMLCodec::{}: failed to prepare packet ({:d})", __FUNCTION__,
++              prepareResult);
++    am_private->am_pkt.isvalid = 0;
++    return prepareResult != PLAYER_NOMEM;
++  }
+ 
+   // loop until we write all into codec, am_pkt.isvalid
+   // will get set to zero once everything is consumed.
