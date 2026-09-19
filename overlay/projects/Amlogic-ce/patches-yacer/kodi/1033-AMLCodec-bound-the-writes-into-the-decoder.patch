@@ -71,8 +71,7 @@ index 5764ae4611..5881d11e7a 100644
              CLog::Log(LOGDEBUG, "[{}]write header failed!", __FUNCTION__);
              return PLAYER_WR_FAILED;
          }
--        //pkt->newflag = 0;
-+        pkt->newflag = 0;
+         //pkt->newflag = 0;
      }
  
      buf = pkt->data;
