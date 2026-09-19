@@ -11,10 +11,10 @@ running.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 91d2562e1b65e0045b4a05f6e2aa7df8346806c7..d268d9bfd500810cbc86e6a458f031502cd7e7ce 100644
+index 2c24a2ad62e9336cf68766042703c767c8ee8418..190d319a2f5935a9ca81efb486ea7407f953d378 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2863,7 +2863,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3008,7 +3008,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
  
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
@@ -25,7 +25,7 @@ index 91d2562e1b65e0045b4a05f6e2aa7df8346806c7..d268d9bfd500810cbc86e6a458f03150
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 00905bb5a52e9fe47e99d16fc3ea59cb727cb7a8..4c2451922c5bd841235dfa5af95b6d4ae843050c 100644
+index d5a81ba994597f9454c2aa217f5c15037a58fe18..8abfed5c879ffbb48a74fe8fcee6859a90ccc1c0 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -35,6 +35,12 @@ constexpr uint64_t MAX_VBLANKS = 4;
@@ -103,7 +103,7 @@ index 00905bb5a52e9fe47e99d16fc3ea59cb727cb7a8..4c2451922c5bd841235dfa5af95b6d4a
    // Decided on every presented frame. Settled once per report instead, it would
    // spend the first minute of every file false - so the check would never run,
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index aad2d1d5c2a21b220f91266f9142b8cba7f3fe68..2401f6da270ccc2fe43148cdb6baeb184ec55355 100644
+index 6617243eb893db13a3baf4173628da332a167f4c..df714da1d272376d79941485a1b54c66eecebc95 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -83,7 +83,13 @@ public:

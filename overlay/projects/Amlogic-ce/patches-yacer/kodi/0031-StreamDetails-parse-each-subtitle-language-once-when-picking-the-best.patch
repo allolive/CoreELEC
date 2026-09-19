@@ -13,7 +13,7 @@ Shared code: the comparison and its loop both live in StreamDetails.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index 8a857b81b4b73a59f506882a0bf34b79c9c8bff0..8190c7ba9630c0a832ace5e434b9cb96bf3630ba 100644
+index 1c7d25c3151e61eaf951a1d1f3242d76cb6a6231..c46ae546722c275b111d7aefcc8ec7a247d2791d 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -23,6 +23,21 @@
@@ -59,7 +59,7 @@ index 8a857b81b4b73a59f506882a0bf34b79c9c8bff0..8190c7ba9630c0a832ace5e434b9cb96
  }
  
  CStreamDetailVideo& CStreamDetailVideo::operator=(const CStreamDetailVideo& that)
-@@ -790,6 +799,10 @@ void CStreamDetails::DetermineBestStreams(void)
+@@ -769,6 +778,10 @@ void CStreamDetails::DetermineBestStreams(void)
    m_pBestAudio = NULL;
    m_pBestSubtitle = NULL;
  
@@ -70,7 +70,7 @@ index 8a857b81b4b73a59f506882a0bf34b79c9c8bff0..8190c7ba9630c0a832ace5e434b9cb96
    for (const auto &iter : m_vecItems)
    {
      const CStreamDetail **champion;
-@@ -802,8 +815,17 @@ void CStreamDetails::DetermineBestStreams(void)
+@@ -781,8 +794,17 @@ void CStreamDetails::DetermineBestStreams(void)
        champion = (const CStreamDetail **)&m_pBestAudio;
        break;
      case CStreamDetail::SUBTITLE:

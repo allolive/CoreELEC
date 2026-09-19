@@ -1,20 +1,100 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:27 -0400
+Date: Mon, 14 Sep 2026 19:14:40 -0400
 Subject: [PATCH] VideoThumbLoader: load video, audio and subtitle info faster
 
-Library lists come without stream details, so LoadItemCached sent one
-streamdetails query per row. The 500-item art read-ahead now also reads
-those files with GetStreamDetailsForFiles, and LoadItemCached applies an
-entry as GetStreamDetails would (tag, video duration, redraw only with
-streams). Anything not read ahead takes GetStreamDetails as before. Used
-entries are dropped, so at most one window is held. Shared code, no
-Amlogic counterpart.
+Library list items usually arrive without stream details, so
+LoadItemCached issued one streamdetails query per row. Extend the existing
+500-item artwork window to collect eligible file IDs and fetch their stream
+details with GetStreamDetailsForFiles. Cache results by file ID, apply the
+streams, video duration and item invalidation as the single-item path does,
+and erase each consumed entry. Items outside the window and failed or
+aborted batches still use the single-item lookup; clear the cache at window,
+loader and exception boundaries.
+
+Copying a prefetched CStreamDetails onto the item reallocated every stream
+and reran DetermineBestStreams. Add noexcept move construction and
+assignment that transfer the owned streams and selected-stream pointers,
+reparent the streams and leave the source empty. Move each consumed cache
+entry onto the item's tag; the database bulk path continues to transfer map
+nodes so the streams' parent pointers remain valid.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
+diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
+index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76cb6a6231 100644
+--- a/xbmc/utils/StreamDetails.cpp
++++ b/xbmc/utils/StreamDetails.cpp
+@@ -19,6 +19,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <ranges>
++#include <utility>
+ 
+ const float VIDEOASPECT_EPSILON = 0.025f;
+ 
+@@ -403,6 +404,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
+   *this = that;
+ }
+ 
++CStreamDetails::CStreamDetails(CStreamDetails&& that) noexcept
++  : m_vecItems(std::move(that.m_vecItems)),
++    m_pBestVideo(std::exchange(that.m_pBestVideo, nullptr)),
++    m_pBestAudio(std::exchange(that.m_pBestAudio, nullptr)),
++    m_pBestSubtitle(std::exchange(that.m_pBestSubtitle, nullptr))
++{
++  that.m_vecItems.clear();
++  for (const auto& item : m_vecItems)
++    item->m_pParent = this;
++}
++
++CStreamDetails& CStreamDetails::operator=(CStreamDetails&& that) noexcept
++{
++  if (this != &that)
++  {
++    m_vecItems = std::move(that.m_vecItems);
++    that.m_vecItems.clear();
++    m_pBestVideo = std::exchange(that.m_pBestVideo, nullptr);
++    m_pBestAudio = std::exchange(that.m_pBestAudio, nullptr);
++    m_pBestSubtitle = std::exchange(that.m_pBestSubtitle, nullptr);
++    for (const auto& item : m_vecItems)
++      item->m_pParent = this;
++  }
++  return *this;
++}
++
+ void CStreamDetails::AddStream(CStreamDetail *item)
+ {
+   item->m_pParent = this;
+diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
+index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad752fb93b5 100644
+--- a/xbmc/utils/StreamDetails.h
++++ b/xbmc/utils/StreamDetails.h
+@@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
+ public:
+   CStreamDetails() { Reset(); }
+   CStreamDetails(const CStreamDetails &that);
++  CStreamDetails(CStreamDetails&& that) noexcept;
+   CStreamDetails& operator=(const CStreamDetails &that);
++  CStreamDetails& operator=(CStreamDetails&& that) noexcept;
+   bool operator ==(const CStreamDetails &that) const;
+   bool operator !=(const CStreamDetails &that) const;
+ 
+diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index 869aeda41eb313c9893a712bbe54bd947c48f332..79d5ce666ac6bba22237a2619d87acce54583a19 100644
+--- a/xbmc/video/VideoDatabase.cpp
++++ b/xbmc/video/VideoDatabase.cpp
+@@ -4826,7 +4826,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+     {
+       if (details.contains(id))
+         continue;
+-      // Move the node, not the value: each stream points back at its CStreamDetails
++      // Hand the entry over as a node, so it is neither copied nor moved
+       auto node = found.extract(id);
+       const auto it =
+           node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index cee70e5e502f7b39ff139b210f70161fdc1aeefd..2b4c945f2ac18512368189843b9602d2ce2b0241 100644
+index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49ea490199 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
@@ -50,7 +130,7 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..2b4c945f2ac18512368189843b9602d2
 +      if (prefetched->second.HasItems())
 +      {
 +        CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
-+        tag.m_streamDetails = prefetched->second;
++        tag.m_streamDetails = std::move(prefetched->second);
 +        if (tag.m_streamDetails.GetVideoDuration() > 0)
 +          tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
 +        pItem->SetInvalid();

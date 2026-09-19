@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:26 -0400
+Date: Mon, 14 Sep 2026 19:14:40 -0400
 Subject: [PATCH] VideoDatabase: look up artwork for many items at once
 
 GetArtForItem runs one query per item and the thumb loader calls it for
@@ -13,10 +13,10 @@ chunk; ids are integers, never item text. Shared code, no AML counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 54171480042ee63b274d0fa46e882612a00033d1..ef80614a0efffe753f77b7ef5c1ecc5e65851df5 100644
+index 0f4fddda43d5debae0a4c654079de98da63a71d9..d9a7ed3bf342432f23675c1ba056906f2cd67cc1 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -74,6 +74,7 @@
+@@ -73,6 +73,7 @@
  #include <memory>
  #include <ranges>
  #include <set>
@@ -24,7 +24,7 @@ index 54171480042ee63b274d0fa46e882612a00033d1..ef80614a0efffe753f77b7ef5c1ecc5e
  #include <string>
  #include <unordered_set>
  #include <utility>
-@@ -4687,6 +4688,36 @@ bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
+@@ -4686,6 +4687,36 @@ bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
    return false;
  }
  
@@ -61,7 +61,7 @@ index 54171480042ee63b274d0fa46e882612a00033d1..ef80614a0efffe753f77b7ef5c1ecc5e
  bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
  {
    CVideoInfoTag tag;
-@@ -5517,6 +5548,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
+@@ -5516,6 +5547,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
    return false;
  }
  

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:27 -0400
+Date: Mon, 14 Sep 2026 19:14:40 -0400
 Subject: [PATCH] VideoThumbLoader: load library artwork faster
 
 FillLibraryArt queries each item's own art on its own; only parent art is

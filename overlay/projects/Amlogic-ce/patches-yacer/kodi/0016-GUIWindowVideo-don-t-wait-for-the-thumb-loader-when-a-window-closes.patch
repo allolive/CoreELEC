@@ -1,18 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:26 -0400
+Date: Mon, 14 Sep 2026 19:00:17 -0400
 Subject: [PATCH] GUIWindowVideo: leave video views without waiting on artwork
 
-Leaving a video window asks the thumb loader to stop without joining it, so a
-slow share cannot hold the GUI thread; the next Load() joins it. A forced
-resource unload joins it, before the texture cache is torn down, and covers
-windows that were never deactivated. Shared GUI code with no Amlogic
-counterpart.
+Leaving a video window joined its thumb loader on the GUI thread until a slow share answered. Stop it asynchronously on ordinary deactivation instead.
+
+A window deactivated before shutdown receives no second deinit, so checking IsStopping there cannot provide the required join. The window manager does force-unload every window before deinitializing the texture cache. Join the loader from FreeResources(true), which covers inactive windows and skin reloads as well as shutdown.
+
+VideoNav forwards deinit to VideoBase and needs no duplicate stop policy. Shared GUI code with no Amlogic counterpart.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/windows/GUIWindowVideoBase.cpp b/xbmc/video/windows/GUIWindowVideoBase.cpp
-index 2584ba7256955a6c858e29eb5820f82f490fed40..e07cda18ad1b9beae6d7b90c64c1174097720979 100644
+index 2584ba7256955a6c858e29eb5820f82f490fed40..6ed398a203ab98b6598c6fc32835aab407f9d5bd 100644
 --- a/xbmc/video/windows/GUIWindowVideoBase.cpp
 +++ b/xbmc/video/windows/GUIWindowVideoBase.cpp
 @@ -104,6 +104,14 @@ CGUIWindowVideoBase::CGUIWindowVideoBase(int id, const std::string &xmlFile)
@@ -30,14 +30,13 @@ index 2584ba7256955a6c858e29eb5820f82f490fed40..e07cda18ad1b9beae6d7b90c64c11740
  bool CGUIWindowVideoBase::OnAction(const CAction &action)
  {
    if (action.GetID() == ACTION_SCAN_ITEM)
-@@ -131,8 +139,9 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
+@@ -131,8 +139,8 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
    switch ( message.GetMessage() )
    {
    case GUI_MSG_WINDOW_DEINIT:
 -    if (m_thumbLoader.IsLoading())
 -      m_thumbLoader.StopThread();
-+    // Don't wait for the item being loaded: on a slow share that read can take tens
-+    // of seconds. A forced resource unload joins it before the texture cache goes.
++    // A forced resource unload joins it before the texture cache is deinitialized.
 +    m_thumbLoader.StopAsync();
      m_database.Close();
      break;

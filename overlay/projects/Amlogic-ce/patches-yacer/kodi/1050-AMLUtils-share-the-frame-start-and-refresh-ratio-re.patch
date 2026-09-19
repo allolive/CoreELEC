@@ -11,7 +11,7 @@ any of them is written, rather than letting three copies grow and disagree.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index e2a39e929d8b73c47251de56cfbdb9ee05f11340..a0a13fbf2fd5c8fc86f35ac420628a9c51f4b133 100644
+index 27014d35cb8e73ded14ba2b6dec811ef5785204b..ae708ae0c92829ad7e9be30f6ec622f2e3cec0cd 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -10,9 +10,18 @@
@@ -215,7 +215,7 @@ index cc135d04da6540b0b69134af2a49f130a4f8c75b..dc16fd5f1ea469e3ddcdae8b3db26d73
 +//! Callers apply their own tolerance; CheckEnableClockSync() uses 0.0005.
 +double aml_refreshes_per_frame(double displayRate, double fps);
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 1d1fc4637c9aafc49d758e093c9d9cdccad0ed64..cf46c19dd90cebc672fc278d7e971826f7247b55 100644
+index afc9fde4eab3e12f8defec6316b4f0a5de963435..4cbd58837ec50200fb958c01e2741b0df030f01e 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -85,6 +85,7 @@ public:

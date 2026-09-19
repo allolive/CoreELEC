@@ -11,7 +11,7 @@ Count the steps.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 4c2451922c5bd841235dfa5af95b6d4ae843050c..7a064643c9db7fbd532d188f72d2051ef6f24084 100644
+index 8abfed5c879ffbb48a74fe8fcee6859a90ccc1c0..96d1bc7eadba9d36e1bb408b9e23b13588aa87ff 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -126,14 +126,17 @@ void CAMLLatency::Rearm()
@@ -83,7 +83,7 @@ index 4c2451922c5bd841235dfa5af95b6d4ae843050c..7a064643c9db7fbd532d188f72d2051e
      // Inside the blanking interval the kernel extrapolates to the frame about
      // to start, so the age comes back negative and the sequence names the next
      // vblank rather than the last. pts_video still names the last one, so put
-@@ -752,16 +785,21 @@ void CAMLLatency::Update(
+@@ -754,16 +787,21 @@ void CAMLLatency::Update(
        // are not meant to agree exactly: the genlock announces its corrections,
        // which stands this check down across the refreshes the fold counts.
        const unsigned int judged = m_shown + m_held + m_lostOn;
@@ -109,7 +109,7 @@ index 4c2451922c5bd841235dfa5af95b6d4ae843050c..7a064643c9db7fbd532d188f72d2051e
  
        m_reports = 0;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index 2401f6da270ccc2fe43148cdb6baeb184ec55355..cd63080d41d38ec54291e8ca5a384716c993f925 100644
+index df714da1d272376d79941485a1b54c66eecebc95..051a1a33004952b4ae189a710e7cc9db4962cd6f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -111,6 +111,10 @@ public:

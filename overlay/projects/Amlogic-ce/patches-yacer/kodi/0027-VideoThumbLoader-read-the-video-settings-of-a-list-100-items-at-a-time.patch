@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 10:06:27 -0400
+Date: Mon, 14 Sep 2026 19:14:41 -0400
 Subject: [PATCH] VideoThumbLoader: check user-set 3D modes faster
 
 The second pass queries a user-set stereo mode per item. At its first item
@@ -13,7 +13,7 @@ read-ahead is a snapshot. Shared code, no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 2b4c945f2ac18512368189843b9602d2ce2b0241..18713fad992e4280521e493d7733dfcbbb76ceb6 100644
+index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0eea72e17 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -50,6 +50,16 @@ using namespace XFILE;
