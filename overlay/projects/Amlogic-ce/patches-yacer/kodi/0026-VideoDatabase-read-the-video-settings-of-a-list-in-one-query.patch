@@ -1,22 +1,101 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Mon, 14 Sep 2026 19:14:41 -0400
-Subject: [PATCH] VideoThumbLoader: check user-set 3D modes faster
+Date: Sat, 13 Sep 2026 11:10:00 -0400
+Subject: [PATCH] VideoDatabase: read the video settings of a list in one query
 
-The second pass queries a user-set stereo mode per item. At its first item
-and every 100th, read the next 100 file ids with GetVideoSettingsForFiles,
-only for items GetVideoSettings resolves by file id (not Blu-ray) and that
-DetectAndAddMissingItemData does not skip; misses query as before. The
-window is 100, not 500, as this pass can spend seconds per item and the
-read-ahead is a snapshot. Shared code, no Amlogic counterpart.
+Add GetVideoSettingsForFiles, which fetches the video settings of many file
+ids in a single query, and use it from VideoThumbLoader in batches of 100.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0eea72e17 100644
+--- a/xbmc/video/VideoDatabase.cpp
++++ b/xbmc/video/VideoDatabase.cpp
+@@ -5429,6 +5429,52 @@
+   return false;
+ }
+ 
++bool CVideoDatabase::GetVideoSettingsForFiles(
++    const std::vector<int>& fileIds,
++    std::unordered_map<int, std::optional<CVideoSettings>>& settings,
++    const std::function<bool()>& abort /* = {} */)
++{
++  if (fileIds.empty())
++    return true;
++  if (nullptr == m_pDB)
++    return false;
++
++  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
++  if (!pDS)
++    return false;
++
++  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
++  {
++    std::unordered_map<int, CVideoSettings> found;
++    try
++    {
++      pDS->query(PrepareSQL("SELECT * FROM settings WHERE idFile IN (%s)", idList.c_str()));
++      while (!pDS->eof())
++      {
++        const auto [it, inserted] = found.try_emplace(pDS->fv("idFile").get_asInt());
++        if (inserted)
++          ReadVideoSettingsRow(*pDS, it->second);
++        pDS->next();
++      }
++      pDS->close();
++    }
++    catch (...)
++    {
++      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
++      return false;
++    }
++
++    for (const int id : ids)
++    {
++      auto node = found.extract(id);
++      settings.try_emplace(id, node ? std::optional(std::move(node.mapped())) : std::nullopt);
++    }
++    return true;
++  };
++
++  return ForEachIdChunk(fileIds, abort, readChunk);
++}
++
+ void CVideoDatabase::SetVideoSettings(const CFileItem &item, const CVideoSettings &settings)
+ {
+   int idFile = AddFile(item);
+--- a/xbmc/video/VideoDatabase.h
++++ b/xbmc/video/VideoDatabase.h
+@@ -19,6 +19,7 @@
+ #include <array>
+ #include <functional>
+ #include <memory>
++#include <optional>
+ #include <set>
+ #include <stdexcept>
+ #include <string>
+@@ -459,6 +460,19 @@
+    */
+   bool GetVideoSettings(const std::string &filePath, CVideoSettings &settings);
+ 
++  /*!
++   * \brief Retrieve the video settings of many files with a few queries
++   * \param fileIds ids of the files, looked up in chunks
++   * \param settings receives one entry per id that was looked up, empty if the file has no stored
++   * settings. Ids of a chunk that failed or was not reached are left out, and entries already in
++   * the map are kept.
++   * \param abort optional, checked before each chunk; the lookup stops when it returns true
++   * \return true if every chunk was looked up, false if the lookup was stopped or failed
++   */
++  bool GetVideoSettingsForFiles(const std::vector<int>& fileIds,
++                                std::unordered_map<int, std::optional<CVideoSettings>>& settings,
++                                const std::function<bool()>& abort = {});
++
+   /*! \brief Set video settings for the specified file path
+    \param fileItem to set the settings for
+    \sa GetVideoSettings
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
-@@ -50,6 +50,16 @@ using namespace XFILE;
+@@ -50,6 +50,16 @@
  namespace
  {
  constexpr size_t PREFETCH_WINDOW = 500;
@@ -33,7 +112,7 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
  } // namespace
  
  CVideoThumbLoader::CVideoThumbLoader() : CThumbLoader()
-@@ -69,7 +79,9 @@ void CVideoThumbLoader::OnLoaderStart()
+@@ -69,7 +79,9 @@
    m_artCache.clear();
    m_parentArtKeys.clear();
    m_streamDetailsCache.clear();
@@ -43,7 +122,7 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
    CThumbLoader::OnLoaderStart();
  }
  
-@@ -79,6 +91,7 @@ void CVideoThumbLoader::OnLoaderFinish()
+@@ -79,6 +91,7 @@
    m_artCache.clear();
    m_parentArtKeys.clear();
    m_streamDetailsCache.clear();
@@ -51,7 +130,7 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
    CThumbLoader::OnLoaderFinish();
  }
  
-@@ -265,6 +278,8 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
+@@ -265,6 +278,8 @@
  
  bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
  {
@@ -60,7 +139,7 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
    if (pItem->IsShareOrDrive() || pItem->IsParentFolder() || pItem->GetPath() == "add")
      return false;
  
-@@ -686,7 +701,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
+@@ -686,7 +701,7 @@
      // check for custom stereomode setting in video settings
      CVideoSettings itemVideoSettings;
      m_videoDatabase->Open();
@@ -69,7 +148,7 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
          itemVideoSettings.m_StereoMode != static_cast<int>(RenderStereoMode::OFF))
      {
        stereoMode = CStereoscopicsManager::ConvertGuiStereoModeToString(
-@@ -796,6 +811,60 @@ void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> item
+@@ -796,6 +811,60 @@
                                              m_streamDetailsCache, [this] { return m_bStop; });
  }
  
@@ -130,8 +209,6 @@ index 93b8aca805ca1a62cb6422a8d34f1c49ea490199..4329650e669cf02eb97ae9947560ddb0
  bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
-diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index cb89b86b465a722e2ae75dd09576b84fbdb0484b..bd2450293de2232066667dddcc2ffa9493a36d21 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -10,10 +10,12 @@
@@ -147,7 +224,7 @@ index cb89b86b465a722e2ae75dd09576b84fbdb0484b..bd2450293de2232066667dddcc2ffa94
  #include <set>
  #include <span>
  #include <unordered_map>
-@@ -81,6 +83,7 @@ protected:
+@@ -81,6 +83,7 @@
    CVideoDatabase *m_videoDatabase;
    ArtCache m_artCache;
    std::unordered_map<int, CStreamDetails> m_streamDetailsCache; // by file id
@@ -155,7 +232,7 @@ index cb89b86b465a722e2ae75dd09576b84fbdb0484b..bd2450293de2232066667dddcc2ffa94
  
    /*! \brief Tries to detect missing data/info from a file and adds those
     \param item The CFileItem to process
-@@ -95,9 +98,13 @@ private:
+@@ -95,9 +98,13 @@
    void PrefetchArt(std::span<const CFileItemPtr> items);
    void PrefetchStreamDetails(std::span<const CFileItemPtr> items);
    bool GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork);

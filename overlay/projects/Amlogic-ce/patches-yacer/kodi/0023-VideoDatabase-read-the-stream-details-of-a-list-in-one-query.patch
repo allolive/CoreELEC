@@ -1,28 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Mon, 14 Sep 2026 19:14:40 -0400
-Subject: [PATCH] VideoThumbLoader: load video, audio and subtitle info faster
+Date: Sat, 13 Sep 2026 11:05:00 -0400
+Subject: [PATCH] VideoDatabase: read the stream details of a list in one query
 
-Library list items usually arrive without stream details, so
-LoadItemCached issued one streamdetails query per row. Extend the existing
-500-item artwork window to collect eligible file IDs and fetch their stream
-details with GetStreamDetailsForFiles. Cache results by file ID, apply the
-streams, video duration and item invalidation as the single-item path does,
-and erase each consumed entry. Items outside the window and failed or
-aborted batches still use the single-item lookup; clear the cache at window,
-loader and exception boundaries.
-
-Copying a prefetched CStreamDetails onto the item reallocated every stream
-and reran DetermineBestStreams. Add noexcept move construction and
-assignment that transfer the owned streams and selected-stream pointers,
-reparent the streams and leave the source empty. Move each consumed cache
-entry onto the item's tag; the database bulk path continues to transfer map
-nodes so the streams' parent pointers remain valid.
+Add GetStreamDetailsForFiles, which fetches the stream details of many file
+ids in a single query, and use it from VideoThumbLoader in batches of 500.
+The rows are interpreted through the same helper the single-file path uses.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76cb6a6231 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -19,6 +19,7 @@
@@ -33,7 +19,7 @@ index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76
  
  const float VIDEOASPECT_EPSILON = 0.025f;
  
-@@ -403,6 +404,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
+@@ -403,6 +404,32 @@
    *this = that;
  }
  
@@ -66,11 +52,9 @@ index e61220ad8ffacb39073b17bbe76efe9b6ca43d9f..1c7d25c3151e61eaf951a1d1f3242d76
  void CStreamDetails::AddStream(CStreamDetail *item)
  {
    item->m_pParent = this;
-diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
-index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad752fb93b5 100644
 --- a/xbmc/utils/StreamDetails.h
 +++ b/xbmc/utils/StreamDetails.h
-@@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
+@@ -139,7 +139,9 @@
  public:
    CStreamDetails() { Reset(); }
    CStreamDetails(const CStreamDetails &that);
@@ -80,24 +64,90 @@ index 27434f248a4b1cdd52c45a0848c073edafb9ac6d..69dc2c69664fe930bf084da78e337ad7
    bool operator ==(const CStreamDetails &that) const;
    bool operator !=(const CStreamDetails &that) const;
  
-diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 869aeda41eb313c9893a712bbe54bd947c48f332..79d5ce666ac6bba22237a2619d87acce54583a19 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -4826,7 +4826,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
-     {
-       if (details.contains(id))
-         continue;
--      // Move the node, not the value: each stream points back at its CStreamDetails
+@@ -4789,6 +4789,56 @@
+   return retVal;
+ }
+ 
++bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
++                                              std::unordered_map<int, CStreamDetails>& details,
++                                              const std::function<bool()>& abort /* = {} */)
++{
++  if (fileIds.empty())
++    return true;
++  if (nullptr == m_pDB)
++    return false;
++
++  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
++  if (!pDS)
++    return false;
++
++  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
++  {
++    std::unordered_map<int, CStreamDetails> found;
++    try
++    {
++      const std::string sql =
++          PrepareSQL("SELECT * FROM streamdetails WHERE idFile IN (%s)", idList.c_str());
++      pDS->query(sql);
++      while (!pDS->eof())
++      {
++        AddStreamDetailRow(*pDS, found[pDS->fv(0).get_asInt()]);
++        pDS->next();
++      }
++      pDS->close();
++    }
++    catch (...)
++    {
++      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
++      return false;
++    }
++
++    for (const int id : ids)
++    {
++      if (details.contains(id))
++        continue;
 +      // Hand the entry over as a node, so it is neither copied nor moved
-       auto node = found.extract(id);
-       const auto it =
-           node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
-diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49ea490199 100644
++      auto node = found.extract(id);
++      const auto it =
++          node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
++      it->second.DetermineBestStreams();
++    }
++    return true;
++  };
++
++  return ForEachIdChunk(fileIds, abort, readChunk);
++}
++
+ bool CVideoDatabase::GetResumePoint(CVideoInfoTag& tag)
+ {
+   if (tag.m_iFileId < 0)
+--- a/xbmc/video/VideoDatabase.h
++++ b/xbmc/video/VideoDatabase.h
+@@ -524,6 +524,19 @@
+   bool GetStreamDetails(CFileItem& item);
+   bool GetStreamDetails(CVideoInfoTag& tag);
+   bool GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details);
++
++  /*!
++   * \brief Retrieve the stream details of many files with a few queries
++   * \param fileIds ids of the files, looked up in chunks
++   * \param details receives one entry per id that was looked up, empty if the file has no stored
++   * stream details. Ids of a chunk that failed or was not reached are left out, and entries already
++   * in the map are kept.
++   * \param abort optional, checked before each chunk; the lookup stops when it returns true
++   * \return true if every chunk was looked up, false if the lookup was stopped or failed
++   */
++  bool GetStreamDetailsForFiles(const std::vector<int>& fileIds,
++                                std::unordered_map<int, CStreamDetails>& details,
++                                const std::function<bool()>& abort = {});
+   bool GetDetailsByTypeAndId(CFileItem& item, VideoDbContentType type, int id);
+   CVideoInfoTag GetDetailsByTypeAndId(VideoDbContentType type, int id);
+ 
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
-@@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
+@@ -68,6 +68,7 @@
    m_videoDatabase->Open();
    m_artCache.clear();
    m_parentArtKeys.clear();
@@ -105,7 +155,7 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49
    m_cachedWindowStart = 0;
    CThumbLoader::OnLoaderStart();
  }
-@@ -77,6 +78,7 @@ void CVideoThumbLoader::OnLoaderFinish()
+@@ -77,6 +78,7 @@
    m_videoDatabase->Close();
    m_artCache.clear();
    m_parentArtKeys.clear();
@@ -113,7 +163,7 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49
    CThumbLoader::OnLoaderFinish();
  }
  
-@@ -196,11 +198,26 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
+@@ -196,11 +198,26 @@
  
    if (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails()) // no stream details
    {
@@ -145,7 +195,7 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49
      {
        if (m_videoDatabase->GetStreamDetails(*pItem))
          pItem->SetInvalid();
-@@ -695,15 +712,18 @@ void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
+@@ -695,15 +712,18 @@
    const auto window = std::span(m_vecItems).subspan(
        m_cachedWindowStart, std::min(PREFETCH_WINDOW, m_vecItems.size() - m_cachedWindowStart));
    m_cachedWindowStart += window.size();
@@ -164,7 +214,7 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49
    }
  }
  
-@@ -758,6 +778,24 @@ void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
+@@ -758,6 +778,24 @@
    }
  }
  
@@ -189,8 +239,6 @@ index cee70e5e502f7b39ff139b210f70161fdc1aeefd..93b8aca805ca1a62cb6422a8d34f1c49
  bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
-diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index fd6b5379bfe39793b941b40e6afb90ce9cbc390e..cb89b86b465a722e2ae75dd09576b84fbdb0484b 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -11,10 +11,12 @@
@@ -206,7 +254,7 @@ index fd6b5379bfe39793b941b40e6afb90ce9cbc390e..cb89b86b465a722e2ae75dd09576b84f
  #include <vector>
  
  class CStreamDetails;
-@@ -78,6 +80,7 @@ public:
+@@ -78,6 +80,7 @@
  protected:
    CVideoDatabase *m_videoDatabase;
    ArtCache m_artCache;
@@ -214,7 +262,7 @@ index fd6b5379bfe39793b941b40e6afb90ce9cbc390e..cb89b86b465a722e2ae75dd09576b84f
  
    /*! \brief Tries to detect missing data/info from a file and adds those
     \param item The CFileItem to process
-@@ -90,6 +93,7 @@ protected:
+@@ -90,6 +93,7 @@
  private:
    void PrefetchCachedWindow(const CFileItem* item);
    void PrefetchArt(std::span<const CFileItemPtr> items);
