@@ -1,25 +1,22 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Thu, 3 Sep 2026 12:00:00 -0400
-Subject: [PATCH] AMLAudioTrim: remove leftover lip sync offset in passthrough
+Date: Sun, 14 Sep 2026 12:00:00 -0400
+Subject: [PATCH] AMLAudioTrim: aim the rate loop, and hold it off when it is off
 
-Holding the rate takes the drift out but says nothing about where the flat line
-sits: two cold starts of the same file settle tens of milliseconds apart and then
-each holds its own offset perfectly, which is a rate loop doing exactly its job
-and no more. Aim it off centre until the standing offset is gone, then let it
-settle back.
+Aim the loop at the residual passthrough offset, pick the trim node by SoC
+(including S7D and S6), and leave the integrator alone when the audio-lead
+setting is Off: hold m_want at rest and reset m_clamped, so the watchdog
+cannot latch a stand-down while nothing is being written. The branch sits
+after the median and plausibility test, so the measurement is unchanged, and
+a genuine stand-down still latches.
 
-Off keeps measuring with the ceiling at zero, so the stand-down watchdog counts
-only while the ceiling permits a write: an unwritten level cannot show whether
-the clock answers.
+Not exercised on hardware.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 2a846db9d34a5bcdc4d07b03830d32dbbc13b13b..73370184ff375f936f06a045d84070ac374b1d28 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -9123,6 +9123,42 @@ msgctxt "#14427"
+@@ -9123,6 +9123,42 @@
  msgid "Player-Led"
  msgstr ""
  
@@ -62,8 +59,6 @@ index 2a846db9d34a5bcdc4d07b03830d32dbbc13b13b..73370184ff375f936f06a045d84070ac
  #: xbmc/music/MusicDatabase.cpp
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
-diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index e3a9fba2c159dd02fb6471a5627b80e669cd2baf..edde0440b5d22cd151ceed4aa2a8cd5a2059e847 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -4086,6 +4086,25 @@
@@ -92,11 +87,9 @@ index e3a9fba2c159dd02fb6471a5627b80e669cd2baf..edde0440b5d22cd151ceed4aa2a8cd5a
      </category>
      <category id="cache" label="439" help="36399">
        <visible>false</visible>
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
-index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b61cf7c9d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
-@@ -10,10 +10,14 @@
+@@ -10,24 +10,79 @@
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
  #include "platform/linux/SysfsPath.h"
  #include "utils/AMLUtils.h"
@@ -111,8 +104,37 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
  
  namespace
  {
-@@ -25,9 +29,39 @@ constexpr const char* TRIM_PATH =
- //! lands on the same divider half the time. Two always moves.
+ constexpr const char* ENABLE_PATH = "/storage/.kodi/userdata/aml-audio-trim";
+-constexpr const char* TRIM_PATH =
+-    "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
+ 
+-//! The hardware ignores the field's low bit and rounds up, so a step of one
+-//! lands on the same divider half the time. Two always moves.
++//! Where the trim lives depends on which clock driver runs the SoC: the g12a
++//! one trims mpll0 on g12a/g12b/sm1, the s7d one the HIFI PLL on the
++//! S905X5M and the s6 one the HIFI PLL on the plain S905X5; any
++//! other or unidentified SoC keeps the g12a node, as before. Chosen by SoC and
++//! not by which node exists, because a kernel with both drivers built in
++//! registers both nodes whether or not their driver ever probed.
++const char* TrimPath()
++{
++  static const char* const path = []() -> const char* {
++    switch (aml_get_cpufamily_id())
++    {
++      case AML_S7D:
++        return "/sys/module/amlogic_clk_soc_s7d/parameters/audio_sdm_trim";
++      case AML_S6:
++        return "/sys/module/amlogic_clk_soc_s6/parameters/audio_sdm_trim";
++      default:
++        return "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
++    }
++  }();
++  return path;
++}
++
++//! The g12a driver's mpll0 ignores the field's low bit and rounds up, so a step
++//! of one lands on the same divider half the time. Two always moves. S7D and S6 share
++//! this step and the kernel's limit of forty until measured on that hardware.
  constexpr int STEP = 2;
  
 -//! The kernel refuses more than four, and sixty parts per million is already an
@@ -154,7 +176,21 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
  
  //! How long the error is averaged before a slope is taken from it. A minute of
  //! means differ by ~0.02ms while a minute of drift is ~1.2ms, so fifteen seconds
-@@ -149,8 +183,12 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
+@@ -122,7 +177,7 @@
+ 
+   try
+   {
+-    CSysfsPath{TRIM_PATH}.Set(0);
++    CSysfsPath{TrimPath()}.Set(0);
+   }
+   catch (...)
+   {
+@@ -145,12 +200,16 @@
+ {
+   try
+   {
+-    CSysfsPath path{TRIM_PATH};
++    CSysfsPath path{TrimPath()};
      if (!path.Exists())
        return std::nullopt;
  
@@ -168,7 +204,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
        return std::nullopt;
  
      return got;
-@@ -161,6 +199,18 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
+@@ -161,11 +220,23 @@
    }
  }
  
@@ -176,7 +212,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
 +{
 +  try
 +  {
-+    return CSysfsPath{TRIM_PATH}.Exists();
++    return CSysfsPath{TrimPath()}.Exists();
 +  }
 +  catch (...)
 +  {
@@ -187,7 +223,13 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
  bool CAMLAudioTrim::WriteLevel(int level)
  {
    try
-@@ -252,6 +302,58 @@ void CAMLAudioTrim::Release()
+   {
+-    CSysfsPath{TRIM_PATH}.Set(level);
++    CSysfsPath{TrimPath()}.Set(level);
+   }
+   catch (...)
+   {
+@@ -252,6 +323,58 @@
    m_lastDither = 0.0;
  }
  
@@ -246,7 +288,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
  void CAMLAudioTrim::Settle(double reading)
  {
    // Kept as a small history and acted on by the middle value. A clock step too
-@@ -276,19 +378,46 @@ void CAMLAudioTrim::Settle(double reading)
+@@ -276,19 +399,57 @@
    // audio running fast, which wants a lower level. The sign is the measured one:
    // raising the level was seen to raise the rate on this hardware, whatever the
    // divider arithmetic suggests about which way round that ought to be.
@@ -283,6 +325,17 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
 +  // it would simply be integrated back out again.
 +  const double err = drift - aim;
 +
++  // Off (audiolead 0: no slew, so Update() leaves the ceiling at zero). Nothing
++  // is written, so there is no level to integrate and no answer to judge.
++  if (m_levelMax <= 0.0)
++  {
++    m_want = 0.0;
++    m_clamped = 0;
++    if (std::abs(err) >= DEADBAND)
++      CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, loop off", drift * 1e6);
++    return;
++  }
++
 +  if (std::abs(err) < DEADBAND)
      return;
  
@@ -297,15 +350,14 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
  
    // Held against its limit while the drift says nothing changed. The level has
    // been moved by its whole range and the measurement has not answered, so
-@@ -309,9 +438,15 @@ void CAMLAudioTrim::Settle(double reading)
+@@ -309,9 +470,15 @@
    // giving up would hand back the part it had. So the test is not "still
    // drifting" but "moved the level and nothing happened".
    const double moved = m_haveDriftAtZero ? std::abs(drift - m_driftAtZero) : 0.0;
 -  const bool answered = moved > 0.5 * MAX_LEVEL * STEP_RATE;
--
--  if (std::abs(m_want) >= MAX_LEVEL && std::abs(drift) > ANSWERED && !answered)
 +  const bool answered = moved > 0.5 * MAX_LEVEL_RATE * STEP_RATE;
-+
+ 
+-  if (std::abs(m_want) >= MAX_LEVEL && std::abs(drift) > ANSWERED && !answered)
 +  // Against err and not drift. Walking an offset out means deliberately holding
 +  // a large rate error, and a level sitting at its limit doing exactly what it
 +  // was told is not a knob that has stopped listening.
@@ -316,7 +368,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
      ++m_clamped;
    else
      m_clamped = 0;
-@@ -324,19 +459,32 @@ void CAMLAudioTrim::Settle(double reading)
+@@ -324,19 +491,32 @@
                drift * 1e6, m_clamped);
      m_want = 0.0;
      m_dither = 0.0;
@@ -353,7 +405,16 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
    if (m_stopped)
      return;
  
-@@ -390,6 +538,48 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -369,7 +549,7 @@
+     m_checked = true;
+     m_present = ReadLevel().has_value();
+     if (!m_present)
+-      CLog::Log(LOGINFO, "CAMLAudioTrim: no audio_sdm_trim in this kernel");
++      CLog::Log(LOGINFO, "CAMLAudioTrim: no {} in this kernel", TrimPath());
+   }
+ 
+   if (!m_present)
+@@ -390,6 +570,48 @@
      return;
    }
  
@@ -402,7 +463,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
    if (error)
    {
      // A clock step moves the error without the audio rate having changed, and
-@@ -451,16 +641,17 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -451,16 +673,17 @@
    // Sigma-delta: the fraction the level cannot express is carried and paid off
    // by the next slot that can, so the average over a few slots is the wanted
    // level even though every slot is a whole one.
@@ -426,7 +487,7 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
    // Against the register, not against what was last written to it. A remembered
    // value that the register no longer holds is a loop that has stopped driving
    // and cannot tell: it goes on integrating, reaches its limit, and leaves the
-@@ -473,6 +664,27 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+@@ -473,6 +696,27 @@
      return;
  
    m_applied = *got;
@@ -454,11 +515,9 @@ index 792d873cfca5d8a042b807209c5ef39bde813856..a52d125448751aa5e000cb08fe8be64b
    if (level != m_applied)
      WriteLevel(level);
  }
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
-index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189cd9fedd33 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
-@@ -43,12 +43,20 @@ public:
+@@ -43,12 +43,20 @@
      return trim;
    }
  
@@ -480,7 +539,7 @@ index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189c
  
    //! \brief Give the clock back and forget everything. For a decoder closing:
    //! the level must not outlive the playback that asked for it.
-@@ -68,6 +76,17 @@ private:
+@@ -68,6 +76,17 @@
    CAMLAudioTrim& operator=(const CAMLAudioTrim&) = delete;
  
    bool Armed();
@@ -498,7 +557,7 @@ index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189c
    void ForgetLocked();
    std::optional<int> ReadLevel() const;
    bool WriteLevel(int level);
-@@ -105,4 +124,12 @@ private:
+@@ -105,4 +124,12 @@
    mutable std::mutex m_mutex; //!< Release() comes from the player thread
  
    double m_lastDither{0.0};   //!< when the level was last put out
@@ -511,11 +570,9 @@ index a0ec9fea15644f2568e37d7f47e684c8d5e0766f..a6e7afd72d2d9dad2578df469c98189c
 +  bool m_haveSlew{false};     //!< whether the offset loop is switched on at all
 +  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
  };
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 5b91298832af98e4898dcf159d22619c7303224b..ac6cc5695536beef3bb6a72bd01926a3916c73ff 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -53,6 +53,11 @@
+@@ -54,6 +54,11 @@
  
  namespace
  {
@@ -527,7 +584,7 @@ index 5b91298832af98e4898dcf159d22619c7303224b..ac6cc5695536beef3bb6a72bd01926a3
  
  std::mutex pollSyncMutex;
  
-@@ -2899,10 +2904,81 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -2949,10 +2954,81 @@
    }
    m_trimWasPassthrough = true;
  
@@ -610,11 +667,9 @@ index 5b91298832af98e4898dcf159d22619c7303224b..ac6cc5695536beef3bb6a72bd01926a3
  }
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 78f41e417ac2b7abff35fb8a8c1c1e2e19574716..b4a87ed7d36c176267b6013b3f824aef8a84709d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -112,6 +112,8 @@ private:
+@@ -112,6 +112,8 @@
    //! Whether the audio was a bitstream last frame, so the trim is given back
    //! once on the way out rather than on every frame after it.
    bool             m_trimWasPassthrough{false};
@@ -623,11 +678,9 @@ index 78f41e417ac2b7abff35fb8a8c1c1e2e19574716..b4a87ed7d36c176267b6013b3f824aef
    bool             m_drain = false;
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad7300376ab35 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -46,6 +46,22 @@ constexpr unsigned int AGREE_BEFORE_SETTLING = 8;
+@@ -46,6 +46,22 @@
  // How often to report where the picture actually landed.
  constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
  
@@ -650,7 +703,7 @@ index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad730
  // Opening a file drops frames on purpose to catch up with the clock, so the
  // check stands down until the picture has run clean for about this long. Given
  // in seconds and turned into refreshes, so it means the same at 24Hz and at 60.
-@@ -116,6 +132,8 @@ void CAMLLatency::Rearm()
+@@ -116,6 +132,8 @@
    m_audioReports = 0;
    m_audioSum = 0.0;
    m_leadSum = 0.0;
@@ -659,7 +712,7 @@ index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad730
    m_cadenceSeq = 0;
    m_ratioIsOne = false;
    m_classArmed = false;
-@@ -613,8 +631,59 @@ void CAMLLatency::Update(
+@@ -613,8 +631,59 @@
          m_audioMax = std::max(m_audioMax, audioSyncError);
        }
        m_audioSum += audioSyncError;
@@ -720,8 +773,6 @@ index 2b086c2a77d4a53ceec55fa77da222ac85aa2b25..2d8074a6217e69d0583e7981f68ad730
      }
  
      if (absolute - m_since >= TIME_BETWEEN_REPORTS)
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb228f623b00 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -9,6 +9,7 @@
@@ -732,7 +783,7 @@ index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb22
  
  class CDVDClock;
  
-@@ -91,6 +92,21 @@ public:
+@@ -91,6 +92,21 @@
                double audioSyncError,
                bool clockSync);
  
@@ -754,7 +805,7 @@ index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb22
    //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
    //! path it travels, so the measured answer still stands.
    void Restart();
-@@ -177,6 +193,11 @@ private:
+@@ -177,6 +193,11 @@
    double m_driftPrevAbsolute{0.0};  //!< the previous report, to catch a step
    double m_driftPrevClock{0.0};
    double m_lastAlign{0.0};   //!< the newest sample, not the window mean
@@ -766,11 +817,9 @@ index cd63080d41d38ec54291e8ca5a384716c993f925..462e64a5277b8acefb2152773aeabb22
    double m_driftAlign{0.0};  //!< the same at the previous report
    double m_driftWalkUs{0.0};
    int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
-diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 2b2da5d33933be562b7c30ce10b2816417b2ef5c..79a910d12d73663a88f6036f43b4ab897f7bd054 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -471,6 +471,7 @@ public:
+@@ -471,6 +471,7 @@
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
@@ -778,11 +827,9 @@ index 2b2da5d33933be562b7c30ce10b2816417b2ef5c..79a910d12d73663a88f6036f43b4ab89
    static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
    static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
-diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index a0a13fbf2fd5c8fc86f35ac420628a9c51f4b133..d14daa7bfd3fb02d0789e68da6982777108bf22f 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -416,6 +416,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+@@ -416,6 +416,42 @@
                            videoDelay);
  }
  
@@ -825,11 +872,9 @@ index a0a13fbf2fd5c8fc86f35ac420628a9c51f4b133..d14daa7bfd3fb02d0789e68da6982777
  double aml_refreshes_per_frame(double displayRate, double fps)
  {
    // Zero when the content outruns the display, which shows some frames and
-diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index dc16fd5f1ea469e3ddcdae8b3db26d73fa7a03b0..36de1f949b0f852a43ceefa46e9928f5f26db525 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
-@@ -91,6 +91,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
+@@ -91,6 +91,7 @@
  //! units, without the vblank term that only the frame loop can use. See
  //! CRenderManager::PrepareNextRender().
  double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
@@ -837,8 +882,6 @@ index dc16fd5f1ea469e3ddcdae8b3db26d73fa7a03b0..36de1f949b0f852a43ceefa46e9928f5
  
  //! \brief How many times the display shows each frame of a stream at fps.
  //! Zero if either rate is unknown, or if the content outruns the display.
-diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 49f3baa0e9b96b9714a7ef30c822ea17fb7c9e67..9fb1d613c3077b17624bc2b07c174e30b7ce087b 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -40,6 +40,7 @@
@@ -849,7 +892,7 @@ index 49f3baa0e9b96b9714a7ef30c822ea17fb7c9e67..9fb1d613c3077b17624bc2b07c174e30
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -491,6 +492,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -491,6 +492,13 @@
    if (setting)
      setting->SetVisible(sink_dv);
  
