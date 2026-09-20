@@ -9,10 +9,15 @@ bounded OBU parser. Reject malformed LEB128 lengths and truncated OBUs, report
 allocation failures separately, and never advance or write beyond the supplied
 access unit and destination capacity.
 
+Treat the end of the input as the end of the temporal unit, so a unit whose
+last OBU is padding or metadata is not reported as a parse failure after its
+output has been written. Against the fixtures in
+docs/kodi-patch-audit-20260914: a padded unit returns 0 with the same 135
+bytes, an unpadded one is unchanged, and units truncated by one and by four
+bytes are still rejected.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb01af0190 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -44,6 +44,7 @@
@@ -23,7 +28,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
  #include <thread>
  #include "aom_integer.h"
  #include "obu_util.h"
-@@ -1110,11 +1111,19 @@ int av1_parser_frame(
+@@ -1107,11 +1108,19 @@
      uint8_t *data,
      const uint8_t *data_end,
      uint8_t *dst_data,
@@ -46,7 +51,20 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
      ObuHeader obu_header;
      memset(&obu_header, 0, sizeof(obu_header));
      int seen_frame_header = 0;
-@@ -1152,26 +1161,32 @@ int av1_parser_frame(
+@@ -1137,7 +1146,11 @@
+         OBU_METADATA_TYPE meta_type;
+         uint64_t type;
+ 
+-        if (bytes_available == 0 && !seen_frame_header) {
++        // A temporal unit may legally end with padding or metadata after the
++        // last tile group, which leaves seen_frame_header set. The repacked
++        // output is already complete here: stop, rather than reading an OBU
++        // header out of the zero bytes that remain and calling it a failure.
++        if (bytes_available == 0) {
+             break;
+         }
+ 
+@@ -1149,26 +1162,32 @@
              return -1;
          }
  
@@ -87,7 +105,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
          header[0] = ((obu_size + 4) >> 24) & 0xff;
          header[1] = ((obu_size + 4) >> 16) & 0xff;
          header[2] = ((obu_size + 4) >> 8) & 0xff;
-@@ -1180,13 +1195,12 @@ int av1_parser_frame(
+@@ -1177,13 +1196,12 @@
          header[5] = header[1] ^ 0xff;
          header[6] = header[2] ^ 0xff;
          header[7] = header[3] ^ 0xff;
@@ -105,7 +123,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
  
          switch (obu_header.type) {
          case OBU_TEMPORAL_DELIMITER:
-@@ -1237,7 +1251,11 @@ int av1_parser_frame(
+@@ -1234,7 +1252,11 @@
                  seen_frame_header = 0;
              break;
          case OBU_METADATA:
@@ -118,7 +136,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
              if (type < 6)
                  meta_type = static_cast<OBU_METADATA_TYPE>(type);
              else
-@@ -1247,15 +1265,23 @@ int av1_parser_frame(
+@@ -1244,15 +1266,23 @@
                        type < 6 ? meta_type_name[type] : "RESERVED", bytes_read,
                        payload_size - bytes_read);
  
@@ -143,7 +161,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
                          rpu_size = 0x100;
                          rpu_size |= (p[11] & 0x0f) << 4;
                          rpu_size |= (p[12] >> 4) & 0x0f;
-@@ -1263,6 +1289,8 @@ int av1_parser_frame(
+@@ -1260,6 +1290,8 @@
                              CLog::Log(LOGDEBUG, "\tmeta rpu in obu exceed 512 bytes");
                              break;
                          }
@@ -152,7 +170,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
                          for (i = 0; i < rpu_size; i++) {
                              meta_buf[5 + i] = (p[12 + i] & 0x07) << 5;
                              meta_buf[5 + i] |= (p[13 + i] >> 3) & 0x1f;
-@@ -1272,6 +1300,8 @@ int av1_parser_frame(
+@@ -1269,6 +1301,8 @@
                      else {
                          rpu_size = (p[10] & 0x1f) << 3;
                          rpu_size |= (p[11] >> 5) & 0x07;
@@ -161,7 +179,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
                          for (i = 0; i < rpu_size; i++) {
                              meta_buf[5 + i] = (p[11 + i] & 0x0f) << 4;
                              meta_buf[5 + i] |= (p[12 + i] >> 4) & 0x0f;
-@@ -1282,11 +1312,15 @@ int av1_parser_frame(
+@@ -1279,11 +1313,15 @@
                  }
              }
              else if (meta_type == OBU_METADATA_TYPE_HDR_CLL) {
@@ -177,7 +195,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
                  CLog::Log(LOGDEBUG, "\t\thdr10 primaries[r,g,b] =");
                  for (i = 0; i < 3; i++) {
                      CLog::Log(LOGDEBUG, "\t\t {:x}, {:x}",
-@@ -1297,7 +1331,8 @@ int av1_parser_frame(
+@@ -1294,7 +1332,8 @@
                  CLog::Log(LOGDEBUG, "\t\tmaxl = {:x}", (p[16] << 24) | (p[17] << 16) | (p[18] << 8) | p[19]);
                  CLog::Log(LOGDEBUG, "\t\tminl = {:x}", (p[20] << 24) | (p[21] << 16) | (p[22] << 8) | p[23]);
              }
@@ -187,7 +205,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
          case OBU_TILE_LIST:
              break;
          case OBU_PADDING:
-@@ -1318,25 +1353,44 @@ int av1_add_frame_dec_info(am_private_t *para)
+@@ -1315,25 +1354,44 @@
    int ret;
    am_packet_t *pkt = &para->am_pkt;
  
@@ -202,8 +220,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
 +  if (pkt->data_size <= 0 ||
 +      static_cast<size_t>(pkt->data_size) > (SIZE_MAX - 4096) / 11)
 +    return PLAYER_FAILED;
- 
--  if (dst_frame_size - pkt->data_size > 0)
++
 +  const size_t dst_capacity = static_cast<size_t>(pkt->data_size) * 11 + 4096;
 +  uint8_t *dst_data = (uint8_t *)calloc(1, dst_capacity);
 +  if (!dst_data)
@@ -215,7 +232,8 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
 +    free(dst_data);
 +    return PLAYER_FAILED;
 +  }
-+
+ 
+-  if (dst_frame_size - pkt->data_size > 0)
 +  if (dst_frame_size > static_cast<size_t>(pkt->data_size))
    {
      pkt->avpkt.data = pkt->data;
@@ -239,7 +257,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
      memcpy(pkt->data, dst_data, dst_frame_size);
    }
    free(dst_data);
-@@ -1942,9 +1996,8 @@ int set_header_info(am_private_t *para)
+@@ -1939,9 +1997,8 @@
      else if (para->video_format == VFORMAT_VP9) {
        vp9_update_frame_header(pkt);
      }
@@ -251,7 +269,7 @@ index 1ad361092826e7ef12ab70a991ce1499408dea56..29340799c93100055c519098010bfdeb
      else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_MPEG12)
        mpeg12_add_frame_dec_info(para);
  
-@@ -2807,7 +2887,14 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+@@ -2754,7 +2811,14 @@
    // some formats need header/data tweaks.
    // the actual write occurs once in write_av_packet
    // and is controlled by am_pkt.newflag.

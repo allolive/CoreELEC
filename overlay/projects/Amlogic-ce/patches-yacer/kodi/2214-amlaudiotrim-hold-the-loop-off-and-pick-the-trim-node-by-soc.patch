@@ -1,25 +1,43 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Thu, 17 Sep 2026 03:25:54 +0000
-Subject: [PATCH] AMLAudioTrim: pick the trim node by SoC, adding S7D and S6
+Subject: [PATCH] AMLAudioTrim: hold the loop off, and pick the trim node by SoC
 
-The trim loop hard-codes the g12a driver's mpll0 trim node,
-/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim. On S905X5 the
-audio clock comes from the HIFI PLLs, trimmed by the s6 driver (plain
-S905X5) or the s7d one (S905X5M); the g12a handler refuses the write with
--ENODEV, the read back never moves, and the loop disables itself.
+With the audio-lead setting at Off, ReadSlew() returns nullopt and m_levelMax
+stays zero, so nothing is written to audio_sdm_trim. Settle() still ran the
+integrator and clamped m_want against MAX_LEVEL_RATE, so m_clamped counted up
+until the watchdog latched a stand-down for the rest of the title. Skip the
+integrator when the loop is off: hold m_want at rest and reset m_clamped. The
+branch sits after the median and plausibility test, so the measurement is
+unchanged, and a genuine stand-down still latches.
 
-Resolve the node once from the SoC id: AML_S6 and AML_S7D take their own
-node, any other or unidentified family keeps the g12a path unchanged. Not
-by which node exists: with both drivers built in both module parameters
-appear whether or not the driver probed. STEP=2 and the limit of forty
-carry over to S6/S7D as an assumption. Needs the kernel patches adding the
-node (1112 for S6, 2084 for S7D); not exercised on S905X5 hardware.
+Also select the trim node by SoC, adding S7D and S6 alongside the existing
+ones.
+
+Not exercised on hardware.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
-index 3757b86d5b3bf7dc99594bd79b1fc7441d957b88..f72c530ccaab21ec16ce2d68e907d2da62a323a5 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -409,6 +409,17 @@ void CAMLAudioTrim::Settle(double reading)
+   // it would simply be integrated back out again.
+   const double err = drift - aim;
+ 
++  // Off (audiolead 0: no slew, so Update() leaves the ceiling at zero). Nothing
++  // is written, so there is no level to integrate and no answer to judge.
++  if (m_levelMax <= 0.0)
++  {
++    m_want = 0.0;
++    m_clamped = 0;
++    if (std::abs(err) >= DEADBAND)
++      CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, loop off", drift * 1e6);
++    return;
++  }
++
+   if (std::abs(err) < DEADBAND)
+     return;
+ 
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -22,11 +22,32 @@

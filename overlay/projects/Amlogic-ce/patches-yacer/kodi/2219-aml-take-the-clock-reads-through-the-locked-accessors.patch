@@ -1,23 +1,20 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sat, 20 Sep 2026 10:45:00 -0400
-Subject: [PATCH] AML: read the clock and its reference through the locked
- accessors
+Subject: [PATCH] AML: take the clock reads through the locked accessors
 
-CDVDClock::GetClock(double&) updates m_systemAdjust without holding
-m_critSection, and both of these callers run on the renderer thread while the
-player thread is in the clock. The pair is read for one purpose - to see
-whether the clock has been stepped - so it does not need to be atomic, only
-uncorrupted.
+CDVDClock::GetClock(double&) writes m_systemAdjust without m_critSection, and
+AMLGenlock and AMLLatency call it from the renderer thread. Use GetClock() and
+GetAbsoluteClock(), which lock. The pair is now sampled in two calls rather
+than one; both callers only difference it against the previous pair, so a
+steady skew cancels.
 
-Take the two values through the accessors that already lock: GetClock() holds
-m_critSection and GetAbsoluteClock() reads only fields written in the
-constructor. The cost is that the two are sampled a few nanoseconds apart
-rather than together, against a step test measured in milliseconds.
+In the same pass, lift the displayed timestamp into the epoch of the clock it
+is subtracted from: pts_video is the kernel's 32-bit 90kHz counter and
+restarts about every thirteen hours. Inside one epoch this rounds to zero.
+That figure is published for diagnostics and does not steer playback.
 
-Fixing it in CDVDClock would be the tidier change and would need a lock in
-shared player code for a fault only Amlogic reaches; this keeps it on our side
-of the line.
+Not measured on hardware.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
@@ -53,3 +50,19 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
      // Both ends advance by about a frame between presented frames, so what is
      // left over is somebody moving the clock. Measured against the frame
+@@ -592,7 +595,14 @@
+     }
+     age += carried;
+ 
+-    const double shownUs = static_cast<double>(m_pollTicks) * (DVD_TIME_BASE / 90000.0);
++    // pts_video is the kernel's 32-bit 90kHz counter, so it restarts every
++    // 2^32 ticks - about 13 hours - while the playback clock runs on. Lift it
++    // into the period the frame being handed over sits in; the two are a few
++    // frames apart, so the nearest period is the right one.
++    double shownUs = static_cast<double>(m_pollTicks) * (DVD_TIME_BASE / 90000.0);
++    constexpr double ptsWrapUs = 4294967296.0 * (DVD_TIME_BASE / 90000.0);
++    const double shownRef = clockNow - age;
++    shownUs += std::round((shownRef - shownUs) / ptsWrapUs) * ptsWrapUs;
+     const double alignment = clockNow - age - shownUs +
+                              static_cast<double>(RDMA_COMMIT_VBLANKS) * m_period;
+     CAMLLatencyStore::GetInstance().SetAlignment(static_cast<float>(alignment / 1000.0));
