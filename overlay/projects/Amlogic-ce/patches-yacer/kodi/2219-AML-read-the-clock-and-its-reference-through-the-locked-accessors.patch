@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 10:45:00 -0400
+Subject: [PATCH] AML: read the clock and its reference through the locked
+ accessors
+
+CDVDClock::GetClock(double&) updates m_systemAdjust without holding
+m_critSection, and both of these callers run on the renderer thread while the
+player thread is in the clock. The pair is read for one purpose - to see
+whether the clock has been stepped - so it does not need to be atomic, only
+uncorrupted.
+
+Take the two values through the accessors that already lock: GetClock() holds
+m_critSection and GetAbsoluteClock() reads only fields written in the
+constructor. The cost is that the two are sampled a few nanoseconds apart
+rather than together, against a step test measured in milliseconds.
+
+Fixing it in CDVDClock would be the tidier change and would need a lock in
+shared player code for a fault only Amlogic reaches; this keeps it on our side
+of the line.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -50,8 +50,11 @@
+   // A step in the clock voids it too. Ours is not one: the read below is retaken
+   // after a correction, so the alignment does not see its own work and ask for
+   // itself again.
+-  double absolute;
+-  const double clockNow = clock.GetClock(absolute);
++  // Two locked reads instead of one unlocked pair: GetClock(double&) writes
++  // m_systemAdjust outside m_critSection, and this runs on the renderer thread.
++  // The skew between them is nanoseconds; a step is milliseconds.
++  const double clockNow = clock.GetClock();
++  const double absolute = clock.GetAbsoluteClock();
+   if (m_haveClock && std::abs((clockNow - m_lastClock) - (absolute - m_lastAbsolute)) >
+                          CLOCK_STEPPED)
+     Restart();
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -552,8 +552,11 @@
+   {
+     // pts_video names the frame that appears at the next vblank, so the one on
+     // screen is a refresh older and its timestamp fell due a period sooner.
+-    double absolute;
+-    const double clockNow = clock.GetClock(absolute);
++    // Two locked reads instead of one unlocked pair: GetClock(double&) writes
++    // m_systemAdjust outside m_critSection, and this runs on the renderer
++    // thread. The skew between them is nanoseconds; a step is milliseconds.
++    const double clockNow = clock.GetClock();
++    const double absolute = clock.GetAbsoluteClock();
+ 
+     // Both ends advance by about a frame between presented frames, so what is
+     // left over is somebody moving the clock. Measured against the frame
