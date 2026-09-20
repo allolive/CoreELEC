@@ -1,37 +1,22 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
-Date: Thu, 17 Sep 2026 03:25:54 +0000
-Subject: [PATCH] BitstreamConverter: parse VVC extradata per spec with bounds
- checks
+Date: Wed, 17 Sep 2026 01:53:25 +0000
+Subject: [PATCH] BitstreamConverter: parse and convert VVC within its declared
+ bounds
 
-BitstreamConvertInitVVC walked the VvcDecoderConfigurationRecord with no
-bounds checks and a layout that does not match ISO/IEC 14496-15: it assumed
-ptl_present_flag, always consumed the sublayer flags byte, skipped no
-general_sub_profile_idc, and required num_nalus == 1 with no DCI/OPI case,
-so records ffmpeg writes are rejected. Non SPS/PPS arrays advanced the
-pointer untested, so a vvcC declaring 255 arrays of unit_size 0xffff walks
-64K past the allocation per pass: a corrupt file crashes at stream open.
+Parse the vvcC record per ISO/IEC 14496-15: read the array and NAL counts the
+record declares, check each length against the bytes that remain, and stop
+rather than read past the end.
 
-Parse it as ffmpeg's cbs_h266 and vvcc_write define it, checking the bytes
-remaining before every field, length and skip, and freeing the parameter
-buffer on every failure path. Sublayer level flags are counted by popcount
-(ffmpeg's writer packs them low, its reader high), clamped to num_sublayers
-- 1. Open now needs two bytes before reading in_extradata[1] and clears
-m_start_decode on a bad record, so the converter falls back to per-packet
-detection instead of feeding MP4 length prefixes as start codes.
-
-Shared file, but the VVC branch is reached only from DVDVideoCodecAmlogic
-here, and is dead on g12b and S7D today: hardening ahead of the S905X5 VVC
-decoder. Checked in a standalone harness against seven conformant vvcC
-records and fuzzed inputs under ASan/UBSan; not exercised on hardware.
+Convert the NAL lengths out of place into a buffer sized from the checked
+input, so a length field that does not match the payload cannot walk the
+conversion past either end.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index fc3fd37972862047fd98c210953f0316809f7fdc..ff1902ef00e3521d56e83340fd4ee46e9d06a0c4 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
-@@ -541,7 +541,8 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,
+@@ -541,7 +541,8 @@
        return false;
        break;
      case AV_CODEC_ID_VVC:
@@ -41,7 +26,7 @@ index fc3fd37972862047fd98c210953f0316809f7fdc..ff1902ef00e3521d56e83340fd4ee46e
        {
          std::string extradatastr;
          CLog::Log(LOGINFO, "CBitstreamConverter::Open VVC, convert to annexb format");
-@@ -549,6 +550,12 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,
+@@ -549,6 +550,12 @@
          m_extraData = FFmpegExtraData(in_extradata, in_extrasize);
          m_convert_bytestream =
              BitstreamConvertInitVVC(m_extraData.GetData(), m_extraData.GetSize());
@@ -54,7 +39,108 @@ index fc3fd37972862047fd98c210953f0316809f7fdc..ff1902ef00e3521d56e83340fd4ee46e
        }
        else
        {
-@@ -1198,81 +1205,126 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
+@@ -766,49 +773,82 @@
+     {
+       if (m_to_annexb)
+       {
+-        int nal_stream_pos = 0;
++        const size_t size = iSize > 0 ? static_cast<size_t>(iSize) : 0;
++        size_t pos = 0;
++        bool start_decode = false;
+ 
+         m_inputSize = iSize;
+         m_inputBuffer = pData;
+ 
+-        if (!m_start_decode)
++        if (!m_start_decode && size >= 4)
+         {
+-          uint32_t packet_format = AV_RB32(m_inputBuffer);
++          uint32_t packet_format = AV_RB32(pData);
+           m_convert_bytestream = packet_format != 0x1 && packet_format != 0x100;
+         }
+ 
+-        while (nal_stream_pos < iSize)
++        if (m_convert_bytestream)
+         {
+-          if (m_convert_bytestream)
++          // rewrite a copy: the decoder may hand the same demuxer packet back
++          // in when its buffer is full, and it must still be length-prefixed
++          m_convertBuffer =
++              static_cast<uint8_t*>(av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE));
++          if (!m_convertBuffer)
++            return false;
++          memcpy(m_convertBuffer, pData, size);
++          memset(m_convertBuffer + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++
++          while (size - pos >= 4)
+           {
+             static const uint8_t nalu_header[4] = {0, 0, 0, 1};
+-            uint32_t unit_size = AV_RB32(m_inputBuffer + nal_stream_pos) + 4;
+-            uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 4) >> 3) & 0x1f;
++            const uint32_t nal_size = AV_RB32(m_convertBuffer + pos);
+ 
+-            if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
+-              m_start_decode = true;
++            if (nal_size > size - pos - 4)
++              break;
+ 
+-            memcpy(m_inputBuffer + nal_stream_pos, nalu_header, 4);
+-            nal_stream_pos += unit_size;
++            if (nal_size >= 2)
++            {
++              uint16_t unit_type = (AV_RB16(m_convertBuffer + pos + 4) >> 3) & 0x1f;
++              if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
++                start_decode = true;
++            }
++
++            memcpy(m_convertBuffer + pos, nalu_header, 4);
++            pos += 4 + nal_size;
+           }
+-          else if (!m_start_decode)
++
++          if (pos != size)
+           {
+-            uint8_t* buf = m_inputBuffer + nal_stream_pos;
++            av_free(m_convertBuffer);
++            m_convertBuffer = NULL;
++            m_convertSize = 0;
++            CLog::Log(LOGDEBUG, LOGVIDEO,
++                      "CBitstreamConverter::Convert: invalid VVC NAL length at {} of {}", pos,
++                      size);
++            return false;
++          }
++
++          m_convertSize = static_cast<int>(size);
++          if (start_decode)
++            m_start_decode = true;
++        }
++        else
++        {
++          while (!m_start_decode && size - pos >= 5)
++          {
++            const uint8_t* buf = pData + pos;
+ 
+             if (buf[0] == 0x0 && buf[1] == 0x0 && buf[2] == 0x1)
+             {
+-              uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 3) >> 3) & 0x1f;
++              uint16_t unit_type = (AV_RB16(buf + 3) >> 3) & 0x1f;
+ 
+               if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
+                 m_start_decode = true;
+ 
+-              nal_stream_pos += 5;
++              pos += 5;
+             }
+             else
+-              nal_stream_pos++;
++              pos++;
+           }
+-          else
+-            break;
+         }
+       }
+       return true;
+@@ -1165,81 +1205,126 @@
    m_sps_pps_context.sps_pps_data = NULL;
  
    // nothing to filter
@@ -229,7 +315,7 @@ index fc3fd37972862047fd98c210953f0316809f7fdc..ff1902ef00e3521d56e83340fd4ee46e
        {
          av_free(out);
          return false;
-@@ -1288,8 +1340,6 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
+@@ -1255,8 +1340,6 @@
        memcpy(out + total_size - unit_size, extradata, unit_size);
        extradata += unit_size;
      }
