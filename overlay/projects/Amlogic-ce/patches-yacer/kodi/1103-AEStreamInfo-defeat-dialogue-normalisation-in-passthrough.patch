@@ -307,7 +307,7 @@ index d30cf8e0f0f9dacefb3de381b2392caa3a9fc03c..876c2b275113b4a2d28a9bcb4efdc7fa
 +          framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
 +          break;
 +        case 2:
-+          framewords = bitRate * 4;
++          framewords = bitRate * 3;
 +          break;
 +      }
 +      frameBytes = framewords * 2;
