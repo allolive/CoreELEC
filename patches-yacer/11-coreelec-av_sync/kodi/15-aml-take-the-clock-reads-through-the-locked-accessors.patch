@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 10:45:00 -0400
+Subject: [PATCH] AML: take the clock reads through the locked accessors
+
+CDVDClock::GetClock(double&) writes m_systemAdjust without m_critSection, and
+AMLGenlock and AMLLatency call it from the renderer thread. Use GetClock() and
+GetAbsoluteClock(), which lock. The pair is now sampled in two calls rather
+than one; both callers only difference it against the previous pair, so a
+steady skew cancels.
+
+In the same pass, lift the displayed timestamp into the epoch of the clock it
+is subtracted from: pts_video is the kernel's 32-bit 90kHz counter and
+restarts about every thirteen hours. Inside one epoch this rounds to zero.
+That figure is published for diagnostics and does not steer playback.
+
+Not measured on hardware.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+index 464c95d..0793c17 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -50,8 +50,11 @@ void CAMLGenlock::Update(CDVDClock& clock,
+   // A step in the clock voids it too. Ours is not one: the read below is retaken
+   // after a correction, so the alignment does not see its own work and ask for
+   // itself again.
+-  double absolute;
+-  const double clockNow = clock.GetClock(absolute);
++  // Two locked reads instead of one unlocked pair: GetClock(double&) writes
++  // m_systemAdjust outside m_critSection, and this runs on the renderer thread.
++  // The skew between them is nanoseconds; a step is milliseconds.
++  const double clockNow = clock.GetClock();
++  const double absolute = clock.GetAbsoluteClock();
+   if (m_haveClock && std::abs((clockNow - m_lastClock) - (absolute - m_lastAbsolute)) >
+                          CLOCK_STEPPED)
+     Restart();
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 2d8074a..f25bc55 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -552,8 +552,11 @@ void CAMLLatency::Update(
+   {
+     // pts_video names the frame that appears at the next vblank, so the one on
+     // screen is a refresh older and its timestamp fell due a period sooner.
+-    double absolute;
+-    const double clockNow = clock.GetClock(absolute);
++    // Two locked reads instead of one unlocked pair: GetClock(double&) writes
++    // m_systemAdjust outside m_critSection, and this runs on the renderer
++    // thread. The skew between them is nanoseconds; a step is milliseconds.
++    const double clockNow = clock.GetClock();
++    const double absolute = clock.GetAbsoluteClock();
+ 
+     // Both ends advance by about a frame between presented frames, so what is
+     // left over is somebody moving the clock. Measured against the frame
+@@ -592,7 +595,14 @@ void CAMLLatency::Update(
+     }
+     age += carried;
+ 
+-    const double shownUs = static_cast<double>(m_pollTicks) * (DVD_TIME_BASE / 90000.0);
++    // pts_video is the kernel's 32-bit 90kHz counter, so it restarts every
++    // 2^32 ticks - about 13 hours - while the playback clock runs on. Lift it
++    // into the period the frame being handed over sits in; the two are a few
++    // frames apart, so the nearest period is the right one.
++    double shownUs = static_cast<double>(m_pollTicks) * (DVD_TIME_BASE / 90000.0);
++    constexpr double ptsWrapUs = 4294967296.0 * (DVD_TIME_BASE / 90000.0);
++    const double shownRef = clockNow - age;
++    shownUs += std::round((shownRef - shownUs) / ptsWrapUs) * ptsWrapUs;
+     const double alignment = clockNow - age - shownUs +
+                              static_cast<double>(RDMA_COMMIT_VBLANKS) * m_period;
+     CAMLLatencyStore::GetInstance().SetAlignment(static_cast<float>(alignment / 1000.0));

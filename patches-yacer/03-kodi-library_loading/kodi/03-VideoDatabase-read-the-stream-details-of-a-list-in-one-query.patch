@@ -1,0 +1,284 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 13 Sep 2026 11:05:00 -0400
+Subject: [PATCH] VideoDatabase: read the stream details of a list in one query
+
+Add GetStreamDetailsForFiles, which fetches the stream details of many file
+ids in a single query, and use it from VideoThumbLoader in batches of 500.
+The rows are interpreted through the same helper the single-file path uses.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
+index 8b2f63d..8a857b8 100644
+--- a/xbmc/utils/StreamDetails.cpp
++++ b/xbmc/utils/StreamDetails.cpp
+@@ -19,6 +19,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <ranges>
++#include <utility>
+ 
+ const float VIDEOASPECT_EPSILON = 0.025f;
+ 
+@@ -403,6 +404,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
+   *this = that;
+ }
+ 
++CStreamDetails::CStreamDetails(CStreamDetails&& that) noexcept
++  : m_vecItems(std::move(that.m_vecItems)),
++    m_pBestVideo(std::exchange(that.m_pBestVideo, nullptr)),
++    m_pBestAudio(std::exchange(that.m_pBestAudio, nullptr)),
++    m_pBestSubtitle(std::exchange(that.m_pBestSubtitle, nullptr))
++{
++  that.m_vecItems.clear();
++  for (const auto& item : m_vecItems)
++    item->m_pParent = this;
++}
++
++CStreamDetails& CStreamDetails::operator=(CStreamDetails&& that) noexcept
++{
++  if (this != &that)
++  {
++    m_vecItems = std::move(that.m_vecItems);
++    that.m_vecItems.clear();
++    m_pBestVideo = std::exchange(that.m_pBestVideo, nullptr);
++    m_pBestAudio = std::exchange(that.m_pBestAudio, nullptr);
++    m_pBestSubtitle = std::exchange(that.m_pBestSubtitle, nullptr);
++    for (const auto& item : m_vecItems)
++      item->m_pParent = this;
++  }
++  return *this;
++}
++
+ void CStreamDetails::AddStream(CStreamDetail *item)
+ {
+   item->m_pParent = this;
+diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
+index 7954bb0..e33f7a4 100644
+--- a/xbmc/utils/StreamDetails.h
++++ b/xbmc/utils/StreamDetails.h
+@@ -139,7 +139,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
+ public:
+   CStreamDetails() { Reset(); }
+   CStreamDetails(const CStreamDetails &that);
++  CStreamDetails(CStreamDetails&& that) noexcept;
+   CStreamDetails& operator=(const CStreamDetails &that);
++  CStreamDetails& operator=(CStreamDetails&& that) noexcept;
+   bool operator ==(const CStreamDetails &that) const;
+   bool operator !=(const CStreamDetails &that) const;
+ 
+diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index ef80614..d32a9a1 100644
+--- a/xbmc/video/VideoDatabase.cpp
++++ b/xbmc/video/VideoDatabase.cpp
+@@ -4789,6 +4789,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
+   return retVal;
+ }
+ 
++bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
++                                              std::unordered_map<int, CStreamDetails>& details,
++                                              const std::function<bool()>& abort /* = {} */)
++{
++  if (fileIds.empty())
++    return true;
++  if (nullptr == m_pDB)
++    return false;
++
++  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
++  if (!pDS)
++    return false;
++
++  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
++  {
++    std::unordered_map<int, CStreamDetails> found;
++    try
++    {
++      const std::string sql =
++          PrepareSQL("SELECT * FROM streamdetails WHERE idFile IN (%s)", idList.c_str());
++      pDS->query(sql);
++      while (!pDS->eof())
++      {
++        AddStreamDetailRow(*pDS, found[pDS->fv(0).get_asInt()]);
++        pDS->next();
++      }
++      pDS->close();
++    }
++    catch (...)
++    {
++      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
++      return false;
++    }
++
++    for (const int id : ids)
++    {
++      if (details.contains(id))
++        continue;
++      // Hand the entry over as a node, so it is neither copied nor moved
++      auto node = found.extract(id);
++      const auto it =
++          node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
++      it->second.DetermineBestStreams();
++    }
++    return true;
++  };
++
++  return ForEachIdChunk(fileIds, abort, readChunk);
++}
++
+ bool CVideoDatabase::GetResumePoint(CVideoInfoTag& tag)
+ {
+   if (tag.m_iFileId < 0)
+diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
+index ce8cab4..1658417 100644
+--- a/xbmc/video/VideoDatabase.h
++++ b/xbmc/video/VideoDatabase.h
+@@ -524,6 +524,19 @@ public:
+   bool GetStreamDetails(CFileItem& item);
+   bool GetStreamDetails(CVideoInfoTag& tag);
+   bool GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details);
++
++  /*!
++   * \brief Retrieve the stream details of many files with a few queries
++   * \param fileIds ids of the files, looked up in chunks
++   * \param details receives one entry per id that was looked up, empty if the file has no stored
++   * stream details. Ids of a chunk that failed or was not reached are left out, and entries already
++   * in the map are kept.
++   * \param abort optional, checked before each chunk; the lookup stops when it returns true
++   * \return true if every chunk was looked up, false if the lookup was stopped or failed
++   */
++  bool GetStreamDetailsForFiles(const std::vector<int>& fileIds,
++                                std::unordered_map<int, CStreamDetails>& details,
++                                const std::function<bool()>& abort = {});
+   bool GetDetailsByTypeAndId(CFileItem& item, VideoDbContentType type, int id);
+   CVideoInfoTag GetDetailsByTypeAndId(VideoDbContentType type, int id);
+ 
+diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
+index cee70e5..93b8aca 100644
+--- a/xbmc/video/VideoThumbLoader.cpp
++++ b/xbmc/video/VideoThumbLoader.cpp
+@@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
+   m_videoDatabase->Open();
+   m_artCache.clear();
+   m_parentArtKeys.clear();
++  m_streamDetailsCache.clear();
+   m_cachedWindowStart = 0;
+   CThumbLoader::OnLoaderStart();
+ }
+@@ -77,6 +78,7 @@ void CVideoThumbLoader::OnLoaderFinish()
+   m_videoDatabase->Close();
+   m_artCache.clear();
+   m_parentArtKeys.clear();
++  m_streamDetailsCache.clear();
+   CThumbLoader::OnLoaderFinish();
+ }
+ 
+@@ -196,11 +198,26 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
+ 
+   if (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails()) // no stream details
+   {
+-    if ((pItem->HasVideoInfoTag() &&
+-         pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
+-        || (!pItem->IsFolder() &&
+-            VIDEO::IsVideo(
+-                *pItem))) // Some other video file for which we haven't yet got any database details
++    const auto prefetched = pItem->HasVideoInfoTag()
++                                ? m_streamDetailsCache.find(pItem->GetVideoInfoTag()->m_iFileId)
++                                : m_streamDetailsCache.end();
++    if (prefetched != m_streamDetailsCache.end())
++    {
++      if (prefetched->second.HasItems())
++      {
++        CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
++        tag.m_streamDetails = std::move(prefetched->second);
++        if (tag.m_streamDetails.GetVideoDuration() > 0)
++          tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
++        pItem->SetInvalid();
++      }
++      m_streamDetailsCache.erase(prefetched);
++    }
++    else if ((pItem->HasVideoInfoTag() &&
++              pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
++             || (!pItem->IsFolder() &&
++                 VIDEO::IsVideo(
++                     *pItem))) // Some other video file for which we haven't yet got any database details
+     {
+       if (m_videoDatabase->GetStreamDetails(*pItem))
+         pItem->SetInvalid();
+@@ -695,15 +712,18 @@ void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
+   const auto window = std::span(m_vecItems).subspan(
+       m_cachedWindowStart, std::min(PREFETCH_WINDOW, m_vecItems.size() - m_cachedWindowStart));
+   m_cachedWindowStart += window.size();
++  m_streamDetailsCache.clear();
+ 
+   try
+   {
+     PrefetchArt(window);
++    PrefetchStreamDetails(window);
+   }
+   catch (...)
+   {
+     CLog::LogF(LOGERROR, "failed");
+     m_artCache.clear();
++    m_streamDetailsCache.clear();
+   }
+ }
+ 
+@@ -758,6 +778,24 @@ void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
+   }
+ }
+ 
++void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> items)
++{
++  // The files LoadItemCached() will read stream details for
++  std::set<int> ids;
++  for (const auto& item : items)
++  {
++    if (item->IsShareOrDrive() || item->IsParentFolder() || !item->HasVideoInfoTag())
++      continue;
++
++    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
++    if (!tag.HasStreamDetails() && tag.m_iFileId >= 0)
++      ids.insert(tag.m_iFileId);
++  }
++
++  m_videoDatabase->GetStreamDetailsForFiles(std::vector<int>(ids.begin(), ids.end()),
++                                            m_streamDetailsCache, [this] { return m_bStop; });
++}
++
+ bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
+ {
+   const auto it = m_artCache.find(std::make_pair(mediaType, id));
+diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
+index fd6b537..cb89b86 100644
+--- a/xbmc/video/VideoThumbLoader.h
++++ b/xbmc/video/VideoThumbLoader.h
+@@ -11,10 +11,12 @@
+ #include "FileItem.h"
+ #include "ThumbLoader.h"
+ #include "utils/Artwork.h"
++#include "utils/StreamDetails.h"
+ 
+ #include <map>
+ #include <set>
+ #include <span>
++#include <unordered_map>
+ #include <vector>
+ 
+ class CStreamDetails;
+@@ -78,6 +80,7 @@ public:
+ protected:
+   CVideoDatabase *m_videoDatabase;
+   ArtCache m_artCache;
++  std::unordered_map<int, CStreamDetails> m_streamDetailsCache; // by file id
+ 
+   /*! \brief Tries to detect missing data/info from a file and adds those
+    \param item The CFileItem to process
+@@ -90,6 +93,7 @@ protected:
+ private:
+   void PrefetchCachedWindow(const CFileItem* item);
+   void PrefetchArt(std::span<const CFileItemPtr> items);
++  void PrefetchStreamDetails(std::span<const CFileItemPtr> items);
+   bool GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork);
+ 
+   std::set<std::pair<MediaType, int>> m_parentArtKeys;

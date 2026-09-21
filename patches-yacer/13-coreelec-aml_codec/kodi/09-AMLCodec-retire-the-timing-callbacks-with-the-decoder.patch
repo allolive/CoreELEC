@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 13:19:02 -0400
+Subject: [PATCH] AMLCodec: retire the timing callbacks with the decoder
+
+The renderer ticks the latency and genlock loops from a queued frame, which
+holds the codec past CloseDecoder. m_opened was a plain bool read on that
+thread, so a tick could pass the check and publish after Forget had run,
+carrying one decoder's measurements into the next. Make it atomic and take a
+mutex around the retirement and both callbacks.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index d7681b0..e5677ea 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2509,7 +2509,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+ 
+   CSysfsPath("/sys/class/video/freerun_mode", 1);
+ 
+-  m_opened = true;
++  {
++    std::lock_guard<std::mutex> lock(m_timingMutex);
++    // A CAMLCodec can be reopened directly and the trim flag belongs to the
++    // renderer callbacks: clear it while they still observe it as closed.
++    m_trimWasPassthrough = false;
++    m_opened.store(true, std::memory_order_release);
++  }
+ 
+   // vcodec is open, update speed if it was
+   // changed before VideoPlayer called OpenDecoder.
+@@ -2641,13 +2647,16 @@ void CAMLCodec::CloseDecoder()
+ 
+   m_dll->codec_close(&am_private->vcodec);
+   dumpfile_close(am_private);
+-  m_opened = false;
+   m_trimWasPassthrough = false;
+ 
+-  // After m_opened, so a frame still queued in the renderer cannot tick this
+-  // back to life: the measured path belongs to this decoder, and whatever plays
+-  // next may not use this renderer at all.
+-  CAMLLatency::GetInstance().Forget();
++  // A frame still queued in the renderer holds this codec and can tick it: take
++  // the retirement and the Forget together, so a tick either runs wholly before
++  // this or observes the closed state and publishes nothing.
++  {
++    std::lock_guard<std::mutex> lock(m_timingMutex);
++    m_opened.store(false, std::memory_order_release);
++    CAMLLatency::GetInstance().Forget();
++  }
+ 
+   am_packet_release(&am_private->am_pkt);
+   am_private->extradata = {};
+@@ -2975,9 +2984,13 @@ void CAMLCodec::SetPollDevice(int dev)
+ 
+ void CAMLCodec::LatencyTick(uint64_t omxPts)
+ {
+-  CDVDClock* clock = m_hints.pClock;
++  std::lock_guard<std::mutex> lock(m_timingMutex);
+ 
+-  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
++  if (!m_opened.load(std::memory_order_acquire) || omxPts == DVD_NOPTS_VALUE)
++    return;
++
++  CDVDClock* clock = m_hints.pClock;
++  if (!clock)
+     return;
+ 
+   // Trick play and a slewed clock have no steady relationship to measure
+@@ -3100,8 +3113,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+ 
+ void CAMLCodec::GenlockTick(uint64_t omxPts)
+ {
++  std::lock_guard<std::mutex> lock(m_timingMutex);
++
++  if (!m_opened.load(std::memory_order_acquire) || omxPts == DVD_NOPTS_VALUE)
++    return;
++
+   CDVDClock* clock = m_hints.pClock;
+-  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
++  if (!clock)
+     return;
+ 
+   // Trick play and live streams have the player driving the clock, so there is
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index b4a87ed..ef56ec3 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -108,7 +108,7 @@ private:
+   std::string   GetHDRStaticMetadata(bool dv_enable);
+ 
+   DllLibAmCodec   *m_dll;
+-  bool             m_opened;
++  std::atomic<bool> m_opened;
+   //! Whether the audio was a bitstream last frame, so the trim is given back
+   //! once on the way out rather than on every frame after it.
+   bool             m_trimWasPassthrough{false};
+@@ -141,6 +141,8 @@ private:
+ 
+   PosixFilePtr     m_amlVideoFile;
+   std::mutex       m_amlVideoFileMutex;
++  //! Serialises the renderer's timing callbacks against decoder close.
++  std::mutex       m_timingMutex;
+   std::string      m_defaultVfmMap;
+ 
+   static std::atomic_flag  m_pollSync;

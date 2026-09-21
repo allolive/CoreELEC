@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 03:25:53 +0000
+Subject: [PATCH] AMLCodec: validate VP9 superframe index sizes
+
+vp9_update_frame_header() parses the VP9 superframe index into a plain int
+array with size[i] |= buf[p] << (cur_mag * 8), so with mag == 4 and a top
+byte >= 0x80 the frame size comes out negative. The only guard is the
+total_datasize > dsize test after the loop, which a negative sum passes.
+
+A six byte packet d8 f8 ff ff ff d8 gives frame_number 1, mag 4 and
+size[0] == -8; need_more is then 2, av_grow_packet() succeeds, and the
+rewrite loop calls memmove(fdata + 16, old_framedata, (size_t)-8). With
+several frames a large positive size can cancel a negative one, leaving
+oldframeoff before the start of the packet, so the header write and the
+memmove land at a stream-chosen negative offset. The packet comes
+straight from the demuxer, so a crafted or damaged WebM/MKV reaches it.
+
+Parse each entry into a uint32_t and, before storing it, check in int64_t
+that the running sum plus this entry still fits in dsize - index_sz (known
+non-negative from the earlier mag_ptr < 0 test). A packet failing the
+check returns PLAYER_SUCCESS without rewriting, as this function already
+does for a short index or a mismatched second marker. need_more is also
+checked before av_grow_packet() as a backstop.
+
+Checked by replaying the parser and rewrite loop standalone over random
+packets; valid superframes give identical offsets before and after. Not
+smoke-tested against real VP9 superframe content on hardware.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 40f84aa..e727766 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -1380,14 +1380,22 @@ int vp9_update_frame_header(am_packet_t *pkt)
+ 
+     for (cur_frame = 0; cur_frame < frame_number; cur_frame++)
+     {
+-      size[cur_frame] = 0; // or size[0] = bytes_in_buffer - 1; both OK
++      uint32_t fsize = 0;
+ 
+       for (cur_mag = 0; cur_mag < mag; cur_mag++)
+       {
+-        size[cur_frame] = size[cur_frame]|(buf[mag_ptr] << (cur_mag*8));
++        fsize |= static_cast<uint32_t>(buf[mag_ptr]) << (cur_mag * 8);
+         mag_ptr++;
+       }
+ 
++      /* the frames must fit in front of the index, and so must their sum */
++      if (static_cast<int64_t>(total_datasize) + fsize > dsize - index_sz)
++      {
++        CLog::Log(LOGDEBUG, "VP9 superframe index overflow, skip add header");
++        return PLAYER_SUCCESS;
++      }
++      size[cur_frame] = static_cast<int>(fsize);
++
+       offset[cur_frame+1] = offset[cur_frame] + size[cur_frame];
+ 
+       if (cur_frame == 0)
+@@ -1420,6 +1428,12 @@ int vp9_update_frame_header(am_packet_t *pkt)
+     */
+     int need_more = total_datasize + frame_number * 16 - dsize;
+ 
++    if (need_more < 0)
++    {
++      CLog::Log(LOGDEBUG, "VP9 superframe smaller than packet, skip add header");
++      return PLAYER_SUCCESS;
++    }
++
+     av_buffer_unref(&pkt->avpkt.buf);
+     ret = av_grow_packet(&(pkt->avpkt), need_more);
+     if (ret < 0)

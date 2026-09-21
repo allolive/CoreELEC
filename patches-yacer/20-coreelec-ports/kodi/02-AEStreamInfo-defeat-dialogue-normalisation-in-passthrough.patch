@@ -1,0 +1,682 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 10:06:30 -0400
+Subject: [PATCH] AEStreamInfo: stop receivers turning dialogue down in
+ passthrough
+
+Rewrite dialnorm to 0 dB attenuation in passthrough AC-3, E-AC-3, TrueHD
+Atmos (16ch presentation) and DTS / DTS-HD / DTS:X frames, fixing the CRCs.
+AC-3 frames must pass their CRC first; E-AC-3 dependent substreams and DD+
+Atmos (JOC, from addbsi or the stream profile) are never touched; TrueHD and
+DTS EXSS are only rewritten after their CRC checks, DTS core DNG only for VERNUM 6/7.
+
+The E-AC-3 checksum is taken over the rewritten frame. Deriving it from the
+changed bits alone walked libavutil's table by hand, which is not ours to
+index: it produced a wrong checksum on every frame and receivers went silent
+on DD+. A frame that fails its own checksum is left as it came. It is either damaged
+or not the length we read it to be, and in both cases writing our checksum
+over it would only make the damage look intact to the receiver.
+
+One multi-select setting in the CoreELEC section picks the formats (read on
+codec open): AC-3/E-AC-3, TrueHD Atmos and DTS, all selected by default.
+Ported from pannal/xbmc 91e6499007..02169a0bd6 plus the dialnorm part of 451fecaadb.
+This is shared audio-engine code with no Amlogic hook, so it cannot live in Amlogic files.
+
+Co-authored-by: jamal2362 <15986930+jamal2362@users.noreply.github.com>
+Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 29d14f8..6a2759e 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25995,3 +25995,34 @@ msgstr ""
+ msgctxt "#40804"
+ msgid "{0:.1f} dB"
+ msgstr ""
++
++#. Setting label for dialogue normalisation defeat
++#: system/settings/settings.xml
++msgctxt "#55001"
++msgid "Dialogue normalisation defeat (0 dB)"
++msgstr ""
++
++#. Setting help for dialogue normalisation defeat
++#: system/settings/settings.xml
++msgctxt "#55002"
++msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
++msgstr ""
++
++#. Dialogue normalisation defeat format: AC-3 and E-AC-3
++#: system/settings/settings.xml
++msgctxt "#55003"
++msgid "AC-3 / E-AC-3"
++msgstr ""
++
++#. Dialogue normalisation defeat format: TrueHD Atmos
++#: system/settings/settings.xml
++msgctxt "#55004"
++msgid "TrueHD Atmos"
++msgstr ""
++
++#. Dialogue normalisation defeat format: DTS family
++#: system/settings/settings.xml
++msgctxt "#55011"
++msgid "DTS / DTS-HD / DTS:X"
++msgstr ""
++
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 6b2856b..d1e1888 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -4143,6 +4143,25 @@
+           </dependencies>
+           <control type="list" format="string" />
+         </setting>
++        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="55001" help="55002">
++          <level>2</level>
++          <constraints>
++            <options>
++              <option label="55003">0</option> <!-- AC-3 / E-AC-3 -->
++              <option label="55004">1</option> <!-- TrueHD Atmos -->
++              <option label="55011">2</option> <!-- DTS -->
++            </options>
++            <delimiter>,</delimiter>
++            <minimumitems>0</minimumitems>
++          </constraints>
++          <default>0,1,2</default>
++          <dependencies>
++            <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
++          </dependencies>
++          <control type="list" format="string">
++            <multiselect>true</multiselect>
++          </control>
++        </setting>
+       </group>
+     </category>
+     <category id="cache" label="439" help="36399">
+diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
+index d30cf8e..5cdd22c 100644
+--- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
++++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
+@@ -218,6 +218,18 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
+     if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE)
+       size = m_coreSize;
+ 
++    if (m_defeatAC3DialNorm && (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3))
++      DefeatAC3DialNorm(m_buffer, size);
++
++    if (m_defeatDTSDialNorm && (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
++                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA))
++      DefeatDTSDialNorm(m_buffer, size);
++
+     // make sure the buffer is allocated and big enough
+     if (!*buffer || !bufferSize || *bufferSize < size)
+     {
+@@ -292,6 +304,453 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
+   return possible ? possible : skipped;
+ }
+ 
++// AC-3 CRC helpers, as in FFmpeg libavcodec/ac3enc.c
++#define AC3_CRC16_POLY ((1 << 0) | (1 << 2) | (1 << 15) | (1 << 16))
++
++static unsigned int AC3MulPoly(unsigned int a, unsigned int b, unsigned int poly)
++{
++  unsigned int c = 0;
++  while (a)
++  {
++    if (a & 1)
++      c ^= b;
++    a >>= 1;
++    b <<= 1;
++    if (b & (1 << 16))
++      b ^= poly;
++  }
++  return c;
++}
++
++static unsigned int AC3PowPoly(unsigned int a, unsigned int n, unsigned int poly)
++{
++  unsigned int r = 1;
++  while (n)
++  {
++    if (n & 1)
++      r = AC3MulPoly(r, a, poly);
++    a = AC3MulPoly(a, a, poly);
++    n >>= 1;
++  }
++  return r;
++}
++
++static inline uint16_t AC3Bswap16(uint16_t x)
++{
++  return static_cast<uint16_t>((x >> 8) | (x << 8));
++}
++
++// E-AC-3 BSI up to addbsi, per FFmpeg ac3_parser.c. True when the
++// extension_type_a (JOC) flag is set or the header cannot be parsed.
++static bool EAC3HasJOC(const uint8_t* frame, unsigned int frameBytes)
++{
++  const unsigned int limit = (frameBytes - 2) * 8;
++  unsigned int pos = 16;
++  bool overrun = false;
++  auto read = [&](unsigned int n) -> uint32_t
++  {
++    uint32_t value = 0;
++    if (pos + n > limit)
++    {
++      overrun = true;
++      return 0;
++    }
++    while (n--)
++    {
++      value = (value << 1) | ((frame[pos >> 3] >> (7 - (pos & 7))) & 1);
++      ++pos;
++    }
++    return value;
++  };
++  auto skip = [&](unsigned int n)
++  {
++    pos += n;
++    if (pos > limit)
++      overrun = true;
++  };
++
++  const unsigned int strmtyp = read(2);
++  skip(3 + 11); // substreamid, frmsiz
++  const unsigned int fscod = read(2);
++  unsigned int numblks = 6;
++  if (fscod == 3)
++    skip(2); // fscod2
++  else
++    numblks = AC3BlkCod[read(2)];
++  const unsigned int acmod = read(3);
++  const unsigned int lfeon = read(1);
++  skip(5); // bsid
++  for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
++  {
++    skip(5); // dialnorm
++    if (read(1))
++      skip(8); // compr
++  }
++  if (strmtyp == 1 && read(1))
++    skip(16); // chanmap
++  if (read(1)) // mixmdate
++  {
++    if (acmod > 2)
++    {
++      skip(2); // dmixmod
++      if (acmod & 1)
++        skip(6); // ltrtcmixlev, lorocmixlev
++      if (acmod & 4)
++        skip(6); // ltrtsurmixlev, lorosurmixlev
++    }
++    if (lfeon && read(1))
++      skip(5); // lfemixlevcod
++    if (strmtyp == 0)
++    {
++      for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
++        if (read(1))
++          skip(6); // pgmscl
++      if (read(1))
++        skip(6); // extpgmscl
++      switch (read(2)) // mixdef
++      {
++        case 1:
++          skip(5);
++          break;
++        case 2:
++          skip(12);
++          break;
++        case 3:
++          skip((read(5) + 2) * 8);
++          break;
++      }
++      if (acmod < 2)
++        for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
++          if (read(1))
++            skip(14); // paninfo
++      if (read(1)) // frmmixcfginfoe
++      {
++        for (unsigned int i = 0; i < numblks; i++)
++          if (numblks == 1 || read(1))
++            skip(5); // blkmixcfginfo
++      }
++    }
++  }
++  if (read(1)) // infomdate
++  {
++    skip(3 + 1 + 1); // bsmod, copyrightb, origbs
++    if (acmod == 2)
++      skip(4); // dsurmod, dheadphonmod
++    if (acmod >= 6)
++      skip(2); // dsurexmod
++    for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
++      if (read(1))
++        skip(8); // mixlevel, roomtyp, adconvtyp
++    if (fscod != 3)
++      skip(1); // sourcefscod
++  }
++  if (strmtyp == 0 && numblks != 6)
++    skip(1); // convsync
++  if (strmtyp == 2 && (numblks == 6 || read(1)))
++    skip(6); // frmsizecod
++  if (read(1)) // addbsie
++  {
++    skip(6 + 7); // addbsil, first addbsi bits
++    if (read(1))
++      return true;
++  }
++  return overrun;
++}
++
++void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
++{
++  const AVCRC* crcTable = av_crc_get_table(AV_CRC_16_ANSI);
++  unsigned int offset = 0;
++
++  while (offset + 8 <= size)
++  {
++    if (data[offset] != 0x0b || data[offset + 1] != 0x77)
++      break;
++
++    uint8_t* frame = data + offset;
++    uint8_t bsid = frame[5] >> 3;
++    unsigned int frameBytes = 0;
++
++    if (bsid <= 10)
++    {
++      uint8_t fscod = frame[4] >> 6;
++      uint8_t frmsizecod = frame[4] & 0x3F;
++      if (fscod >= 3 || frmsizecod > 37)
++        break;
++
++      unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
++      unsigned int framewords = 0;
++      switch (fscod)
++      {
++        case 0:
++          framewords = bitRate * 2;
++          break;
++        case 1:
++          framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
++          break;
++        case 2:
++          framewords = bitRate * 3;
++          break;
++      }
++      frameBytes = framewords * 2;
++      if (offset + frameBytes > size)
++        break;
++
++      // dialnorm follows acmod, the optional mix levels / dsurmod and lfeon
++      uint8_t acmod = frame[6] >> 5;
++      unsigned int shift = 15;
++      if ((acmod & 0x1) && (acmod != 0x1))
++        shift -= 2;
++      if (acmod & 0x4)
++        shift -= 2;
++      if (acmod == 0x2)
++        shift -= 2;
++
++      // leave frames with a bad CRC untouched
++      uint32_t bits = (frame[6] << 16) | (frame[7] << 8) | frame[8];
++      if (((bits >> shift) & 0x1F) != 31 &&
++          av_crc(crcTable, 0, frame + 2, frameBytes - 2) == 0)
++      {
++        bits |= 0x1FU << shift;
++        frame[6] = (bits >> 16) & 0xFF;
++        frame[7] = (bits >> 8) & 0xFF;
++        frame[8] = bits & 0xFF;
++
++        // crc1 brings the CRC back to zero at 5/8, so crc2 stays valid
++        unsigned int frameSize58 = ((frameBytes >> 2) + (frameBytes >> 4)) << 1;
++        uint16_t crc1 = AC3Bswap16(av_crc(crcTable, 0, frame + 4, frameSize58 - 4));
++        unsigned int crcInv =
++            AC3PowPoly((AC3_CRC16_POLY >> 1), (8 * frameSize58) - 16, AC3_CRC16_POLY);
++        crc1 = static_cast<uint16_t>(AC3MulPoly(crcInv, crc1, AC3_CRC16_POLY));
++        frame[2] = (crc1 >> 8) & 0xFF;
++        frame[3] = crc1 & 0xFF;
++      }
++    }
++    else if (bsid <= 16)
++    {
++      uint8_t strmtyp = frame[2] >> 6;
++      frameBytes = ((((frame[2] & 0x7) << 8) | frame[3]) + 1) * 2;
++      if (offset + frameBytes > size)
++        break;
++
++      // leave damaged frames, dependent substreams and DD+ Atmos (JOC) alone. A
++      // frame that fails its own checksum is either damaged or not the length we
++      // read it to be, and either way the receiver is better off with it as it
++      // came than with our checksum making the damage look intact.
++      uint8_t dialnorm = ((frame[5] & 0x07) << 2) | (frame[6] >> 6);
++      if (strmtyp != 1 && frameBytes >= 10 && dialnorm != 31 &&
++          av_crc(crcTable, 0, frame + 2, frameBytes - 2) == 0 &&
++          !EAC3HasJOC(frame, frameBytes))
++      {
++        frame[5] |= 0x07;
++        frame[6] |= 0xC0;
++
++        // the checksum covers the frame, so take it over the frame as it now is
++        uint16_t crc2 =
++            AC3Bswap16(static_cast<uint16_t>(av_crc(crcTable, 0, frame + 2, frameBytes - 4)));
++        while (crc2 == 0x0B77)
++        {
++          frame[frameBytes - 3] ^= 0x1;
++          crc2 =
++              AC3Bswap16(static_cast<uint16_t>(av_crc(crcTable, 0, frame + 2, frameBytes - 4)));
++        }
++        frame[frameBytes - 2] = (crc2 >> 8) & 0xFF;
++        frame[frameBytes - 1] = crc2 & 0xFF;
++      }
++    }
++    else
++      break;
++
++    offset += frameBytes;
++  }
++}
++
++static uint32_t DTSReadBits(const uint8_t* data, unsigned int& pos, unsigned int n)
++{
++  uint32_t value = 0;
++  while (n--)
++  {
++    value = (value << 1) | ((data[pos >> 3] >> (7 - (pos & 7))) & 1);
++    ++pos;
++  }
++  return value;
++}
++
++static void DTSWriteBits(uint8_t* data, unsigned int pos, unsigned int n, uint32_t value)
++{
++  for (unsigned int i = 0; i < n; ++i)
++  {
++    const uint8_t mask = 1 << (7 - ((pos + i) & 7));
++    if ((value >> (n - 1 - i)) & 1)
++      data[(pos + i) >> 3] |= mask;
++    else
++      data[(pos + i) >> 3] &= ~mask;
++  }
++}
++
++static unsigned int DTSPopCount(uint32_t x)
++{
++  unsigned int count = 0;
++  for (; x; x >>= 1)
++    count += x & 1;
++  return count;
++}
++
++// CRC-16-CCITT (poly 0x1021, init 0xFFFF), the EXSS header CRC
++static uint16_t DTSCrc16(const uint8_t* data, unsigned int len)
++{
++  uint16_t crc = 0xFFFF;
++  for (unsigned int i = 0; i < len; ++i)
++  {
++    crc ^= static_cast<uint16_t>(data[i]) << 8;
++    for (int b = 0; b < 8; ++b)
++      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
++                           : static_cast<uint16_t>(crc << 1);
++  }
++  return crc;
++}
++
++// DTS dialnorm is attenuation in dB, so 0 defeats it. Only the 16-bit BE core
++// is handled; layout per ETSI TS 102 114 and FFmpeg dca_exss.c.
++void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
++{
++  if (size < 16)
++    return;
++
++  const uint32_t sync = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
++  if (sync != DTS_PREAMBLE_16BE)
++    return;
++
++  // core DNG means attenuation for VERNUM 6/7; skip when there is a header CRC
++  unsigned int pos = 32;
++  DTSReadBits(data, pos, 1 + 5); // FTYPE, SHORT
++  const unsigned int cpf = DTSReadBits(data, pos, 1);
++  DTSReadBits(data, pos, 7); // NBLKS
++  const unsigned int fsize = DTSReadBits(data, pos, 14) + 1;
++  DTSReadBits(data, pos, 6 + 4 + 5); // AMODE, SFREQ, RATE
++  DTSReadBits(data, pos, 1 + 1 + 1 + 1 + 1); // MIX, DYNF, TIMEF, AUXF, HDCD
++  DTSReadBits(data, pos, 3 + 1 + 1 + 2 + 1); // EXT_AUDIO_ID, EXT_AUDIO, ASPF, LFF, HFLAG
++  if (cpf)
++    DTSReadBits(data, pos, 16); // HCRC
++  DTSReadBits(data, pos, 1); // FILTS
++  const unsigned int vernum = DTSReadBits(data, pos, 4);
++  DTSReadBits(data, pos, 2 + 3 + 1 + 1); // CHIST, PCMR, SUMF, SUMS
++  const unsigned int dngPos = pos;
++  if (cpf == 0 && (vernum == 6 || vernum == 7) && DTSReadBits(data, pos, 4) != 0)
++    DTSWriteBits(data, dngPos, 4, 0);
++
++  // extension substream: nuDialNormCode of the first asset
++  if (fsize + 16 > size)
++    return;
++  uint8_t* exss = data + fsize;
++  const uint32_t exssSync = (exss[0] << 24) | (exss[1] << 16) | (exss[2] << 8) | exss[3];
++  if (exssSync != DTS_PREAMBLE_HD)
++    return;
++
++  unsigned int ep = 32;
++  DTSReadBits(exss, ep, 8); // nuUserDefinedBits
++  const unsigned int extSSIndex = DTSReadBits(exss, ep, 2);
++  const unsigned int wideHeader = DTSReadBits(exss, ep, 1);
++  const unsigned int fsizeBits = wideHeader ? 20 : 16;
++  const unsigned int headerSize = DTSReadBits(exss, ep, wideHeader ? 12 : 8) + 1;
++  if (headerSize < 7 || fsize + headerSize > size)
++    return;
++
++  // only touch a header whose CRC validates
++  if (DTSCrc16(exss + 5, headerSize - 5) != 0)
++    return;
++  // a valid CRC does not make the layout sane: never read past the header
++  const unsigned int limit = (headerSize - 2) * 8;
++  auto read = [&](unsigned int n) -> uint32_t {
++    if (ep + n > limit)
++    {
++      ep = limit + 1;
++      return 0;
++    }
++    return DTSReadBits(exss, ep, n);
++  };
++
++  read(fsizeBits); // nuExtSSFsize
++  const unsigned int staticFields = read(1);
++  unsigned int numAssets = 1;
++  if (staticFields)
++  {
++    read(2 + 3); // nuRefClockCode, nuExSSFrameDurationCode
++    if (read(1))
++      read(32 + 4); // nuTimeStamp, nLSB
++    const unsigned int numPresentations = read(3) + 1;
++    numAssets = read(3) + 1;
++    uint32_t masks[8] = {};
++    for (unsigned int i = 0; i < numPresentations; ++i)
++      masks[i] = read(extSSIndex + 1);
++    for (unsigned int i = 0; i < numPresentations; ++i)
++      read(DTSPopCount(masks[i]) * 8); // nuActiveAssetMask
++    if (read(1)) // bMixMetadataEnbl
++      return;
++  }
++  for (unsigned int i = 0; i < numAssets; ++i)
++    read(fsizeBits); // nuAssetFsize
++
++  read(9 + 3); // nuAssetDescriptFsize, nuAssetIndex
++  if (staticFields)
++  {
++    if (read(1))
++      read(4); // nuAssetTypeDescriptor
++    if (read(1))
++      read(24); // LanguageDescriptor
++    if (read(1))
++    {
++      const unsigned int textBytes = read(10) + 1;
++      ep = std::min(ep + textBytes * 8, limit + 1); // InfoTextString
++    }
++    read(5 + 4); // nuBitResolution, nuMaxSampleRate
++    const unsigned int numChannels = read(8) + 1;
++    if (read(1)) // bOne2OneMapChannels2Speakers
++    {
++      if (numChannels > 2)
++        read(1); // bEmbeddedStereoFlag
++      if (numChannels > 6)
++        read(1); // bEmbeddedSixChFlag
++      unsigned int maskBits = 0;
++      if (read(1)) // bSpkrMaskEnabled
++      {
++        maskBits = (read(2) + 1) << 2;
++        read(maskBits); // nuSpkrActivityMask
++      }
++      const unsigned int remapSets = read(3);
++      if (remapSets && !maskBits)
++        return;
++      uint32_t layouts[8] = {};
++      for (unsigned int i = 0; i < remapSets; ++i)
++        layouts[i] = read(maskBits);
++      for (unsigned int i = 0; i < remapSets; ++i)
++      {
++        const unsigned int decChannels = read(5) + 1;
++        // some mask bits stand for a speaker pair
++        const unsigned int speakers =
++            DTSPopCount((layouts[i] & 0xffff) | ((layouts[i] & 0xae66) << 16));
++        for (unsigned int c = 0; c < speakers; ++c)
++          read(DTSPopCount(read(decChannels)) * 5);
++      }
++    }
++    else
++      read(3); // nuRepresentationType
++  }
++  if (read(1)) // bDRCCoefPresent
++    read(8);
++  if (!read(1)) // bDialNormPresent
++    return;
++
++  const unsigned int dnPos = ep;
++  if (dnPos + 5 > limit || read(5) == 0)
++    return;
++
++  DTSWriteBits(exss, dnPos, 5, 0);
++  const uint16_t crc = DTSCrc16(exss + 5, headerSize - 2 - 5);
++  exss[headerSize - 2] = (crc >> 8) & 0xFF;
++  exss[headerSize - 1] = crc & 0xFF;
++}
++
+ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
+                                  unsigned int size,
+                                  bool resyncing,
+@@ -789,6 +1248,19 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
+       if (((data[4 + major_sync_size - 1] << 8) | data[4 + major_sync_size - 2]) != crc)
+         continue;
+ 
++      // 16ch (Atmos) dialogue_norm in extra_channel_meaning, 31 = 0 dB
++      if (m_defeatTrueHDDialNorm && (data[21] & 0x80) && (data[29] & 1) && (data[30] >> 4) &&
++          (((data[30] & 0x0F) << 1) | (data[31] >> 7)) != 31)
++      {
++        data[30] |= 0x0F;
++        data[31] |= 0x80;
++
++        crc = av_crc(m_crcTrueHD, 0, data + 4, major_sync_size - 4);
++        crc ^= (data[4 + major_sync_size - 3] << 8) | data[4 + major_sync_size - 4];
++        data[4 + major_sync_size - 2] = crc & 0xFF;
++        data[4 + major_sync_size - 1] = (crc >> 8) & 0xFF;
++      }
++
+       // get the sample rate and substreams, we have a valid master audio unit
+       m_info.m_sampleRate = (rate & 0x8 ? 44100 : 48000) << (rate & 0x7);
+       m_substreams = (data[20] & 0xF0) >> 4;
+diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
+index acfa77d..562e5b6 100644
+--- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
++++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
+@@ -58,6 +58,9 @@ public:
+   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
+ 
+   void SetCoreOnly(bool value) { m_coreOnly = value; }
++  void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
++  void SetDefeatTrueHDDialNorm(bool value) { m_defeatTrueHDDialNorm = value; }
++  void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
+   unsigned int IsValid() const { return m_hasSync; }
+   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
+   unsigned int GetChannels() const { return m_info.m_channels; }
+@@ -80,6 +83,9 @@ private:
+ 
+   CAEStreamInfo m_info;
+   bool m_coreOnly = false;
++  bool m_defeatAC3DialNorm = false;
++  bool m_defeatTrueHDDialNorm = false;
++  bool m_defeatDTSDialNorm = false;
+   unsigned int m_needBytes = 0;
+   ParseFunc m_syncFunc;
+   bool m_hasSync = false;
+@@ -91,6 +97,8 @@ private:
+   AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
+ 
+   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
++  void DefeatAC3DialNorm(uint8_t* data, unsigned int size);
++  void DefeatDTSDialNorm(uint8_t* data, unsigned int size);
+   unsigned int DetectType(uint8_t *data, unsigned int size);
+   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
+   unsigned int SyncAC3(uint8_t *data, unsigned int size);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+index 7636e3a..f4ab898 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+@@ -9,7 +9,11 @@
+ #include "DVDAudioCodecPassthrough.h"
+ 
+ #include "DVDCodecs/DVDCodecs.h"
++#include "ServiceBroker.h"
+ #include "cores/AudioEngine/Utils/PackerMAT.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
++#include "utils/Variant.h"
+ #include "utils/log.h"
+ 
+ #include <algorithm>
+@@ -48,6 +52,26 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
+ {
+   m_hints = hints;
+   m_parser.SetCoreOnly(false);
++
++  bool defeatAC3 = false;
++  bool defeatTrueHD = false;
++  bool defeatDTS = false;
++  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
++  {
++    if (const auto settings = settingsComponent->GetSettings())
++    {
++      for (const auto& format : settings->GetList(CSettings::SETTING_COREELEC_AUDIO_DIALNORMDEFEAT))
++      {
++        defeatAC3 |= format.asInteger() == 0;
++        defeatTrueHD |= format.asInteger() == 1;
++        defeatDTS |= format.asInteger() == 2;
++      }
++    }
++  }
++  // DD+ Atmos (JOC) is never touched; the parser also checks the bitstream
++  m_parser.SetDefeatAC3DialNorm(defeatAC3 && hints.profile != AV_PROFILE_EAC3_DDP_ATMOS);
++  m_parser.SetDefeatTrueHDDialNorm(defeatTrueHD);
++  m_parser.SetDefeatDTSDialNorm(defeatDTS);
+   switch (m_format.m_streamInfo.m_type)
+   {
+     case CAEStreamInfo::STREAM_TYPE_AC3:
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 97ff1f5..afbcfd8 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -425,6 +425,7 @@ public:
+   static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
+   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
+   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";
++  static constexpr auto SETTING_COREELEC_AUDIO_DIALNORMDEFEAT = "coreelec.audio.dialnormdefeat";
+   static constexpr auto SETTING_AUDIOOUTPUT_VOLUMESTEPS = "audiooutput.volumesteps";
+   static constexpr auto SETTING_AUDIOOUTPUT_LOWLATENCY = "audiooutput.lowlatency";
+   static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";

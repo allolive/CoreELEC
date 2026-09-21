@@ -1,0 +1,104 @@
+From fab87c08af588cac10a0eb22edec69aa7be1b57b Mon Sep 17 00:00:00 2001
+From: pannal <1359593+pannal@users.noreply.github.com>
+Date: Sat, 18 Apr 2026 03:45:15 +0200
+Subject: [PATCH] Subtitles: premultiply alpha in linear light for bitmap
+ overlays
+
+Straight gamma-space premultiplication of semi-transparent edge pixels
+produces RGB values that appear perceptually too dark. The effect is
+subtle in SDR but severe under HDR/PQ output, where mid-gray PMA values
+get mapped by the display's PQ EOTF to very low luminance, producing
+the dark fringe visible around anti-aliased subtitle edges.
+
+Add SrgbToLinear / LinearToSrgb8 helpers (gamma 2.2 approximation via
+a 256-entry LUT for decode) and apply linear-light premultiplication
+in build_rgba (palette path: PGS, VobSub).
+
+Ported from pannal/xbmc 4c77c613c4. The direct-RGBA premultiply loop that
+commit also changes comes from another of its branch's commits and does
+not exist here, so only the palette path is taken.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoRenderers/OverlayRendererUtil.cpp    | 37 ++++++++++++++++---
+ .../VideoRenderers/OverlayRendererUtil.h      |  7 ++++
+ 2 files changed, 39 insertions(+), 5 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index d87c8df..aa1457f 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -19,11 +19,35 @@
+ #include "windowing/WinSystem.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <cmath>
+ 
+ namespace OVERLAY
+ {
+ 
++float SrgbToLinear(int v)
++{
++  static const auto lut = []() {
++    std::array<float, 256> t{};
++    for (int i = 0; i < 256; i++)
++      t[i] = std::pow(i / 255.0f, 2.2f);
++    return t;
++  }();
++  return lut[v & 0xff];
++}
++
++int LinearToSrgb8(float v)
++{
++  if (v <= 0.0f)
++    return 0;
++  if (v >= 1.0f)
++    return 255;
++  return static_cast<int>(std::pow(v, 1.0f / 2.2f) * 255.0f + 0.5f);
++}
++
++// Premultiply alpha in linear light so semi-transparent edges don't appear dark
++// on HDR displays (where gamma-space PMA gets mapped to very low PQ luminance).
++// Also improves SDR correctness for anti-aliased overlay edges.
+ namespace
+ {
+ //! Two samples count as the same paint within this per-channel distance.
+@@ -101,11 +125,14 @@ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int pas
+ 
+ static uint32_t build_rgba(int a, int r, int g, int b, bool mergealpha)
+ {
+-  if(mergealpha)
+-    return      a        << PIXEL_ASHIFT
+-         | (r * a / 255) << PIXEL_RSHIFT
+-         | (g * a / 255) << PIXEL_GSHIFT
+-         | (b * a / 255) << PIXEL_BSHIFT;
++  if (mergealpha)
++  {
++    const float af = a / 255.0f;
++    const int rp = LinearToSrgb8(SrgbToLinear(r) * af);
++    const int gp = LinearToSrgb8(SrgbToLinear(g) * af);
++    const int bp = LinearToSrgb8(SrgbToLinear(b) * af);
++    return a << PIXEL_ASHIFT | rp << PIXEL_RSHIFT | gp << PIXEL_GSHIFT | bp << PIXEL_BSHIFT;
++  }
+   else
+     return a << PIXEL_ASHIFT
+          | r << PIXEL_RSHIFT
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+index b4a2e56..af1a318 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+@@ -36,6 +36,13 @@ struct SQuads
+   std::vector<SQuad> quad;
+ };
+ 
++// Linear-light alpha premultiplication for overlay pixels.
++// Premultiplying gamma-encoded values directly produces edges that are
++// too dark, especially pronounced when the OSD is displayed in HDR/PQ mode.
++// These helpers perform the multiplication in linear space (gamma 2.2).
++float SrgbToLinear(int v);
++int LinearToSrgb8(float v);
++
+ //! True when a PQ overlay palette (isHDROverlay) must be converted to sRGB
+ //! for the surface it will be drawn into.
+ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay);

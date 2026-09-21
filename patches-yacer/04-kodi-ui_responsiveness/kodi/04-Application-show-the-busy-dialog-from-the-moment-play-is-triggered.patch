@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 23:58:00 -0400
+Subject: [PATCH] Application: show the busy dialog from the moment play is
+ triggered
+
+Kodi already raises a busy dialog while a file opens - GUI_MSG_PLAYBACK_STARTED
+resets m_playerEvent and waits on it, OnAVStart sets it - but that begins once
+a player exists, and a good deal happens before one does.
+
+CApplication::PlayFile first calls GatherPlaybackDetails, which resolves the
+item and then opens the video database and reads from it: LoadVideoInfo, the
+resume point, the episode bookmark. With the library on another machine that is
+a MySQL connect and several queries over the network, on the app thread, with
+nothing on screen. Kodi sets MYSQL_OPT_CONNECT_TIMEOUT and no read timeout, so
+those reads are unbounded.
+
+What that looks like is a press that does nothing, with the stock wheel turning
+up seconds later.
+
+Cover that stretch too. It will not animate - the work after it is on this
+thread - and that is the accepted trade here: the point is to acknowledge the
+press at once. Kodi's own wheel takes over and animates once the player exists.
+
+- CGUIDialogBusyNoCancel, not CGUIDialogBusy: the latter inherits privately and
+  only CGUIWindowManager may open it. Both use DialogBusy.xml. CPowerManager
+  already drives this dialog the same way.
+- Its Open_Internal forces bProcessRenderLoop off, so Open() shows and returns
+  rather than pumping until close.
+- One Render() so it reaches the screen before the blocking work starts.
+  CGUIWindowManager::ProcessRenderLoop would be the usual way and is private to
+  CGUIDialog/CGUIMediaWindow, so this calls our own Render instead. Whether one
+  Render is enough for it to appear is the part to confirm on hardware.
+- Scoped, so every path out of PlayFile closes it, including the early returns
+  for a playback error, a disc stub and an unselected playlist. A spinner left
+  on screen is the failure worth designing against.
+
+PlayFile is where a GUI click and a JSON-RPC Player.Open both arrive, so one
+place covers both.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
+index 8f4e7c2..c67a70c 100644
+--- a/xbmc/application/Application.cpp
++++ b/xbmc/application/Application.cpp
+@@ -76,6 +76,7 @@
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIControlProfiler.h"
+ #include "guilib/GUIFontManager.h"
++#include "dialogs/GUIDialogBusyNoCancel.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "guilib/StereoscopicsManager.h"
+ #include "guilib/TextureManager.h"
+@@ -2074,8 +2075,48 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
+   return PlayFile(item, player, false);
+ }
+ 
++namespace
++{
++// Holds the busy dialog up for a scope. Open() on this one does not pump the
++// render loop - CGUIDialogBusyNoCancel::Open_Internal forces that off - so it
++// shows and returns, which is what is wanted here.
++class CPlayStartBusy
++{
++public:
++  CPlayStartBusy()
++  {
++    auto* dialog = CServiceBroker::GetGUI()
++                       ->GetWindowManager()
++                       .GetWindow<CGUIDialogBusyNoCancel>(WINDOW_DIALOG_BUSY_NOCANCEL);
++    if (dialog && !dialog->IsDialogRunning())
++    {
++      dialog->Open();
++      m_dialog = dialog;
++    }
++  }
++  ~CPlayStartBusy()
++  {
++    if (m_dialog)
++      m_dialog->Close(true);
++  }
++  bool IsShowing() const { return m_dialog != nullptr; }
++
++  CPlayStartBusy(const CPlayStartBusy&) = delete;
++  CPlayStartBusy& operator=(const CPlayStartBusy&) = delete;
++
++private:
++  CGUIDialogBusyNoCancel* m_dialog{nullptr};
++};
++} // namespace
++
+ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRestart /* = false */)
+ {
++  // Closes on every path out of PlayFile, so a failure here cannot leave a
++  // spinner behind.
++  const CPlayStartBusy playStartBusy;
++  if (playStartBusy.IsShowing())
++    Render(); // draw it now; what follows blocks this thread
++
+   const auto appPlayer{GetComponent<CApplicationPlayer>()};
+   const auto stackHelper{GetComponent<CApplicationStackHelper>()};
+ 

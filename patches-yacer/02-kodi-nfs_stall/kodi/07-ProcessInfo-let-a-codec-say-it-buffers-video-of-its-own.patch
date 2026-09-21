@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 17:00:00 -0400
+Subject: [PATCH] ProcessInfo: let a codec say it buffers video of its own
+
+The buffering hold has to know whether the codec keeps video of its own,
+because that is what hides a stalled source from the usual check. Carry it on
+the blackboard both sides already hold, reset with the rest of the codec
+information, so whoever knows can say so and the player can ask.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index d7d8c43..1587512 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+@@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
+ //******************************************************************************
+ // video codec
+ //******************************************************************************
++void CProcessInfo::SetVideoCodecBuffersData(bool buffersData)
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  m_videoCodecBuffersData = buffersData;
++}
++
++bool CProcessInfo::GetVideoCodecBuffersData() const
++{
++  std::unique_lock lock(m_videoCodecSection);
++
++  return m_videoCodecBuffersData;
++}
++
+ void CProcessInfo::ResetVideoCodecInfo()
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = false;
+   m_videoDecoderName = "unknown";
+   m_videoDeintMethod = "unknown";
+@@ -104,6 +119,8 @@ void CProcessInfo::SetVideoDecoderName(const std::string &name, bool isHw)
+ {
+   std::unique_lock lock(m_videoCodecSection);
+ 
++  // A codec that holds data of its own says so after naming itself.
++  m_videoCodecBuffersData = false;
+   m_videoIsHWDecoder = isHw;
+   m_videoDecoderName = name;
+ 
+diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index 0c5f4f2..f1a3663 100644
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+@@ -36,6 +36,8 @@ public:
+   void SetVideoDecoderName(const std::string &name, bool isHw);
+   std::string GetVideoDecoderName();
+   bool IsVideoHwDecoder();
++  void SetVideoCodecBuffersData(bool buffersData);
++  bool GetVideoCodecBuffersData() const;
+   void SetVideoDeintMethod(const std::string &method);
+   std::string GetVideoDeintMethod();
+   void SetVideoPixelFormat(const std::string &pixFormat);
+@@ -149,6 +151,7 @@ protected:
+ 
+   // player video info
+   bool m_videoIsHWDecoder;
++  bool m_videoCodecBuffersData{false};
+   std::string m_videoDecoderName;
+   std::string m_videoDeintMethod;
+   std::string m_videoPixelFormat;

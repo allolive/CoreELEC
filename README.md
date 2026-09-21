@@ -2,7 +2,7 @@
 
 Unofficial CoreELEC builds for Amlogic devices.
 
-> **Tracks the CoreELEC 22.0 nightly tree, with a few patches of our own.**
+> **Tracks the CoreELEC 22.0 nightly tree, with a few patches added on top.**
 > Builds install like any CoreELEC update - copy the `.tar` to your box's
 > `.update` share and reboot. Each release lists what changed since the one
 > before it. This is not an official CoreELEC release and carries no warranty:
@@ -10,7 +10,7 @@ Unofficial CoreELEC builds for Amlogic devices.
 
 ## Why use these builds instead of an official one
 
-Only for the patches we add on top. Everything else is CoreELEC exactly as they
+Only for the patches added on top. Everything else is CoreELEC exactly as they
 ship it, built from their nightly tree. If none of those matter to you, take an
 [official release](https://coreelec.org) - it is the same software with fewer
 moving parts.
@@ -49,29 +49,42 @@ Or let the box do it. In **Settings -> CoreELEC -> Updates**:
 
 ## Branches
 
-- **`coreelec-22`** — an exact mirror of `CoreELEC/CoreELEC`. Nothing of ours is
-  committed there. It is force-pushed to follow upstream wherever they go,
+- **`coreelec-22`** — an exact mirror of `CoreELEC/CoreELEC`. Nothing of this
+  repository's own work is committed there. It is force-pushed to follow upstream wherever they go,
   including across a history rewrite.
 - **`yacer`** — this branch. It shares no history with the mirror and holds only
-  the files we add or replace.
+  the files added or replaced.
 
 The build checks out the mirror, lays this branch over the top, and builds the
-result. Our files are never replayed onto upstream, so an upstream rewrite cannot
-conflict with them.
+result. These files are never replayed onto upstream, so an upstream rewrite
+cannot conflict with them.
 
 ## Layout
 
-- **`overlay/`** — files we add, copied into the tree as-is. A path that already
-  exists upstream is refused rather than overwritten: replacing a whole upstream
-  file would silently revert whatever they changed in it, with nothing to notice.
-- **`tree-patches/`** — the few upstream files we do change, as patches. If
-  upstream moves that code the patch stops applying and the build stops with it,
-  rather than quietly restoring our older copy.
+- **`patches-yacer/<group>/<pkg>/`** — the patches to packages, grouped by what
+  they are for. A `kodi-` group touches only upstream Kodi code, a `coreelec-`
+  group is Amlogic-specific, and `yacer-` is for these builds alone. Hardening leads each
+  family. Each group carries a `README.md`: its heading names the group and the
+  text under it says what the patches are for, which is what the
+  [change list](https://allolive.github.io/CoreELEC/) shows above them. Without
+  one a group is named after its directory and shown bare.
 
-Our own patches to packages go in `overlay/projects/.../patches-yacer/<pkg>/`,
-beside upstream's `patches/` rather than scattered through them, and are applied
-the same way upstream's are. They show up in the build log as `(yacer)` so it is
-clear which are ours.
+  A patch is numbered within its group — `01`, `02` — and assembly composes the
+  group's number in as it copies, so `11-coreelec-av_sync/kodi/01-…` lands as
+  `projects/Amlogic-ce/patches-yacer/kodi/11_01-…`. That name is what the build
+  sorts on: the group's number decides where its patches sit among the other
+  groups', the patch's own where it sits inside its group. Renumbering or
+  renaming a group is then renaming one directory, not every patch in it.
+- **`tree-patches/`** — the few upstream files that are changed, as patches. If
+  upstream moves that code the patch stops applying and the build stops with it,
+  rather than quietly restoring an older copy.
+- **`overlay/`** — anything else added to the tree, copied in as-is. Empty
+  today. A path that already exists upstream is refused rather than overwritten:
+  replacing a whole upstream file would silently revert whatever they changed in
+  it, with nothing to notice.
+
+These patches are applied exactly the way upstream's are, and show up in the
+build log as `(yacer)` so it is clear which is which.
 
 Each patch's subject and message are what the
 [change list](https://allolive.github.io/CoreELEC/) shows, so write them for
@@ -85,7 +98,7 @@ Two checkouts of the same repository, so the branch can be edited while the buil
 tree stays a build tree:
 
     ~/Documents/coreelec/CoreELEC    the coreelec branches - the build tree
-    ~/Documents/coreelec/CoreELEC-yacer  this branch - where our patches live
+    ~/Documents/coreelec/CoreELEC-yacer  this branch - where the patches live
 
     git -C CoreELEC worktree add ../CoreELEC-yacer yacer     # once
 
@@ -127,7 +140,7 @@ the build, so a build does not depend on third-party hosts staying reachable.
 
 ## License
 
-Our original code is released under GPLv2.
+Original code is released under GPLv2.
 
 ## Copyright
 

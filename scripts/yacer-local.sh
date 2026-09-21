@@ -22,7 +22,26 @@ BRANCH=${YACER_BRANCH:-yacer}
 STATE=.yacer-local-state
 SRCSAVE=.yacer-local-source
 
+# The directories the branch assembles from. Where our patches go in the build
+# tree, how each file is placed, and what makes a valid set of them are in
+# scripts/yacer-patches.sh, shared with the CI assembler.
+SRCDIRS="patches-yacer overlay tree-patches"
+
+# shellcheck source=yacer-patches.sh
+. "$(dirname "${BASH_SOURCE[0]}")/yacer-patches.sh"
+
 die() { echo "yacer-local: $*" >&2; exit 1; }
+
+# Copy whatever of $SRCDIRS $1 has into $2. Missing ones are fine - only an
+# empty result is not, and the callers check for that.
+copy_src() {
+  local from=$1 to=$2 d rc=0
+  for d in $SRCDIRS; do
+    [ -d "$from/$d" ] || continue
+    cp -a "$from/$d" "$to"/ || rc=1
+  done
+  return $rc
+}
 
 [ -d .git ] || die "run this from the root of the CoreELEC clone"
 git rev-parse --verify --quiet "$BRANCH" >/dev/null || die "no $BRANCH branch in this clone"
@@ -32,7 +51,7 @@ cmd=${1:-status}
 case "$cmd" in
 status)
   if [ -f "$STATE" ]; then
-    echo "applied: $(grep -c '^file ' "$STATE" || true) overlay file(s), $(grep -c '^patch ' "$STATE" || true) tree-patch(es)"
+    echo "applied: $(grep -c '^file ' "$STATE" || true) file(s), $(grep -c '^patch ' "$STATE" || true) tree-patch(es)"
     echo "from $BRANCH @ $(sed -n 's/^commit //p' "$STATE")"
   else
     echo "clean: this is a plain checkout of the mirror"
@@ -51,11 +70,13 @@ apply)
     src=$(git worktree list --porcelain \
           | awk -v b="refs/heads/$BRANCH" '/^worktree /{w=$2} $0=="branch "b{print w}' \
           | head -1)
-    [ -n "$src" ] && [ -d "$src/overlay" ] || src=""
+    if [ -n "$src" ] && [ ! -d "$src/patches-yacer" ] && [ ! -d "$src/overlay" ]; then
+      src=""
+    fi
   fi
   if [ -n "$src" ]; then
-    cp -a "$src/overlay" "$src/tree-patches" "$tmp"/ || die "cannot read $src"
-    if git -C "$src" diff --quiet HEAD -- overlay tree-patches 2>/dev/null; then
+    copy_src "$src" "$tmp" || die "cannot read $src"
+    if git -C "$src" diff --quiet HEAD -- $SRCDIRS 2>/dev/null; then
       origin="$BRANCH @ ${commit:0:9}"
     else
       origin="$BRANCH @ ${commit:0:9} plus uncommitted edits"
@@ -89,30 +110,36 @@ apply)
     done < <(sed -n 's|^--- a/||p' "$p")
   done
 
+  # A patch that cannot land the way it reads - wrong depth, a package that is
+  # not in this tree, two groups carrying the same number - before anything is
+  # copied.
+  check_patches "$tmp" || die "fix the patches above, then apply again"
+
   # A patch of ours that is also sitting loose in the package's patch directory
   # would be applied twice, and the second time would fail.
-  while IFS= read -r -d '' f; do
-    rel=${f#"$tmp"/overlay/}
-    case "$rel" in */patches-yacer/*/*.patch) ;; *) continue;; esac
-    loose=${rel/\/patches-yacer\//\/patches\/}
+  check_loose() {
+    case "$2" in */patches-yacer/*/*.patch) ;; *) return 0;; esac
+    local loose=${2/\/patches-yacer\//\/patches\/}
     [ -e "$loose" ] && die "$loose is also in the tree - it would be applied twice"
-  done < <(find "$tmp/overlay" -type f -print0 2>/dev/null)
+    return 0
+  }
+  each_file check_loose "$tmp"
 
   : > "$STATE"
   echo "commit $commit" >> "$STATE"
   # Keep what was assembled. revert compares against this rather than against a
   # commit, so it stays exact when the source had uncommitted edits.
   rm -rf "$SRCSAVE"; mkdir -p "$SRCSAVE"
-  cp -a "$tmp"/overlay "$tmp"/tree-patches "$SRCSAVE"/
+  copy_src "$tmp" "$SRCSAVE"
 
-  while IFS= read -r -d '' f; do
-    rel=${f#"$tmp"/overlay/}
-    [ -e "$rel" ] && die "overlay would overwrite $rel - use a tree-patch instead"
-    mkdir -p "$(dirname "$rel")"
-    cp -p "$f" "$rel"
-    echo "file $rel" >> "$STATE"
-    echo "  added   $rel"
-  done < <(find "$tmp/overlay" -type f -print0 2>/dev/null)
+  add_one() {
+    [ -e "$2" ] && die "we would overwrite $2 - use a tree-patch instead"
+    mkdir -p "$(dirname "$2")"
+    cp -p "$1" "$2"
+    echo "file $2" >> "$STATE"
+    echo "  added   $2"
+  }
+  each_file add_one "$tmp"
 
   # Roll back what landed if a later patch fails, so a failed apply never leaves
   # a half-assembled tree behind.
@@ -136,7 +163,7 @@ apply)
 
   if ! grep -q '^file \|^patch ' "$STATE"; then
     rm -f "$STATE"; rm -rf "$SRCSAVE"
-    echo "yacer-local: $BRANCH carries no overlay files and no tree-patches." >&2
+    echo "yacer-local: $BRANCH carries no files to add and no tree-patches." >&2
     echo "  Building from this would produce stock CoreELEC." >&2
     exit 1
   fi
@@ -149,8 +176,8 @@ revert)
   commit=$(sed -n 's/^commit //p' "$STATE")
   # What apply kept, or the commit it recorded for a state written before there
   # was a snapshot.
-  if [ -d "$SRCSAVE/overlay" ]; then
-    cp -a "$SRCSAVE"/overlay "$SRCSAVE"/tree-patches "$tmp"/
+  if [ -d "$SRCSAVE/patches-yacer" ] || [ -d "$SRCSAVE/overlay" ]; then
+    copy_src "$SRCSAVE" "$tmp"
   else
     git archive "$commit" | tar -x -C "$tmp"
   fi
@@ -160,11 +187,15 @@ revert)
   # tree - regenerated after a fix, say - would be destroyed by a routine revert
   # that reported success. Refusing half way through would leave the tree part
   # reverted, so this runs first.
+  declare -A SOURCE_OF=()
+  remember() { SOURCE_OF["$2"]=$1; }
+  each_file remember "$tmp"
+
   edited=""
   while read -r rel; do
     [ -n "$rel" ] || continue
     [ -f "$rel" ] || continue
-    cmp -s "$tmp/overlay/$rel" "$rel" || edited="$edited $rel"
+    cmp -s "${SOURCE_OF[$rel]:-/dev/null}" "$rel" || edited="$edited $rel"
   done < <(sed -n 's/^file //p' "$STATE")
   if [ -n "$edited" ] && [ "${2:-}" != "--force" ]; then
     echo "yacer-local: these have been edited since they were applied:" >&2

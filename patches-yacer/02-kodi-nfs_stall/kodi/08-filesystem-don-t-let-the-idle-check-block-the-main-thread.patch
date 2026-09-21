@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 12:00:00 -0400
+Subject: [PATCH] filesystem: don't let the idle check block the main thread
+
+CNfsConnection::CheckIfIdle and CSMB::CheckIfIdle run on the main thread, from
+CApplication::ProcessSlow every 500ms. Both take the connection lock to close a
+connection that has gone idle.
+
+A directory listing holds that same lock across the mount and the readdir, and
+a listing counts as no open connection - m_OpenConnections counts open files -
+so while browsing a share that has stopped answering the idle check is entered
+and waits behind the listing. The main thread then blocks for as long as the
+server takes.
+
+That reaches further than a plain freeze. A slow listing is already run on a
+worker behind the busy dialog, which keeps the UI alive by pumping the render
+loop on the main thread - and that pump calls ProcessSlow. So the thread the
+dialog just freed blocks again within half a second, the spinner stops and the
+cancel button stops being polled.
+
+Closing an idle connection is an optimisation with no deadline, so take the
+lock only if it is free and leave a busy round to the next one.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
+index 965295e..89c3e1b 100644
+--- a/xbmc/filesystem/NFSFile.cpp
++++ b/xbmc/filesystem/NFSFile.cpp
+@@ -439,8 +439,11 @@ void CNfsConnection::CheckIfIdle()
+    worst case scenario is that m_OpenConnections could read 0 and then changed to 1 if this happens it will enter the if which will lead to another check, which is locked.  */
+   if (m_OpenConnections == 0 && m_pNfsContext != NULL)
+   { /* I've set the the maximum IDLE time to be 1 min and 30 sec. */
+-    std::unique_lock lock(*this);
+-    if (m_OpenConnections == 0 /* check again - when locked */)
++    // A listing holds this lock across the mount and the readdir. Waiting for it here
++    // would block the main thread for the length of the server timeout, so skip a busy
++    // round - the deadline below still fires on a later one.
++    std::unique_lock lock(*this, std::try_to_lock);
++    if (lock.owns_lock() && m_OpenConnections == 0 /* check again - when locked */)
+     {
+       const auto now = std::chrono::steady_clock::now();
+ 
+diff --git a/xbmc/platform/posix/filesystem/SMBFile.cpp b/xbmc/platform/posix/filesystem/SMBFile.cpp
+index 195c9da..a676aba 100644
+--- a/xbmc/platform/posix/filesystem/SMBFile.cpp
++++ b/xbmc/platform/posix/filesystem/SMBFile.cpp
+@@ -709,8 +709,11 @@ void CSMB::CheckIfIdle()
+    worst case scenario is that m_OpenConnections could read 0 and then changed to 1 if this happens it will enter the if which will lead to another check, which is locked.  */
+   if (m_OpenConnections == 0)
+   { /* I've set the the maximum IDLE time to be 1 min and 30 sec. */
+-    std::unique_lock lock(*this);
+-    if (m_OpenConnections == 0 /* check again - when locked */ && m_context != NULL)
++    // A listing holds this lock across the connect and the readdir. Waiting for it here
++    // would block the main thread for the length of the server timeout, so skip a busy
++    // round - the countdown below simply resumes on a later one.
++    std::unique_lock lock(*this, std::try_to_lock);
++    if (lock.owns_lock() && m_OpenConnections == 0 /* check again - when locked */ && m_context != NULL)
+     {
+       if (m_IdleTimeout > 0)
+       {

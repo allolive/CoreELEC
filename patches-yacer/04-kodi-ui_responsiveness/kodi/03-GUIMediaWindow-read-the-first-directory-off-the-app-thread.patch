@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 23:20:00 -0400
+Subject: [PATCH] GUIMediaWindow: read the first directory off the app thread
+
+CGUIMediaWindow::GetDirectoryItems already knows how to list a directory on a
+worker behind the busy dialog, and uses it for every navigation the window
+does. OnInitWindow turns it off for the first one:
+
+    // initial fetch is done unthreaded to ensure the items are setup prior to
+    // skin animations kicking off
+    m_backgroundLoad = false;
+
+So entering a window is the one listing that runs on the app thread, and on a
+network source it takes the UI with it for as long as the server needs. Opening
+a TV show over NFS is exactly this path.
+
+Use the background path for the first fetch too. The window opens and fills
+rather than opening filled, which is what the removed comment was protecting -
+the items are no longer guaranteed to be in place before the skin's open
+animation starts. That ordering is a look, not a correctness property, and it
+is already how the window behaves on every later navigation.
+
+Stop setting the flag back to true further down; it is true from the top now.
+
+This is the OnInitWindow half of the old 9002, which the 2026-09-13 audit of
+the shelved patches picked out as the part worth keeping.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/windows/GUIMediaWindow.cpp b/xbmc/windows/GUIMediaWindow.cpp
+index 05f03d3..05ad053 100644
+--- a/xbmc/windows/GUIMediaWindow.cpp
++++ b/xbmc/windows/GUIMediaWindow.cpp
+@@ -1690,8 +1690,9 @@ void CGUIMediaWindow::OnRenameItem(int iItem)
+ 
+ void CGUIMediaWindow::OnInitWindow()
+ {
+-  // initial fetch is done unthreaded to ensure the items are setup prior to skin animations kicking off
+-  m_backgroundLoad = false;
++  // Read the first directory the way every later navigation reads one. Unthreaded
++  // it runs on the app thread, so a network source takes the UI with it.
++  m_backgroundLoad = true;
+ 
+   // the start directory may change during Refresh
+   bool updateStartDirectory = URIUtils::PathEquals(m_vecItems->GetPath(), m_startDirectory, true);
+@@ -1719,8 +1720,6 @@ void CGUIMediaWindow::OnInitWindow()
+     SetHistoryForPath(m_startDirectory);
+   }
+ 
+-  m_backgroundLoad = true;
+-
+   CGUIWindow::OnInitWindow();
+ }
+ 

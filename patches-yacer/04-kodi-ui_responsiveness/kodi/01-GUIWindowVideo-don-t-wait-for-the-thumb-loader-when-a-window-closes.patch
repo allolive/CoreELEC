@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 14 Sep 2026 19:00:17 -0400
+Subject: [PATCH] GUIWindowVideo: leave video views without waiting on artwork
+
+Leaving a video window joined its thumb loader on the GUI thread until a slow share answered. Stop it asynchronously on ordinary deactivation instead.
+
+A window deactivated before shutdown receives no second deinit, so checking IsStopping there cannot provide the required join. The window manager does force-unload every window before deinitializing the texture cache. Join the loader from FreeResources(true), which covers inactive windows and skin reloads as well as shutdown.
+
+VideoNav forwards deinit to VideoBase and needs no duplicate stop policy. Shared GUI code with no Amlogic counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/video/windows/GUIWindowVideoBase.cpp b/xbmc/video/windows/GUIWindowVideoBase.cpp
+index 2584ba7..6ed398a 100644
+--- a/xbmc/video/windows/GUIWindowVideoBase.cpp
++++ b/xbmc/video/windows/GUIWindowVideoBase.cpp
+@@ -104,6 +104,14 @@ CGUIWindowVideoBase::CGUIWindowVideoBase(int id, const std::string &xmlFile)
+ 
+ CGUIWindowVideoBase::~CGUIWindowVideoBase() = default;
+ 
++void CGUIWindowVideoBase::FreeResources(bool forceUnload)
++{
++  if (forceUnload)
++    m_thumbLoader.StopThread();
++
++  CGUIMediaWindow::FreeResources(forceUnload);
++}
++
+ bool CGUIWindowVideoBase::OnAction(const CAction &action)
+ {
+   if (action.GetID() == ACTION_SCAN_ITEM)
+@@ -131,8 +139,8 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
+   switch ( message.GetMessage() )
+   {
+   case GUI_MSG_WINDOW_DEINIT:
+-    if (m_thumbLoader.IsLoading())
+-      m_thumbLoader.StopThread();
++    // A forced resource unload joins it before the texture cache is deinitialized.
++    m_thumbLoader.StopAsync();
+     m_database.Close();
+     break;
+ 
+diff --git a/xbmc/video/windows/GUIWindowVideoBase.h b/xbmc/video/windows/GUIWindowVideoBase.h
+index d28757d..55adf8e 100644
+--- a/xbmc/video/windows/GUIWindowVideoBase.h
++++ b/xbmc/video/windows/GUIWindowVideoBase.h
+@@ -18,6 +18,7 @@ class CGUIWindowVideoBase : public CGUIMediaWindow, public IBackgroundLoaderObse
+ public:
+   CGUIWindowVideoBase(int id, const std::string &xmlFile);
+   ~CGUIWindowVideoBase(void) override;
++  void FreeResources(bool forceUnload = false) override;
+   bool OnMessage(CGUIMessage& message) override;
+   bool OnAction(const CAction &action) override;
+   bool OnPopupMenu(int iItem) override;
+diff --git a/xbmc/video/windows/GUIWindowVideoNav.cpp b/xbmc/video/windows/GUIWindowVideoNav.cpp
+index c240fee..f7985b3 100644
+--- a/xbmc/video/windows/GUIWindowVideoNav.cpp
++++ b/xbmc/video/windows/GUIWindowVideoNav.cpp
+@@ -111,10 +111,6 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
+   case GUI_MSG_WINDOW_RESET:
+     m_vecItems->SetPath("");
+     break;
+-  case GUI_MSG_WINDOW_DEINIT:
+-    if (m_thumbLoader.IsLoading())
+-      m_thumbLoader.StopThread();
+-    break;
+   case GUI_MSG_WINDOW_INIT:
+     {
+       /* We don't want to show Autosourced items (ie removable pendrives, memorycards) in Library mode */

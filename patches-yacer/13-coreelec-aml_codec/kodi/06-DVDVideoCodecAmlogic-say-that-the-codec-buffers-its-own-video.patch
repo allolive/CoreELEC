@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 17:00:00 -0400
+Subject: [PATCH] DVDVideoCodecAmlogic: say that the codec buffers its own video
+
+libamcodec keeps its own stream buffer, so the player's buffering hold cannot
+tell a stalled source by the picture queue alone. Publish it once the codec
+has named itself.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index c2119e6..5df8e14 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -407,6 +407,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+   m_videobuffer.color_transfer = m_hints.colorTransferCharacteristic;
+ 
+   m_processInfo.SetVideoDecoderName(m_pFormatName, true);
++  // libamcodec keeps its own stream buffer.
++  m_processInfo.SetVideoCodecBuffersData(true);
+   m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
+   m_processInfo.SetVideoDeintMethod("hardware");
+   m_processInfo.SetVideoDAR(m_hints.aspect);

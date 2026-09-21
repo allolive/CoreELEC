@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 20 Sep 2026 21:00:00 -0400
+Subject: [PATCH] GUIWindowManager: don't hold the graphics context across a
+ window's init
+
+CGUIWindowManager::ActivateWindow takes the graphics context lock and holds it
+through ActivateWindow_Internal all the way to the GUI_MSG_WINDOW_INIT the new
+window receives. CGUIMediaWindow answers that message by reading its first
+directory with m_backgroundLoad deliberately false, so the listing runs
+synchronously - on a network source, for as long as the server takes.
+
+Everything that needs the graphics context waits behind it for that whole time,
+including the nested render loop the busy dialog uses to keep the UI alive. So
+the one place that most needs the UI to keep drawing is the one place that
+cannot.
+
+Drop the lock around the init message, exactly as the dialog branch forty lines
+above already does for Open(). Use CSingleExit and not unique_lock::unlock():
+the graphics context is a counting recursive lock, so unlock() releases only one
+level and does nothing at all when the caller already holds it deeper in the
+stack, while CSingleExit unwinds to zero and restores on scope exit.
+
+The contract this asks of a window is the one HandleAction already asks of every
+action handler, and ActivateWindow's own dialog branch already asks of Open():
+the window and dialog containers may move while the message is being handled.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/guilib/GUIWindowManager.cpp b/xbmc/guilib/GUIWindowManager.cpp
+index 05622aa..839f6be 100644
+--- a/xbmc/guilib/GUIWindowManager.cpp
++++ b/xbmc/guilib/GUIWindowManager.cpp
+@@ -968,7 +968,16 @@ void CGUIWindowManager::ActivateWindow_Internal(int iWindowID, const std::vector
+   // Send the init message
+   CGUIMessage msg(GUI_MSG_WINDOW_INIT, 0, 0, currentWindow, iWindowID);
+   msg.SetStringParams(params);
+-  pNewWindow->OnMessage(msg);
++  {
++    // A media window reads its first directory from inside this message, and
++    // does it synchronously. Holding the graphics context across a network
++    // listing stops anything else drawing - including the busy dialog's own
++    // render loop. The dialog branch above drops the lock the same way.
++    // CSingleExit, not lock.unlock(): the context is a counting recursive lock
++    // and unlock() would be a no-op whenever we are already nested.
++    CSingleExit exitit(CServiceBroker::GetWinSystem()->GetGfxContext());
++    pNewWindow->OnMessage(msg);
++  }
+ //  CServiceBroker::GetGUI()->GetInfoManager().GetInfoProviders().GetGUIControlsInfoProvider().SetPreviousWindow(WINDOW_INVALID);
+ }
+ 

@@ -4,7 +4,7 @@
 #   scripts/yacer-changes.py [OUTDIR]     (default: site)
 #
 # Every active patch (a *.patch, not *.patch.disabled) under
-# overlay/**/patches-yacer/<package>/ contributes one entry:
+# patches-yacer/<package>/ contributes one entry:
 # its subject and its message body. The page is the current set of patches;
 # what changed from one build to the next is in each release's notes.
 
@@ -20,14 +20,38 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "site")
 REPO = os.environ.get("GITHUB_REPOSITORY", "allolive/CoreELEC")
 COREELEC = "CoreELEC 22 nightly"
 
-GROUPS = {
+# The page is the branch's own grouping - patches-yacer/<NN-name>/ - in that
+# order. A group describes itself in its README.md: the heading titles it, the
+# text under it says what the patches are for. Adding a group is making a
+# directory, not editing this. Without a README it is named after itself.
+def describe(gdir, name):
+    title = name.split("-", 1)[-1].replace("_", " ").capitalize()
+    body = ""
+    try:
+        with open(os.path.join(gdir, "README.md")) as fh:
+            text = fh.read()
+    except OSError:
+        return title, body
+    parts = text.strip().split("\n\n", 1)
+    head = parts[0].strip().lstrip("#").strip()
+    if head:
+        title = head
+    if len(parts) > 1:
+        # paragraphs as written, each rewrapped into one line
+        body = "\n\n".join(" ".join(p.split()) for p in parts[1].strip().split("\n\n"))
+    return title, body
+
+
+# Where a patch lands, shown only in a group that spans more than one of them.
+PACKAGES = {
     "kodi": "Kodi",
-    "common_drivers": "Kernel drivers",
-    "media_modules-aml": "Kernel media drivers",
-    "linux": "Kernel",
-    "CoreELEC-settings": "CoreELEC settings",
+    "common_drivers": "kernel drivers",
+    "media_modules-aml": "kernel media drivers",
+    "gpu-aml": "GPU driver",
+    "CoreELEC-settings": "settings add-on",
+    "bluez": "BlueZ",
+    "linux": "kernel",
 }
-ORDER = list(GROUPS.values())
 
 TRAILER = re.compile(r"^(Signed-off-by|Co-authored-by|Reviewed-by|Acked-by|Tested-by):", re.I)
 PAYLOAD = re.compile(r"^(diff |--- a/|---$|Index: )")
@@ -75,47 +99,75 @@ def parse(path):
             "message": message, "author": author}
 
 
+# Where the patches used to live. Their history is under those names too, so a
+# patch untouched since a move keeps the date of its last real change.
+LEGACY = ["overlay/projects/Amlogic-ce/patches-yacer", "patches-yacer"]
+
+
+def ident(path):
+    """A patch is the same patch wherever the branch files it: package + name."""
+    return "/".join(path.split("/")[-2:])
+
+
 def updated_dates():
-    """Last commit date of every file under overlay/, newest first wins."""
+    """Last commit date of every patch, newest first wins."""
     dates = {}
     date = None
+    # --diff-filter leaves out renames: moving a patch is not a change to it,
+    # and the move would otherwise date everything it touched to the day of it.
     for line in git("-c", "core.quotePath=false", "log", "--format=@%cs", "--name-only",
-                    "--", "overlay").splitlines():
+                    "--diff-filter=ACMT", "--", *LEGACY).splitlines():
         if line.startswith("@"):
             date = line[1:]
-        elif line and line not in dates:
-            dates[line] = date
+        elif line and ident(line) not in dates:
+            dates[ident(line)] = date
     # -z: unstripped, unquoted paths ("XY path\0")
-    status = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "-z", "--", "overlay"],
+    status = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "-z", "--", "patches-yacer"],
                             capture_output=True, text=True).stdout
-    dirty = {x[3:] for x in status.split("\0") if len(x) > 3}
+    dirty = {ident(x[3:]) for x in status.split("\0") if len(x) > 3}
     return dates, dirty
 
 
 def collect():
     dates, dirty = updated_dates()
-    entries = []
-    base = os.path.join(ROOT, "overlay")
-    for dirpath, _, files in os.walk(base):
-        if os.path.basename(os.path.dirname(dirpath)) != "patches-yacer":
+    base = os.path.join(ROOT, "patches-yacer")
+    groups, blurbs = {}, {}
+    for g in sorted(os.listdir(base)):
+        gdir = os.path.join(base, g)
+        if not os.path.isdir(gdir):
             continue
-        pkg = os.path.basename(dirpath)
-        for f in files:
-            if f.endswith(".patch"):
-                entries.append((GROUPS.get(pkg, pkg), os.path.join(dirpath, f)))
-    groups = {}
-    for group, path in sorted(entries, key=lambda e: os.path.basename(e[1])):
-        item = parse(path)
-        item["file"] = os.path.relpath(path, ROOT)
-        stamp = None if item["file"] in dirty else dates.get(item["file"])
-        item["updated"] = (datetime.strptime(stamp, "%Y-%m-%d") if stamp else
-                           datetime.fromtimestamp(os.path.getmtime(path), timezone.utc))
-        item["num"] = (re.match(r"(\d+)-", os.path.basename(path)) or [None, ""])[1]
-        groups.setdefault(group, []).append(item)
-    return dict(sorted(groups.items(), key=lambda g: (ORDER.index(g[0]) if g[0] in ORDER else len(ORDER), g[0])))
+        name = g.split("-", 1)[1]
+        items, packages = [], set()
+        for pkg in sorted(os.listdir(gdir)):
+            pdir = os.path.join(gdir, pkg)
+            if not os.path.isdir(pdir):
+                continue
+            for f in sorted(os.listdir(pdir)):
+                if not f.endswith(".patch"):
+                    continue
+                path = os.path.join(pdir, f)
+                item = parse(path)
+                item["file"] = os.path.relpath(path, ROOT)
+                stamp = None if ident(item["file"]) in dirty else dates.get(ident(item["file"]))
+                item["updated"] = (datetime.strptime(stamp, "%Y-%m-%d") if stamp else
+                                   datetime.fromtimestamp(os.path.getmtime(path), timezone.utc))
+                item["num"] = (re.match(r"(\d+)-", f) or [None, ""])[1]
+                item["pkg"] = pkg
+                items.append(item)
+                packages.add(pkg)
+        if not items:
+            continue
+        items.sort(key=lambda i: i["num"])
+        if len(packages) > 1:
+            for i in items:
+                i["where"] = PACKAGES.get(i["pkg"], i["pkg"])
+        title, blurb = describe(gdir, name)
+        groups[title] = items
+        blurbs[title] = blurb
+    return groups, blurbs
 
 
-def render(groups):
+def render(groups, blurbs):
     sha = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD")
     ref = sha or "yacer"
     total = sum(len(v) for v in groups.values())
@@ -123,7 +175,11 @@ def render(groups):
     out = []
     n = 0
     for group, items in groups.items():
-        out.append(f'<section><h2>{e(group)} <span class="count">{len(items)}</span></h2><ul>')
+        out.append(f'<section><h2>{e(group)} <span class="count">{len(items)}</span></h2>')
+        for para in (blurbs.get(group) or "").split("\n\n"):
+            if para:
+                out.append(f'<p class="blurb">{e(para)}</p>')
+        out.append("<ul>")
         for it in items:
             n += 1
             url = f"https://github.com/{REPO}/blob/{ref}/{it['file']}"
@@ -131,7 +187,7 @@ def render(groups):
             desc = it["message"]
             when = f'updated {it["updated"].day} {it["updated"].strftime("%b %Y")}'
             who = " and ".join(x for x in (it["author"], ", ".join(it["credits"])) if x)
-            meta = " · ".join(x for x in (who, when) if x)
+            meta = " · ".join(x for x in (it.get("where"), who, when) if x)
             button = (f'<button type="button" class="ellipsis" aria-expanded="false" '
                       f'aria-controls="d{n}" aria-label="Show commit message" title="Show commit message">…</button>' if desc else "")
             panel = f'<pre class="desc" id="d{n}" hidden>{e(desc)}</pre>' if desc else ""
@@ -153,6 +209,7 @@ main {{ max-width:1012px; margin:0 auto; padding:32px 0 64px; }}
 h1 {{ font-size:24px; font-weight:600; margin:0 0 8px; }}
 .lead {{ color:var(--muted); margin:0 0 24px; }}
 h2 {{ font-size:16px; font-weight:600; margin:28px 0 8px; }}
+.blurb {{ color:var(--muted); margin:0 0 8px; max-width:70ch; }}
 .count {{ display:inline-block; min-width:20px; padding:0 6px; font-size:12px; font-weight:500; line-height:18px; text-align:center; color:var(--fg); background:var(--expander); border-radius:2em; }}
 ul {{ list-style:none; margin:0; padding:0; border:1px solid var(--line); border-radius:6px; }}
 li {{ padding:8px 16px; border-top:1px solid var(--line); overflow-wrap:anywhere; }}
@@ -198,9 +255,9 @@ document.addEventListener("click", function (ev) {{
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    groups = collect()
+    groups, blurbs = collect()
     with open(os.path.join(OUT, "index.html"), "w", encoding="utf-8") as fh:
-        fh.write(render(groups))
+        fh.write(render(groups, blurbs))
     print(f"{sum(len(v) for v in groups.values())} patches -> {os.path.join(OUT, 'index.html')}")
 
 

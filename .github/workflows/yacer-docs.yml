@@ -11,7 +11,7 @@ on:
   push:
     branches: [ yacer ]
     paths:
-      - 'overlay/**/patches-yacer/**'
+      - 'patches-yacer/**'
       - 'scripts/yacer-changes.py'
       - '.github/workflows/yacer-docs.yml'
   workflow_dispatch:
