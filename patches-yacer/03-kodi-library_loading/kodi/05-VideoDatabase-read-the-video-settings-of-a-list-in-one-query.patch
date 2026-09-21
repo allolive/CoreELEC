@@ -69,15 +69,7 @@ diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
 index 1658417..c0ebd11 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
-@@ -19,6 +19,7 @@
- #include <array>
- #include <functional>
- #include <memory>
-+#include <optional>
- #include <set>
- #include <stdexcept>
- #include <string>
-@@ -459,6 +460,19 @@ public:
+@@ -459,6 +459,19 @@ public:
     */
    bool GetVideoSettings(const std::string &filePath, CVideoSettings &settings);
  
