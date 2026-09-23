@@ -31,6 +31,7 @@ each_file() {
     while IFS= read -r -d '' f; do
       [ "$(basename "$f")" = README.md ] && continue   # describes the group
       pkg=$(basename "$(dirname "$f")")
+      case "$pkg" in *_tests) continue ;; esac          # a group's tests are ours
       grp=$(basename "$(dirname "$(dirname "$f")")")
       "$cb" "$f" "$PATCHES_DEST/$pkg/${grp%%-*}_$(basename "$f")"
     done < <(find "$root/patches-yacer" -type f -print0)
@@ -75,6 +76,18 @@ check_patches() {
       *) echo "yacer: group $group has no number - it decides where its" >&2
          echo "       patches apply among the other groups'." >&2
          bad=1; continue ;;
+    esac
+
+    # A group's tests sit beside its patches, in <package>_tests/. They are
+    # ours the way the README is: checked here, never copied into the tree.
+    case "$pkg" in
+      *_tests)
+        case "$name" in
+          *.cpp|*.h|CMakeLists.txt) ;;
+          *) echo "yacer: $rel - $pkg holds test sources and its CMakeLists.txt" >&2
+             bad=1 ;;
+        esac
+        continue ;;
     esac
 
     case "$name" in
