@@ -15,3 +15,13 @@ yacer_add_test(
   SOURCES TestAudioSyncReplay.cpp
   INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
+
+# The genlock's collaborators are all ordinary non-virtual functions, so the
+# test binary defines them rather than mocking them.
+yacer_add_test(
+  NAME AMLGenlock
+  STANDARD 20
+  SOURCES TestAMLGenlock.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+  INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/cores/VideoPlayer
+)

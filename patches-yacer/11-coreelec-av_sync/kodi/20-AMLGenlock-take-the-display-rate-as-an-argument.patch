@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 23 Sep 2026 04:30:00 -0400
+Subject: [PATCH] AMLGenlock: take the display rate from the caller
+
+The genlock read the refresh rate from the graphics context. That was its only
+use of the windowing system, and it kept the class out of reach of a test:
+everything else it reads is an ordinary function a test can supply for itself.
+
+Pass the rate in. The caller already has it and the behaviour is unchanged. It
+also settles an inconsistency the code comments on - it deliberately takes the
+clock-sync flag from CProcessInfo rather than comparing rates itself, then
+compared rates from the graphics context anyway.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+@@ -39,11 +39,13 @@
+   //! \brief Aligns the clock if an alignment is owed. Called once per frame on
+   //! the frame loop, as the frame is handed to the display. Reads what it
+   //! needs itself, so the frames that owe nothing pay only for the clock.
++  //! \param displayFps the refresh rate the display is running at
+   //! \param clock the player's master clock, not retained
+   //! \param processInfo the player's process info, not retained
+   //! \param hdrType the stream's HDR type, for the latency the renderer applies
+   //! \param framePts the frame's timestamp, in master clock units
+-  void Update(CDVDClock& clock,
++  void Update(double displayFps,
++              CDVDClock& clock,
+               CProcessInfo& processInfo,
+               StreamHdrType hdrType,
+               double framePts);
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -9,14 +9,11 @@
+ 
+ #include "AMLLatency.h"
+ 
+-#include "ServiceBroker.h"
+ #include "cores/VideoPlayer/DVDClock.h"
+ #include "cores/VideoPlayer/Process/ProcessInfo.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "utils/AMLUtils.h"
+ #include "utils/log.h"
+-#include "windowing/GraphicContext.h"
+-#include "windowing/WinSystem.h"
+ 
+ #include <cmath>
+ 
+@@ -33,13 +30,17 @@
+ 
+ } // unnamed namespace
+ 
+-void CAMLGenlock::Update(CDVDClock& clock,
++void CAMLGenlock::Update(double displayFps,
++                         CDVDClock& clock,
+                          CProcessInfo& processInfo,
+                          StreamHdrType hdrType,
+                          double framePts)
+ {
+-  // A mode change voids any earlier alignment.
+-  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
++  // A mode change voids any earlier alignment. The rate is passed in rather
++  // than read from the graphics context: this decides nothing else from the
++  // windowing system, and taking it as an argument keeps the whole of this
++  // class reachable without one.
++  const double rate = displayFps;
+   const double period = rate > 0.0 ? DVD_TIME_BASE / rate : 0.0;
+   if (period != m_period)
+   {
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3150,7 +3150,9 @@
+     return;
+   }
+ 
+-  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
++  m_genlock.Update(
++      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()), *clock,
++      m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+ }
+ 
+ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
