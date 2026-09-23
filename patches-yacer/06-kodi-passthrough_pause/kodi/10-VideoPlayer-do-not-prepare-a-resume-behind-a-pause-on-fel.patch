@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 23 Sep 2026 20:00:00 -0400
+Subject: [PATCH] VideoPlayer: do not prepare a resume behind a pause on FEL
+
+Preparing behind a pause seeks back for audio runway, which flushes video.
+That closes the decoder's stream and cycles the frame providers, and the
+Dolby Vision core drops its per-frame state when they go. It rebuilds that
+state from the next picture it is given - but a preparation deliberately
+withholds every picture until it releases, so on a stream decoding a full
+enhancement layer the frame the video sink kept has nothing to composite it
+and the whole output, overlays included, stays black until the pause ends.
+
+Skip the preparation there. Those streams resume as they did before the
+feature existed; everything else keeps it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -4129,7 +4129,15 @@
+          !m_pInputStream->IsRealtime() && !KODI::NETWORK::IsInternetStream(m_item) &&
+          !m_pInputStream->GetIPosTime() && !m_pInputStream->GetITimes() &&
+          !m_Edl.HasEdits() && !m_processInfo->GetVideoInterlaced() &&
+-         m_State.time_offset == 0.0 && m_offset_pts == 0.0;
++         m_State.time_offset == 0.0 && m_offset_pts == 0.0 &&
++         // Preparing behind a pause flushes video, which closes the decoder's
++         // stream and cycles the frame providers. The Dolby Vision core drops
++         // its per-frame state on that and only rebuilds it from a new
++         // picture, so a preparation that then withholds every picture leaves
++         // the kept frame with nothing to composite it: the whole output,
++         // overlays included, stays black for as long as the pause lasts.
++         // Only a stream decoding a full enhancement layer carries that state.
++         !m_processInfo->GetDoviIsFEL();
+ }
+ 
+ bool CVideoPlayer::ResumeArmedPreroll()
