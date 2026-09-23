@@ -1,16 +1,20 @@
 Apply our own package patches, and label them in the build log
 
 They live in projects/<project>/patches-yacer/<package>/ - one place, beside
-the upstream patches rather than scattered through them - and are applied
-exactly as upstream's are, GNU patch with its default fuzz.
+the upstream patches rather than scattered through them - and are applied the
+way upstream's are, except for the fuzz: theirs keep GNU patch's default, ours
+apply with --fuzz=0.
+
+Upstream's patches are written against trees that have since moved, so the
+fuzz is how they survive; ours are written against this tree and have no
+reason to need it. A hunk of ours that only fits two lines out has landed
+somewhere it was not written for, and the build says so instead of carrying
+on.
 
 diff --git a/scripts/unpack b/scripts/unpack
 --- a/scripts/unpack
 +++ b/scripts/unpack
-@@ -155,13 +155,14 @@
-       ${PKG_DIR}/patches/${PKG_VERSION}/*.patch \
-       ${PKG_DIR}/patches/${PKG_VERSION}/${PATCH_ARCH}/*.patch \
-       ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/*.patch \
+@@ -158,9 +158,13 @@
        ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PATCH_ARCH}/*.patch \
        ${PATCH_DIRS_PRJ} \
        ${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PKG_VERSION}/*.patch \
@@ -19,22 +23,28 @@ diff --git a/scripts/unpack b/scripts/unpack
 +      ${PROJECT_DIR}/${PROJECT}/patches-yacer/${PKG_NAME}/*.patch; do
  
        thisdir="${i%/*}"
++      # Upstream's patches carry the fuzz they were written with; ours are
++      # written against this tree and are expected to match it exactly.
++      PATCH_FUZZ=""
  
        if [ "${thisdir}" = "${PKG_DIR}/patches" ]; then
          PATCH_DESC="(common)"
-       elif [ "${thisdir}" = "${PKG_DIR}/patches/${PATCH_ARCH}" ]; then
-@@ -175,12 +176,14 @@
-       elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PATCH_ARCH}" ]; then
-         PATCH_DESC="(project - ${PATCH_ARCH})"
-       elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches/${PKG_NAME}/${PKG_VERSION}" ]; then
+@@ -178,6 +182,9 @@
          PATCH_DESC="(project - ${PKG_VERSION})"
        elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/patches/${PKG_NAME}" ]; then
          PATCH_DESC="(device)"
 +      elif [ "${thisdir}" = "${PROJECT_DIR}/${PROJECT}/patches-yacer/${PKG_NAME}" ]; then
 +        PATCH_DESC="(yacer)"
++        PATCH_FUZZ="--fuzz=0"
        else
          if [[ "${thisdir}" =~ ^${PKG_DIR}/.* ]]; then
            PATCH_DESC="(common - ${thisdir##*/})"
-         elif [[ "${thisdir}" =~ ^${PROJECT_DIR}/.*/devices/.* ]]; then
-           PATCH_DESC="(device - ${thisdir##*/})"
-         elif [[ "${thisdir}" =~ ^${PROJECT_DIR}/.* ]]; then
+@@ -195,7 +202,7 @@
+         if grep -qE '^GIT binary patch$|^rename from|^rename to' ${i}; then
+           git apply --directory="${PKG_BUILD}" -p1 --verbose --whitespace=nowarn --unsafe-paths <${i} >&${VERBOSE_OUT}
+         else
+-          patch -d "${PKG_BUILD}" -p1 <${i} >&${VERBOSE_OUT}
++          patch -d "${PKG_BUILD}" -p1 ${PATCH_FUZZ} <${i} >&${VERBOSE_OUT}
+         fi
+       fi
+     done
