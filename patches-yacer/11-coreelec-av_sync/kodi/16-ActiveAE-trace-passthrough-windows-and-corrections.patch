@@ -1,0 +1,585 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:00:00 -0400
+Subject: [PATCH] ActiveAE: trace passthrough measurement windows and correction ownership
+
+Record immutable physical and compatibility averages, whole-window saturation,
+observation identity and software delay-reset provenance. Keep existing error
+accumulators, cached corrections, thresholds and output policy unchanged.
+Aggregate engine mute/insert/drop requests and correlate player corrections
+with the snapshot actually accepted by its legacy timestamp gate. Compare
+value-based freshness with window identity without changing the decision.
+
+Shared AudioEngine and VideoPlayer changes are necessary because these own the
+measurements and corrections; AML consumers cannot reconstruct their windows
+or correction provenance. This is diagnostic infrastructure, not a receiver
+readiness contract or proof of audible synchronization. LOGAUDIO window records
+are bounded to publication/reset events; declined clock corrections are logged
+once per accepted snapshot. Requested burst duration is not hardware output.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -154,6 +154,7 @@
+       str.m_syncErrorRawValid = stream->m_syncErrorRaw.LastErrorValid();
+       str.m_syncErrorScale = stream->m_errorScale;
+       str.m_syncErrorSaturated = stream->m_errorSaturated;
++      str.m_observation = stream->m_syncObservations.Last();
+       if (stream->m_processingBuffers)
+       {
+         str.m_resampleRatio = stream->m_processingBuffers->GetRR();
+@@ -231,6 +232,7 @@
+       info.errorRawValid = str.m_syncErrorRawValid;
+       info.errorScale = str.m_syncErrorScale;
+       info.errorSaturated = str.m_syncErrorSaturated;
++      info.observation = str.m_observation;
+       info.errortime = str.m_errorTime;
+       info.state = str.m_syncState;
+       info.rr = str.m_resampleRatio;
+@@ -727,12 +729,16 @@
+             m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
+           }
+           stream->m_paused = true;
++          if (stream->m_format.m_dataFormat == AE_FMT_RAW)
++            TraceSync(stream, "pause", true);
+           return;
+         case CActiveAEControlProtocol::RESUMESTREAM:
+           stream = *(CActiveAEStream**)msg->data;
+           if (stream->m_paused)
+             stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+           stream->m_paused = false;
++          if (stream->m_format.m_dataFormat == AE_FMT_RAW)
++            TraceSync(stream, "resume", true);
+           streaming = true;
+           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
+           m_extTimeout = 0ms;
+@@ -1006,6 +1012,8 @@
+           stream = *(CActiveAEStream**)msg->data;
+           stream->m_paused = false;
+           stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
++          if (stream->m_format.m_dataFormat == AE_FMT_RAW)
++            TraceSync(stream, "resume-idle", true);
+           m_state = AE_TOP_CONFIGURED_PLAY;
+           m_extTimeout = 0ms;
+           return;
+@@ -1276,6 +1284,7 @@
+                                 : stream->GetErrorInterval();
+       stream->m_syncError.Flush(interval);
+       stream->m_syncErrorRaw.Flush(interval);
++      ResetSyncObservation(stream, "sink-reconfigure");
+       m_stats.UpdateStream(stream);
+     }
+ 
+@@ -1645,6 +1654,7 @@
+   stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+   stream->m_syncError.Flush();
+   stream->m_syncErrorRaw.Flush();
++  ResetSyncObservation(stream, "stream-flush");
+   stream->ResetFreeBuffers();
+ 
+   // Reset Logic State Variables to revive Servo
+@@ -1671,6 +1681,9 @@
+ 
+ void CActiveAE::FlushEngine()
+ {
++  ++m_syncDelayGeneration;
++  CLog::Log(LOGDEBUG, LOGAUDIO, "AESYNC event=engine-flush delay_generation={} host_us={}",
++            m_syncDelayGeneration, CAESyncObservations::Now());
+   if (m_sinkBuffers)
+     m_sinkBuffers->Flush();
+   if (m_vizBuffers)
+@@ -2158,7 +2171,8 @@
+         double delay = status.GetDelay() * 1000;
+         double playingPts = pts - delay;
+         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
+-        double error = playingPts - (*it)->m_pClock->GetClock();
++        const double clock = (*it)->m_pClock->GetClock();
++        double error = playingPts - clock;
+ 
+         // Kept before the scaling and clamped on its own, so a report reading it
+         // gets what the pipeline is doing rather than what the sync loop was
+@@ -2194,6 +2208,10 @@
+         }
+         (*it)->m_syncError.Add(error);
+         (*it)->m_syncErrorRaw.Add(errorRaw);
++        if (m_mode == MODE_RAW)
++          (*it)->m_syncObservations.Add(errorMeasured, errorRaw, error, (*it)->m_errorScale,
++                                        maxError, playingPts, clock, delay, m_syncDelayGeneration,
++                                        CAESyncObservations::Now());
+       }
+     }
+ 
+@@ -2566,6 +2584,39 @@
+   return false;
+ }
+ 
++void CActiveAE::TraceSync(CActiveAEStream* stream, const char* event, bool discarded)
++{
++  const auto observation = discarded ? stream->m_syncObservations.Pending(stream->m_id)
++                                     : stream->m_syncObservations.Last();
++  const auto& actions = stream->m_syncObservations.Actions();
++  CLog::Log(LOGDEBUG, LOGAUDIO,
++            "AESYNC event={} stream={} epoch={} seq={} published={} state={} type={} rate={} "
++            "host_us={} first_sample_us={} last_sample_us={} delay_generation={} samples={} "
++            "valid={} finite={} "
++            "saturated={} mixed={} measured_ms={:.6f} raw_ms={:.6f} control_ms={:.6f} scale={} "
++            "clamp_ms={} last_playing_pts_ms={:.6f} last_clock_ms={:.6f} last_delay_ms={:.6f} "
++            "actions_first_seq={} actions_last_seq={} mute_count={} mute_requested_ms={:.6f} "
++            "insert_count={} insert_requested_ms={:.6f} drop_count={} drop_requested_ms={:.6f}",
++            event, stream->m_id, observation.epoch, observation.sequence, !discarded,
++            static_cast<int>(stream->m_syncState),
++            static_cast<int>(stream->m_format.m_streamInfo.m_type), stream->m_format.m_sampleRate,
++            CAESyncObservations::Now(), observation.begin, observation.end,
++            observation.delayGeneration, observation.samples, observation.Valid(),
++            observation.finite, observation.saturated, observation.mixed, observation.measured,
++            observation.raw, observation.control, observation.scale, observation.clamp,
++            observation.playingPts, observation.clock, observation.delay, actions.firstSequence,
++            actions.lastSequence, actions.muted, actions.muteDuration, actions.inserted,
++            actions.insertDuration, actions.dropped, actions.dropDuration);
++  stream->m_syncObservations.ClearActions();
++}
++
++void CActiveAE::ResetSyncObservation(CActiveAEStream* stream, const char* reason)
++{
++  if (stream->m_format.m_dataFormat == AE_FMT_RAW)
++    TraceSync(stream, reason, true);
++  stream->m_syncObservations.Flush();
++}
++
+ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+ {
+   CSampleBuffer *ret = NULL;
+@@ -2578,6 +2629,7 @@
+     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
+     stream->m_syncError.Flush(100ms);
+     stream->m_syncErrorRaw.Flush(100ms);
++    ResetSyncObservation(stream, "sync-start");
+     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
+     stream->m_resampleIntegral = 0;
+     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
+@@ -2601,7 +2653,14 @@
+                                           : stream->GetErrorInterval();
+   bool newerror = stream->m_syncError.Get(error, timeout);
+   if (newerror)
++  {
+     stream->m_syncErrorRaw.Latch(timeout);
++    if (m_mode == MODE_RAW)
++    {
++      stream->m_syncObservations.Latch(stream->m_id);
++      TraceSync(stream, "window");
++    }
++  }
+ 
+   if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+   {
+@@ -2626,6 +2685,7 @@
+     {
+       buf->pkt->nb_samples = 0;
+       buf->pkt->pause_burst_ms = stream->m_processingBuffers->m_inputFormat.m_streamInfo.GetDuration();
++      stream->m_syncObservations.Mute(buf->pkt->pause_burst_ms);
+     }
+     else
+     {
+@@ -2670,6 +2730,7 @@
+           stream->m_syncError.Correction(-credit);
+           stream->m_syncErrorRaw.Correction(-ret->pkt->pause_burst_ms);
+           error -= credit;
++          stream->m_syncObservations.Insert(ret->pkt->pause_burst_ms);
+         }
+         else
+         {
+@@ -2713,6 +2774,7 @@
+           stream->m_syncError.Correction(dropped * stream->m_errorScale);
+           stream->m_syncErrorRaw.Correction(dropped);
+           error += dropped * stream->m_errorScale;
++          stream->m_syncObservations.Drop(dropped);
+           buf->pkt->nb_samples = 0;
+         }
+       }
+@@ -2741,6 +2803,7 @@
+         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
+         stream->m_syncError.Flush(100ms);
+         stream->m_syncErrorRaw.Flush(100ms);
++        ResetSyncObservation(stream, "sync-remute");
+         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
+                   error, stream->m_lastSyncError);
+         stream->m_lastSyncError = error;
+@@ -2750,6 +2813,7 @@
+         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
+         stream->m_syncError.Flush(1000ms);
+         stream->m_syncErrorRaw.Flush(1000ms);
++        ResetSyncObservation(stream, "sync-insync");
+         stream->m_resampleIntegral = 0;
+         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
+         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
+@@ -2779,6 +2843,7 @@
+   const std::chrono::milliseconds errorInterval = stream->GetErrorInterval();
+   stream->m_syncError.SetErrorInterval(errorInterval);
+   stream->m_syncErrorRaw.SetErrorInterval(errorInterval);
++  stream->m_syncObservations.RestartWindow();
+ 
+   return ret;
+ }
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
+@@ -227,6 +227,7 @@
+     bool m_syncErrorRawValid{false};
+     double m_syncErrorScale{1.0};
+     bool m_syncErrorSaturated{false};
++    AESyncObservation m_observation;
+     unsigned int m_errorTime;
+     CAESyncInfo::AESyncState m_syncState;
+   };
+@@ -382,6 +383,9 @@
+   AEAudioFormat m_inputFormat;
+   AudioSettings m_settings;
+   CEngineStats m_stats;
++  uint64_t m_syncDelayGeneration{0};
++  void TraceSync(CActiveAEStream* stream, const char* event, bool discarded = false);
++  void ResetSyncObservation(CActiveAEStream* stream, const char* reason);
+   IAEEncoder *m_encoder;
+   std::string m_currDevice;
+   std::string m_openedDevice;
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+@@ -272,6 +272,7 @@
+   //! pipeline really has. Fed and flushed in step with \ref m_syncError so the
+   //! two always describe the same window.
+   CSyncError m_syncErrorRaw;
++  CAESyncObservations m_syncObservations;
+   double m_errorScale{1.0};
+   bool m_errorSaturated{false};
+   double m_lastSyncError;
+diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
+--- a/xbmc/cores/AudioEngine/Interfaces/AEStream.h
++++ b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
+@@ -9,6 +9,8 @@
+ #pragma once
+ 
+ #include "cores/AudioEngine/Utils/AEAudioFormat.h"
++#include "cores/AudioEngine/Utils/AESyncObservation.h"
++
+ #include <stdint.h>
+ 
+ extern "C" {
+@@ -65,6 +67,8 @@
+   //! reading is a lower bound, not a measurement, and nothing should be
+   //! corrected by it.
+   bool errorSaturated{false};
++
++  AESyncObservation observation;
+ };
+ 
+ /**
+diff --git a/xbmc/cores/AudioEngine/Utils/AESyncObservation.h b/xbmc/cores/AudioEngine/Utils/AESyncObservation.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/AudioEngine/Utils/AESyncObservation.h
+@@ -0,0 +1,170 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <chrono>
++#include <cmath>
++#include <cstdint>
++
++// Error, PTS and delay are milliseconds. Host timestamps are steady-clock microseconds.
++// Validity describes the samples, not receiver readiness or clock-epoch coherence.
++struct AESyncObservation
++{
++  uint64_t stream{0};
++  uint64_t epoch{0};
++  uint64_t sequence{0};
++  uint64_t delayGeneration{0};
++  int64_t begin{0};
++  int64_t end{0};
++  uint64_t samples{0};
++  double measured{0.0};
++  double raw{0.0};
++  double control{0.0};
++  double scale{1.0};
++  double clamp{0.0};
++  double playingPts{0.0};
++  double clock{0.0};
++  double delay{0.0};
++  bool finite{true};
++  bool saturated{false};
++  bool mixed{false};
++
++  bool Valid() const { return samples != 0 && finite && !mixed; }
++  bool SameWindow(const AESyncObservation& other) const
++  {
++    return stream == other.stream && epoch == other.epoch && sequence == other.sequence;
++  }
++};
++
++struct AESyncActions
++{
++  uint64_t firstSequence{0};
++  uint64_t lastSequence{0};
++  uint64_t muted{0};
++  uint64_t inserted{0};
++  uint64_t dropped{0};
++  double muteDuration{0.0};
++  double insertDuration{0.0};
++  double dropDuration{0.0};
++};
++
++// Diagnostic sidecar: never supplies an error or a deadline to the sync controller.
++class CAESyncObservations
++{
++public:
++  static int64_t Now()
++  {
++    return std::chrono::duration_cast<std::chrono::microseconds>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++  }
++
++  void Add(double measured,
++           double raw,
++           double control,
++           double scale,
++           double clamp,
++           double playingPts,
++           double clock,
++           double delay,
++           uint64_t delayGeneration,
++           int64_t now)
++  {
++    if (m_pending.samples == 0)
++    {
++      m_pending.begin = now;
++      m_pending.scale = scale;
++      m_pending.clamp = clamp;
++      m_pending.delayGeneration = delayGeneration;
++    }
++    m_pending.mixed |= m_pending.scale != scale || m_pending.clamp != clamp ||
++                       m_pending.delayGeneration != delayGeneration;
++    m_pending.end = now;
++    ++m_pending.samples;
++    m_pending.measured += measured;
++    m_pending.raw += raw;
++    m_pending.control += control;
++    m_pending.playingPts = playingPts;
++    m_pending.clock = clock;
++    m_pending.delay = delay;
++    m_pending.saturated |= std::abs(measured) >= clamp;
++    m_pending.finite &= std::isfinite(measured) && std::isfinite(raw) && std::isfinite(control) &&
++                        std::isfinite(playingPts) && std::isfinite(clock) && std::isfinite(delay) &&
++                        std::isfinite(scale) && std::isfinite(clamp);
++  }
++
++  AESyncObservation Pending(uint64_t stream) const
++  {
++    auto result = m_pending;
++    result.stream = stream;
++    result.epoch = m_epoch;
++    result.sequence = m_sequence + 1;
++    if (result.samples != 0)
++    {
++      result.measured /= result.samples;
++      result.raw /= result.samples;
++      result.control /= result.samples;
++      result.finite &= std::isfinite(result.measured) && std::isfinite(result.raw) &&
++                       std::isfinite(result.control);
++    }
++    return result;
++  }
++
++  void Latch(uint64_t stream)
++  {
++    m_last = Pending(stream);
++    ++m_sequence;
++    m_pending = {};
++  }
++
++  void Flush()
++  {
++    ++m_epoch;
++    m_last = {};
++    m_pending = {};
++    m_actions = {};
++  }
++
++  void RestartWindow() { m_pending = {}; }
++  const AESyncObservation& Last() const { return m_last; }
++  const AESyncActions& Actions() const { return m_actions; }
++  void ClearActions() { m_actions = {}; }
++  void Mute(double duration)
++  {
++    RecordAction();
++    ++m_actions.muted;
++    m_actions.muteDuration += duration;
++  }
++  void Insert(double duration)
++  {
++    RecordAction();
++    ++m_actions.inserted;
++    m_actions.insertDuration += duration;
++  }
++  void Drop(double duration)
++  {
++    RecordAction();
++    ++m_actions.dropped;
++    m_actions.dropDuration += duration;
++  }
++
++private:
++  void RecordAction()
++  {
++    if (m_actions.muted + m_actions.inserted + m_actions.dropped == 0)
++      m_actions.firstSequence = m_last.sequence;
++    m_actions.lastSequence = m_last.sequence;
++  }
++
++  uint64_t m_epoch{0};
++  uint64_t m_sequence{0};
++  AESyncObservation m_pending;
++  AESyncObservation m_last;
++  AESyncActions m_actions;
++};
+diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+--- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
++++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+@@ -102,6 +102,8 @@
+   m_syncErrorAcquire = false;
+   m_syncWasInSync = false;
+   m_syncErrorTime = 0;
++  m_syncObservation = {};
++  m_acceptedSyncObservation = {};
+ }
+ 
+ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
+@@ -114,6 +116,7 @@
+     return 0;
+ 
+   CAESyncInfo info = m_pAudioStream->GetSyncInfo();
++  m_syncObservation = info.observation;
+   const bool inSync = info.state == CAESyncInfo::SYNC_INSYNC;
+ 
+   // The engine has just finished resynchronising, so the next measurement it
+@@ -135,6 +138,7 @@
+ 
+       m_syncErrorScale = info.errorScale;
+       m_syncErrorSaturated = info.errorSaturated;
++      m_acceptedSyncObservation = info.observation;
+ 
+       m_resampleRatio = info.rr;
+     }
+@@ -148,6 +152,7 @@
+     m_syncErrorScale = 1.0;
+     m_syncErrorSaturated = false;
+     m_syncErrorAcquire = false;
++    m_acceptedSyncObservation = {};
+   }
+ 
+   // Use wall-clock deadline independent of playback speed (fixes dimensional error
+@@ -266,6 +271,8 @@
+   m_syncErrorAcquire = false;
+   m_syncWasInSync = false;
+   m_syncErrorTime = 0;
++  m_syncObservation = {};
++  m_acceptedSyncObservation = {};
+ }
+ 
+ void CAudioSinkAE::AbortAddPackets()
+diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
+--- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
++++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
+@@ -46,6 +46,8 @@
+   double GetMaxDelay(); // returns total time of audio in AE for the stream
+   double GetDelay(); // returns the time it takes to play a packet if we add one at this time
+   double GetSyncError();
++  const AESyncObservation& GetSyncObservation() const { return m_syncObservation; }
++  const AESyncObservation& GetAcceptedSyncObservation() const { return m_acceptedSyncObservation; }
+ 
+   //! \brief Whether there is a measurement at all. GetSyncError() reads zero
+   //! both when the audio is exactly on the clock and when the engine has not
+@@ -105,6 +107,8 @@
+   double m_timeOfPts;
+   double m_syncError;
+   double m_syncErrorRaw{0.0};
++  AESyncObservation m_syncObservation;
++  AESyncObservation m_acceptedSyncObservation;
+   bool m_syncErrorRawValid{false};
+   double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
+   bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -684,6 +684,28 @@
+     // that regime too, for its own reasons.
+     const double errorRaw = m_audioSink.HasSyncError() ? m_audioSink.GetSyncErrorRaw() : 0.0;
+ 
++    const auto& observation = m_audioSink.GetSyncObservation();
++    const auto& acceptedObservation = m_audioSink.GetAcceptedSyncObservation();
++    const bool windowChanged = !observation.SameWindow(m_lastSyncObservation);
++    const bool legacyFresh = m_audioSink.HasSyncError() && errorRaw != m_rawPrev;
++    if (m_audioSink.IsPassthrough() && windowChanged)
++    {
++      CLog::Log(
++          LOGDEBUG, LOGAUDIO,
++          "AESYNC event=player-reading stream={} epoch={} seq={} host_us={} "
++          "window_fresh={} legacy_fresh={} sample_valid={} window_saturated={} "
++          "legacy_valid={} legacy_saturated={} raw_ms={:.6f} cached_raw_ms={:.6f} "
++          "cached_control_ms={:.6f} accepted_epoch={} accepted_seq={} acquisition={} readings={} "
++          "settled={}",
++          observation.stream, observation.epoch, observation.sequence, CAESyncObservations::Now(),
++          windowChanged && observation.Valid(), legacyFresh, observation.Valid(),
++          observation.saturated, m_audioSink.HasSyncError(), m_audioSink.IsSyncErrorSaturated(),
++          observation.raw, errorRaw / 1000.0, syncerror / 1000.0, acceptedObservation.epoch,
++          acceptedObservation.sequence, m_audioSink.PeekSyncAcquisition(), m_rawReadings,
++          m_rawSettled);
++    }
++    m_lastSyncObservation = observation;
++
+     // Only the changes count: the engine republishes about once a second, so
+     // consecutive packets mostly carry the same figure and comparing those would
+     // call anything stationary.
+@@ -737,6 +759,17 @@
+                                 ? m_audioSink.GetSyncErrorRaw()
+                                 : syncerror;
+       double correction = m_pClock->ErrorAdjust(actual, "CVideoPlayerAudio::OutputPacket");
++      if (m_audioSink.IsPassthrough() &&
++          (correction != 0.0 || !acceptedObservation.SameWindow(m_lastCorrectionObservation)))
++      {
++        CLog::Log(LOGDEBUG, LOGAUDIO,
++                  "AESYNC event=player-correction stream={} epoch={} seq={} host_us={} "
++                  "acquisition={} requested_ms={:.6f} applied_ms={:.6f}",
++                  acceptedObservation.stream, acceptedObservation.epoch,
++                  acceptedObservation.sequence, CAESyncObservations::Now(), acquire,
++                  actual / 1000.0, correction / 1000.0);
++        m_lastCorrectionObservation = acceptedObservation;
++      }
+       if (correction != 0)
+       {
+         // Spent once the clock has moved, whichever path moved it. The residue
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+@@ -107,6 +107,8 @@
+ 
+   int m_synctype;
+   double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
++  AESyncObservation m_lastSyncObservation;
++  AESyncObservation m_lastCorrectionObservation;
+   double m_rawPrev{0.0};      //!< the last unscaled reading, to see it stop moving
+   bool m_haveRawPrev{false};
+   bool m_rawSettled{false};      //!< three readings running agreed
+@@ -131,4 +133,3 @@
+   unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
+   int m_disconAdjustCounter = 0;
+ };
+-

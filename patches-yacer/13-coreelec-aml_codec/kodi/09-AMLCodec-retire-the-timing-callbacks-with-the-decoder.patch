@@ -30,9 +30,7 @@ index d7681b0..e5677ea 100644
  
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
-@@ -2641,13 +2647,16 @@ void CAMLCodec::CloseDecoder()
- 
-   m_dll->codec_close(&am_private->vcodec);
+@@ -2643,9 +2649,12 @@ void CAMLCodec::CloseDecoder()
    dumpfile_close(am_private);
 -  m_opened = false;
    m_trimWasPassthrough = false;
@@ -50,8 +48,6 @@ index d7681b0..e5677ea 100644
 +    CAMLLatency::GetInstance().Forget();
 +  }
  
-   am_packet_release(&am_private->am_pkt);
-   am_private->extradata = {};
 @@ -2975,9 +2984,13 @@ void CAMLCodec::SetPollDevice(int dev)
  
  void CAMLCodec::LatencyTick(uint64_t omxPts)

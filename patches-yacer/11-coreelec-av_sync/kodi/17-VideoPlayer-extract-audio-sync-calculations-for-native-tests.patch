@@ -1,0 +1,491 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:10:00 -0400
+Subject: [PATCH] VideoPlayer: make existing audio sync calculations testable off-device
+
+Move the existing error accumulator into a header with its timer supplied as a
+type. Production still uses XbmcThreads::EndTime; native tests can advance time
+without sleeping or linking the player, renderer, ALSA or an Amlogic driver.
+
+Extract the residual-acquisition settling and magnitude tests unchanged. Keep
+clock access, short-circuit guards, correction ownership and application in
+the player. In particular preserve the existing value-based freshness rule
+and strict thresholds so its later fix is a separate, testable behavior change.
+
+These shared-code moves are necessary because the actual synchronization
+calculations live in AudioEngine and VideoPlayer, not the AML consumers. The
+native harness compiles these production headers, not a separate sync model.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+@@ -13,6 +13,7 @@
+ #include "cores/AudioEngine/Interfaces/AEStream.h"
+ #include "cores/AudioEngine/Utils/AEAudioFormat.h"
+ #include "cores/AudioEngine/Utils/AELimiter.h"
++#include "cores/AudioEngine/Utils/AESyncError.h"
+ #include "threads/Event.h"
+ 
+ #include <atomic>
+@@ -21,98 +22,6 @@
+ namespace ActiveAE
+ {
+ class CActiveAE;
+-
+-class CSyncError
+-{
+-public:
+-  CSyncError()
+-  {
+-    Flush();
+-  }
+-  void Add(double error)
+-  {
+-    m_buffer += error;
+-    m_count++;
+-  }
+-
+-  void Flush(std::chrono::milliseconds interval = std::chrono::milliseconds(100))
+-  {
+-    m_buffer = 0.0;
+-    m_lastError = 0.0;
+-    m_lastValid = false;
+-    m_count  = 0;
+-    m_timer.Set(interval);
+-  }
+-
+-  void SetErrorInterval(std::chrono::milliseconds interval = std::chrono::milliseconds(100))
+-  {
+-    m_buffer = 0.0;
+-    m_count = 0;
+-    m_timer.Set(interval);
+-  }
+-
+-  bool Get(double& error, std::chrono::milliseconds interval = std::chrono::milliseconds(100))
+-  {
+-    if(m_timer.IsTimePast())
+-    {
+-      const bool sampled = m_count != 0;
+-      error = Get();
+-      Flush(interval);
+-      m_lastError = error;
+-      m_lastValid = sampled;
+-      return true;
+-    }
+-    else
+-    {
+-      error = m_lastError;
+-      return false;
+-    }
+-  }
+-
+-  double GetLastError(unsigned int &time)
+-  {
+-    time = m_timer.GetStartTime().time_since_epoch().count();
+-    return m_lastError;
+-  }
+-
+-  //! \brief Whether the window behind GetLastError() held any samples at all.
+-  //! An empty one averages to zero and is stamped with a fresh time like any
+-  //! other, so a reader cannot otherwise tell it from a measurement of zero.
+-  bool LastErrorValid() const { return m_lastValid; }
+-
+-  //! \brief Close the current window now, on another accumulator's deadline
+-  //! rather than this one's. Two accumulators armed a moment apart have
+-  //! deadlines a moment apart, and a poll landing between them would leave one
+-  //! answering for the window before. For a second accumulator that has to
+-  //! describe exactly the window the first just reported.
+-  void Latch(std::chrono::milliseconds interval)
+-  {
+-    const bool sampled = m_count != 0;
+-    const double error = Get();
+-    Flush(interval);
+-    m_lastError = error;
+-    m_lastValid = sampled;
+-  }
+-
+-  void Correction(double correction)
+-  {
+-    m_lastError += correction;
+-  }
+-
+-protected:
+-  double Get() const
+-  {
+-    if(m_count)
+-      return m_buffer / m_count;
+-    else
+-      return 0.0;
+-  }
+-  double m_buffer;
+-  double m_lastError;
+-  bool m_lastValid{false};
+-  int m_count;
+-  XbmcThreads::EndTime<> m_timer;
+-};
+ 
+ class CActiveAEStreamBuffers
+ {
+@@ -266,12 +175,12 @@
+   enum AVAudioServiceType m_audioServiceType;
+   bool m_forceResampler;
+   IAEClockCallback *m_pClock;
+-  CSyncError m_syncError;
++  CSyncError<XbmcThreads::EndTime<>> m_syncError;
+   //! \brief The same measurement without the engine's own scaling, and without
+   //! anything reading it back: kept only so a report can state the offset the
+   //! pipeline really has. Fed and flushed in step with \ref m_syncError so the
+   //! two always describe the same window.
+-  CSyncError m_syncErrorRaw;
++  CSyncError<XbmcThreads::EndTime<>> m_syncErrorRaw;
+   CAESyncObservations m_syncObservations;
+   double m_errorScale{1.0};
+   bool m_errorSaturated{false};
+diff --git a/xbmc/cores/AudioEngine/Utils/AESyncError.h b/xbmc/cores/AudioEngine/Utils/AESyncError.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/AudioEngine/Utils/AESyncError.h
+@@ -0,0 +1,102 @@
++/*
++ *  Copyright (C) 2010-2018 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <chrono>
++
++namespace ActiveAE
++{
++template<class Timer>
++class CSyncError
++{
++public:
++  CSyncError() { Flush(); }
++  void Add(double error)
++  {
++    m_buffer += error;
++    m_count++;
++  }
++
++  void Flush(std::chrono::milliseconds interval = std::chrono::milliseconds(100))
++  {
++    m_buffer = 0.0;
++    m_lastError = 0.0;
++    m_lastValid = false;
++    m_count = 0;
++    m_timer.Set(interval);
++  }
++
++  void SetErrorInterval(std::chrono::milliseconds interval = std::chrono::milliseconds(100))
++  {
++    m_buffer = 0.0;
++    m_count = 0;
++    m_timer.Set(interval);
++  }
++
++  bool Get(double& error, std::chrono::milliseconds interval = std::chrono::milliseconds(100))
++  {
++    if (m_timer.IsTimePast())
++    {
++      const bool sampled = m_count != 0;
++      error = Get();
++      Flush(interval);
++      m_lastError = error;
++      m_lastValid = sampled;
++      return true;
++    }
++    else
++    {
++      error = m_lastError;
++      return false;
++    }
++  }
++
++  double GetLastError(unsigned int& time)
++  {
++    time = m_timer.GetStartTime().time_since_epoch().count();
++    return m_lastError;
++  }
++
++  //! \brief Whether the window behind GetLastError() held any samples at all.
++  //! An empty one averages to zero and is stamped with a fresh time like any
++  //! other, so a reader cannot otherwise tell it from a measurement of zero.
++  bool LastErrorValid() const { return m_lastValid; }
++
++  //! \brief Close the current window now, on another accumulator's deadline
++  //! rather than this one's. Two accumulators armed a moment apart have
++  //! deadlines a moment apart, and a poll landing between them would leave one
++  //! answering for the window before. For a second accumulator that has to
++  //! describe exactly the window the first just reported.
++  void Latch(std::chrono::milliseconds interval)
++  {
++    const bool sampled = m_count != 0;
++    const double error = Get();
++    Flush(interval);
++    m_lastError = error;
++    m_lastValid = sampled;
++  }
++
++  void Correction(double correction) { m_lastError += correction; }
++
++protected:
++  double Get() const
++  {
++    if (m_count)
++      return m_buffer / m_count;
++    else
++      return 0.0;
++  }
++  double m_buffer;
++  double m_lastError;
++  bool m_lastValid{false};
++  int m_count;
++  Timer m_timer;
++};
++
++} // namespace ActiveAE
+diff --git a/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
+@@ -0,0 +1,54 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++
++#include <algorithm>
++#include <cmath>
++
++class CAudioSyncAcquisition
++{
++public:
++  void Reset() { *this = {}; }
++
++  bool Fresh(bool valid, double error) const { return valid && error != m_previous; }
++
++  void Observe(bool valid, double error)
++  {
++    if (Fresh(valid, error))
++    {
++      const double allowed = std::max(DVD_MSEC_TO_TIME(2.0), 0.05 * std::abs(error));
++      const bool pairAgrees = m_havePrevious && std::abs(error - m_previous) < allowed;
++      m_settled = pairAgrees && m_previousPairAgreed;
++      m_previousPairAgreed = pairAgrees;
++      m_previous = error;
++      m_havePrevious = true;
++      ++m_readings;
++    }
++  }
++
++  bool WithinMagnitude(double error) const
++  {
++    return m_settled && std::abs(error) > DVD_MSEC_TO_TIME(5.0) &&
++           std::abs(error) < DVD_MSEC_TO_TIME(500.0);
++  }
++
++  bool ReadingsExpired() const { return m_readings >= 8; }
++  static bool TimeExpired(double elapsed) { return elapsed > 30.0 * DVD_TIME_BASE; }
++  unsigned int Readings() const { return m_readings; }
++  bool Settled() const { return m_settled; }
++
++private:
++  double m_previous{0.0};
++  bool m_havePrevious{false};
++  bool m_settled{false};
++  bool m_previousPairAgreed{false};
++  unsigned int m_readings{0};
++};
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -31,62 +31,6 @@
+ 
+ using namespace std::chrono_literals;
+ 
+-namespace
+-{
+-//! Past this a reading is not a resync residue but something that has gone wrong
+-//! - a stale timestamp, a seek the decoder has not caught up with. It is above
+-//! the ordinary threshold anyway, so the correction still happens; what this
+-//! saves is the one chance, for a reading worth spending it on.
+-constexpr double ACQUIRE_LIMIT = DVD_MSEC_TO_TIME(500.0);
+-
+-//! Below this a correction is not worth a clock step, and more to the point it is
+-//! below the rate loop's own jump guard - so it would land inside a drift bucket
+-//! and be read as a rate rather than discarded as a step. Kept in step with that
+-//! guard deliberately.
+-constexpr double ACQUIRE_FLOOR = DVD_MSEC_TO_TIME(5.0);
+-
+-//! Readings allowed to arrive before an acquisition that has found nothing worth
+-//! correcting lapses. Held indefinitely it would be spent much later on ordinary
+-//! jitter, which is a clock step under a running picture - the thing the
+-//! threshold exists to avoid.
+-//!
+-//! Counted as well as timed. The engine widens its own averaging window when a
+-//! stream's timestamps jump - to six seconds, tripled again when it is resampling
+-//! hard - so a wall clock alone could lapse the chance before the readings it is
+-//! waiting for had been published at all. But readings alone are not a bound
+-//! either: readings come seconds apart, so eight of them is a wait, and a correction
+-//! that arrives minutes in is a clock step under a picture nobody is expecting
+-//! one under. Whichever comes first.
+-constexpr unsigned int ACQUIRE_READINGS = 8;
+-constexpr double ACQUIRE_EXPIRY = 30.0 * DVD_TIME_BASE;
+-
+-//! Three readings must agree within this before the one chance is spent. The
+-//! engine reports a mean over the last second, so a reading taken while the
+-//! pipeline is still moving is a blend of where the audio was and where it now
+-//! is - and the step sized from it lands short by the difference, permanently,
+-//! because what is left is inside every threshold below it.
+-//!
+-//! Measured: a display mode change re-opens the audio sink a few hundred
+-//! milliseconds before the acquisition falls due. The error plateaus at +153ms
+-//! while the mean still reads +90ms; the clock moves 90 and 63 stands for the
+-//! rest of the film. With no re-open the same code lands within a tenth of a
+-//! millisecond, which is what says the sizing is right and only the timing is
+-//! wrong.
+-//! Two milliseconds, an order above the settled noise: consecutive windows agree
+-//! to a fifth of a millisecond once the pipeline is still. Ten was fifty times
+-//! that, wide enough to pass a ramp still forty milliseconds from where it was
+-//! going.
+-//!
+-//! Or a twentieth of the reading, whichever is larger. A mean over a jittery
+-//! source - a variable bitrate, a network, the messy timestamps that widened the
+-//! window in the first place - moves by more than two milliseconds between
+-//! windows while sitting perfectly still, and a fixed figure would refuse every
+-//! reading on exactly the content most likely to need correcting. The ramp this
+-//! has to reject moved sixty-three milliseconds in one window, so a twentieth
+-//! turns it away with room to spare.
+-constexpr double STATIONARY = DVD_MSEC_TO_TIME(2.0);
+-constexpr double STATIONARY_FRACTION = 0.05;
+-} // unnamed namespace
+ 
+ class CDVDMsgAudioCodecChange : public CDVDMsg
+ {
+@@ -656,21 +600,12 @@
+     {
+       m_acquireSince = 0.0;
+ 
+-      // The pair below has to belong to the acquisition it guards. Nothing else
+-      // clears it, and the engine stops reporting an error at all across a
+-      // resync - so a reading kept from before a pause would be compared with
+-      // the first one after it, which is not two consecutive readings of
+-      // anything, and the gate would open on a reading it never checked.
+-      m_haveRawPrev = false;
+-      m_rawPrev = 0.0;
+-      m_rawSettled = false;
+-      m_rawSettledPrev = false;
+-      m_rawReadings = 0;
++      m_rawAcquisition.Reset();
+     }
+     else if (m_acquireSince == 0.0)
+       m_acquireSince = m_pClock->GetAbsoluteClock();
+-    else if (m_rawReadings >= ACQUIRE_READINGS ||
+-             m_pClock->GetAbsoluteClock() - m_acquireSince > ACQUIRE_EXPIRY)
++    else if (m_rawAcquisition.ReadingsExpired() ||
++             CAudioSyncAcquisition::TimeExpired(m_pClock->GetAbsoluteClock() - m_acquireSince))
+     {
+       m_audioSink.TakeSyncAcquisition();
+       m_acquireSince = 0.0;
+@@ -687,7 +622,7 @@
+     const auto& observation = m_audioSink.GetSyncObservation();
+     const auto& acceptedObservation = m_audioSink.GetAcceptedSyncObservation();
+     const bool windowChanged = !observation.SameWindow(m_lastSyncObservation);
+-    const bool legacyFresh = m_audioSink.HasSyncError() && errorRaw != m_rawPrev;
++    const bool legacyFresh = m_rawAcquisition.Fresh(m_audioSink.HasSyncError(), errorRaw);
+     if (m_audioSink.IsPassthrough() && windowChanged)
+     {
+       CLog::Log(
+@@ -701,29 +636,12 @@
+           windowChanged && observation.Valid(), legacyFresh, observation.Valid(),
+           observation.saturated, m_audioSink.HasSyncError(), m_audioSink.IsSyncErrorSaturated(),
+           observation.raw, errorRaw / 1000.0, syncerror / 1000.0, acceptedObservation.epoch,
+-          acceptedObservation.sequence, m_audioSink.PeekSyncAcquisition(), m_rawReadings,
+-          m_rawSettled);
++          acceptedObservation.sequence, m_audioSink.PeekSyncAcquisition(),
++          m_rawAcquisition.Readings(), m_rawAcquisition.Settled());
+     }
+     m_lastSyncObservation = observation;
+ 
+-    // Only the changes count: the engine republishes about once a second, so
+-    // consecutive packets mostly carry the same figure and comparing those would
+-    // call anything stationary.
+-    if (m_audioSink.HasSyncError() && errorRaw != m_rawPrev)
+-    {
+-      // Three in a row, not two: a ramp gentle enough to move less than the
+-      // threshold between one reading and the next would otherwise pass while
+-      // still well short of where it is going, and the chance would be spent
+-      // short - which is the whole failure this exists to prevent, just at a
+-      // shallower slope.
+-      const double allowed = std::max(STATIONARY, STATIONARY_FRACTION * std::abs(errorRaw));
+-      const bool pairAgrees = m_haveRawPrev && std::abs(errorRaw - m_rawPrev) < allowed;
+-      m_rawSettled = pairAgrees && m_rawSettledPrev;
+-      m_rawSettledPrev = pairAgrees;
+-      m_rawPrev = errorRaw;
+-      m_haveRawPrev = true;
+-      ++m_rawReadings;
+-    }
++    m_rawAcquisition.Observe(m_audioSink.HasSyncError(), errorRaw);
+     // Only where the argument for it holds. The residue this exists to remove is
+     // one the engine cannot remove itself: in passthrough its finest move is a
+     // whole IEC frame, twenty milliseconds, so it stops inside its own band and
+@@ -732,11 +650,9 @@
+     // to go after, and correcting outside the threshold there would be a clock
+     // step for something the engine was going to take out anyway.
+     const bool acquire = m_audioSink.IsPassthrough() && m_audioSink.PeekSyncAcquisition() &&
+-                         m_audioSink.HasSyncError() &&
+-                         !m_audioSink.IsSyncErrorSaturated() && m_pClock->GetVsyncAdjust() == 0.0 &&
+-                         m_pClock->GetSpeedAdjust() == 0.0 &&
+-                         m_rawSettled && std::abs(errorRaw) > ACQUIRE_FLOOR &&
+-                         std::abs(errorRaw) < ACQUIRE_LIMIT;
++                         m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated() &&
++                         m_pClock->GetVsyncAdjust() == 0.0 && m_pClock->GetSpeedAdjust() == 0.0 &&
++                         m_rawAcquisition.WithinMagnitude(errorRaw);
+ 
+     if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
+     {
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "AudioSinkAE.h"
++#include "AudioSyncAcquisition.h"
+ #include "DVDClock.h"
+ #include "DVDMessageQueue.h"
+ #include "DVDStreamInfo.h"
+@@ -21,7 +22,6 @@
+ #include <list>
+ #include <mutex>
+ #include <utility>
+-
+ 
+ class CVideoPlayer;
+ class CDVDAudioCodec;
+@@ -109,11 +109,7 @@
+   double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
+   AESyncObservation m_lastSyncObservation;
+   AESyncObservation m_lastCorrectionObservation;
+-  double m_rawPrev{0.0};      //!< the last unscaled reading, to see it stop moving
+-  bool m_haveRawPrev{false};
+-  bool m_rawSettled{false};      //!< three readings running agreed
+-  bool m_rawSettledPrev{false};  //!< the pair before this one agreed
+-  unsigned int m_rawReadings{0}; //!< readings seen since the chance was armed
++  CAudioSyncAcquisition m_rawAcquisition;
+   int m_prevsynctype;
+ 
+   bool   m_prevskipped;

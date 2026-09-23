@@ -131,9 +131,7 @@ index 5df8e14..5a3ce4c 100644
    m_metadataSequencer.Reset();
    m_pendingMeta = m_streamMeta;
    if (m_bitstream)
-@@ -817,6 +829,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
-     pVideoPicture->videoBuffer = nullptr;
-     pVideoPicture->SetParams(m_videobuffer);
+@@ -819,2 +831,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
  
 +    if (m_seekPreroll.ShouldDrop(m_videobuffer.pts != DVD_NOPTS_VALUE
 +                                     ? std::optional<double>{m_videobuffer.pts}
@@ -141,8 +139,6 @@ index 5df8e14..5a3ce4c 100644
 +      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
 +
      pVideoPicture->videoBuffer = m_videoBufferPool->Get();
-     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
-      m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex());;
 @@ -852,10 +869,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
      CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
      m_codecControlFlags = flags;
