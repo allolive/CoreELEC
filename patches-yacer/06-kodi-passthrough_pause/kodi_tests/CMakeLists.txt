@@ -49,3 +49,27 @@ yacer_add_test(
                xbmc/utils/BitstreamReader.cpp
   INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/platform/posix
 )
+
+# The decorator and Kodi's real callback queue, so the paths that drop a call
+# are the paths the box has rather than an imitation of them.
+yacer_add_test(
+  NAME PlaybackCallbackDecorator
+  STANDARD 20
+  SOURCES TestPlaybackCallbackDecorator.cpp
+  KODI_SOURCES xbmc/interfaces/legacy/CallbackFunction.cpp
+               xbmc/interfaces/legacy/CallbackHandler.cpp
+               xbmc/interfaces/legacy/AddonClass.cpp
+               xbmc/interfaces/legacy/LanguageHook.cpp
+               xbmc/interfaces/legacy/String.cpp
+               xbmc/platform/posix/threads/RecursiveMutex.cpp
+  INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/platform/posix
+)
+
+# Preroll state is header-only; the sink and player sides are covered by their
+# own suites.
+yacer_add_test(
+  NAME AudioPreroll
+  SOURCES TestAudioPreroll.cpp
+  INCLUDES ${YACER_SHIMS}
+)
+
