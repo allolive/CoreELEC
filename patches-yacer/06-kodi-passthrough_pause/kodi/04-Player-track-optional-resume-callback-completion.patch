@@ -1,0 +1,394 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 20:30:00 -0400
+Subject: [PATCH] Player: track optional resume callback completion
+
+A legacy resume callback can synchronously request a seek while its player
+notification was queued asynchronously. Returning from the notification
+broadcast therefore does not establish that the seek callback has finished.
+
+Add optional internal completion tracking through the application and Python
+callback dispatch. Decorate only a tracked resume callback. Successful return,
+exception and callback destruction each complete a ticket exactly once.
+Sealed registration prevents fast recipients from finishing a broadcast early;
+cancellation remains terminal even when an old callback returns later.
+Unsupported callback implementations preserve their notification but cannot
+certify asynchronous completion. The ordinary no-fence path stays unchanged.
+
+Tickets publish bookkeeping only, never player calls under callback locks.
+The waiting player must remain asynchronous and process a same-priority FIFO
+barrier after completion, then check the current output generation. A resume
+request identity survives a callback-induced seek; a media generation does not.
+This patch provides completion plumbing only: VideoPlayer does not yet create
+a fence, hold presentation or enable historical audio output.
+
+The API and callback ownership are shared Kodi code; an AML-specific hook
+cannot observe legacy callback return/removal here. No addon code, settings
+or public Python callbacks are changed.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/application/ApplicationPlayerCallback.cpp b/xbmc/application/ApplicationPlayerCallback.cpp
+--- a/xbmc/application/ApplicationPlayerCallback.cpp
++++ b/xbmc/application/ApplicationPlayerCallback.cpp
+@@ -421,8 +421,14 @@
+ 
+ void CApplicationPlayerCallback::OnPlayBackResumed()
+ {
++  OnPlayBackResumed({});
++}
++
++void CApplicationPlayerCallback::OnPlayBackResumed(
++    const std::shared_ptr<CPlaybackCallbackFence>& fence)
++{
+ #ifdef HAS_PYTHON
+-  CServiceBroker::GetXBPython().OnPlayBackResumed();
++  CServiceBroker::GetXBPython().OnPlayBackResumed(fence);
+ #endif
+ 
+   CGUIMessage msg(GUI_MSG_PLAYBACK_RESUMED, 0, 0);
+diff --git a/xbmc/application/ApplicationPlayerCallback.h b/xbmc/application/ApplicationPlayerCallback.h
+--- a/xbmc/application/ApplicationPlayerCallback.h
++++ b/xbmc/application/ApplicationPlayerCallback.h
+@@ -26,6 +26,7 @@
+   void OnPlayerCloseFile(const CFileItem& file, const CBookmark& bookmark) override;
+   void OnPlayBackPaused() override;
+   void OnPlayBackResumed() override;
++  void OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence) override;
+   void OnPlayBackStopped() override;
+   void OnPlayBackError() override;
+   void OnQueueNextItem() override;
+diff --git a/xbmc/cores/IPlayerCallback.h b/xbmc/cores/IPlayerCallback.h
+--- a/xbmc/cores/IPlayerCallback.h
++++ b/xbmc/cores/IPlayerCallback.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "VideoSettings.h"
++#include "utils/PlaybackCallbackFence.h"
+ 
+ #include <stdint.h>
+ 
+@@ -24,6 +25,14 @@
+   virtual void OnPlayerCloseFile(const CFileItem& file, const CBookmark& bookmark) {}
+   virtual void OnPlayBackPaused() {}
+   virtual void OnPlayBackResumed() {}
++  // Internal opt-in completion tracking. Unknown callback implementations keep
++  // their notification, but a discarded ticket prevents claiming completion
++  // of work they may have queued asynchronously.
++  virtual void OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence)
++  {
++    auto unsupported = fence ? fence->Register() : nullptr;
++    OnPlayBackResumed();
++  }
+   virtual void OnPlayBackStopped() = 0;
+   virtual void OnPlayBackError() = 0;
+   virtual void OnQueueNextItem() = 0;
+diff --git a/xbmc/interfaces/legacy/CallbackFunction.h b/xbmc/interfaces/legacy/CallbackFunction.h
+--- a/xbmc/interfaces/legacy/CallbackFunction.h
++++ b/xbmc/interfaces/legacy/CallbackFunction.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "AddonClass.h"
++#include "utils/PlaybackCallbackFence.h"
+ 
+ namespace XBMCAddon
+ {
+@@ -63,6 +64,32 @@
+     ~CallbackFunction() override { XBMC_TRACE; deallocating(); }
+ 
+     void executeCallback() override { XBMC_TRACE; ((*obj).*(meth))(); }
++  };
++
++  // Only a tracked resume callback uses this decorator. Queue removal, handler
++  // teardown and deallocating recipients destroy the ticket as DISCARDED.
++  // Invocation records return/exception without changing handler behavior.
++  template<class M>
++  class CallbackFunctionWithCompletion : public CallbackFunction<M>
++  {
++  public:
++    CallbackFunctionWithCompletion(
++        M* object, typename CallbackFunction<M>::MemberFunction method,
++        std::shared_ptr<CPlaybackCallbackFence::Ticket> ticket)
++      : CallbackFunction<M>(object, method), m_ticket(std::move(ticket))
++    {
++    }
++
++    void executeCallback() override
++    {
++      if (m_ticket)
++        m_ticket->Invoke([this] { CallbackFunction<M>::executeCallback(); });
++      else
++        CallbackFunction<M>::executeCallback();
++    }
++
++  private:
++    std::shared_ptr<CPlaybackCallbackFence::Ticket> m_ticket;
+   };
+ 
+   /**
+@@ -168,4 +195,3 @@
+   };
+ }
+ 
+-
+diff --git a/xbmc/interfaces/legacy/Player.cpp b/xbmc/interfaces/legacy/Player.cpp
+--- a/xbmc/interfaces/legacy/Player.cpp
++++ b/xbmc/interfaces/legacy/Player.cpp
+@@ -247,8 +247,17 @@
+ 
+     void Player::OnPlayBackResumed()
+     {
+-      XBMC_TRACE;
+-      invokeCallback(new CallbackFunction<Player>(this,&Player::onPlayBackResumed));
++      OnPlayBackResumed({});
++    }
++
++    void Player::OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence)
++    {
++      XBMC_TRACE;
++      if (fence)
++        invokeCallback(new CallbackFunctionWithCompletion<Player>(
++            this, &Player::onPlayBackResumed, fence->Register()));
++      else
++        invokeCallback(new CallbackFunction<Player>(this,&Player::onPlayBackResumed));
+     }
+ 
+     void Player::OnQueueNextItem()
+@@ -607,4 +616,3 @@
+     }
+   }
+ }
+-
+diff --git a/xbmc/interfaces/legacy/Player.h b/xbmc/interfaces/legacy/Player.h
+--- a/xbmc/interfaces/legacy/Player.h
++++ b/xbmc/interfaces/legacy/Player.h
+@@ -828,6 +828,7 @@
+       void OnPlayBackError() override;
+       void OnPlayBackPaused() override;
+       void OnPlayBackResumed() override;
++      void OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence) override;
+       void OnQueueNextItem() override;
+       void OnPlayBackSpeedChanged(int iSpeed) override;
+       void OnPlayBackSeek(int64_t iTime, int64_t seekOffset) override;
+@@ -838,4 +839,3 @@
+     };
+   }
+ }
+-
+diff --git a/xbmc/interfaces/python/XBPython.cpp b/xbmc/interfaces/python/XBPython.cpp
+--- a/xbmc/interfaces/python/XBPython.cpp
++++ b/xbmc/interfaces/python/XBPython.cpp
+@@ -223,12 +223,17 @@
+ // message all registered callbacks that we resumed playing
+ void XBPython::OnPlayBackResumed()
+ {
+-  XBMC_TRACE;
+-  LOCK_AND_COPY(std::vector<void*>, tmp, m_vecPlayerCallbackList);
+-  for (auto& it : tmp)
+-  {
+-    if (CHECK_FOR_ENTRY(m_vecPlayerCallbackList, it))
+-      ((IPlayerCallback*)it)->OnPlayBackResumed();
++  OnPlayBackResumed({});
++}
++
++void XBPython::OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence)
++{
++  XBMC_TRACE;
++  LOCK_AND_COPY(std::vector<void*>, tmp, m_vecPlayerCallbackList);
++  for (auto& it : tmp)
++  {
++    if (CHECK_FOR_ENTRY(m_vecPlayerCallbackList, it))
++      ((IPlayerCallback*)it)->OnPlayBackResumed(fence);
+   }
+ }
+ 
+diff --git a/xbmc/interfaces/python/XBPython.h b/xbmc/interfaces/python/XBPython.h
+--- a/xbmc/interfaces/python/XBPython.h
++++ b/xbmc/interfaces/python/XBPython.h
+@@ -64,6 +64,7 @@
+   void OnAVChange() override;
+   void OnPlayBackPaused() override;
+   void OnPlayBackResumed() override;
++  void OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence) override;
+   void OnPlayBackStopped() override;
+   void OnPlayBackError() override;
+   void OnPlayBackSpeedChanged(int iSpeed) override;
+diff --git a/xbmc/utils/PlaybackCallbackFence.h b/xbmc/utils/PlaybackCallbackFence.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/utils/PlaybackCallbackFence.h
+@@ -0,0 +1,172 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <utility>
++
++/** Completion of callbacks dispatched for one resume request, without waiting.
++ *
++ * A resume request survives a seek made by its callback; the output generation
++ * does not. This object intentionally tracks only the request identity. Its
++ * completion is not permission to release A/V: the player must process a FIFO
++ * barrier after callback-issued seeks, then wait for the current endpoints.
++ */
++class CPlaybackCallbackFence
++{
++public:
++  enum class Status
++  {
++    REGISTERING,
++    PENDING,
++    COMPLETED,
++    FAILED,
++    CANCELLED,
++  };
++
++  struct Snapshot
++  {
++    uint64_t request = 0;
++    Status status = Status::REGISTERING;
++    size_t pending = 0;
++    size_t returned = 0;
++    size_t failed = 0;
++    size_t discarded = 0;
++  };
++
++private:
++  struct State
++  {
++    explicit State(uint64_t id) : request(id) {}
++    std::mutex mutex;
++    const uint64_t request;
++    bool sealed = false;
++    bool cancelled = false;
++    bool lateRegistration = false;
++    size_t pending = 0;
++    size_t returned = 0;
++    size_t failed = 0;
++    size_t discarded = 0;
++  };
++
++public:
++  class Ticket
++  {
++  public:
++    Ticket(const Ticket&) = delete;
++    Ticket& operator=(const Ticket&) = delete;
++    ~Ticket() { Finish(Outcome::DISCARDED); }
++
++    // Keep this ticket alive during invocation. Exceptions still reach Kodi's
++    // existing callback handler; completion records the failure before rethrow.
++    template<typename Function>
++    bool Invoke(Function&& function)
++    {
++      if (m_invoked.exchange(true))
++        return false;
++      try
++      {
++        std::forward<Function>(function)();
++        Finish(Outcome::RETURNED);
++      }
++      catch (...)
++      {
++        Finish(Outcome::FAILED);
++        throw;
++      }
++      return true;
++    }
++
++  private:
++    friend class CPlaybackCallbackFence;
++    enum class Outcome { RETURNED, FAILED, DISCARDED };
++    explicit Ticket(std::shared_ptr<State> state) : m_state(std::move(state)) {}
++
++    void Finish(Outcome outcome)
++    {
++      if (!m_registered)
++        return;
++      if (m_finished.exchange(true))
++        return;
++      // No player calls, queue messages or external callbacks under this lock.
++      // Destruction can happen while the legacy callback-list lock is held.
++      std::lock_guard<std::mutex> lock(m_state->mutex);
++      --m_state->pending;
++      switch (outcome)
++      {
++        case Outcome::RETURNED: ++m_state->returned; break;
++        case Outcome::FAILED: ++m_state->failed; break;
++        case Outcome::DISCARDED: ++m_state->discarded; break;
++      }
++    }
++
++    std::shared_ptr<State> m_state;
++    // Armed only after shared_ptr control-block allocation succeeds. Its
++    // failure can destroy this ticket while Register still owns State::mutex.
++    bool m_registered = false;
++    std::atomic<bool> m_invoked{false};
++    std::atomic<bool> m_finished{false};
++  };
++
++  explicit CPlaybackCallbackFence(uint64_t request) : m_state(std::make_shared<State>(request)) {}
++
++  std::shared_ptr<Ticket> Register()
++  {
++    std::lock_guard<std::mutex> lock(m_state->mutex);
++    if (m_state->cancelled)
++      return {};
++    if (m_state->sealed)
++    {
++      m_state->lateRegistration = true;
++      return {};
++    }
++    auto ticket = std::shared_ptr<Ticket>(new Ticket(m_state));
++    ++m_state->pending;
++    ticket->m_registered = true;
++    return ticket;
++  }
++
++  // Called only after every recipient has been offered registration.
++  void Seal()
++  {
++    std::lock_guard<std::mutex> lock(m_state->mutex);
++    m_state->sealed = true;
++  }
++
++  // Stop/pause/replacement request and timeout invalidate permission immediately.
++  // Outstanding callbacks can finish safely; their results cannot uncancel it.
++  void Cancel()
++  {
++    std::lock_guard<std::mutex> lock(m_state->mutex);
++    m_state->cancelled = true;
++  }
++
++  Snapshot Read() const
++  {
++    std::lock_guard<std::mutex> lock(m_state->mutex);
++    Status status = Status::REGISTERING;
++    if (m_state->cancelled)
++      status = Status::CANCELLED;
++    else if (!m_state->sealed)
++      status = Status::REGISTERING;
++    else if (m_state->pending != 0)
++      status = Status::PENDING;
++    else if (m_state->failed || m_state->discarded || m_state->lateRegistration)
++      status = Status::FAILED;
++    else
++      status = Status::COMPLETED;
++    return {m_state->request, status, m_state->pending, m_state->returned,
++            m_state->failed, m_state->discarded};
++  }
++
++private:
++  std::shared_ptr<State> m_state;
++};

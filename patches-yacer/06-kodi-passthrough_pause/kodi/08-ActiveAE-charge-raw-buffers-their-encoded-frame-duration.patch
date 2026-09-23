@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 22 Sep 2026 16:10:00 -0400
+Subject: [PATCH] Audio: charge raw buffers their encoded frame duration
+
+A raw passthrough buffer holds one encoded frame in byte-sized samples, so
+its nb_samples is a byte count. The buffer pools divide it by the sample rate
+anyway, which reports a 9300-byte DTS packet as 194ms rather than 10.667ms.
+
+Steady playback hides it, because the pools drain as fast as they fill. They
+only fill while a stream is paused, which is exactly when a resume asks what
+is queued: a 0.43s preroll queue was reported as 4.87s, putting the estimated
+position five seconds behind the clock and failing every release.
+
+Charge each raw buffer its encoded frame duration instead, chosen on the
+format rather than on a zero duration - an unknown stream type answers zero,
+and falling back to the byte arithmetic there would reinstate the overcount.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp
+@@ -372,18 +372,20 @@
+ {
+   float delay = 0;
+   std::deque<CSampleBuffer*>::iterator itBuf;
++  const RawFrameTime inputFrame = RawFrameTimeOf(m_inputFormat);
++  const RawFrameTime outputFrame = RawFrameTimeOf(m_format);
+ 
+   if (m_procSample)
+-    delay += (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
++    delay += BufferedTime(m_procSample, outputFrame);
+ 
+   for(itBuf=m_inputSamples.begin(); itBuf!=m_inputSamples.end(); ++itBuf)
+   {
+-    delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
++    delay += BufferedTime(*itBuf, inputFrame);
+   }
+ 
+   for(itBuf=m_outputSamples.begin(); itBuf!=m_outputSamples.end(); ++itBuf)
+   {
+-    delay += (float)(*itBuf)->pkt->nb_samples / (*itBuf)->pkt->config.sample_rate;
++    delay += BufferedTime(*itBuf, outputFrame);
+   }
+ 
+   if (m_resampler)
+@@ -665,18 +667,19 @@
+ float CActiveAEBufferPoolAtempo::GetDelay()
+ {
+   float delay = 0;
++  const RawFrameTime frame = RawFrameTimeOf(m_format);
+ 
+   if (m_procSample)
+-    delay += (float)m_procSample->pkt->nb_samples / m_procSample->pkt->config.sample_rate;
++    delay += BufferedTime(m_procSample, frame);
+ 
+   for (auto &buf : m_inputSamples)
+   {
+-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
++    delay += BufferedTime(buf, frame);
+   }
+ 
+   for (auto &buf : m_outputSamples)
+   {
+-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
++    delay += BufferedTime(buf, frame);
+   }
+ 
+   if (m_pTempoFilter->IsActive())
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h
+@@ -57,6 +57,31 @@
+   double centerMixLevel;
+ };
+ 
++// A RAW buffer holds one encoded frame in byte-sized samples, so nb_samples is
++// a byte count and dividing it by the sample rate is not a duration. Resolve
++// the encoded frame length once per query: GetDuration logs on an unknown type.
++struct RawFrameTime
++{
++  bool raw{false};
++  float seconds{0.0f};
++};
++
++inline RawFrameTime RawFrameTimeOf(const AEAudioFormat& format)
++{
++  if (format.m_dataFormat != AE_FMT_RAW)
++    return {};
++  // GetDuration answers 0 for a type it does not know, after logging. That is
++  // not a reason to divide a byte count by a sample rate instead: the format
++  // says the samples are bytes either way.
++  return {true, static_cast<float>(format.m_streamInfo.GetDuration() / 1000.0)};
++}
++
++inline float BufferedTime(const CSampleBuffer* buffer, const RawFrameTime& frame)
++{
++  return frame.raw ? frame.seconds
++                   : static_cast<float>(buffer->pkt->nb_samples) / buffer->pkt->config.sample_rate;
++}
++
+ class CActiveAEBufferPool
+ {
+ public:
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp
+@@ -677,10 +677,11 @@
+ float CActiveAEStreamBuffers::GetDelay()
+ {
+   float delay = 0;
++  const RawFrameTime frame = RawFrameTimeOf(m_inputFormat);
+ 
+   for (auto &buf : m_inputSamples)
+   {
+-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
++    delay += BufferedTime(buf, frame);
+   }
+ 
+   delay += m_resampleBuffers->GetDelay();
+@@ -688,7 +689,7 @@
+ 
+   for (auto &buf : m_outputSamples)
+   {
+-    delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;
++    delay += BufferedTime(buf, frame);
+   }
+ 
+   return delay;

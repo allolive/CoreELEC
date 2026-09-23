@@ -1,0 +1,557 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 21:00:00 -0400
+Subject: [PATCH] VideoPlayer: order passthrough resume after callback seeks
+
+A resume callback can seek synchronously after the old speed path has already
+released audio/video. Keep eligible seekable-file passthrough A/V playback
+paused while tracked callbacks execute, servicing the player queue throughout.
+Follow completion with a normal-priority FIFO barrier. Preserve any callback
+seek's buffering state when committing the requested speed.
+
+Keep request identity stable through seeks while invalidating output identity.
+Cancel on pause, overriding speed, stop and replacement playback; stale barriers
+cannot release a replacement request. A failed or timed-out callback uses a
+logged ordinary-resume fallback without repeating the notification. The timeout
+is checked when the player loop runs, not a hard deadline over blocking I/O.
+
+Queue pause/resume notifications in request order. Serialize desired-speed
+publication with request insertion so rapid toggles retain the latest intent,
+and compare speed requests in matching units to avoid duplicate normal resumes.
+No callback or endpoint action runs under that request lock.
+
+This is generic Kodi player/callback ordering, which cannot be implemented by
+an AML sink or renderer: only VideoPlayer owns the speed and seek queue. No
+platform dependency or additional addon is introduced. It does not establish
+hardware presentation hold, decoder readiness or a 500 ms audio lead-in.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDMessage.h b/xbmc/cores/VideoPlayer/DVDMessage.h
+--- a/xbmc/cores/VideoPlayer/DVDMessage.h
++++ b/xbmc/cores/VideoPlayer/DVDMessage.h
+@@ -47,4 +47,5 @@
+     PLAYER_SEEK_CHAPTER,            //
+     PLAYER_SETSPEED,                // set the playback speed
++    PLAYER_RESUME_BARRIER,          // callback work precedes deferred speed release
+     PLAYER_REQUEST_STATE,
+     PLAYER_OPENFILE,
+@@ -241,8 +242,16 @@
+ {
+ public:
++  enum class Notification
++  {
++    NONE,
++    PAUSED,
++    RESUMED,
++  };
++
+   struct SpeedParams
+   {
+     int m_speed;
+     bool m_isTempo;
++    Notification m_notification = Notification::NONE;
+   };
+ 
+@@ -255,4 +264,5 @@
+   int GetSpeed() const { return m_params.m_speed; }
+   bool IsTempo() const { return m_params.m_isTempo; }
++  Notification GetNotification() const { return m_params.m_notification; }
+ 
+ private:
+diff --git a/xbmc/cores/VideoPlayer/PlaybackResumeGate.h b/xbmc/cores/VideoPlayer/PlaybackResumeGate.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/PlaybackResumeGate.h
+@@ -0,0 +1,142 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include "utils/PlaybackCallbackFence.h"
++
++#include <chrono>
++#include <cstdint>
++#include <memory>
++#include <optional>
++
++/** Player-thread ordering of a resume notification and its direct callback work.
++ *
++ * The player remains paused while callbacks run, but continues servicing its
++ * message queue (a callback's synchronous seek needs that queue). Poll requests
++ * one normal-priority FIFO barrier after completion. Only processing that
++ * barrier may commit the requested speed, preserving any seek's caching state.
++ *
++ * This gate establishes command ordering, not audio or display readiness. It
++ * neither holds a hardware picture nor authorizes historical audio replay.
++ * Callback-created timers/workers can still issue later seeks. Such a seek
++ * invalidates the output generation even after the request has completed.
++ */
++class CPlaybackResumeGate
++{
++public:
++  using Clock = std::chrono::steady_clock;
++  enum class Outcome
++  {
++    COMPLETED,
++    FAILED,
++    TIMED_OUT,
++  };
++  struct Release
++  {
++    uint64_t request;
++    uint64_t generation;
++    int speed;
++    bool tempo;
++    Outcome outcome;
++  };
++
++  CPlaybackResumeGate() = default;
++  CPlaybackResumeGate(const CPlaybackResumeGate&) = delete;
++  CPlaybackResumeGate& operator=(const CPlaybackResumeGate&) = delete;
++  ~CPlaybackResumeGate() { Cancel(); }
++
++  // Install the hold BEFORE dispatch. The caller seals after all recipients
++  // have registered; dispatch exceptions must cancel the returned fence.
++  std::shared_ptr<CPlaybackCallbackFence> Begin(
++      int speed,
++      bool tempo,
++      Clock::time_point now,
++      std::chrono::milliseconds timeout = std::chrono::milliseconds{2000})
++  {
++    Cancel();
++    auto fence = std::make_shared<CPlaybackCallbackFence>(++m_request);
++    m_speed = speed;
++    m_tempo = tempo;
++    m_deadline = now + (timeout.count() > 0 ? timeout : std::chrono::milliseconds{0});
++    m_fence = std::move(fence);
++    m_stage = Stage::CALLBACKS;
++    return m_fence;
++  }
++
++  // Nonblocking observation. Enqueue the returned request behind existing
++  // player commands at the SAME priority. Never commit directly from Poll.
++  std::optional<uint64_t> Poll(Clock::time_point now)
++  {
++    if (m_stage != Stage::CALLBACKS)
++      return {};
++    const auto status = m_fence->Read().status;
++    if (status == CPlaybackCallbackFence::Status::COMPLETED)
++      m_outcome = Outcome::COMPLETED;
++    else if (status == CPlaybackCallbackFence::Status::FAILED ||
++             status == CPlaybackCallbackFence::Status::CANCELLED)
++      m_outcome = Outcome::FAILED;
++    else if (now >= m_deadline)
++    {
++      // A timeout uses ordinary resume as an explicit fallback. Cancellation
++      // prevents late completion from certifying the request; it does not stop
++      // the callback body or withdraw commands it already submitted.
++      m_fence->Cancel();
++      m_outcome = Outcome::TIMED_OUT;
++    }
++    else
++      return {};
++
++    m_stage = Stage::BARRIER;
++    return m_request;
++  }
++
++  // Call only after the barrier reaches the head of the player FIFO. If seek
++  // coalescing sees another queued seek, postpone the barrier behind that seek.
++  std::optional<Release> Commit(uint64_t request)
++  {
++    if (m_stage != Stage::BARRIER || request != m_request)
++      return {};
++    if (m_outcome == Outcome::COMPLETED &&
++        m_fence->Read().status != CPlaybackCallbackFence::Status::COMPLETED)
++      m_outcome = Outcome::FAILED;
++    const Release release{m_request, m_generation, m_speed, m_tempo, m_outcome};
++    m_stage = Stage::IDLE;
++    m_fence.reset();
++    return release;
++  }
++
++  // Pause, stop, replacement playback and an overriding speed request cancel
++  // the request. Old barriers and callbacks cannot commit a subsequent resume.
++  void Cancel()
++  {
++    if (m_fence)
++      m_fence->Cancel();
++    m_fence.reset();
++    m_stage = Stage::IDLE;
++    InvalidateOutput();
++  }
++
++  // A seek/discontinuity replaces output, not the resume request. In particular
++  // a callback that seeks must complete the same request it was given.
++  void InvalidateOutput() { ++m_generation; }
++  bool IsHolding() const { return m_stage != Stage::IDLE; }
++  bool IsCurrentRequest(uint64_t request) const
++  {
++    return IsHolding() && request == m_request;
++  }
++
++private:
++  enum class Stage { IDLE, CALLBACKS, BARRIER };
++  Stage m_stage = Stage::IDLE;
++  uint64_t m_request = 0;
++  uint64_t m_generation = 0;
++  int m_speed = 0;
++  bool m_tempo = false;
++  Outcome m_outcome = Outcome::FAILED;
++  Clock::time_point m_deadline{};
++  std::shared_ptr<CPlaybackCallbackFence> m_fence;
++};
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -14,4 +14,5 @@
+ #include "FileItem.h"
+ #include "IVideoPlayer.h"
++#include "PlaybackResumeGate.h"
+ #include "VideoPlayerAudioID3.h"
+ #include "VideoPlayerRadioRDS.h"
+@@ -31,4 +32,5 @@
+ #include <functional>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ #include <unordered_map>
+@@ -466,4 +468,6 @@
+    */
+   void SetPlaySpeed(int iSpeed);
++  void SetSpeedInternal(float speed, bool togglePause);
++  void PublishPlaySpeed(int speed, bool tempo);
+ 
+   enum ECacheState
+@@ -483,4 +487,6 @@
+   void FlushBuffers(double pts, bool accurate, bool sync);
+ 
++  bool PollResumeGate();
++  void ReleaseResumeGate(const CPlaybackResumeGate::Release& release);
+   void HandleMessages();
+   void HandlePlaySpeed();
+@@ -598,4 +604,6 @@
+   int m_playSpeed;
+   int m_streamPlayerSpeed;
++  std::mutex m_speedRequestMutex;
++  CPlaybackResumeGate m_resumeGate;
+   int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
+   struct SSpeedState
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1534,7 +1534,11 @@
+ {
+   CFFmpegLog::SetLogLevel(1);
+-  SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
+-  m_processInfo->SetSpeed(1.0);
+-  m_processInfo->SetTempo(1.0);
++  {
++    std::unique_lock lock(m_speedRequestMutex);
++    m_processInfo->SetSpeed(1.0);
++    m_processInfo->SetTempo(1.0);
++    CDVDMsgPlayerSetSpeed::SpeedParams params = {DVD_PLAYSPEED_NORMAL, false};
++    m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
++  }
+   m_processInfo->SetFrameAdvance(false);
+   m_State.Clear();
+@@ -1730,4 +1734,7 @@
+     if (m_bAbortRequest)
+       break;
++
++    if (PollResumeGate())
++      continue;
+ 
+     // should we open a new input stream?
+@@ -3145,4 +3152,5 @@
+ {
+   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
++  m_resumeGate.Cancel();
+ 
+   // set event to inform openfile something went wrong in case openfile is still waiting for this event
+@@ -3250,4 +3258,5 @@
+         m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
+     {
++      m_resumeGate.Cancel();
+       CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
+ 
+@@ -3668,4 +3677,41 @@
+       const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
+       const int speed = msg->GetSpeed();
++      const auto notification = msg->GetNotification();
++
++      // Player speed remains paused while the requested resume is pending.
++      // A repeated normal-speed message must not dispatch the callback again.
++      if (m_resumeGate.IsHolding() && speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo())
++        continue;
++
++      const bool deferResume =
++          notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED &&
++          speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo() &&
++          m_playSpeed == DVD_PLAYSPEED_PAUSE && m_CurrentAudio.id >= 0 &&
++          m_CurrentVideo.id >= 0 && m_State.canseek && m_State.canpause && m_pInputStream &&
++          m_pInputStream->IsStreamType(DVDSTREAM_TYPE_FILE) && !m_pInputStream->IsRealtime() &&
++          !KODI::NETWORK::IsInternetStream(m_item) && IsPassthrough();
++      if (deferResume)
++      {
++        auto fence = m_resumeGate.Begin(speed, false, CPlaybackResumeGate::Clock::now());
++        try
++        {
++          // This dispatch only queues Python callbacks. Keep servicing player
++          // messages: a callback's synchronous seek waits for that queue.
++          m_callback.OnPlayBackResumed(fence);
++          fence->Seal();
++        }
++        catch (...)
++        {
++          fence->Cancel();
++          CLog::Log(LOGERROR, "CVideoPlayer::ResumeGate - callback dispatch failed");
++        }
++        continue;
++      }
++
++      m_resumeGate.Cancel();
++      if (notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED)
++        m_callback.OnPlayBackResumed();
++      else if (notification == CDVDMsgPlayerSetSpeed::Notification::PAUSED)
++        m_callback.OnPlayBackPaused();
+ 
+       // correct our current clock, as it would start going wrong otherwise
+@@ -3724,8 +3770,5 @@
+       }
+ 
+-      if (isTempoSpeed)
+-        m_processInfo->SetTempo(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
+-      else
+-        m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
++      PublishPlaySpeed(speed, isTempoSpeed);
+ 
+       m_processInfo->SetFrameAdvance(false);
+@@ -3739,4 +3782,31 @@
+       m_VideoPlayerVideo->SetSpeed(speed);
+       m_streamPlayerSpeed = speed;
++    }
++    else if (pMsg->IsType(CDVDMsg::PLAYER_RESUME_BARRIER))
++    {
++      const auto request = std::static_pointer_cast<CDVDMsgType<uint64_t>>(pMsg)->m_value;
++      if (!m_resumeGate.IsCurrentRequest(request))
++        continue;
++      if (m_bAbortRequest || m_bStop)
++      {
++        m_resumeGate.Cancel();
++        continue;
++      }
++      // Seek coalescing can skip a seek before this barrier when another seek
++      // is queued after it. Process that command before committing this request.
++      if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) != 0 ||
++          m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) != 0 ||
++          m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) != 0 ||
++          m_messenger.GetPacketCount(CDVDMsg::PLAYER_SETSPEED) != 0 ||
++          m_messenger.GetPacketCount(CDVDMsg::PLAYER_ABORT) != 0)
++      {
++        if (m_messenger.Put(pMsg, 0) != MSGQ_OK)
++          m_resumeGate.Cancel();
++        // Put appends at the FIFO tail, so the pending commands run before
++        // this barrier is read again. Do not enter demux Read with them queued.
++        continue;
++      }
++      if (const auto release = m_resumeGate.Commit(request))
++        ReleaseResumeGate(*release);
+     }
+     else if (pMsg->IsType(CDVDMsg::PLAYER_FRAME_ADVANCE))
+@@ -3812,8 +3882,48 @@
+     {
+       CLog::Log(LOGDEBUG, "CVideoPlayer - CDVDMsg::PLAYER_ABORT");
++      m_resumeGate.Cancel();
+       m_bAbortRequest = true;
+     }
+     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_UPDATE_STREAM_DETAILS))
+       m_updateStreamDetails = true;
++  }
++}
++
++bool CVideoPlayer::PollResumeGate()
++{
++  if (const auto request = m_resumeGate.Poll(CPlaybackResumeGate::Clock::now()))
++  {
++    if (m_messenger.Put(
++            std::make_shared<CDVDMsgType<uint64_t>>(CDVDMsg::PLAYER_RESUME_BARRIER, *request),
++            0) == MSGQ_OK)
++      return true;
++    m_resumeGate.Cancel();
++  }
++  return false;
++}
++
++void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release)
++{
++  if (release.outcome == CPlaybackResumeGate::Outcome::COMPLETED)
++    CLog::Log(LOGDEBUG, "CVideoPlayer::ResumeGate - callback barrier request={} generation={}",
++              release.request, release.generation);
++  else
++    CLog::Log(LOGWARNING,
++              "CVideoPlayer::ResumeGate - ordinary resume fallback request={} generation={} reason={}",
++              release.request, release.generation,
++              release.outcome == CPlaybackResumeGate::Outcome::TIMED_OUT ? "timeout" : "callback failure");
++
++  m_playSpeed = release.speed;
++  PublishPlaySpeed(release.speed, release.tempo);
++  m_processInfo->SetFrameAdvance(false);
++
++  // A callback may have sought while paused. Preserve its buffering state;
++  // SetCaching releases the streams when the existing startup conditions pass.
++  if (m_caching == CACHESTATE_PLAY || m_caching == CACHESTATE_DONE)
++  {
++    m_clock.SetSpeed(release.speed);
++    m_VideoPlayerAudio->SetSpeed(release.speed);
++    m_VideoPlayerVideo->SetSpeed(release.speed);
++    m_streamPlayerSpeed = release.speed;
+   }
+ }
+@@ -3882,5 +3992,6 @@
+   if (IsPlaying())
+   {
+-    CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, false };
++    std::unique_lock lock(m_speedRequestMutex);
++    CDVDMsgPlayerSetSpeed::SpeedParams params = {speed, false};
+     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
+   }
+@@ -3892,4 +4003,23 @@
+ }
+ 
++void CVideoPlayer::PublishPlaySpeed(int speed, bool tempo)
++{
++  // SetSpeed also writes ProcessInfo's requested speed. Preserve a newer
++  // queued request atomically with producers, without holding this lock while
++  // notifying callbacks or changing endpoint speed.
++  std::unique_lock lock(m_speedRequestMutex);
++  const float requestedSpeed = m_processInfo->GetNewSpeed();
++  const float requestedTempo = m_processInfo->GetNewTempo();
++  if (tempo)
++    m_processInfo->SetTempo(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
++  else
++    m_processInfo->SetSpeed(static_cast<float>(speed) / DVD_PLAYSPEED_NORMAL);
++  if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_SETSPEED) != 0)
++  {
++    m_processInfo->SetNewTempo(requestedTempo);
++    m_processInfo->SetNewSpeed(requestedSpeed);
++  }
++}
++
+ bool CVideoPlayer::CanPause() const
+ {
+@@ -3900,13 +4030,5 @@
+ void CVideoPlayer::Pause()
+ {
+-  // toggle between pause and normal speed
+-  if (m_processInfo->GetNewSpeed() == 0)
+-  {
+-    SetSpeed(1);
+-  }
+-  else
+-  {
+-    SetSpeed(0);
+-  }
++  SetSpeedInternal(0.0f, true);
+ }
+ 
+@@ -4348,4 +4470,9 @@
+ void CVideoPlayer::SetSpeed(float speed)
+ {
++  SetSpeedInternal(speed, false);
++}
++
++void CVideoPlayer::SetSpeedInternal(float speed, bool togglePause)
++{
+   // can't rewind in menu as seeking isn't possible
+   // forward is fine
+@@ -4364,33 +4491,55 @@
+   }
+ 
+-  float currentSpeed = m_processInfo->GetNewSpeed();
+-  m_processInfo->SetNewSpeed(speed);
+-  if (iSpeed != currentSpeed)
+-  {
++  auto notification = CDVDMsgPlayerSetSpeed::Notification::NONE;
++  {
++    std::unique_lock lock(m_speedRequestMutex);
++    if (togglePause)
++    {
++      speed = m_processInfo->GetNewSpeed() == 0.0f ? 1.0f : 0.0f;
++      iSpeed = static_cast<int>(speed * DVD_PLAYSPEED_NORMAL);
++    }
++    if (speed == m_processInfo->GetNewSpeed())
++      return;
++
+     if (iSpeed == DVD_PLAYSPEED_NORMAL)
+-      m_callback.OnPlayBackResumed();
++      notification = CDVDMsgPlayerSetSpeed::Notification::RESUMED;
+     else if (iSpeed == DVD_PLAYSPEED_PAUSE)
+-      m_callback.OnPlayBackPaused();
+-
++      notification = CDVDMsgPlayerSetSpeed::Notification::PAUSED;
++
++    CDVDMsgPlayerSetSpeed::SpeedParams params = {iSpeed, false, notification};
+     if (iSpeed == DVD_PLAYSPEED_NORMAL)
+     {
+-      float currentTempo = m_processInfo->GetNewTempo();
+-      if (currentTempo != 1.0f)
+-      {
+-        SetTempo(currentTempo);
+-        return;
+-      }
+-    }
+-    SetPlaySpeed(iSpeed);
+-  }
++      const float currentTempo = m_processInfo->GetNewTempo();
++      if (currentTempo != 1.0f && m_processInfo->IsTempoAllowed(currentTempo))
++      {
++        params.m_speed = static_cast<int>(currentTempo * DVD_PLAYSPEED_NORMAL);
++        params.m_isTempo = true;
++      }
++    }
++
++    m_processInfo->SetNewSpeed(speed);
++    if (IsPlaying())
++    {
++      m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
++      return;
++    }
++    m_playSpeed = params.m_speed;
++    m_streamPlayerSpeed = params.m_speed;
++  }
++
++  if (notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED)
++    m_callback.OnPlayBackResumed();
++  else if (notification == CDVDMsgPlayerSetSpeed::Notification::PAUSED)
++    m_callback.OnPlayBackPaused();
+ }
+ 
+ void CVideoPlayer::SetTempo(float tempo)
+ {
++  std::unique_lock lock(m_speedRequestMutex);
+   tempo = floor(tempo * 100.0f + 0.5f) / 100.0f;
+   if (m_processInfo->IsTempoAllowed(tempo))
+   {
+     int speed = tempo * DVD_PLAYSPEED_NORMAL;
+-    CDVDMsgPlayerSetSpeed::SpeedParams params = { speed, true };
++    CDVDMsgPlayerSetSpeed::SpeedParams params = {speed, true};
+     m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
+ 
+@@ -4401,4 +4550,5 @@
+ void CVideoPlayer::FrameAdvance(int frames)
+ {
++  std::unique_lock lock(m_speedRequestMutex);
+   float currentSpeed = m_processInfo->GetNewSpeed();
+   if (currentSpeed != DVD_PLAYSPEED_PAUSE)
+@@ -4853,4 +5003,5 @@
+ {
+   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
++  m_resumeGate.InvalidateOutput();
+ 
+   double startpts;

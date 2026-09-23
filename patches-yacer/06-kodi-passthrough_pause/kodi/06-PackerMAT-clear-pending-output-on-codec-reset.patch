@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 22:00:00 -0400
+Subject: [PATCH] Audio: clear pending MAT output on passthrough codec reset
+
+A passthrough codec reset clears parser input and timestamps but leaves the
+MAT packer's partial packet, completed output queue and timing state alive.
+A seek can consequently mix pre-reset payload or timing into later output.
+
+Add an explicit MAT reset that clears every state field and both output
+buffers, then invoke it from the existing codec reset. Retain the packer
+object: its creation currently depends on the TrueHD staging buffer being
+empty, so deleting only the packer would not reliably recreate it.
+
+After reset the packer waits for a new major sync and produces the same
+bytes as a fresh packer fed the new stream. This does not change seamless
+branch handling during continuous playback or implement resume preroll.
+Native tests compare the production packer against a fresh instance after
+partial/queued output and across sample-rate and timing discontinuities.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp b/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+--- a/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
++++ b/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+@@ -147,6 +147,14 @@
+   m_buffer.reserve(MAT_BUFFER_SIZE);
+ }
+ 
++void CPackerMAT::Reset()
++{
++  m_state = {};
++  m_bufferCount = 0;
++  m_buffer.clear();
++  m_outputQueue.clear();
++}
++
+ // On a high level, a MAT frame consists of a sequence of padded TrueHD frames
+ // The size of the padded frame can be determined from the frame time/sequence code in the frame header,
+ // since it varies to accommodate spikes in bitrate.
+diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.h b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
+--- a/xbmc/cores/AudioEngine/Utils/PackerMAT.h
++++ b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
+@@ -31,6 +31,7 @@
+ 
+   bool PackTrueHD(const uint8_t* data, int size);
+   std::vector<uint8_t> GetOutputFrame();
++  void Reset();
+ 
+ private:
+   struct MATState
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+@@ -302,6 +302,8 @@
+   m_currentPts = DVD_NOPTS_VALUE;
+   m_nextPts = DVD_NOPTS_VALUE;
+   m_parser.Reset();
++  if (m_packerMAT)
++    m_packerMAT->Reset();
+ }
+ 
+ int CDVDAudioCodecPassthrough::GetBufferSize()
