@@ -210,15 +210,51 @@ GENERATED = {
 }
 
 
-def pinned_archive(package, suffix):
+def download_to(url, target, expect=None):
+    """Fetch url to target, leaving nothing behind if it does not arrive whole.
+
+    Returns the digest of what landed. A caller that knows the digest the
+    package declares passes it as expect, and a body that does not match is
+    discarded rather than cached.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # A fixed .part name in a directory the product build also writes would
+    # let two runs splice one file together.
+    handle, partial = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}-", suffix=".part")
+    os.close(handle)
+    partial = Path(partial)
+    try:
+        # --connect-timeout only bounds the handshake; --speed-limit with
+        # --speed-time is what gives up on a transfer that connects and then
+        # stalls, which would otherwise hold the run until its whole timeout.
+        subprocess.run(["curl", "-sSLf", "--retry", "3", "--connect-timeout", "20",
+                        "--speed-limit", "1000", "--speed-time", "60", "--max-time", "900",
+                        "-o", str(partial), url], check=True)
+        digest = file_sha256(partial)
+        if expect and digest != expect:
+            raise RuntimeError(
+                f"{url} does not match the PKG_SHA256 it declares:\n"
+                f"  declared {expect}\n  fetched  {digest}")
+        partial.rename(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return digest
+
+
+def pinned_archive(package, suffix, download=True):
     """A package's pinned source, verified against the PKG_SHA256 it declares."""
     mk = (package / "package.mk").read_text()
     version = re.search(r'^PKG_VERSION="([^"]+)"', mk, re.MULTILINE)[1]
     want = re.search(r'^PKG_SHA256="([^"]*)"', mk, re.MULTILINE)
     archive = CORELEC / f"sources/{package.name}/{package.name}-{version}{suffix}"
+    digest = want[1] if want else None
     if not archive.is_file():
-        raise RuntimeError(f"missing {archive}; a build fetches it, or fetch it by hand")
-    if want and want[1] and file_sha256(archive) != want[1]:
+        if not download:
+            raise RuntimeError(f"missing {archive}; a build fetches it, or fetch it by hand")
+        url = re.search(r'^PKG_URL="([^"]+)"', mk, re.MULTILINE)[1]
+        download_to(url.replace("${PKG_VERSION}", version), archive, expect=digest)
+    if digest and file_sha256(archive) != digest:
         raise RuntimeError(f"{archive} does not match the PKG_SHA256 in {package}/package.mk")
     return archive, version
 
@@ -247,12 +283,12 @@ static inline int ff_thread_once(AVOnce *control, void (*routine)(void))
 FFMPEG_SOURCES = ("libavutil/crc.c",)
 
 
-def staged_sources(destination):
+def staged_sources(destination, download=True):
     """Stage the few ffmpeg sources a suite compiles rather than fakes."""
     destination = Path(destination)
     if (destination / FFMPEG_SOURCES[0]).is_file():
         return destination
-    archive, version = pinned_archive(FFMPEG, ".tar.xz")
+    archive, version = pinned_archive(FFMPEG, ".tar.xz", download)
     root = f"ffmpeg-{version}/"
     wanted = {root + name for name in FFMPEG_SOURCES}
     with tarfile.open(archive) as tar:
@@ -266,7 +302,7 @@ def staged_sources(destination):
     return destination
 
 
-def staged_headers(destination):
+def staged_headers(destination, download=True):
     """Stage the declaration headers a suite may need, from pinned sources.
 
     Kodi's utility translation units include FFmpeg and fmt. Taking those from
@@ -279,7 +315,7 @@ def staged_headers(destination):
         return destination
     destination.mkdir(parents=True, exist_ok=True)
 
-    archive, version = pinned_archive(FFMPEG, ".tar.xz")
+    archive, version = pinned_archive(FFMPEG, ".tar.xz", download)
     root = f"ffmpeg-{version}/"
     with tarfile.open(archive) as tar:
         for member in tar:
@@ -296,7 +332,7 @@ def staged_headers(destination):
     for relative, body in GENERATED.items():
         (destination / relative).write_text(body.format(version=version))
 
-    archive, version = pinned_archive(LIBFMT, ".tar.gz")
+    archive, version = pinned_archive(LIBFMT, ".tar.gz", download)
     root = f"fmt-{version}/include/"
     with tarfile.open(archive) as tar:
         for member in tar:
@@ -346,25 +382,8 @@ def kodi_archive(pin, download=True):
         return archive
     if not download:
         raise RuntimeError(f"missing {archive}")
-    archive.parent.mkdir(parents=True, exist_ok=True)
     url = f"https://github.com/CoreELEC/xbmc/archive/{pin}.tar.gz"
-    # A fixed .part name in a directory the product build also writes would
-    # let two runs splice one file together.
-    handle, partial = tempfile.mkstemp(dir=archive.parent, prefix=".kodi-", suffix=".part")
-    os.close(handle)
-    partial = Path(partial)
-    try:
-        # --connect-timeout only bounds the handshake; --speed-limit with
-        # --speed-time is what gives up on a transfer that connects and then
-        # stalls, which would otherwise hold the run until its whole timeout.
-        subprocess.run(["curl", "-sSLf", "--retry", "3", "--connect-timeout", "20",
-                        "--speed-limit", "1000", "--speed-time", "60", "--max-time", "900",
-                        "-o", str(partial), url], check=True)
-        digest = file_sha256(partial)
-        partial.rename(archive)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
+    digest = download_to(url, archive)
     record.write_text(digest)
     Path(f"{archive}.url").write_text(url)
     return archive
@@ -419,8 +438,8 @@ def prepare_tree(destination, download=True):
     }
     # Suites that compile Kodi translation units need these; staging them
     # beside the tree keeps the whole compile hermetic.
-    staged_headers(destination / ".yacer-include")
-    staged_sources(destination / ".yacer-src")
+    staged_headers(destination / ".yacer-include", download)
+    staged_sources(destination / ".yacer-src", download)
     # Written last: its absence means the tree is half-built.
     (destination / "yacer-tree.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Applied {len(applied)} ordered Kodi patches to {destination} (pin {pin})", flush=True)
