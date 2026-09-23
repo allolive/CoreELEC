@@ -208,7 +208,7 @@ now stays present after the first playback. Not exercised on hardware.
 --- a/sound/soc/amlogic/auge/tdm_hw.h
 +++ b/sound/soc/amlogic/auge/tdm_hw.h
 @@ -70,9 +70,12 @@
- 	bool tdmin_lb_after_gain;
+ 	int ext_amp_ws_inv;
  };
  
 +struct snd_kcontrol;

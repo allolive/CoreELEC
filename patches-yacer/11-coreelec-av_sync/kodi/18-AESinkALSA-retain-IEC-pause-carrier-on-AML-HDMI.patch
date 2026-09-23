@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:10:00 -0400
+Subject: [PATCH] AESinkALSA: opt Auge HDMI HD passthrough into IEC pause carrier
+
+Plug CoreELEC's Amlogic ALSA path into Kodi's generic optional pause-carrier
+policy. Enable it by default only for opened Auge HDMI TrueHD and DTS-HD
+passthrough streams. PCM, S/PDIF, USB and other devices retain their policy.
+
+The setting does not extend keepalive, certify receiver readiness or suppress
+synchronization. It avoids selecting zero filler solely because STREAMING is
+false while an eligible transport remains open. Software pause, buffering and
+same-format seeks all share that existing idle-carrier path.
+
+This is a bounded carrier-policy experiment for late sound after unpause.
+Do not use snd_pcm_pause: AML's pause release can reset the FIFO and mute the
+receiver. Keep this platform opt-in separate from the generic cache and sink
+changes; no addon or runtime plugin installation is needed.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
+--- a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
++++ b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
+@@ -52,6 +52,7 @@
+   double GetCacheTotal() override;
+   unsigned int AddPackets(uint8_t **data, unsigned int frames, unsigned int offset) override;
+   void Drain() override;
++  bool WantsIECPauseBursts() const override;
+ 
+ private:
+   CAEChannelInfo GetChannelLayoutRaw(const AEAudioFormat& format);
+@@ -112,4 +113,3 @@
+ 
+   static void sndLibErrorHandler(const char *file, int line, const char *function, int err, const char *fmt, ...);
+ };
+-
+diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
+--- a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
++++ b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
+@@ -743,6 +743,19 @@
+   }
+ }
+ 
++bool CAESinkALSA::WantsIECPauseBursts() const
++{
++  // CoreELEC's AML HDMI integration opts into Kodi's generic idle-carrier
++  // policy. Limit the initial change to the Auge HD passthrough paths; PCM,
++  // USB, S/PDIF and unrelated ALSA devices retain the generic default.
++  const auto type = m_initFormat.m_streamInfo.m_type;
++  return m_pcm && m_passthrough && GetAMLDeviceType(m_device) == AML_AUGESOUND &&
++         AEDeviceTypeFromName(m_device) == AE_DEVTYPE_HDMI &&
++         (type == CAEStreamInfo::STREAM_TYPE_TRUEHD ||
++          type == CAEStreamInfo::STREAM_TYPE_DTSHD ||
++          type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA);
++}
++
+ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
+ {
+   m_initDevice = device;
