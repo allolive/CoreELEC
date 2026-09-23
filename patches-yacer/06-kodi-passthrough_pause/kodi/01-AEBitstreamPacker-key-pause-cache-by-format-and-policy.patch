@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:10:00 -0400
+Subject: [PATCH] AEBitstreamPacker: include format and filler policy in pause cache
+
+Equal-duration requests currently reuse the previous pause buffer even when
+switching between zero filler and IEC pause bursts. Sample-rate and codec
+changes can likewise retain the wrong preamble layout or encoded gap.
+
+Cache all pause-generation inputs, invalidate on program packing and Reset,
+and keep a real cache hit byte-identical because the sink may have swapped it
+in place. An unsupported format must not leave prior payload as pause output.
+
+This is a generic Kodi fix. IEC packing is shared AudioEngine code and cannot
+be corrected in an Amlogic consumer.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
+--- a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
++++ b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
+@@ -11,7 +11,9 @@
+ #include "AEChannelInfo.h"
+ #include "AEPackIEC61937.h"
+ 
++#include <array>
+ #include <list>
++#include <optional>
+ #include <stdint.h>
+ #include <vector>
+ 
+@@ -45,6 +47,7 @@
+ 
+   unsigned int  m_dataSize = 0;
+   uint8_t       m_packedBuffer[MAX_IEC61937_PACKET];
+-  unsigned int m_pauseDuration = 0;
++  // The sink may byte-swap this buffer in place. A cache hit must preserve it;
++  // every input that changes the generated pause bytes belongs in the key.
++  std::optional<std::array<unsigned int, 6>> m_pauseKey;
+ };
+-
+diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
+--- a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
++++ b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
+@@ -34,7 +34,7 @@
+ 
+ void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
+ {
+-  m_pauseDuration = 0;
++  m_pauseKey.reset();
+   switch (info.m_type)
+   {
+     case CAEStreamInfo::STREAM_TYPE_TRUEHD:
+@@ -75,8 +75,12 @@
+ 
+ bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts)
+ {
+-  // re-use last buffer
+-  if (m_pauseDuration == millis)
++  const std::array<unsigned int, 6> key{
++      millis, static_cast<unsigned int>(info.m_type), info.m_sampleRate, GetOutputRate(info),
++      GetOutputChannelMap(info).Count(), iecBursts ? 1U : 0U};
++  // A change from zero filler to IEC pause bursts needs fresh bytes even when
++  // the requested duration is unchanged. A real hit is already byte-swapped.
++  if (m_pauseKey && *m_pauseKey == key)
+     return false;
+ 
+   switch (info.m_type)
+@@ -84,7 +88,6 @@
+     case CAEStreamInfo::STREAM_TYPE_TRUEHD:
+     case CAEStreamInfo::STREAM_TYPE_EAC3:
+       m_dataSize = CAEPackIEC61937::PackPause(m_packedBuffer, millis, GetOutputChannelMap(info).Count() * 2, GetOutputRate(info), 4, info.m_sampleRate);
+-      m_pauseDuration = millis;
+       break;
+ 
+     case CAEStreamInfo::STREAM_TYPE_AC3:
+@@ -95,13 +98,16 @@
+     case CAEStreamInfo::STREAM_TYPE_DTS_1024:
+     case CAEStreamInfo::STREAM_TYPE_DTS_2048:
+       m_dataSize = CAEPackIEC61937::PackPause(m_packedBuffer, millis, GetOutputChannelMap(info).Count() * 2, GetOutputRate(info), 3, info.m_sampleRate);
+-      m_pauseDuration = millis;
+       break;
+ 
+     default:
+       CLog::Log(LOGERROR, "CAEBitstreamPacker::Pack - no pack function");
+-  }
+-
++      m_dataSize = 0;
++      m_pauseKey.reset();
++      return true;
++  }
++
++  m_pauseKey = key;
+   if (!iecBursts)
+   {
+     memset(m_packedBuffer, 0, m_dataSize);
+@@ -123,7 +129,7 @@
+ void CAEBitstreamPacker::Reset()
+ {
+   m_dataSize = 0;
+-  m_pauseDuration = 0;
++  m_pauseKey.reset();
+   m_packedBuffer[0] = 0;
+ }
+ 

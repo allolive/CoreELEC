@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:10:00 -0400
+Subject: [PATCH] ActiveAESink: allow backend opt-in to retained IEC pause carrier
+
+A paused stream clears STREAMING, which selects zero filler during keepalive.
+For a backend that wants to retain an established IEC carrier, distinguish
+successful complete program submission from the current mutable packer bytes.
+
+Expose a default-false sink policy and use submission history only for opted-in
+backends. Preserve the existing selection policy for other sinks. Keep the
+existing silence timeout, acquisition algorithm, packet consumption, and codec
+packing. The companion pause-cache fix corrects reuse in both policies.
+
+Record history after every carrier frame from a real packed output was accepted.
+Clear on output failure, drain or close; retain it on software FLUSH, which does
+not retract hardware bytes. History is not proof of receiver lock or continuous
+transport: backends can recover internally and external receivers are unobserved.
+
+These shared changes belong in the sink and IEC transport layer. There is no
+Amlogic dependency; CoreELEC opts in separately in its ALSA integration.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/AudioEngine/Interfaces/AESink.h b/xbmc/cores/AudioEngine/Interfaces/AESink.h
+--- a/xbmc/cores/AudioEngine/Interfaces/AESink.h
++++ b/xbmc/cores/AudioEngine/Interfaces/AESink.h
+@@ -62,6 +62,15 @@
+   virtual void AddPause(unsigned int millis) {}
+ 
+   /*!
++   * @brief Prefer IEC pause bursts to zero filler after real IEC data has been
++   * submitted on this open sink, including retained-format idle periods.
++   * This does not extend the user's keepalive timeout or report receiver lock.
++   * Only used when AudioEngine performs IEC packing; other sinks keep their
++   * existing policy unless their backend explicitly opts in.
++   */
++  virtual bool WantsIECPauseBursts() const { return false; }
++
++  /*!
+    * @brief Return a timestamped status structure with delay and sink info
+    * @param status structure filled with sink status
+   */
+@@ -82,4 +91,3 @@
+   */
+   virtual void SetVolume(float volume) {}
+ };
+-
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.h
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.h
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.h
+@@ -164,6 +164,9 @@
+   int m_sinkLatency;
+   std::unique_ptr<CAEBitstreamPacker> m_packer;
+   bool m_needIecPack{false};
++  // Successful complete real IEC submission on the current open transport.
++  // This is output history, not a decoder-readiness or continuity guarantee.
++  bool m_hasSubmittedIECFrame{false};
+   bool m_streamNoise;
+ };
+ 
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+@@ -405,6 +405,9 @@
+         case CSinkControlProtocol::STREAMING:
+           m_extStreaming = *(bool*)msg->data;
+           SetSilenceTimer();
++          CLog::Log(LOGDEBUG, LOGAUDIO,
++                    "AESINK event=streaming active={} keep_iec_pause={} submitted_iec={}",
++                    m_extStreaming, m_sink->WantsIECPauseBursts(), m_hasSubmittedIECFrame);
+           if (!m_extSilenceTimer.IsTimePast())
+           {
+             m_state = S_TOP_CONFIGURED_SILENCE;
+@@ -435,6 +438,7 @@
+         switch (signal)
+         {
+         case CSinkDataProtocol::DRAIN:
++          m_hasSubmittedIECFrame = false;
+           m_sink->Drain();
+           msg->Reply(CSinkDataProtocol::ACC);
+           m_state = S_TOP_CONFIGURED_IDLE;
+@@ -566,6 +570,7 @@
+           }
+           else
+           {
++            m_hasSubmittedIECFrame = false;
+             m_sink->Drain();
+             m_state = S_TOP_CONFIGURED_IDLE;
+             if (m_extAppFocused)
+@@ -1061,6 +1066,7 @@
+ 
+ void CActiveAESink::CloseSink(const bool drain)
+ {
++  m_hasSubmittedIECFrame = false;
+   if (!m_sink)
+     return;
+ 
+@@ -1096,6 +1102,7 @@
+   int retry = 0;
+   unsigned int written = 0;
+   AEDelayStatus status;
++  bool realIECFrame = false;
+ 
+   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+   {
+@@ -1109,8 +1116,12 @@
+       }
+       else if (samples->pkt->pause_burst_ms > 0)
+       {
+-        // construct a pause burst if we have already output valid audio
+-        bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
++        // Opted-in transports retain IEC carrier during their existing idle
++        // keepalive budget. Mutable packed bytes cannot establish output history:
++        // zero filler overwrites them, and packing is not a successful write.
++        const bool burst = m_sink->WantsIECPauseBursts()
++                               ? m_hasSubmittedIECFrame
++                               : m_extStreaming && (m_packer->GetBuffer()[0] != 0);
+         if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
+           skipSwap = true;
+       }
+@@ -1121,6 +1132,7 @@
+       packBuffer = m_packer->GetBuffer();
+       buffer = &packBuffer;
+       totalFrames = size / m_sinkFormat.m_frameSize;
++      realIECFrame = samples->pkt->nb_samples > 0 && totalFrames > 0;
+       frames = totalFrames;
+ 
+       switch(m_swapState)
+@@ -1165,6 +1177,7 @@
+       retry++;
+       if (retry > 4)
+       {
++        m_hasSubmittedIECFrame = false;
+         m_extError = true;
+         CLog::Log(LOGERROR, "CActiveAESink::OutputSamples - failed");
+         status.SetDelay(0);
+@@ -1179,6 +1192,7 @@
+     }
+     else if (written > maxFrames)
+     {
++      m_hasSubmittedIECFrame = false;
+       m_extError = true;
+       CLog::Log(LOGERROR, "CActiveAESink::OutputSamples - sink returned error");
+       status.SetDelay(0);
+@@ -1196,6 +1210,11 @@
+       m_stats->UpdateSinkDelay(status, samples->pool ? written : 0);
+   }
+ 
++  // Partial writes, zero-size aggregation and pause filler never establish this
++  // history. A host queue FLUSH deliberately retains it; it does not stop ALSA.
++  if (realIECFrame)
++    m_hasSubmittedIECFrame = true;
++
+   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
+ 
