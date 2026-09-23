@@ -111,8 +111,12 @@ function(yacer_add_test)
   set_target_properties(${target} PROPERTIES
     CXX_STANDARD ${TEST_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   # A suite's own include directories come first so a shim can stand in for a
-  # header the tree has - that is the only reason to pass one.
-  target_include_directories(${target} PRIVATE ${TEST_INCLUDES} "${KODI_SOURCE}/xbmc")
+  # header the tree has - that is the only reason to pass one. The tree itself
+  # is a system include: upstream's headers are no more ours to make
+  # warning-clean than upstream's translation units are, and -Werror on our own
+  # code should answer for our own code.
+  target_include_directories(${target} PRIVATE ${TEST_INCLUDES})
+  target_include_directories(${target} SYSTEM PRIVATE "${KODI_SOURCE}/xbmc")
   # FFmpeg declaration headers, staged from the pinned tarball by
   # prepare-tree.py so nothing depends on what the host has installed.
   if(EXISTS "${KODI_SOURCE}/.yacer-include")
