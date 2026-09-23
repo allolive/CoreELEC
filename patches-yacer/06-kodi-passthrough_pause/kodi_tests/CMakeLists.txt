@@ -26,3 +26,26 @@ yacer_add_test(
   INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/platform/posix
            ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
+
+# The real packer: a reset test that compared against an imitation of MAT
+# framing would prove nothing about the framing the box emits.
+yacer_add_test(
+  NAME MATReset
+  SOURCES TestMATReset.cpp
+  KODI_SOURCES xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+               xbmc/utils/BitstreamReader.cpp
+  INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/platform/posix
+)
+
+# Both production packers, so the bytes checked here are the bytes the sink
+# would hand the HDMI carrier.
+yacer_add_test(
+  NAME IECPause
+  SOURCES TestIECPause.cpp
+  KODI_SOURCES xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
+               xbmc/cores/AudioEngine/Utils/AEPackIEC61937.cpp
+               xbmc/cores/AudioEngine/Utils/AEChannelInfo.cpp
+               xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+               xbmc/utils/BitstreamReader.cpp
+  INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/platform/posix
+)
