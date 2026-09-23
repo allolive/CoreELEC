@@ -88,3 +88,13 @@ yacer_add_test(
   INCLUDES ${YACER_SHIMS}/registry ${YACER_SHIMS}
            ${KODI_SOURCE}/xbmc/platform/posix ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
+
+# The gate is header-only. The AML side of this - the QBUF generation check in
+# the codec and the renderer's handoff - is not here: AMLCodec.cpp needs GBM
+# headers and a cmake-generated one, so it wants a build dependency rather than
+# a seam.
+yacer_add_test(
+  NAME VideoPrerollGate
+  SOURCES TestVideoPrerollGate.cpp
+  INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/cores/VideoPlayer
+)
