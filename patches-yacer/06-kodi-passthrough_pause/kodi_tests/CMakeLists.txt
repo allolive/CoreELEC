@@ -73,3 +73,18 @@ yacer_add_test(
   INCLUDES ${YACER_SHIMS}
 )
 
+
+
+# The real sink. gmock supplies the audio engine interfaces, which are pure
+# virtual; the registry comes from the opt-in shim and the clock's symbols from
+# the test binary, because both are singletons reached through a header.
+yacer_add_test(
+  NAME AudioPrerollSink
+  STANDARD 20
+  SOURCES TestAudioPrerollSink.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+               xbmc/cores/AudioEngine/Utils/AEChannelInfo.cpp
+               xbmc/platform/posix/threads/RecursiveMutex.cpp
+  INCLUDES ${YACER_SHIMS}/registry ${YACER_SHIMS}
+           ${KODI_SOURCE}/xbmc/platform/posix ${KODI_SOURCE}/xbmc/cores/VideoPlayer
+)
