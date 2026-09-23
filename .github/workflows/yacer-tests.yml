@@ -1,0 +1,225 @@
+# YACER - Yet Another CoreELEC Repo
+#
+# Compiles and runs the native tests against the pinned Kodi with every patch
+# applied - the tree the build compiles, not a reconstruction of it. Applying
+# the stack is itself the first test: a patch that no longer applies, or one of
+# ours that only applies with fuzz, fails here in minutes instead of hours into
+# a build.
+#
+# Tests live with the feature they cover, in patches-yacer/<group>/<pkg>_tests/.
+name: YACER tests
+
+on:
+  push:
+    branches: [ yacer ]
+    paths:
+      - 'patches-yacer/**'
+      - 'tests/**'
+      - 'scripts/yacer-patches.sh'
+      - '.github/workflows/yacer-tests.yml'
+  # The mirror branch has no tests/ directory, so a pull request against it
+  # would check out a tree this job cannot run in.
+  pull_request:
+    branches: [ yacer ]
+  workflow_dispatch:
+  workflow_call:        # so the build can gate on it
+
+permissions:
+  contents: read
+
+concurrency:
+  # A reusable workflow inherits the caller's ref, so a run started by the
+  # build would otherwise share a group with the standalone run on the same
+  # branch - and cancelling a called workflow fails its caller.
+  group: yacer-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: native tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The layout the test tooling expects: the mirror and our branch side by
+      # side, the way the two worktrees sit on a workstation.
+      - uses: actions/checkout@v7
+        with:
+          ref: coreelec-22
+          path: CoreELEC
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          path: CoreELEC-yacer
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Pin the interpreter rather than taking whatever the image ships: the
+      # harness uses tarfile extraction filters, whose default changed in 3.14.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read the Kodi pin
+        id: pin
+        run: |
+          mk=CoreELEC/projects/Amlogic-ce/packages/mediacenter/kodi/package.mk
+          pin=$(sed -n 's/^PKG_VERSION="\(.*\)"/\1/p' "$mk" | head -1)
+          if ! [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$mk does not hold a 40-character commit pin"
+            exit 1
+          fi
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "kodi $pin"
+
+      # 42 MB, and it never changes for a given pin. The epoch is here to
+      # invalidate every entry at once if a cached archive is ever bad.
+      - name: Cache the pinned Kodi archive
+        uses: actions/cache@v6
+        with:
+          path: CoreELEC/sources/kodi
+          key: kodi-source-v1-${{ steps.pin.outputs.pin }}
+
+      # Also stages FFmpeg's declaration headers from the pinned tarball, which
+      # is why nothing here installs libav packages.
+      - name: Apply every patch to the pinned Kodi
+        timeout-minutes: 10
+        run: python3 CoreELEC-yacer/tests/prepare-tree.py --out "${RUNNER_TEMP}/kodi"
+
+      # RelWithDebInfo without NDEBUG: several suites still assert(), and a
+      # build type that compiles those out would run them as no-ops.
+      - name: Configure
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            cmake -S CoreELEC-yacer/tests -B "${RUNNER_TEMP}/build" \
+                  -DKODI_SOURCE="${RUNNER_TEMP}/kodi" \
+                  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                  -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g" && exit 0
+            echo "configure failed (fetching googletest?), retrying"
+            sleep 15
+          done
+          exit 1
+
+      - name: Build
+        run: cmake --build "${RUNNER_TEMP}/build" -j"$(nproc)"
+
+      # --no-tests=error: if discovery ever lists nothing, ctest otherwise
+      # reports success and the job goes green having run nothing.
+      - name: Run
+        run: |
+          ctest --test-dir "${RUNNER_TEMP}/build" --output-on-failure \
+                --no-tests=error --parallel "$(nproc)" \
+                --output-junit "${RUNNER_TEMP}/results.xml"
+
+      # A second, instrumented build. It is deliberately not a gate: a coverage
+      # threshold buys assertion-free tests written to reach lines, not safety.
+      - name: Coverage
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          cmake -S CoreELEC-yacer/tests -B "${RUNNER_TEMP}/coverage" \
+                -DKODI_SOURCE="${RUNNER_TEMP}/kodi" -DYACER_COVERAGE=ON \
+                -DCMAKE_BUILD_TYPE=Debug
+          cmake --build "${RUNNER_TEMP}/coverage" -j"$(nproc)"
+          ctest --test-dir "${RUNNER_TEMP}/coverage" --no-tests=error --output-on-failure
+          python3 CoreELEC-yacer/tests/coverage.py \
+                  --build "${RUNNER_TEMP}/coverage" \
+                  --source "${RUNNER_TEMP}/kodi" --markdown >> "$GITHUB_STEP_SUMMARY"
+
+      # Written whether the run passed or not - a failed run is when the report
+      # is worth reading. Guarded because a failure before ctest leaves no file.
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - "${RUNNER_TEMP}/results.xml" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+          if not os.path.exists(path):
+              print("### Native tests\n\nThe run did not reach ctest; see the failing step above.")
+              sys.exit(0)
+
+
+          def detail(case):
+              # ctest leaves <failure> empty and puts the run's output in
+              # system-out, so the assertion is in there. Start at the line
+              # googletest reports it on.
+              lines = (case.findtext("system-out") or "").strip().splitlines()
+              for index, line in enumerate(lines):
+                  if "Failure" in line or "error:" in line:
+                      return "\n".join(lines[index:index + 40])
+              return "\n".join(lines[-40:])
+
+
+          rows, failed = [], []
+          for case in ET.parse(path).getroot().iter("testcase"):
+              bad = case.find("failure") is not None
+              rows.append((case.get("name", "?"), float(case.get("time", 0)), bad))
+              if bad:
+                  failed.append(case)
+          print(f"### Native tests: {len(rows) - len(failed)}/{len(rows)} passed\n")
+          if not failed:
+              print(f"All {len(rows)} cases passed in "
+                    f"{sum(seconds for _, seconds, _ in rows):.2f}s.")
+              sys.exit(0)
+
+          print("| | test | time |")
+          print("|---|---|---|")
+          for name, seconds, bad in rows:
+              if bad:
+                  print(f"| :x: | `{name}` | {seconds:.2f}s |")
+          print()
+          # A mass breakage would otherwise overrun the 1 MiB summary limit.
+          for case in failed[:20]:
+              print(f"<details><summary>{case.get('name')}</summary>\n")
+              print("```")
+              print(detail(case)[:4000])
+              print("```\n</details>\n")
+          if len(failed) > 20:
+              print(f"...and {len(failed) - 20} more.")
+          PY
+
+      # Workflow commands need no permissions and annotate the diff even on a
+      # fork's pull request, which a check-run reporter cannot.
+      - name: Annotate the failing assertions
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - "${RUNNER_TEMP}/results.xml" CoreELEC-yacer <<'PY'
+          import os
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path, checkout = sys.argv[1], os.path.abspath(sys.argv[2])
+          if not os.path.exists(path):
+              sys.exit(0)
+          for case in ET.parse(path).getroot().iter("testcase"):
+              if case.find("failure") is None:
+                  continue
+              out = case.findtext("system-out") or ""
+              hit = re.search(r"^(/\S+?):(\d+): Failure\n(.*?)(?:\n\n|\Z)", out,
+                              re.MULTILINE | re.DOTALL)
+              if not hit:
+                  continue
+              source, line, message = hit[1], hit[2], " ".join(hit[3].split())[:400]
+              # Annotations resolve against the repository, so only a file
+              # inside our checkout can be pointed at - not one in the
+              # prepared Kodi tree, which is not in the diff.
+              if not source.startswith(checkout + os.sep):
+                  continue
+              print(f"::error file={os.path.relpath(source, checkout)},line={line},"
+                    f"title={case.get('name')}::{message}")
+          PY
+
+      - name: Upload the report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/results.xml
+          retention-days: 14
+          if-no-files-found: warn

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Working notes, kept out of the published tree.
+diary.md
