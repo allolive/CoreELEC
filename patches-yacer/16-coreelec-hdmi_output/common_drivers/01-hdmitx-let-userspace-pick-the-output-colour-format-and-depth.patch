@@ -138,7 +138,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  	DRM_DEBUG("vic: %d, cs: %d, cd: %d\n", hdmitx_state->hcs.para.vic,
  		 hdmitx_state->hcs.para.cs, hdmitx_state->hcs.para.cd);
  
-@@ -2638,6 +2719,43 @@ static void meson_hdmitx_hpd_cb(void *data)
+@@ -2638,6 +2719,45 @@ static void meson_hdmitx_hpd_cb(void *data)
  	drm_kms_helper_hotplug_event(am_hdmi->base.connector.dev);
  }
  
@@ -171,6 +171,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +		/* not showing anything: the next mode set picks it up */
 +		if (crtc_state && crtc_state->active) {
 +			to_am_hdmitx_connector_state(conn_state)->update = true;
++			/* duplicate_state hands the state back without a ctx */
++			state->acquire_ctx = &ctx;
 +			ret = drm_atomic_commit(state);
 +		}
 +		drm_atomic_state_put(state);
@@ -182,7 +184,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  int meson_hdmitx_dev_bind(struct drm_device *drm,
  	int type, struct meson_connector_dev *intf)
  {
-@@ -2725,6 +2843,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
+@@ -2725,6 +2845,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
  	hpd_cb.callback = meson_hdmitx_hpd_cb;
  	hpd_cb.data = &am_hdmi_info;
  	hdmitx_register_hpd_cb(tx_comm, &hpd_cb);
@@ -190,7 +192,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
  	/*hdcp init, default is disable state*/
  	if (!am_hdmi_info.android_path) {
-@@ -2790,6 +2909,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
+@@ -2790,6 +2911,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
  int meson_hdmitx_dev_unbind(struct drm_device *drm,
  	int type, int connector_id)
  {
