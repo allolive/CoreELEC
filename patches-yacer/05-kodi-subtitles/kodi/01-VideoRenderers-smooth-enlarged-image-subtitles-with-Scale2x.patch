@@ -47,8 +47,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../VideoRenderers/OverlayRendererUtil.h      |  9 +++
  3 files changed, 162 insertions(+), 3 deletions(-)
 
-diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 760a4d2..dd62741 100644
+---
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -23,9 +23,14 @@
@@ -66,7 +65,7 @@ index 760a4d2..dd62741 100644
  
  // GLES2.0 cant do CLAMP, but can do CLAMP_TO_EDGE.
  #define GL_CLAMP GL_CLAMP_TO_EDGE
-@@ -143,6 +148,54 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
+@@ -143,6 +148,54 @@
    return std::make_shared<COverlayTextureGLES>(o, rSource);
  }
  
@@ -118,10 +117,10 @@ index 760a4d2..dd62741 100644
 +}
 +} // unnamed namespace
 +
- inline bool IsImageColored(const std::vector<uint32_t>& rgba)
+ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource)
  {
-   constexpr uint8_t TOL = 2; // grayscale tolerance
-@@ -181,8 +234,25 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+   m_isHDROverlay = o.m_isHDROverlay;
+@@ -158,8 +211,25 @@
    if (o.palette.empty())
    {
      m_pma = false;
@@ -149,7 +148,7 @@ index 760a4d2..dd62741 100644
    }
    else
    {
-@@ -220,7 +290,12 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+@@ -196,7 +266,12 @@
        }
      }
  
@@ -163,8 +162,6 @@ index 760a4d2..dd62741 100644
    }
  
    glBindTexture(GL_TEXTURE_2D, 0);
-diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index d371fe1..d87c8df 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -24,6 +24,81 @@
@@ -249,11 +246,9 @@ index d371fe1..d87c8df 100644
  static uint32_t build_rgba(int a, int r, int g, int b, bool mergealpha)
  {
    if(mergealpha)
-diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
-index 3a62975..b4a2e56 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
-@@ -61,6 +61,15 @@ void convert_rgba(const CDVDOverlaySpu& o,
+@@ -61,6 +61,15 @@
                    int& min_y,
                    int& max_y,
                    std::vector<uint32_t>& rgba);

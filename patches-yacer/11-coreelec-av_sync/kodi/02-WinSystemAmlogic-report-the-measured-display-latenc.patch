@@ -11,8 +11,7 @@ against it. Report what the pipeline actually measures.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 3d338c1..75231b6 100644
+---
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -8,6 +8,8 @@
@@ -24,7 +23,7 @@ index 3d338c1..75231b6 100644
  #include "DynamicDll.h"
  
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
-@@ -2452,6 +2454,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2452,6 +2454,7 @@
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
    m_opened = true;
@@ -32,7 +31,7 @@ index 3d338c1..75231b6 100644
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
    SetSpeed(m_speed);
-@@ -2584,6 +2587,11 @@ void CAMLCodec::CloseDecoder()
+@@ -2584,6 +2587,11 @@
    dumpfile_close(am_private);
    m_opened = false;
  
@@ -44,7 +43,7 @@ index 3d338c1..75231b6 100644
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
    free(am_private->hdr_buf.data);
-@@ -2645,6 +2653,8 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2645,6 +2653,8 @@
  
  void CAMLCodec::Reset()
  {
@@ -53,7 +52,7 @@ index 3d338c1..75231b6 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2880,6 +2890,28 @@ void CAMLCodec::SetPollDevice(int dev)
+@@ -2880,6 +2890,28 @@
    m_pollDevice = dev;
  }
  
@@ -82,7 +81,7 @@ index 3d338c1..75231b6 100644
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
    int ret;
-@@ -3031,6 +3063,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3031,6 +3063,7 @@
    if (m_speed == speed)
      return;
  
@@ -90,11 +89,9 @@ index 3d338c1..75231b6 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
    // update internal vars regardless
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index e8cd529..1280038 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -86,6 +86,7 @@ public:
+@@ -86,6 +86,7 @@
    static int    OMXDurationToNs(int duration);
    int           GetAmlDuration() const;
    int           ReleaseFrame(const uint32_t index, bool bDrop = false);
@@ -102,7 +99,7 @@ index e8cd529..1280038 100644
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
-@@ -109,7 +110,7 @@ private:
+@@ -109,7 +110,7 @@
    bool             m_drain = false;
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
@@ -111,10 +108,7 @@ index e8cd529..1280038 100644
    uint64_t         m_cur_pts;
    uint64_t         m_last_pts;
    uint32_t         m_bufferIndex;
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-new file mode 100644
-index 0000000..26a739f
---- /dev/null
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp	1969-12-31 19:00:00.000000000 -0500
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -0,0 +1,711 @@
 +/*
@@ -828,10 +822,7 @@ index 0000000..26a739f
 +    m_armed = true;
 +  }
 +}
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-new file mode 100644
-index 0000000..8784594
---- /dev/null
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h	1969-12-31 19:00:00.000000000 -0500
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -0,0 +1,217 @@
 +/*
@@ -1051,11 +1042,9 @@ index 0000000..8784594
 +  double m_alignMax{0.0};
 +};
 +
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 6e8283c..8716bfa 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-@@ -14,8 +14,10 @@ endif()
+@@ -14,8 +14,10 @@
  
  if(TARGET ${APP_NAME_LC}::AML)
    list(APPEND SOURCES AMLCodec.cpp
@@ -1066,11 +1055,9 @@ index 6e8283c..8716bfa 100644
                        DVDVideoCodecAmlogic.h)
  endif()
  
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 1a79460..8a32401 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -724,8 +724,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+@@ -724,8 +724,10 @@
    const double latencyTweak = static_cast<double>(
        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
            refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
@@ -1083,19 +1070,17 @@ index 1a79460..8a32401 100644
  
    return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                            videoDelay -
-diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 4181606..962f41f 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-@@ -9,6 +9,7 @@
- #include "RendererAML.h"
+@@ -10,6 +10,7 @@
  
+ #include "ServiceBroker.h"
  #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
 +#include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -180,6 +181,19 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -227,6 +228,19 @@
  {
    ManageRenderArea();
  
@@ -1115,7 +1100,7 @@ index 4181606..962f41f 100644
    CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
    if(amli && amli->m_amlCodec)
    {
-@@ -188,6 +202,9 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -235,6 +249,9 @@
      {
        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE);
        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
@@ -1125,8 +1110,6 @@ index 4181606..962f41f 100644
        amli->m_amlCodec = nullptr; //Mark frame as processed
        m_prevVPts = pts;
      }
-diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 91e7f5d..49f3baa 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -11,10 +11,14 @@
@@ -1152,7 +1135,7 @@ index 91e7f5d..49f3baa 100644
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -555,6 +560,121 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -547,6 +552,121 @@
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
@@ -1274,8 +1257,6 @@ index 91e7f5d..49f3baa 100644
  void CWinSystemAmlogic::Register(IDispResource *resource)
  {
    std::unique_lock<CCriticalSection> lock(m_resourceSection);
-diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 233ef9b..88e5bf6 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -18,7 +18,10 @@
@@ -1289,8 +1270,8 @@ index 233ef9b..88e5bf6 100644
  #include <gbm.h>
  
  class IDispResource;
-@@ -44,6 +47,31 @@ public:
-   float GetGuiSdrPeakLuminance() const override;
+@@ -43,6 +46,31 @@
+   CHDRCapabilities GetDisplayHDRCapabilities() const override;
    HDR_STATUS GetOSHDRStatus() override;
  
 +  //! \brief The measured cost of the video pipeline, in milliseconds, or -1
@@ -1321,7 +1302,7 @@ index 233ef9b..88e5bf6 100644
    virtual void Register(IDispResource *resource);
    virtual void Unregister(IDispResource *resource);
  
-@@ -79,6 +107,10 @@ protected:
+@@ -78,6 +106,10 @@
    std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
    std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
  private:
