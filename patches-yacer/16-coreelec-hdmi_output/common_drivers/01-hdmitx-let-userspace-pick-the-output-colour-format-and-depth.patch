@@ -1,0 +1,628 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx: let userspace pick the output colour format and depth
+
+A calibration pattern generator needs to send a known format: RGB or YCbCr
+444/422/420 at 8, 10 or 12 bit. On the android path CoreELEC runs, the attr
+is decided in meson_hdmitx_encoder_atomic_check() and nowhere else; the
+attr node is read only, and Kodi as DRM master keeps add-ons off the
+connector properties.
+
+Add /sys/class/amhdmitx/amhdmitx0/user_attr, in hdmitx_common:
+
+  echo rgb,10bit,full > user_attr    format and depth required, range
+                                     optional, limited by default
+  echo > user_attr                   automatic again ("auto" also works)
+
+Malformed input is EINVAL. Full range YCbCr, or full range on hw without
+user_range_cap, is EOPNOTSUPP. A change re-commits the current mode with
+the connector's update flag set, as a hotplug does; if that commit fails
+the old value is restored and write() gets the error. Nothing is saved.
+
+atomic_check validates the request strictly, through a strict mode of the
+stock validator (TMDS clock against both ends, cs/cd against the sink), and
+stays automatic, logged once, where it does not fit. Dolby Vision, 3D frame
+packing, the boot commit and the non-android path stay automatic. With the
+node unwritten, the decide condition, validation and format para are stock.
+
+Built against the pinned tree, not run on hardware.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+--- a/drivers/drm/meson_hdmi.c
++++ b/drivers/drm/meson_hdmi.c
+@@ -1248,6 +1248,7 @@ struct drm_connector_state *meson_hdmitx_atomic_duplicate_state
+ 	new_state->allm_mode = cur_state->allm_mode;
+ 	cur_state->hcs.state_sequence_id = am_hdmi_info.sequence_id;
+ 	new_state->frac_rate_policy = cur_state->frac_rate_policy;
++	new_state->user_attr_applied = cur_state->user_attr_applied;
+ 	memcpy(&new_state->hcs, &cur_state->hcs, sizeof(struct hdmitx_common_state));
+ 
+ 	return &new_state->base;
+@@ -2133,6 +2134,82 @@ void meson_hdmitx_encoder_atomic_disable(struct drm_encoder *encoder,
+ 	msleep(100);
+ }
+ 
++/*
++ * Put the format asked for through user_attr in place of the attr this mode
++ * set would use, when there is one and the mode set may take it. Returns
++ * true with hdmitx_state->hcs built and strictly validated for it. On false
++ * the stock validation runs on *attr, decided afresh when a user_attr was
++ * refused or has just stopped applying.
++ */
++static bool meson_hdmitx_user_attr(struct hdmitx_common *common,
++				   struct am_meson_crtc_state *crtc_state,
++				   struct am_hdmitx_connector_state *hdmitx_state,
++				   struct hdmitx_color_attr *attr, char *modename,
++				   u64 sequence_id)
++{
++	/* no padding, so it compares with memcmp() */
++	static struct refusal {
++		int err, clock;
++		u16 hdisplay, vdisplay, cs, cd;
++	} last_refused;
++	struct refusal refused;
++	const struct drm_display_mode *mode = &crtc_state->base.adjusted_mode;
++	/* a user_attr that stops applying leaves its attr behind: decide */
++	bool decide = hdmitx_state->user_attr_applied;
++	struct hdmitx_user_attr ua;
++	char attr_str[HDMITX_ATTR_LEN_MAX];
++	int bitdepth, ret;
++
++	hdmitx_state->user_attr_applied = false;
++	/* the boot commit keeps what uboot set up without a mode set */
++	if (!am_hdmi_info.android_path ||
++	    (crtc_state->uboot_mode_init == 1 && !hdmitx_state->update))
++		return false;
++	/* 3D frame packing and dolby vision pick their own format */
++	if (common->flag_3dfp || is_amdv_output_dv() ||
++	    crtc_state->crtc_eotf_type == HDMI_EOTF_MESON_DOLBYVISION ||
++	    crtc_state->crtc_eotf_type == HDMI_EOTF_MESON_DOLBYVISION_LL)
++		goto automatic;
++
++	ua = hdmitx_common_get_user_attr(common);
++	if (!ua.set)
++		goto automatic;
++
++	bitdepth = colordepth_to_bitdepth(ua.cd);
++	build_hdmitx_attr_str(attr_str, ua.cs, bitdepth);
++	ret = hdmitx_common_validate_user_mode_locked(common, &hdmitx_state->hcs,
++						      modename, attr_str,
++						      crtc_state->valid_brr);
++	if (ret) {
++		refused = (struct refusal){ ret, mode->clock, mode->hdisplay,
++					    mode->vdisplay, ua.cs, ua.cd };
++		if (memcmp(&refused, &last_refused, sizeof(refused))) {
++			DRM_INFO("user_attr %s refused for %s (%d), automatic\n",
++				 attr_str, modename, ret);
++			last_refused = refused;
++		}
++		decide = true;
++		goto automatic;
++	}
++	memset(&last_refused, 0, sizeof(last_refused));
++
++	attr->colorformat = ua.cs;
++	attr->bitdepth = bitdepth;
++	hdmitx_state->user_attr_applied = true;
++	/* only where the hw puts the range out as asked, see user_range_cap */
++	if (common->user_range_cap) {
++		hdmitx_state->hcs.para.cr = ua.cr;
++		hdmitx_state->hcs.para.user_attr = true;
++	}
++	DRM_DEBUG_KMS("user_attr %s applied for %s\n", attr_str, modename);
++	return true;
++
++automatic:
++	if (decide)
++		meson_hdmitx_decide_color_attr(common, crtc_state, attr, sequence_id);
++	return false;
++}
++
+ static int meson_hdmitx_encoder_atomic_check(struct drm_encoder *encoder,
+ 					     struct drm_crtc_state *crtc_state,
+ 					     struct drm_connector_state *conn_state)
+@@ -2193,6 +2270,9 @@ static int meson_hdmitx_encoder_atomic_check(struct drm_encoder *encoder,
+ 		meson_hdmitx_decide_color_attr(common, meson_crtc_state,
+ 						 attr, sequence_id);
+ 
++	if (meson_hdmitx_user_attr(common, meson_crtc_state, hdmitx_state, attr,
++				   modename, sequence_id))
++		goto validated;
+ 	build_hdmitx_attr_str(attr_str, attr->colorformat, attr->bitdepth);
+ 
+ 	ret = hdmitx_common_validate_mode_locked(common, &hdmitx_state->hcs,
+@@ -2203,6 +2283,7 @@ static int meson_hdmitx_encoder_atomic_check(struct drm_encoder *encoder,
+ 		return -EINVAL;
+ 	}
+ 
++validated:
+ 	DRM_DEBUG("vic: %d, cs: %d, cd: %d\n", hdmitx_state->hcs.para.vic,
+ 		 hdmitx_state->hcs.para.cs, hdmitx_state->hcs.para.cd);
+ 
+@@ -2638,6 +2719,43 @@ static void meson_hdmitx_hpd_cb(void *data)
+ 	drm_kms_helper_hotplug_event(am_hdmi->base.connector.dev);
+ }
+ 
++/*
++ * user_attr changed: re-run the mode set at the current mode, the way a
++ * hotplug forces one, so the new attr is decided and applied now.
++ */
++static int meson_hdmitx_user_attr_cb(void *data)
++{
++	struct am_hdmi_tx *am_hdmi = data;
++	struct drm_connector *connector = &am_hdmi->base.connector;
++	struct drm_device *dev = connector->dev;
++	struct drm_modeset_acquire_ctx ctx;
++	struct drm_atomic_state *state;
++	struct drm_connector_state *conn_state;
++	struct drm_crtc_state *crtc_state;
++	int ret;
++
++	/* no sink: the mode set after the next hotplug picks it up */
++	if (!hdmitx_get_hpd_state(am_hdmi->hdmitx_dev->hdmitx_common))
++		return 0;
++
++	DRM_MODESET_LOCK_ALL_BEGIN(dev, ctx, 0, ret);
++	state = drm_atomic_helper_duplicate_state(dev, &ctx);
++	ret = PTR_ERR_OR_ZERO(state);
++	if (!ret) {
++		conn_state = drm_atomic_get_new_connector_state(state, connector);
++		crtc_state = conn_state && conn_state->crtc ?
++			drm_atomic_get_new_crtc_state(state, conn_state->crtc) : NULL;
++		/* not showing anything: the next mode set picks it up */
++		if (crtc_state && crtc_state->active) {
++			to_am_hdmitx_connector_state(conn_state)->update = true;
++			ret = drm_atomic_commit(state);
++		}
++		drm_atomic_state_put(state);
++	}
++	DRM_MODESET_LOCK_ALL_END(dev, ctx, ret);
++	return ret;
++}
++
+ int meson_hdmitx_dev_bind(struct drm_device *drm,
+ 	int type, struct meson_connector_dev *intf)
+ {
+@@ -2725,6 +2843,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
+ 	hpd_cb.callback = meson_hdmitx_hpd_cb;
+ 	hpd_cb.data = &am_hdmi_info;
+ 	hdmitx_register_hpd_cb(tx_comm, &hpd_cb);
++	hdmitx_register_user_attr_cb(tx_comm, meson_hdmitx_user_attr_cb, &am_hdmi_info);
+ 
+ 	/*hdcp init, default is disable state*/
+ 	if (!am_hdmi_info.android_path) {
+@@ -2790,6 +2909,7 @@ int meson_hdmitx_dev_bind(struct drm_device *drm,
+ int meson_hdmitx_dev_unbind(struct drm_device *drm,
+ 	int type, int connector_id)
+ {
++	hdmitx_register_user_attr_cb(am_hdmi_info.hdmitx_dev->hdmitx_common, NULL, NULL);
+ 	if (am_hdmi_info.hdmitx_dev->hdcp_exit)
+ 		am_hdmi_info.hdmitx_dev->hdcp_exit();
+ 
+--- a/drivers/drm/meson_hdmi.h
++++ b/drivers/drm/meson_hdmi.h
+@@ -135,6 +135,8 @@ struct am_hdmitx_connector_state {
+ 	bool avmute : 1;
+ 	bool ready : 1;
+ 	bool frac_rate_policy : 1;
++	/* attr came from user_attr; kept, so clearing it re-decides */
++	bool user_attr_applied : 1;
+ 	int allm_mode;
+ };
+ 
+--- a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
+@@ -259,7 +259,8 @@ bool hdmitx_edid_check_y420_support(struct rx_cap *prxcap, enum hdmi_vic vic)
+  * Max_TMDS_Clock2 to indicate that it can support 5.94G signal.
+  */
+ static int hdmitx_edid_validate_format_para(struct tx_cap *hdmi_tx_cap,
+-					    struct rx_cap *prxcap, struct hdmi_format_para *para)
++					    struct rx_cap *prxcap, struct hdmi_format_para *para,
++					    bool strict)
+ {
+ 	const struct dv_info *dv;
+ 	/* needed tmds clk bandwidth for current format */
+@@ -347,10 +348,14 @@ static int hdmitx_edid_validate_format_para(struct tx_cap *hdmi_tx_cap,
+ 		if (calc_tmds_clk > hdmi_tx_cap->tx_max_tmds_clk) {
+ 			HDMITX_DEBUG_EDID("output tmds clk:%d exceed tx cap: %d\n",
+ 				calc_tmds_clk, hdmi_tx_cap->tx_max_tmds_clk);
++			if (strict)
++				return -EPERM;
+ 		}
+ 		if (calc_tmds_clk > rx_max_tmds_clk) {
+ 			HDMITX_DEBUG_EDID("output tmds clk:%d exceed rx cap: %d\n",
+ 					  calc_tmds_clk, rx_max_tmds_clk);
++			if (strict)
++				return -EPERM;
+ 		}
+ 	} else {
+ #ifdef CONFIG_AMLOGIC_DSC
+@@ -367,10 +372,14 @@ static int hdmitx_edid_validate_format_para(struct tx_cap *hdmi_tx_cap,
+ 			if (calc_tmds_clk > hdmi_tx_cap->tx_max_tmds_clk) {
+ 				HDMITX_DEBUG_EDID("output tmds clk:%d exceed tx cap: %d\n",
+ 					calc_tmds_clk, hdmi_tx_cap->tx_max_tmds_clk);
++				if (strict)
++					return -EPERM;
+ 			}
+ 			if (calc_tmds_clk > rx_max_tmds_clk) {
+ 				HDMITX_DEBUG_EDID("output tmds clk:%d exceed rx cap: %d\n",
+ 						  calc_tmds_clk, rx_max_tmds_clk);
++				if (strict)
++					return -EPERM;
+ 			}
+ 		} else {
+ 			/* try to check if able to run under FRL mode */
+@@ -422,7 +431,8 @@ static int hdmitx_edid_validate_format_para(struct tx_cap *hdmi_tx_cap,
+ 
+ 	/* step4: check color space/depth is within RX cap */
+ 	/* skip cd/cs check as it is already auto selected */
+-	goto out;
++	if (!strict)
++		goto out;
+ 
+ 	if (para->cs == HDMI_COLORSPACE_YUV444) {
+ 		enum hdmi_color_depth rx_y444_max_dc = COLORDEPTH_24B;
+@@ -506,12 +516,26 @@ int hdmitx_common_validate_format_para(struct hdmitx_common *tx_comm,
+ 
+ 	/* check if the format param is within capability of both TX/RX */
+ 	ret = hdmitx_edid_validate_format_para(&tx_comm->tx_hw->hdmi_tx_cap,
+-					       &tx_comm->rxcap, para);
++					       &tx_comm->rxcap, para, false);
+ 
+ 	return ret;
+ }
+ EXPORT_SYMBOL(hdmitx_common_validate_format_para);
+ 
++/*
++ * The same for a format asked for through user_attr, which also has to pass
++ * what the automatic choice goes without: a TMDS clock past either end fails
++ * instead of being logged, and cs/cd are checked against the rx caps.
++ */
++int hdmitx_common_validate_user_format_para(struct hdmitx_common *tx_comm,
++					    struct hdmi_format_para *para)
++{
++	if (!tx_comm || !para || para->vic == HDMI_0_UNKNOWN)
++		return -EPERM;
++	return hdmitx_edid_validate_format_para(&tx_comm->tx_hw->hdmi_tx_cap,
++						&tx_comm->rxcap, para, true);
++}
++
+ /*
+  * check VIC supported or not with basic cs/cd
+  * compare with hdmitx_common_validate_mode_locked()
+--- a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.h
++++ b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.h
+@@ -23,6 +23,9 @@ bool hdmitx_edid_check_y420_support(struct rx_cap *prxcap, enum hdmi_vic vic);
+  */
+ int hdmitx_common_validate_format_para(struct hdmitx_common *tx_comm,
+ 				       struct hdmi_format_para *para);
++/* the same, strict, for a format asked for through user_attr */
++int hdmitx_common_validate_user_format_para(struct hdmitx_common *tx_comm,
++					    struct hdmi_format_para *para);
+ bool hdmitx_mode_validate_y420_vic(enum hdmi_vic vic);
+ /* for some non-std TV, it declare 4k while MAX_TMDS_CLK
+  * not match 4K format, so filter out mode list by
+--- a/drivers/media/vout/hdmitx_common/hdmitx_common.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_common.c
+@@ -149,9 +149,10 @@ EXPORT_SYMBOL(hdmitx_common_build_format_para);
+  * step3, build format with mode/attr and check if it's
+  * supported by EDID/hdmitx_cap
+  */
+-int hdmitx_common_validate_mode_locked(struct hdmitx_common *tx_comm,
+-				       struct hdmitx_common_state *new_state,
+-				       char *mode, char *attr, bool brr_valid, bool do_validate)
++static int validate_mode_locked(struct hdmitx_common *tx_comm,
++				struct hdmitx_common_state *new_state,
++				char *mode, char *attr, bool brr_valid, bool do_validate,
++				bool strict)
+ {
+ 	int ret = 0;
+ 	struct hdmi_format_para *new_para;
+@@ -198,8 +199,10 @@ int hdmitx_common_validate_mode_locked(struct hdmitx_common *tx_comm,
+ 	}
+ 
+ 	if (do_validate) {
+-		ret = hdmitx_common_validate_format_para(tx_comm, new_para);
+-		if (ret)
++		ret = strict ? hdmitx_common_validate_user_format_para(tx_comm, new_para) :
++			hdmitx_common_validate_format_para(tx_comm, new_para);
++		/* a refused user_attr is logged, once, by its caller */
++		if (ret && !strict)
+ 			HDMITX_ERROR("validate formatpara [%s,%s] return error %d\n",
+ 				     mode, attr, ret);
+ 	}
+@@ -208,8 +211,26 @@ out:
+ 	mutex_unlock(&tx_comm->hdmimode_mutex);
+ 	return ret;
+ }
++
++int hdmitx_common_validate_mode_locked(struct hdmitx_common *tx_comm,
++				       struct hdmitx_common_state *new_state,
++				       char *mode, char *attr, bool brr_valid, bool do_validate)
++{
++	return validate_mode_locked(tx_comm, new_state, mode, attr, brr_valid,
++				    do_validate, false);
++}
+ EXPORT_SYMBOL(hdmitx_common_validate_mode_locked);
+ 
++/* the same, always validating, strictly, for the format user_attr asks for */
++int hdmitx_common_validate_user_mode_locked(struct hdmitx_common *tx_comm,
++					    struct hdmitx_common_state *new_state,
++					    char *mode, char *attr, bool brr_valid)
++{
++	return validate_mode_locked(tx_comm, new_state, mode, attr, brr_valid,
++				    true, true);
++}
++EXPORT_SYMBOL(hdmitx_common_validate_user_mode_locked);
++
+ /* init format para only when probe */
+ int hdmitx_common_init_bootup_format_para(struct hdmitx_common *tx_comm,
+ 		struct hdmi_format_para *para)
+@@ -346,6 +367,111 @@ int hdmitx_get_attr(struct hdmitx_common *tx_comm, char attr[16])
+ }
+ EXPORT_SYMBOL(hdmitx_get_attr);
+ 
++/*
++ * "<rgb|444|422|420>,<8bit|10bit|12bit>[,full|limited]" asks for that output
++ * format at every mode set it is valid for; "", "auto" or a bare newline clears
++ * it. Nothing is kept across a reboot.
++ */
++int hdmitx_common_set_user_attr(struct hdmitx_common *tx_comm, const char *buf)
++{
++	static DEFINE_MUTEX(user_attr_lock);
++	struct hdmitx_user_attr new = { 0 }, old;
++	int cs = -1, cd = -1, v;
++	char tmp[32], *s, *tok;
++	int (*cb)(void *data);
++	void *cb_data;
++	int ret = 0;
++
++	if (strscpy(tmp, buf, sizeof(tmp)) < 0)
++		return -EINVAL;
++	s = strim(tmp);
++	if (*s && strcmp(s, "auto")) {
++		while ((tok = strsep(&s, ","))) {
++			tok = strim(tok);
++			v = hdmitx_cs_from_name(tok);
++			if (v >= 0 && cs < 0) {
++				cs = v;
++				continue;
++			}
++			v = hdmitx_cd_from_name(tok);
++			if (v >= 0 && v <= COLORDEPTH_36B && cd < 0) {
++				cd = v;
++				continue;
++			}
++			if (!strcmp(tok, "full") && !new.cr)
++				new.cr = HDMI_QUANTIZATION_RANGE_FULL;
++			else if (!strcmp(tok, "limited") && !new.cr)
++				new.cr = HDMI_QUANTIZATION_RANGE_LIMITED;
++			else
++				return -EINVAL;
++		}
++		if (cs < 0 || cd < 0)
++			return -EINVAL;
++		if (!new.cr)
++			new.cr = HDMI_QUANTIZATION_RANGE_LIMITED;
++		/* full range ycbcr, or any full range the hw cannot make */
++		if (new.cr == HDMI_QUANTIZATION_RANGE_FULL &&
++		    (cs != HDMI_COLORSPACE_RGB || !tx_comm->user_range_cap))
++			return -EOPNOTSUPP;
++		new.set = true;
++		new.cs = cs;
++		new.cd = cd;
++	}
++
++	mutex_lock(&user_attr_lock);
++	mutex_lock(&tx_comm->valid_mutex);
++	old = tx_comm->user_attr;
++	if (!memcmp(&new, &old, sizeof(new))) {
++		mutex_unlock(&tx_comm->valid_mutex);
++		goto out;
++	}
++	tx_comm->user_attr = new;
++	cb = tx_comm->user_attr_cb;
++	cb_data = tx_comm->user_attr_cb_data;
++	mutex_unlock(&tx_comm->valid_mutex);
++
++	if (new.set)
++		HDMITX_INFO("user_attr %s,%s,%s\n", hdmitx_cs_name(new.cs),
++			    hdmitx_cd_name(new.cd),
++			    new.cr == HDMI_QUANTIZATION_RANGE_FULL ? "full" : "limited");
++	else
++		HDMITX_INFO("user_attr auto\n");
++	/* the mode set takes valid_mutex itself */
++	if (cb)
++		ret = cb(cb_data);
++	if (ret) {
++		HDMITX_ERROR("user_attr commit failed %d, previous value restored\n", ret);
++		mutex_lock(&tx_comm->valid_mutex);
++		tx_comm->user_attr = old;
++		mutex_unlock(&tx_comm->valid_mutex);
++	}
++out:
++	mutex_unlock(&user_attr_lock);
++	return ret;
++}
++EXPORT_SYMBOL(hdmitx_common_set_user_attr);
++
++struct hdmitx_user_attr hdmitx_common_get_user_attr(struct hdmitx_common *tx_comm)
++{
++	struct hdmitx_user_attr ua;
++
++	mutex_lock(&tx_comm->valid_mutex);
++	ua = tx_comm->user_attr;
++	mutex_unlock(&tx_comm->valid_mutex);
++	return ua;
++}
++EXPORT_SYMBOL(hdmitx_common_get_user_attr);
++
++void hdmitx_register_user_attr_cb(struct hdmitx_common *tx_comm,
++				  int (*cb)(void *data), void *data)
++{
++	mutex_lock(&tx_comm->valid_mutex);
++	tx_comm->user_attr_cb = cb;
++	tx_comm->user_attr_cb_data = data;
++	mutex_unlock(&tx_comm->valid_mutex);
++}
++EXPORT_SYMBOL(hdmitx_register_user_attr_cb);
++
+ /*
+  * hdr_priority definition:
+  *   strategy1: bit[3:0]
+--- a/drivers/media/vout/hdmitx_common/hdmitx_format_para.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_format_para.c
+@@ -69,6 +69,46 @@ void hdmitx_parse_color_attr(char const *attr_str,
+ 		*cr = HDMI_QUANTIZATION_RANGE_FULL;
+ }
+ 
++int hdmitx_cs_from_name(const char *name)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(parse_cs_); i++)
++		if (!strcmp(name, parse_cs_[i].name))
++			return parse_cs_[i].cs;
++	return -EINVAL;
++}
++
++int hdmitx_cd_from_name(const char *name)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(parse_cd_); i++)
++		if (!strcmp(name, parse_cd_[i].name))
++			return parse_cd_[i].cd;
++	return -EINVAL;
++}
++
++const char *hdmitx_cs_name(enum hdmi_colorspace cs)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(parse_cs_); i++)
++		if (cs == parse_cs_[i].cs)
++			return parse_cs_[i].name;
++	return "";
++}
++
++const char *hdmitx_cd_name(enum hdmi_color_depth cd)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(parse_cd_); i++)
++		if (cd == parse_cd_[i].cd)
++			return parse_cd_[i].name;
++	return "";
++}
++
+ int hdmitx_format_para_init(struct hdmi_format_para *para,
+ 		enum hdmi_vic vic, u32 frac_rate_policy,
+ 		enum hdmi_colorspace cs, enum hdmi_color_depth cd,
+--- a/drivers/media/vout/hdmitx_common/hdmitx_sysfs_common.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_sysfs_common.c
+@@ -56,6 +56,28 @@ static ssize_t attr_show(struct device *dev,
+ 
+ static DEVICE_ATTR_RO(attr);
+ 
++static ssize_t user_attr_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct hdmitx_user_attr ua = hdmitx_common_get_user_attr(global_tx_common);
++
++	if (!ua.set)
++		return sysfs_emit(buf, "\n");
++	return sysfs_emit(buf, "%s,%s,%s\n", hdmitx_cs_name(ua.cs), hdmitx_cd_name(ua.cd),
++			  ua.cr == HDMI_QUANTIZATION_RANGE_FULL ? "full" : "limited");
++}
++
++static ssize_t user_attr_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t count)
++{
++	int ret = hdmitx_common_set_user_attr(global_tx_common, buf);
++
++	return ret ? ret : count;
++}
++
++static DEVICE_ATTR_RW(user_attr);
++
+ /* for pxp test */
+ static ssize_t test_attr_show(struct device *dev,
+ 			 struct device_attribute *attr, char *buf)
+@@ -1668,6 +1690,7 @@ int hdmitx_sysfs_common_create(struct device *dev,
+ 
+ 	ret = device_create_file(dev, &dev_attr_hdmi_efuse_state);
+ 	ret = device_create_file(dev, &dev_attr_attr);
++	ret = device_create_file(dev, &dev_attr_user_attr);
+ 	ret = device_create_file(dev, &dev_attr_test_attr);
+ 	ret = device_create_file(dev, &dev_attr_hpd_state);
+ 	ret = device_create_file(dev, &dev_attr_frac_rate_policy);
+@@ -1717,6 +1740,7 @@ int hdmitx_sysfs_common_destroy(struct device *dev)
+ {
+ 	device_remove_file(dev, &dev_attr_hdmi_efuse_state);
+ 	device_remove_file(dev, &dev_attr_attr);
++	device_remove_file(dev, &dev_attr_user_attr);
+ 	device_remove_file(dev, &dev_attr_test_attr);
+ 	device_remove_file(dev, &dev_attr_hpd_state);
+ 	device_remove_file(dev, &dev_attr_frac_rate_policy);
+--- a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_common.h
++++ b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_common.h
+@@ -211,6 +211,13 @@ struct hdmitx_common {
+ 	u32 flag_3dss;
+ 
+ 	enum vrr_type vrr_mode; /* 1: GAME-VRR, 2: QMS-VRR,  0: default no-VRR */
++
++	/* output format asked for through user_attr, under valid_mutex */
++	struct hdmitx_user_attr user_attr;
++	/* the hw can put out full or limited range rgb on request */
++	bool user_range_cap;
++	int (*user_attr_cb)(void *data);
++	void *user_attr_cb_data;
+ };
+ 
+ void hdmitx_get_init_state(struct hdmitx_common *tx_common,
+@@ -311,6 +318,14 @@ bool hdmitx_common_get_hdcp_user_state(struct hdmitx_common *tx_comm);
+ int hdmitx_setup_attr(struct hdmitx_common *tx_comm, const char *buf);
+ int hdmitx_get_attr(struct hdmitx_common *tx_comm, char attr[16]);
+ 
++int hdmitx_common_validate_user_mode_locked(struct hdmitx_common *tx_comm,
++					    struct hdmitx_common_state *new_state,
++					    char *mode, char *attr, bool brr_valid);
++int hdmitx_common_set_user_attr(struct hdmitx_common *tx_comm, const char *buf);
++struct hdmitx_user_attr hdmitx_common_get_user_attr(struct hdmitx_common *tx_comm);
++void hdmitx_register_user_attr_cb(struct hdmitx_common *tx_comm,
++				  int (*cb)(void *data), void *data);
++
+ int hdmitx_get_hdrinfo(struct hdmitx_common *tx_comm, struct hdr_info *hdrinfo);
+ 
+ int hdmitx_set_hdr_priority(struct hdmitx_common *tx_comm, u32 hdr_priority);
+--- a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_format_para.h
++++ b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_format_para.h
+@@ -29,6 +29,16 @@ struct hdmi_format_para {
+ 	u8 dsc_en;
+ 	enum frl_rate_enum frl_rate;
+ 	/*hw related information end*/
++	/* cr was chosen through user_attr and the hw must honour it */
++	bool user_attr;
++};
++
++/* output format asked for through user_attr; cs/cd/cr only when set */
++struct hdmitx_user_attr {
++	bool set;
++	u8 cs; /* enum hdmi_colorspace */
++	u8 cd; /* enum hdmi_color_depth */
++	u8 cr; /* enum hdmi_quantization_range */
+ };
+ 
+ int hdmitx_format_para_reset(struct hdmi_format_para *para);
+@@ -48,4 +58,10 @@ void hdmitx_parse_color_attr(char const *attr_str,
+ 	enum hdmi_colorspace *cs, enum hdmi_color_depth *cd,
+ 	enum hdmi_quantization_range *cr);
+ 
++/* exact names from the tables hdmitx_parse_color_attr() uses; < 0 if none */
++int hdmitx_cs_from_name(const char *name);
++int hdmitx_cd_from_name(const char *name);
++const char *hdmitx_cs_name(enum hdmi_colorspace cs);
++const char *hdmitx_cd_name(enum hdmi_color_depth cd);
++
+ #endif

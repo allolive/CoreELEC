@@ -1,0 +1,280 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] hdmitx21: honour the user_attr range on the VPU_HDMI matrix
+ chips
+
+S1A, S7, and S7D/S6 with CSC_type yuv2rgb, make RGB with the VPU_HDMI
+ycbcr2rgb matrix. Stock always loads BT.601 limited YCbCr to full range
+RGB while the AVI infoframe says Q = limited: full range pixels labelled
+limited, with a 601 hue error on HD and BT.2020. No use to a meter.
+
+vpu_hdmi_set_matrix_ycbcr2rgb() becomes the one writer, from a table. For
+a user_attr format it loads the 601, 709 or 2020 matrix the AVI declares,
+in the requested range (limited adds the 64 offset); otherwise it writes
+the stock values. It also runs when the AVI colorimetry changes without a
+mode set (CONF_AVI_BT2020), skipping a matrix already loaded; the
+rgb2ycbcr writer invalidates that record. The AVI send path only sets Q,
+and YQ to limited, with no register access. The Dolby Vision tunnel keeps
+the stock matrix. These chips set user_range_cap, so full is accepted.
+
+Without user_attr every register write, value and log line is stock. The
+coefficient slots are inferred from the stock 601 values; a meter reading
+of 100% red in 709 and 2020 checks them. Built against the pinned tree,
+not run on hardware.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+--- a/drivers/media/vout/hdmitx21/hdmi_tx.h
++++ b/drivers/media/vout/hdmitx21/hdmi_tx.h
+@@ -273,6 +273,9 @@ enum emp_component_conf {
+ #define YCC_RANGE_FUL		1
+ #define YCC_RANGE_RSVD		2
+ void hdmi_avi_infoframe_config(enum avi_component_conf conf, u8 val);
++void hdmitx21_user_attr_avi_fixup(struct hdmi_avi_infoframe *info);
++void hdmitx21_user_attr_colorimetry(const struct hdmi_avi_infoframe *avi);
++bool hdmitx21_rgb_via_vpu_matrix(struct hdmitx_dev *hdev);
+ 
+ int hdmitx_infoframe_rawget(u16 info_type, u8 *body);
+ 
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_infoframe.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_infoframe.c
+@@ -418,6 +418,7 @@ void hdmi_avi_infoframe_set(struct hdmi_avi_infoframe *info)
+ 		info->version = 0x3;
+ 	else
+ 		info->version = 0x2;
++	hdmitx21_user_attr_avi_fixup(info);
+ 	hdmi_avi_infoframe_pack_renew(info, body, sizeof(body));
+ 	hdmitx_infoframe_send(HDMI_INFOFRAME_TYPE_AVI, body);
+ }
+@@ -476,6 +477,7 @@ void hdmi_avi_infoframe_config(enum avi_component_conf conf, u8 val)
+ 				}
+ 			}
+ 		}
++		hdmitx21_user_attr_colorimetry(info);
+ 		break;
+ 	case CONF_AVI_Q01:
+ 		info->quantization_range = val;
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -4502,6 +4502,8 @@ static int amhdmitx_get_dt_info(struct platform_device *pdev, struct hdmitx_dev
+ 			hdev->tx_hw.chip_data->chip_type,
+ 			hdev->tx_hw.chip_data->chip_name);
+ 
++		hdev->tx_comm.user_range_cap = hdmitx21_rgb_via_vpu_matrix(hdev);
++
+ 		if (hdev->tx_hw.chip_data->chip_type == MESON_CPU_ID_S5)
+ 			hdev->tx_hw.base.hdmi_tx_cap.dsc_capable = true;
+ 		else
+--- a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
++++ b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
+@@ -1198,53 +1198,86 @@ static void set_hdmitx_enc_idx(unsigned int val)
+ 	arm_smccc_smc(HDCPTX_IOOPR, CONF_ENC_IDX, 1, !!val, 0, 0, 0, 0, &res);
+ }
+ 
++/*
++ * YCbCr -> RGB in S2.10: Y, Cr->R, Cb->G, Cr->G, Cb->B, by [rgb range]
++ * [colorimetry]. Stock always loads [full][601]: 601 limited range YCbCr to
++ * full range RGB. A format from user_attr gets the colorimetry the AVI
++ * declares, into the range it declares; limited adds a 64 offset.
++ */
++enum { YCC2RGB_601, YCC2RGB_709, YCC2RGB_2020, YCC2RGB_NR };
++static const char * const ycbcr2rgb_name[YCC2RGB_NR] = { "601", "709", "2020" };
++static const u32 ycbcr2rgb_coef[2][YCC2RGB_NR][5] = {
++	{	/* limited */
++		{0x400, 0x57c, 0x1ea7, 0x1d35, 0x6ee},
++		{0x400, 0x629, 0x1f44, 0x1e2b, 0x742},
++		{0x400, 0x5c4, 0x1f5b, 0x1dc4, 0x75c},
++	}, {	/* full */
++		{0x4a8, 0x662, 0x1e6f, 0x1cbf, 0x811},
++		{0x4a8, 0x72c, 0x1f26, 0x1dde, 0x873},
++		{0x4a8, 0x6b7, 0x1f40, 0x1d66, 0x891},
++	},
++};
++
++/* the matrix in VPU_HDMI_MATRIX: full * YCC2RGB_NR + colorimetry, or -1 */
++static int vpu_hdmi_matrix = -1;
++
++/* a format from user_attr is on; the dolby vision tunnel keeps the stock matrix */
++static bool user_matrix_active(struct hdmitx_dev *hdev)
++{
++	enum eotf_type eotf = hdev->tx_comm.hdmi_current_eotf_type;
++
++	return hdev->tx_comm.fmt_para.user_attr &&
++	       ((eotf != EOTF_T_DOLBYVISION && eotf != EOTF_T_LL_MODE &&
++		 eotf != EOTF_T_DV_AHEAD) || hdev->hdmi_current_signal_sdr);
++}
++
++/*
++ * The ycbcr2rgb matrix for the rgb @avi declares. @avi is NULL in a mode set,
++ * where construct_avi_packet() has yet to declare 601 up to 576 lines, else 709.
++ */
++static int vpu_hdmi_ycbcr2rgb_id(struct hdmitx_dev *hdev,
++				 const struct hdmi_avi_infoframe *avi)
++{
++	struct hdmi_format_para *para = &hdev->tx_comm.fmt_para;
++	int full = 1, m = YCC2RGB_601;
++
++	if (!user_matrix_active(hdev))
++		return full * YCC2RGB_NR + m;
++	full = para->cr == HDMI_QUANTIZATION_RANGE_FULL;
++	if (!avi)
++		m = para->timing.v_active <= 576 ? YCC2RGB_601 : YCC2RGB_709;
++	else if (avi->colorimetry == HDMI_COLORIMETRY_EXTENDED &&
++		 avi->extended_colorimetry == HDMI_EXTENDED_COLORIMETRY_BT2020)
++		m = YCC2RGB_2020;
++	else if (avi->colorimetry != HDMI_COLORIMETRY_ITU_601)
++		m = YCC2RGB_709;
++	return full * YCC2RGB_NR + m;
++}
++
+ //new future for s1a,s7 and s7d
+-static void vpu_hdmi_set_matrix_ycbcr2rgb(void)
++static void vpu_hdmi_set_matrix_ycbcr2rgb(const struct hdmi_avi_infoframe *avi)
+ {
+-	//regVPP_MATRIX_COEF00_01 =VPU_HDMI_MATRIX_COEF00_01;
+-	//regVPP_MATRIX_COEF02_10 =VPU_HDMI_MATRIX_COEF02_10;
+-	//regVPP_MATRIX_COEF11_12 =VPU_HDMI_MATRIX_COEF11_12;
+-	//regVPP_MATRIX_COEF20_21 =VPU_HDMI_MATRIX_COEF20_21;
+-	//regVPP_MATRIX_COEF22 =VPU_HDMI_MATRIX_COEF22;
+-	//regVPP_MATRIX_PRE_OFFSET0_1 = VPU_HDMI_MATRIX_PRE_OFFSET0_1;
+-	//regVPP_MATRIX_PRE_OFFSET2 = VPU_HDMI_MATRIX_PRE_OFFSET2;
+-	//regVPP_MATRIX_OFFSET0_1 =VPU_HDMI_MATRIX_OFFSET0_1;
+-	//regVPP_MATRIX_OFFSET2 =VPU_HDMI_MATRIX_OFFSET2;
+-	//regVPP_MATRIX_EN_CTRL = VPU_HDMI_MATRIX_EN_CTRL;
+-
+-	HDMITX_INFO("ycbcr2rgb matrix\n");
+-	//ycbcr not full range, 601 conversion
+-	if (0) {
+-		hd21_write_reg(VPU_HDMI_MATRIX_PRE_OFFSET0_1,
+-			((0x0) << 16) | (0xe00)); //0xfc00e00);
+-		hd21_write_reg(VPU_HDMI_MATRIX_PRE_OFFSET2, (0xe00)); //0x0e00);
+-
+-		//1     0       1.402
+-		//1   -0.34414  -0.71414
+-		//1   1.772     0
+-		hd21_write_reg(VPU_HDMI_MATRIX_COEF00_01, (0x400 << 16) | 0);
+-		hd21_write_reg(VPU_HDMI_MATRIX_COEF02_10, (0x59c << 16) | 0x400);
+-		hd21_write_reg(VPU_HDMI_MATRIX_COEF11_12, (0x1ea0 << 16) | 0x1d25);
+-		hd21_write_reg(VPU_HDMI_MATRIX_COEF20_21, (0x400 << 16) | 0x717);
+-		hd21_write_reg(VPU_HDMI_MATRIX_COEF22, 0x0);
+-		hd21_write_reg(VPU_HDMI_MATRIX_OFFSET0_1, 0x0);
+-		hd21_write_reg(VPU_HDMI_MATRIX_OFFSET2, 0x0);
+-	}
+-	//ycbcr full range, 601 conversion
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
++	int id = vpu_hdmi_ycbcr2rgb_id(hdev, avi);
++	bool full = id >= YCC2RGB_NR;
++	const u32 *c = ycbcr2rgb_coef[full][id % YCC2RGB_NR];
++
++	if (user_matrix_active(hdev))
++		HDMITX_INFO("ycbcr2rgb matrix %s, %s range\n",
++			    ycbcr2rgb_name[id % YCC2RGB_NR], full ? "full" : "limited");
++	else
++		HDMITX_INFO("ycbcr2rgb matrix\n");
+ 	hd21_write_reg(VPU_HDMI_MATRIX_PRE_OFFSET0_1,
+ 		((0xfc0) << 16) | (0xe00)); //0xfc00e00
+ 	hd21_write_reg(VPU_HDMI_MATRIX_PRE_OFFSET2, (0xe00)); //0x0e00);
+-
+-	//1.164     0       1.596
+-	//1.164   -0.392    -0.813
+-	//1.164   2.017     0
+-	hd21_write_reg(VPU_HDMI_MATRIX_COEF00_01, (0x4a8 << 16) | 0);
+-	hd21_write_reg(VPU_HDMI_MATRIX_COEF02_10, (0x662 << 16) | 0x4a8);
+-	hd21_write_reg(VPU_HDMI_MATRIX_COEF11_12, (0x1e6f << 16) | 0x1cbf);
+-	hd21_write_reg(VPU_HDMI_MATRIX_COEF20_21, (0x4a8 << 16) | 0x811);
++	hd21_write_reg(VPU_HDMI_MATRIX_COEF00_01, (c[0] << 16) | 0);
++	hd21_write_reg(VPU_HDMI_MATRIX_COEF02_10, (c[1] << 16) | c[0]);
++	hd21_write_reg(VPU_HDMI_MATRIX_COEF11_12, (c[2] << 16) | c[3]);
++	hd21_write_reg(VPU_HDMI_MATRIX_COEF20_21, (c[0] << 16) | c[4]);
+ 	hd21_write_reg(VPU_HDMI_MATRIX_COEF22, 0x0);
+-	hd21_write_reg(VPU_HDMI_MATRIX_OFFSET0_1, 0x0);
+-	hd21_write_reg(VPU_HDMI_MATRIX_OFFSET2, 0x0);
++	hd21_write_reg(VPU_HDMI_MATRIX_OFFSET0_1, full ? 0x0 : (0x40 << 16) | 0x40);
++	hd21_write_reg(VPU_HDMI_MATRIX_OFFSET2, full ? 0x0 : 0x40);
++	vpu_hdmi_matrix = id;
+ 
+ 	//enable matrix_ycbcr2rgb
+ 	hd21_set_reg_bits(VPU_HDMI_FMT_CTRL, 3, 0, 2);
+@@ -1308,6 +1341,7 @@ static void vpu_hdmi_set_matrix_rgb2ycbcr(void)
+ 	} else {
+ 		//ycbcr full range, 601 conversion
+ 	}
++	vpu_hdmi_matrix = -1;
+ 	//enable matrix_rgb2ycbcr
+ 	hd21_set_reg_bits(VPU_HDMI_FMT_CTRL, 0, 0, 2);
+ }
+@@ -1333,6 +1367,52 @@ static int CSC_type = 1;
+ module_param(CSC_type, int, 0644);
+ MODULE_PARM_DESC(CSC_type, "for choose VPU_HDMI_if function");
+ 
++/* rgb comes out of the VPU_HDMI ycbcr2rgb matrix, see hdmitx_set_dispmode() */
++bool hdmitx21_rgb_via_vpu_matrix(struct hdmitx_dev *hdev)
++{
++	switch (hdev->tx_hw.chip_data->chip_type) {
++	case MESON_CPU_ID_S1A:
++	case MESON_CPU_ID_S7:
++		return true;
++	case MESON_CPU_ID_S7D:
++	case MESON_CPU_ID_S6:
++		return CSC_type == yuv2rgb;
++	default:
++		return false;
++	}
++}
++
++/*
++ * The AVI colorimetry changed without a mode set: have the ycbcr2rgb matrix
++ * of a user_attr format follow it. MMIO only, it may run under the edid spinlock.
++ */
++void hdmitx21_user_attr_colorimetry(const struct hdmi_avi_infoframe *avi)
++{
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
++
++	if (!hdev->tx_comm.fmt_para.user_attr || vpu_hdmi_matrix < 0 ||
++	    avi->colorspace != HDMI_COLORSPACE_RGB || !hdmitx21_rgb_via_vpu_matrix(hdev))
++		return;
++	if (vpu_hdmi_ycbcr2rgb_id(hdev, avi) != vpu_hdmi_matrix)
++		vpu_hdmi_set_matrix_ycbcr2rgb(avi);
++}
++
++/* with every AVI sent: Q and YQ as a user_attr format has them */
++void hdmitx21_user_attr_avi_fixup(struct hdmi_avi_infoframe *info)
++{
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
++
++	if (!user_matrix_active(hdev))
++		return;
++	info->ycc_quantization_range = HDMI_YCC_QUANTIZATION_RANGE_LIMITED;
++	if (info->colorspace != HDMI_COLORSPACE_RGB)
++		info->quantization_range = HDMI_QUANTIZATION_RANGE_DEFAULT;
++	else if (hdmitx21_rgb_via_vpu_matrix(hdev))
++		info->quantization_range =
++			hdev->tx_comm.fmt_para.cr == HDMI_QUANTIZATION_RANGE_FULL ?
++			HDMI_QUANTIZATION_RANGE_FULL : HDMI_QUANTIZATION_RANGE_LIMITED;
++}
++
+ static int hdmitx_set_dispmode(struct hdmitx_hw_common *tx_hw)
+ {
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+@@ -1496,12 +1576,12 @@ static int hdmitx_set_dispmode(struct hdmitx_hw_common *tx_hw)
+ 		switch (hdev->tx_hw.chip_data->chip_type) {
+ 		case MESON_CPU_ID_S1A:
+ 		case MESON_CPU_ID_S7:
+-			vpu_hdmi_set_matrix_ycbcr2rgb();
++			vpu_hdmi_set_matrix_ycbcr2rgb(NULL);
+ 			break;
+ 		case MESON_CPU_ID_S7D:
+ 		case MESON_CPU_ID_S6:
+ 			if (CSC_type == yuv2rgb)
+-				vpu_hdmi_set_matrix_ycbcr2rgb();
++				vpu_hdmi_set_matrix_ycbcr2rgb(NULL);
+ 			else if (CSC_type == rgb2yuv)
+ 				vpu_hdmi_set_matrix_rgb2ycbcr();
+ 			break;
+@@ -4865,7 +4945,7 @@ void hdmitx21_color_convert(u32 output_color_format)
+ 		case MESON_CPU_ID_S7D:
+ 		case MESON_CPU_ID_S6:
+ 			hdmitx21_vp_conf(COLORDEPTH_24B, HDMI_COLORSPACE_RGB);
+-			vpu_hdmi_set_matrix_ycbcr2rgb();
++			vpu_hdmi_set_matrix_ycbcr2rgb(&hdev->infoframes.avi.avi);
+ 			break;
+ 		case MESON_CPU_ID_T7:
+ 		case MESON_CPU_ID_S5:
