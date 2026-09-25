@@ -21,3 +21,7 @@ old buffer generations, and acknowledges successful submission of the first
 scheduled target frame. It also resets the extra CoreELEC audio-acquisition
 observations at preparation boundaries. No separate addon is required.
 Speaker and panel alignment still need matched hardware tests.
+
+Holding the picture across a passthrough resume needs the render loop to keep
+turning, so a frame the GUI skipped is presented rather than drawn and thrown
+away; without that the player waits for a buffer that never comes back.
