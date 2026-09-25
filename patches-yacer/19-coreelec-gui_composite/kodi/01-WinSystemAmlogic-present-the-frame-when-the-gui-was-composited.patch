@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 25 Sep 2026 12:00:00 -0400
+Subject: [PATCH] WinSystemAmlogic: present the frame when the GUI was composited
+
+A frame whose GUI render pass was skipped still writes the back buffer when
+HDR GUI compositing is on: EndGuiComposite clears it, and CompositeGui draws
+the cached GUI over it.
+
+PresentRender only presented when the GUI pass itself had drawn, so during
+fullscreen video with a static GUI that work was discarded every frame, and
+the render loop had nothing to pace it.
+
+Present whenever the back buffer was written. The GBM backend already flips
+whenever a video layer is up.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -281,7 +281,9 @@
+   }
+ 
+   SetVSync(true);
+-  if (rendered)
++  // A frame whose GUI render was skipped still wrote the back buffer when
++  // compositing is on, so it has to be presented like any other.
++  if (rendered || (videoLayer && m_guiCompositing))
+   {
+ #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
+     if (m_eglFence)
