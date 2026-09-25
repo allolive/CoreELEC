@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 24 Sep 2026 14:40:00 -0400
+Subject: [PATCH] hdmitx21: give back the 4k name when the vendor slot is released
+
+3840x2160p24/25/30 and 4096x2160p24 are named to the sink by the HDMI 1.4b
+vendor infoframe rather than by the AVI, which carries no VIC for them. That
+slot is shared with the Dolby Vision and HDR10+ payloads.
+
+Release it through one helper at the four sites that clear it bare, so the
+name is written back in the same operation. The helper takes the HDMI_VIC
+from a value latched by hdmitx21_set_display() and skips FRL links, where the
+AVI carries the VIC.
+
+Sites that already write the name back, and the teardown path, are unchanged.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -812,6 +812,39 @@
+ 		hdmitx_hw_cntl_config(&hdev->tx_hw.base, CONF_VIDEO_MUTE_OP, VIDEO_UNMUTE);
+ 	}
+ }
++/*
++ * 3840x2160p24/25/30 and 4096x2160p24 are named to the sink by the HDMI 1.4b
++ * vendor infoframe, not by the AVI: construct_avi_packet() leaves their AVI VIC
++ * at 0 for exactly that reason (HDMI Spec v1.4b p151).
++ *
++ * The slot is shared with the Dolby, HDR10+ and CUVA payloads, so a release has
++ * to put the name back. Mirrors the guard in hdmitx21_set_display().
++ */
++static void hdmitx_release_vendor_slot(struct hdmitx_dev *hdev)
++{
++	u8 ven_hb[3] = {0x81, 0x01, 0x00};
++	u8 db[28] = {0};
++	u8 *ven_db = &db[1];
++
++	/* The latch, not fmt_para: the mode-set path resets fmt_para under a
++	 * different lock, so reading it here can answer "not 4k" mid-reset and
++	 * drop the very name this exists to keep. An FRL link puts the VIC in
++	 * the AVI instead, so it needs nothing back.
++	 */
++	if (!hdev->vendor_4k_hvic || hdev->frl_rate != FRL_NONE) {
++		hdmi_vend_infoframe_rawset(NULL, NULL);
++		return;
++	}
++	ven_hb[2] = 0x5;
++	ven_db[0] = 0x03;
++	ven_db[1] = 0x0c;
++	ven_db[2] = 0x00;
++	ven_db[3] = 0x20;
++	ven_db[4] = hdev->vendor_4k_hvic;
++	hdmi_vend_infoframe_rawset(ven_hb, db);
++	hdmi_avi_infoframe_config(CONF_AVI_VIC, 0);
++}
++
+ static void hdr_work_func(struct work_struct *work)
+ {
+ 	struct hdmitx_dev *hdev =
+@@ -843,7 +876,7 @@
+ 			if (ieee_code == 0 || ieee_code == CUVA_IEEEOUI) {
+ 				HDMITX_INFO("%s: disable hdr10+ vsif\n", __func__);
+ 				/* hdmi_vend_infoframe_set(NULL); */
+-				hdmi_vend_infoframe_rawset(NULL, NULL);
++				hdmitx_release_vendor_slot(hdev);
+ 			}
+ 			hdr_status_pos = 0;
+ 		}
+@@ -931,8 +964,7 @@
+ 		/* zero hdr10+ VSIF being sent - disable it */
+ 		HDMITX_DEBUG_PACKET("%s: disable hdr10+ zero vsif\n", __func__);
+ 		/* hdmi_vend_infoframe_set(NULL); */
+-		/* TODO, maybe need recover hdmi1.4b_vsif when 4k */
+-		hdmi_vend_infoframe_rawset(NULL, NULL);
++		hdmitx_release_vendor_slot(hdev);
+ 		hdr_status_pos = 0;
+ 	}
+ 
+@@ -965,7 +997,7 @@
+ 	/* if using VSIF/DOVI, then only clear DV_VS10_SIG, else disable VSIF */
+ 		if (hdmitx_hw_cntl_config(&hdev->tx_hw.base, CONF_CLR_DV_VS10_SIG, 0) == 0)
+ 			/* hdmi_vend_infoframe_set(NULL); */
+-			hdmi_vend_infoframe_rawset(NULL, NULL);
++			hdmitx_release_vendor_slot(hdev);
+ 	}
+ 
+ 	/* hdr10+ content on a hdr10 sink case */
+@@ -1637,7 +1669,7 @@
+ 	if (!data || !flag) {
+ 		HDMITX_INFO("%s: null vsif\n", __func__);
+ 		/* hdmi_vend_infoframe_set(NULL); */
+-		hdmi_vend_infoframe_rawset(NULL, NULL);
++		hdmitx_release_vendor_slot(hdev);
+ 		hdmi_avi_infoframe_config(CONF_AVI_BT2020, CLR_AVI_BT2020);
+ 		hdev->hdr10plus_feature = 0;
+ 		/* When hdr10plus mode ends, clear hdr10plus_event flag */
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_module.h
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_module.h
+@@ -202,6 +202,12 @@
+ 
+ 	/* ignore fifo intr5 if hdmitx output disabled */
+ 	bool ignore_fifo_intr5;
++
++	/* HDMI_VIC (1..4) of the legacy-4k mode now being output, 0 otherwise.
++	 * Latched by hdmitx21_set_display() so a vendor-slot release can put the
++	 * name back without reading fmt_para, which the mode-set path resets.
++	 */
++	u8 vendor_4k_hvic;
+ };
+ 
+ struct hdmitx_dev *get_hdmitx21_device(void);
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_video.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+@@ -124,6 +124,11 @@
+ 			hdmitx_hw_cntl_config(&hdev->tx_hw.base,
+ 				CONF_HDMI_DVI_MODE, HDMI_MODE);
+ 		}
++		/* Latched for a later vendor-slot release. The lookup answers 0 for
++		 * any non-4k mode, including the 3D cases the chain below leaves
++		 * untouched, so the name can never be put back for the wrong mode.
++		 */
++		hdev->vendor_4k_hvic = hdmitx_edid_get_hdmi14_4k_vic(videocode);
+ 		if (videocode == HDMI_95_3840x2160p30_16x9 ||
+ 		    videocode == HDMI_94_3840x2160p25_16x9 ||
+ 		    videocode == HDMI_93_3840x2160p24_16x9 ||
