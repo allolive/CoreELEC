@@ -13,11 +13,9 @@ Watch the cache itself and enter the same buffering state.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index a2135da..6ae6f4c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -952,6 +952,10 @@ bool CVideoPlayer::OpenInputStream()
+@@ -953,6 +953,10 @@
    m_clock.Reset();
    m_dvd.Clear();
  
@@ -28,7 +26,7 @@ index a2135da..6ae6f4c 100644
    return true;
  }
  
-@@ -1789,6 +1793,15 @@ void CVideoPlayer::Process()
+@@ -1792,6 +1796,15 @@
          m_pDemuxer->FillBuffer(fillBuffer);
      }
  
@@ -44,7 +42,7 @@ index a2135da..6ae6f4c 100644
      // if the queues are full, no need to read more
      if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
          (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
-@@ -2168,6 +2181,23 @@ void CVideoPlayer::ProcessAudioID3Data(CDemuxStream* pStream, DemuxPacket* pPack
+@@ -2179,6 +2192,23 @@
    m_VideoPlayerAudioID3->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
  }
  
@@ -68,7 +66,7 @@ index a2135da..6ae6f4c 100644
  CacheInfo CVideoPlayer::GetCachingTimes()
  {
    CacheInfo info{};
-@@ -2198,6 +2228,12 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2209,6 +2239,12 @@
    info.level = 0.0;
    info.offset = (cached + queued) / length;
    info.time = 0.0;
@@ -81,7 +79,7 @@ index a2135da..6ae6f4c 100644
    info.valid = true;
  
    if (currate == 0)
-@@ -2223,6 +2259,59 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2234,6 +2270,59 @@
    return info;
  }
  
@@ -138,10 +136,10 @@ index a2135da..6ae6f4c 100644
 +  return true;
 +}
 +
- void CVideoPlayer::HandlePlaySpeed()
+ bool CVideoPlayer::ShouldDeferSync(bool ready, std::chrono::steady_clock::time_point now)
  {
-   const bool isInMenu = IsInMenuInternal();
-@@ -2232,7 +2321,32 @@ void CVideoPlayer::HandlePlaySpeed()
+   // EOF can report a NOPTS start while the video worker keeps decoding. Ordinary
+@@ -2266,7 +2355,32 @@
    if (tolerateStall && m_caching != CACHESTATE_DONE)
      SetCaching(CACHESTATE_DONE);
  
@@ -175,7 +173,7 @@ index a2135da..6ae6f4c 100644
    {
      CacheInfo cache = GetCachingTimes();
      if (cache.valid)
-@@ -2308,6 +2422,11 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2342,6 +2456,11 @@
    {
      if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
      {
@@ -187,7 +185,7 @@ index a2135da..6ae6f4c 100644
        // take action if audio or video stream is stalled
        if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
             (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
-@@ -3613,6 +3732,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3657,6 +3776,7 @@
  
        m_playSpeed = speed;
  
@@ -195,7 +193,7 @@ index a2135da..6ae6f4c 100644
        m_caching = CACHESTATE_DONE;
        m_clock.SetSpeed(speed);
        m_VideoPlayerAudio->SetSpeed(speed);
-@@ -3700,6 +3820,18 @@ void CVideoPlayer::HandleMessages()
+@@ -3745,6 +3865,18 @@
  
  void CVideoPlayer::SetCaching(ECacheState state)
  {
@@ -214,7 +212,7 @@ index a2135da..6ae6f4c 100644
    if(state == CACHESTATE_FLUSH)
    {
      CacheInfo cache = GetCachingTimes();
-@@ -3707,6 +3839,11 @@ void CVideoPlayer::SetCaching(ECacheState state)
+@@ -3752,6 +3884,11 @@
        state = CACHESTATE_FULL;
      else
        state = CACHESTATE_INIT;
@@ -226,7 +224,7 @@ index a2135da..6ae6f4c 100644
    }
  
    if(m_caching == state)
-@@ -5927,6 +6064,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -5995,6 +6132,9 @@
    double queueTime = GetQueueTime();
    CacheInfo cache = GetCachingTimes();
  
@@ -236,7 +234,7 @@ index a2135da..6ae6f4c 100644
    if (cache.valid)
    {
      state.cache_level = std::max(0.0, std::min(1.0, cache.level));
-@@ -5940,6 +6080,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -6008,6 +6148,10 @@
      state.cache_time = queueTime / 1000.0;
    }
  
@@ -247,11 +245,9 @@ index a2135da..6ae6f4c 100644
    XFILE::SCacheStatus status;
    if (m_pInputStream && m_pInputStream->GetCacheStatus(&status))
    {
-diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 27f65ef..91319b1 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -263,6 +263,9 @@ struct CacheInfo
+@@ -265,6 +265,9 @@
    double level; // current cache level
    double offset; // percentage of file ahead of current position
    double time; // estimated playback time of current cached bytes
@@ -261,7 +257,7 @@ index 27f65ef..91319b1 100644
    bool valid;
  };
  
-@@ -481,6 +484,7 @@ protected:
+@@ -484,6 +487,7 @@
  
    void HandleMessages();
    void HandlePlaySpeed();
@@ -269,7 +265,7 @@ index 27f65ef..91319b1 100644
    bool IsInMenuInternal() const;
    void SynchronizeDemuxer();
    void QueueAutoSceneSkip(std::chrono::milliseconds seekTime);
-@@ -563,6 +567,11 @@ protected:
+@@ -566,6 +570,11 @@
  
    ECacheState  m_caching;
    XbmcThreads::EndTime<> m_cachingTimer;
@@ -281,11 +277,9 @@ index 27f65ef..91319b1 100644
  
    std::unique_ptr<CProcessInfo> m_processInfo;
  
-diff --git a/xbmc/filesystem/IFileTypes.h b/xbmc/filesystem/IFileTypes.h
-index ba0eec0..00ecaf8 100644
 --- a/xbmc/filesystem/IFileTypes.h
 +++ b/xbmc/filesystem/IFileTypes.h
-@@ -55,6 +55,7 @@ struct SCacheStatus
+@@ -55,6 +55,7 @@
    uint32_t maxrate; /**< maximum allowed read(fill) rate (bytes/second) */
    uint32_t currate; /**< average read rate (bytes/second) since last position change */
    uint32_t lowrate; /**< low speed read rate (bytes/second) (if any, else 0) */

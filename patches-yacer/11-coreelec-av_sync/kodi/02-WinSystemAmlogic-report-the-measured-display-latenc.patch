@@ -108,7 +108,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    uint64_t         m_cur_pts;
    uint64_t         m_last_pts;
    uint32_t         m_bufferIndex;
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp	1969-12-31 19:00:00.000000000 -0500
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -0,0 +1,711 @@
 +/*
@@ -822,7 +822,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +    m_armed = true;
 +  }
 +}
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h	1969-12-31 19:00:00.000000000 -0500
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -0,0 +1,217 @@
 +/*
@@ -1080,7 +1080,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -227,6 +228,19 @@
+@@ -232,6 +233,19 @@
  {
    ManageRenderArea();
  
@@ -1100,7 +1100,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
    if(amli && amli->m_amlCodec)
    {
-@@ -235,6 +249,9 @@
+@@ -240,6 +254,9 @@
      {
        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE);
        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
@@ -1135,7 +1135,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -547,6 +552,121 @@
+@@ -555,6 +560,121 @@
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
@@ -1270,9 +1270,9 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include <gbm.h>
  
  class IDispResource;
-@@ -43,6 +46,31 @@
-   CHDRCapabilities GetDisplayHDRCapabilities() const override;
-   HDR_STATUS GetOSHDRStatus() override;
+@@ -48,6 +51,30 @@
+   virtual uint64_t ConfigureHdrGuiSession(uint64_t owner, int colorTransfer, bool dvGraphics) = 0;
+   virtual void ReleaseHdrGuiSession(uint64_t owner) = 0;
  
 +  //! \brief The measured cost of the video pipeline, in milliseconds, or -1
 +  //! until it is known, which asks CGraphicContext for its buffer-count
@@ -1298,11 +1298,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +  //! how far the picture is from its timestamp, and where the display is in its
 +  //! own frame. The only way to see these once the diagnostics patch is gone.
 +  DEBUG_INFO_RENDER GetDebugInfo() override;
-+
    virtual void Register(IDispResource *resource);
    virtual void Unregister(IDispResource *resource);
  
-@@ -78,6 +106,10 @@
+@@ -83,6 +110,10 @@
    std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
    std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
  private:
