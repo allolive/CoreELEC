@@ -8,13 +8,108 @@ many refreshes a frame of content is shown for: the latency measurement, the fra
 scheduling and the phase alignment. Put the reads somewhere they can share before
 any of them is written, rather than letting three copies grow and disagree.
 
-Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+Whether the display is a whole multiple of the content rate is not decided
+again here. CRenderManager::CheckEnableClockSync() already decides it, and a
+second comparison on another copy of the frame rate disagrees with it exactly
+where it matters: a 23.976 mode divided in float lands a rounding error off the
+content rate, and a strict test there disqualified every 23.976 title. So the
+renderer is offered the clock sync together with that verdict - the display
+refreshes per frame CRenderManager found matching, TakeClockSync() - and the
+Amlogic renderer records it as a whole number. Content faster than the display
+(48fps on 24Hz: Kodi counts it a match) records zero, since frames are dropped
+there rather than each shown a whole number of times. Here the renderer still
+hands the clock sync back; the alignment that takes it over comes later in the
+series.
 
+Shared code by necessity: the verdict exists only inside CRenderManager, so the
+renderer interface gains one default-false call and CheckEnableClockSync() one
+line to make it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
+@@ -79,6 +79,12 @@ public:
+   //! SurfaceView, the Amlogic video layer. Such a renderer must produce its
+   //! own capture frame; every other renderer is served by reading the framebuffer.
+   virtual bool VideoBypassesFramebuffer() { return !IsGuiLayer(); }
++  //! \brief Offered CRenderManager's clock sync, with the display refreshes per
++  //! video frame when it finds the rates match (below one when the video runs
++  //! faster than the display), or 0 when they do not. True when the renderer
++  //! keeps the clock in step with the display itself, so CRenderManager must
++  //! leave its own clock sync off.
++  virtual bool TakeClockSync(double /*refreshesPerFrame*/) { return false; }
+   //! \brief Render this renderer's video frame for screencap into result.
+   //! Overridden by renderers whose VideoBypassesFramebuffer() is true.
+   //! Default: capture unavailable.
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -31,11 +31,18 @@ CRendererAML::CRendererAML()
+ 
+ CRendererAML::~CRendererAML()
+ {
++  aml_set_refreshes_per_frame(0.0);
+   Reset();
+   static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+       ->ReleaseHdrGuiSession(m_hdrGuiOwner);
+ }
+ 
++bool CRendererAML::TakeClockSync(double refreshesPerFrame)
++{
++  aml_set_refreshes_per_frame(aml_whole_refreshes(refreshesPerFrame));
++  return false;
++}
++
+ CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
+ {
+   if (buffer && dynamic_cast<CAMLVideoBuffer*>(buffer))
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+@@ -34,6 +34,7 @@ public:
+ 
+   // Player functions
+   virtual bool IsGuiLayer() override { return false; };
++  bool TakeClockSync(double refreshesPerFrame) override;
+ 
+   // Feature support
+   virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -1385,6 +1385,7 @@ void CRenderManager::CheckEnableClockSync()
+ {
+   // refresh rate can be a multiple of video fps
+   double diff = 1.0;
++  double refreshesPerFrame = 0.0;
+ 
+   if (m_fps != 0)
+   {
+@@ -1397,6 +1398,7 @@ void CRenderManager::CheckEnableClockSync()
+     }
+ 
+     diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
++    refreshesPerFrame = diff;
+     if (diff < 1.0)
+       diff = 1.0 / diff;
+ 
+@@ -1404,7 +1406,10 @@ void CRenderManager::CheckEnableClockSync()
+     diff = std::abs(std::round(diff) - diff);
+   }
+ 
+-  if (diff < 0.0005)
++  const bool ratesMatch = diff < 0.0005;
++  const bool rendererSyncs =
++      m_pRenderer && m_pRenderer->TakeClockSync(ratesMatch ? refreshesPerFrame : 0.0);
++  if (ratesMatch && !rendererSyncs)
+   {
+     m_clockSync.m_enabled = true;
+   }
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index e2a39e9..a0a13fb 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -10,9 +10,18 @@
+@@ -10,9 +10,20 @@
  #include <regex>
  #include <string.h>
  #include <sys/ioctl.h>
@@ -27,13 +122,15 @@ index e2a39e9..a0a13fb 100644
 +
 +#include <cstring>
 +
++#include <atomic>
 +#include <charconv>
++#include <cmath>
 +#include "cores/VideoPlayer/Interface/TimingConstants.h"
 +#include "settings/AdvancedSettings.h"
  #include "utils/log.h"
  #include "utils/StringUtils.h"
  #include "ServiceBroker.h"
-@@ -21,9 +30,11 @@
+@@ -21,9 +32,11 @@
  #include "settings/SettingsComponent.h"
  #include "platform/linux/SysfsPath.h"
  #include "windowing/amlogic/WinSystemAmlogic.h"
@@ -45,7 +142,7 @@ index e2a39e9..a0a13fb 100644
  
  int aml_get_cpufamily_id()
  {
-@@ -297,3 +308,120 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
+@@ -297,3 +310,130 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
      CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
    }
  }
@@ -157,29 +254,39 @@ index e2a39e9..a0a13fb 100644
 +                          videoDelay);
 +}
 +
-+double aml_refreshes_per_frame(double displayRate, double fps)
++namespace
 +{
-+  // Zero when the content outruns the display, which shows some frames and
-+  // drops others rather than repeating each of them.
-+  if (displayRate <= 0.0 || fps <= 0.0 || fps > displayRate)
-+    return 0.0;
++// CRenderManager's verdict, handed over through CRendererAML::TakeClockSync().
++// Its call, not a second comparison here: it decides from its own copy of the
++// frame rate, and two tolerances on two copies disagree exactly where it
++// matters - a 23.976 mode divided in float lands a rounding error off the
++// content rate.
++std::atomic<double> g_amlRefreshesPerFrame{0.0};
++} // unnamed namespace
 +
-+  return displayRate / fps;
++void aml_set_refreshes_per_frame(double refreshes)
++{
++  g_amlRefreshesPerFrame.store(refreshes, std::memory_order_relaxed);
++}
++
++double aml_refreshes_per_frame()
++{
++  return g_amlRefreshesPerFrame.load(std::memory_order_relaxed);
 +}
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index cc135d0..dc16fd5 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
-@@ -8,6 +8,8 @@
+@@ -8,6 +8,9 @@
  
  #include "utils/StreamDetails.h"
  
++#include <cmath>
 +#include <optional>
 +
  enum AML_SUPPORT_H264_4K2K
  {
    AML_SUPPORT_H264_4K2K_UNINIT = -1,
-@@ -63,3 +65,34 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+@@ -63,3 +66,46 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
  bool aml_video_started();
  int aml_amdv_wait(StreamHdrType hdrType);
  void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
@@ -210,12 +317,23 @@ index cc135d0..dc16fd5 100644
 +//! CRenderManager::PrepareNextRender().
 +double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
 +
-+//! \brief How many times the display shows each frame of a stream at fps.
-+//! Zero if either rate is unknown, or if the content outruns the display.
-+//! Callers apply their own tolerance; CheckEnableClockSync() uses 0.0005.
-+double aml_refreshes_per_frame(double displayRate, double fps);
++//! \brief The whole number of refreshes the display shows each frame for, from
++//! the refreshes per frame CRenderManager found matching (0 if none). Zero too
++//! when the video runs faster than the display, which drops frames rather than
++//! showing each of them a whole number of times.
++inline double aml_whole_refreshes(double refreshesPerFrame)
++{
++  return refreshesPerFrame >= 1.0 - 0.0005 ? std::round(refreshesPerFrame) : 0.0;
++}
++
++//! \brief Records aml_whole_refreshes() of CRenderManager's verdict. See
++//! CRendererAML::TakeClockSync().
++void aml_set_refreshes_per_frame(double refreshes);
++
++//! \brief How many times the display shows each frame, as recorded: a whole
++//! number, or 0 when the rates do not match that way.
++double aml_refreshes_per_frame();
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 1d1fc46..cf46c19 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -85,6 +85,7 @@ public:

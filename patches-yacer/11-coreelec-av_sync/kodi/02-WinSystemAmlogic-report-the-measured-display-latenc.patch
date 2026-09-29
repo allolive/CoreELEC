@@ -12,6 +12,7 @@ against it. Report what the pipeline actually measures.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 ---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -8,6 +8,8 @@
@@ -23,7 +24,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "DynamicDll.h"
  
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
-@@ -2452,6 +2454,7 @@
+@@ -2452,6 +2454,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
    m_opened = true;
@@ -31,7 +32,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
    SetSpeed(m_speed);
-@@ -2584,6 +2587,11 @@
+@@ -2584,6 +2587,11 @@ void CAMLCodec::CloseDecoder()
    dumpfile_close(am_private);
    m_opened = false;
  
@@ -43,7 +44,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
    free(am_private->hdr_buf.data);
-@@ -2645,6 +2653,8 @@
+@@ -2645,6 +2653,8 @@ void CAMLCodec::CloseAmlVideo()
  
  void CAMLCodec::Reset()
  {
@@ -52,7 +53,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2880,6 +2890,28 @@
+@@ -2880,6 +2890,28 @@ void CAMLCodec::SetPollDevice(int dev)
    m_pollDevice = dev;
  }
  
@@ -81,7 +82,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
    int ret;
-@@ -3031,6 +3063,7 @@
+@@ -3031,6 +3063,7 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -89,9 +90,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
    // update internal vars regardless
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -86,6 +86,7 @@
+@@ -86,6 +86,7 @@ public:
    static int    OMXDurationToNs(int duration);
    int           GetAmlDuration() const;
    int           ReleaseFrame(const uint32_t index, bool bDrop = false);
@@ -99,7 +101,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
-@@ -109,7 +110,7 @@
+@@ -109,7 +110,7 @@ private:
    bool             m_drain = false;
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
@@ -108,9 +110,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    uint64_t         m_cur_pts;
    uint64_t         m_last_pts;
    uint32_t         m_bufferIndex;
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+new file mode 100644
+--- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -0,0 +1,711 @@
+@@ -0,0 +1,715 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -569,9 +573,13 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +  // Decided on every presented frame. Settled once per report instead, it would
 +  // spend the first minute of every file false - so the check would never run,
 +  // and the report would then print a clean sheet it had not earned.
-+  const double refreshes = aml_refreshes_per_frame(DVD_TIME_BASE / m_period, fps);
-+  const bool steady = refreshes > 0.0 && std::abs(std::round(refreshes) - refreshes) <= 0.0005;
-+  m_ratioIsOne = steady && std::round(refreshes) == 1.0;
++  // Whether the rates match is CRenderManager's verdict; the measured ratio is
++  // kept as well, whole or not, for sizing a frame interval under pulldown.
++  const double rate = DVD_TIME_BASE / m_period;
++  const double refreshes = fps > 0.0 ? rate / fps : 0.0;
++  const double matched = aml_refreshes_per_frame();
++  const bool steady = matched > 0.0;
++  m_ratioIsOne = steady && matched == 1.0;
 +  if (m_ratioIsOne != m_ratioWas)
 +  {
 +    // Otherwise the check going quiet has no cause anywhere in the log.
@@ -822,7 +830,9 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +    m_armed = true;
 +  }
 +}
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+new file mode 100644
+--- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -0,0 +1,217 @@
 +/*
@@ -1042,9 +1052,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +  double m_alignMax{0.0};
 +};
 +
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-@@ -14,8 +14,10 @@
+@@ -14,8 +14,10 @@ endif()
  
  if(TARGET ${APP_NAME_LC}::AML)
    list(APPEND SOURCES AMLCodec.cpp
@@ -1055,9 +1066,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
                        DVDVideoCodecAmlogic.h)
  endif()
  
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -724,8 +724,10 @@
+@@ -724,8 +724,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
    const double latencyTweak = static_cast<double>(
        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
            refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
@@ -1070,6 +1082,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                            videoDelay -
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -10,6 +10,7 @@
@@ -1080,7 +1093,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -232,6 +233,19 @@
+@@ -239,6 +240,19 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
  {
    ManageRenderArea();
  
@@ -1100,7 +1113,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
    if(amli && amli->m_amlCodec)
    {
-@@ -240,6 +254,9 @@
+@@ -247,6 +261,9 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
      {
        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE);
        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
@@ -1110,6 +1123,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        amli->m_amlCodec = nullptr; //Mark frame as processed
        m_prevVPts = pts;
      }
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -11,10 +11,14 @@
@@ -1135,7 +1149,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -555,6 +560,121 @@
+@@ -555,6 +560,119 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
@@ -1187,11 +1201,9 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +    return stand_down();
 +
 +  // Whole-number match only, so pulldown, where there is no fixed phase, is left
-+  // alone. Compared with a tolerance: the two rates come from different sources
-+  // and exact equality on a ratio of floats does not hold.
-+  const double refreshes =
-+      aml_refreshes_per_frame(rate, CServiceBroker::GetDataCacheCore().GetVideoFps());
-+  if (refreshes <= 0.0 || std::abs(std::round(refreshes) - refreshes) > 0.0005)
++  // alone.
++  const double refreshes = aml_refreshes_per_frame();
++  if (refreshes <= 0.0)
 +    return stand_down();
 +
 +  const double periodUs = 1000000.0 / rate;
@@ -1232,7 +1244,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +  // display switches rather than on the flip. Only while the display shows each
 +  // frame once: with two or more refreshes per frame PrepareNextRender() already
 +  // flips early on the vblanks with no frame due.
-+  const double lead = std::round(refreshes) == 1.0 ? periodUs / 2.0 : 0.0;
++  const double lead = refreshes == 1.0 ? periodUs / 2.0 : 0.0;
 +
 +  const float adjustment = static_cast<float>((phase - lead) / 1000.0);
 +  m_frameLatencyMs.store(adjustment, std::memory_order_relaxed);
@@ -1257,6 +1269,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  void CWinSystemAmlogic::Register(IDispResource *resource)
  {
    std::unique_lock<CCriticalSection> lock(m_resourceSection);
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -18,7 +18,10 @@
@@ -1270,7 +1283,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include <gbm.h>
  
  class IDispResource;
-@@ -48,6 +51,30 @@
+@@ -48,6 +51,30 @@ public:
    virtual uint64_t ConfigureHdrGuiSession(uint64_t owner, int colorTransfer, bool dvGraphics) = 0;
    virtual void ReleaseHdrGuiSession(uint64_t owner) = 0;
  
@@ -1301,7 +1314,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    virtual void Register(IDispResource *resource);
    virtual void Unregister(IDispResource *resource);
  
-@@ -83,6 +110,10 @@
+@@ -83,6 +110,10 @@ protected:
    std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
    std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
  private:

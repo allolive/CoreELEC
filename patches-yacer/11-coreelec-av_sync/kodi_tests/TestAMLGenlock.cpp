@@ -35,7 +35,6 @@ struct World
   double clock = 0.0;
   double absolute = 0.0;
   double vsyncAdjust = 0.0;
-  bool renderClockSync = false;
   float videoFps = 24.0f;
   unsigned int maxOffSyncMs = 50;
   std::optional<double> sinceFrameStart = 0.0;
@@ -135,10 +134,6 @@ float CProcessInfo::GetVideoFps()
 {
   return g_world.videoFps;
 }
-bool CProcessInfo::IsRenderClockSync()
-{
-  return g_world.renderClockSync;
-}
 unsigned int CProcessInfo::GetMaxPassthroughOffSyncDuration() const
 {
   return g_world.maxOffSyncMs;
@@ -148,7 +143,7 @@ CVideoSettings CProcessInfo::GetVideoSettings()
   return {};
 }
 
-double aml_refreshes_per_frame(double, double)
+double aml_refreshes_per_frame()
 {
   return g_world.refreshesPerFrame;
 }
@@ -225,22 +220,13 @@ TEST(AMLGenlock, StandsDownUntilThePipelineHasBeenMeasured)
   CAMLLatencyStore::GetInstance().Set(50.0f);
 }
 
-TEST(AMLGenlock, StandsDownWhileTheRendererIsSyncingTheClock)
-{
-  Reset();
-  g_world.renderClockSync = true;
-  CAMLGenlock genlock;
-  genlock.Restart();
-  Frame(genlock, 24.0, 2000.0);
-  EXPECT_EQ(g_world.corrections, 0);
-}
-
 TEST(AMLGenlock, LeavesPulldownAlone)
 {
   Reset();
   // 2:3 pulldown gives no whole number of refreshes per frame, so there is no
-  // fixed phase to align to.
-  g_world.refreshesPerFrame = 2.5;
+  // fixed phase to align to. CRenderManager finds no match, and the ratio
+  // reads zero.
+  g_world.refreshesPerFrame = 0.0;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 60.0, 2000.0);
@@ -329,4 +315,25 @@ TEST(AMLGenlock, PhaseCannotReachTheDeadBandAtOrdinaryRefreshRates)
   }
   // At 24p it is reachable, which is why the guard is there at all.
   EXPECT_GT(Period(24.0) / 2.0 / 1000.0, 20.0);
+}
+
+// CRenderManager hands over its refreshes per frame; only a whole number of
+// them is something to align to.
+TEST(AMLGenlock, WholeRefreshesPerFrame)
+{
+  EXPECT_EQ(aml_whole_refreshes(0.0), 0.0); // no match
+  EXPECT_EQ(aml_whole_refreshes(1.0), 1.0);
+  EXPECT_EQ(aml_whole_refreshes(2.0), 2.0);
+  // 23.976 divided in float lands a rounding error either side of the content
+  EXPECT_EQ(aml_whole_refreshes(0.99999992), 1.0);
+  EXPECT_EQ(aml_whole_refreshes(1.00000008), 1.0);
+  EXPECT_EQ(aml_whole_refreshes(1.9999999), 2.0);
+  // Content faster than the display, which Kodi counts as a match: frames are
+  // dropped, not each shown a whole number of times
+  EXPECT_EQ(aml_whole_refreshes(0.5), 0.0);        // 48fps on 24Hz
+  EXPECT_EQ(aml_whole_refreshes(0.49999997), 0.0); // the same in float
+  EXPECT_EQ(aml_whole_refreshes(1.0 / 3.0), 0.0);  // 72fps on 24Hz
+  // the edge of CheckEnableClockSync()'s own tolerance below one
+  EXPECT_EQ(aml_whole_refreshes(1.0 / 1.0004999), 1.0);
+  EXPECT_EQ(aml_whole_refreshes(0.9994), 0.0);
 }

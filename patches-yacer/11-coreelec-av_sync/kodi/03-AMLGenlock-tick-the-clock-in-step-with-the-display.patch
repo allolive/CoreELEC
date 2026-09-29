@@ -9,10 +9,20 @@ to show a frame on has half a period of slack either side; near the edge it has
 none, and the smallest disturbance flips it - a frame repeated, one dropped to
 catch up, repeated again. Hold the phase away from the edge.
 
-Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+Wherever the display shows each frame a whole number of times - by
+CRenderManager's own verdict on the rates - this keeps the clock in step, and
+CRenderManager's clock sync stays off: the Amlogic renderer takes it over when
+it is offered (TakeClockSync(), 11_01). Content faster than the display, which
+Kodi also counts as a match, is left to CRenderManager's clock sync. The two
+cannot run together. Clock sync rounds every clock correction to a whole frame
+and offsets the clock the audio is synced to, so this alignment would turn into
+frame skips. Taking CRenderManager's verdict rather than CheckEnableClockSync
+finding no exact match holds for fractional rates too, however the two rates
+are derived. The display-latency centring (11_02) no longer needs to stand
+down for clock sync either.
 
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 75231b6..6d6caef 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2654,6 +2654,7 @@ void CAMLCodec::CloseAmlVideo()
@@ -70,7 +80,6 @@ index 75231b6..6d6caef 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 1280038..cebb917 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -99,10 +108,9 @@ index 1280038..cebb917 100644
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 new file mode 100644
-index 0000000..464c95d
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,149 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -177,17 +185,10 @@ index 0000000..464c95d
 +  if (CAMLLatencyStore::GetInstance().Get() < 0.0f)
 +    return;
 +
-+  // Stand down while CRenderManager centres the frame itself. Its own flag
-+  // rather than a second rate comparison: it decides from CRenderManager::m_fps
-+  // and this would decide from CProcessInfo, and the two can disagree.
-+  if (processInfo.IsRenderClockSync())
-+    return;
-+
 +  // Whole-number ratios only, so pulldown, where there is no fixed phase, is
-+  // left alone. Compared with a tolerance: the two rates come from different
-+  // sources and exact equality on a ratio of floats does not hold.
-+  const double refreshes = aml_refreshes_per_frame(rate, processInfo.GetVideoFps());
-+  if (period <= 0.0 || refreshes <= 0.0 || std::abs(std::round(refreshes) - refreshes) > 0.0005)
++  // left alone.
++  const double refreshes = aml_refreshes_per_frame();
++  if (period <= 0.0 || refreshes <= 0.0)
 +    return;
 +
 +  // Aligned only where playback is already discontinuous - a start, a seek, a
@@ -218,7 +219,7 @@ index 0000000..464c95d
 +  // period below the late one, so aiming at zero puts both of them exactly on a
 +  // vblank; half a period leaves each of them half a period of slack.
 +  const double offset = std::remainder(clockAtRead - *sinceFrameStart + latency - framePts -
-+                                           (std::round(refreshes) == 1.0 ? 0.0 : period / 2.0),
++                                           (refreshes == 1.0 ? 0.0 : period / 2.0),
 +                                       period);
 +
 +  CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLGenlock: phase {:+.2f}ms", offset / 1000.0);
@@ -261,10 +262,9 @@ index 0000000..464c95d
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
 new file mode 100644
-index 0000000..9e794d5
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,77 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -288,7 +288,8 @@ index 0000000..9e794d5
 +//! clock against the frame's timestamp. Where those timestamps fall inside the
 +//! refresh period is settled by chance when playback starts, and near the
 +//! decision boundary jitter shows one frame twice and drops the next. Handles
-+//! the exact rate match, where CheckEnableClockSync() stands down.
++//! every matched rate: the renderer takes the clock sync over from
++//! CRenderManager through TakeClockSync(), so its own stays off.
 +//!
 +//! The phase only, never the rate, once per trigger. The move is at most half a
 +//! refresh period, which is also the most it shifts video against audio - and
@@ -342,7 +343,6 @@ index 0000000..9e794d5
 +  double m_period{0.0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 8716bfa..3f67ff9 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -14,9 +14,11 @@ endif()
@@ -358,10 +358,24 @@ index 8716bfa..3f67ff9 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 962f41f..57e220b 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-@@ -205,6 +205,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -40,8 +40,12 @@ CRendererAML::~CRendererAML()
+ 
+ bool CRendererAML::TakeClockSync(double refreshesPerFrame)
+ {
+-  aml_set_refreshes_per_frame(aml_whole_refreshes(refreshesPerFrame));
+-  return false;
++  const double refreshes = aml_whole_refreshes(refreshesPerFrame);
++  aml_set_refreshes_per_frame(refreshes);
++  // CAMLGenlock keeps the clock in step with the display wherever each frame is
++  // shown a whole number of times, and the two cannot run together. Anywhere
++  // else the clock sync stays CRenderManager's.
++  return refreshes > 0.0;
+ }
+ 
+ CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
+@@ -264,6 +268,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
        // Refreshes what the decode thread and the debug overlay read.
        winSystem->SampleFrameLatency();
        amli->m_amlCodec->LatencyTick(pts);
@@ -369,3 +383,18 @@ index 962f41f..57e220b 100644
        amli->m_amlCodec = nullptr; //Mark frame as processed
        m_prevVPts = pts;
      }
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -602,11 +602,6 @@ float CWinSystemAmlogic::SampleFrameLatency()
+   if (CServiceBroker::GetDataCacheCore().GetSpeed() != 1.0f)
+     return stand_down();
+ 
+-  // Stand down while CRenderManager centres the frame itself, or this would add
+-  // a second half period on top of its.
+-  if (CServiceBroker::GetDataCacheCore().IsRenderClockSync())
+-    return stand_down();
+-
+   // Whole-number match only, so pulldown, where there is no fixed phase, is left
+   // alone.
+   const double refreshes = aml_refreshes_per_frame();
