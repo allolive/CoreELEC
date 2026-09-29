@@ -1,0 +1,605 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 22:00:00 -0400
+Subject: [PATCH] VideoRenderers: draw subtitles at a chosen brightness
+
+Subtitles come out as bright as whoever made them chose, and on HDR output
+that can be far brighter than the picture around them: the English SDH
+track of one UHD disc authors its text at PQ 154, about 253 nits, where the
+interface's own white sits near 200.
+
+Add Player > Subtitles > Brightness: the most light a subtitle may have, in
+nits, 10 to 400 in steps of 10, or "As authored". Default 100. It is a
+ceiling: a subtitle authored brighter is dimmed to it, one authored dimmer
+keeps its light, and the brightness is measured on the colours the subtitle
+actually draws with.
+
+- An image subtitle authored in HDR, drawn as PQ, is measured on the palette
+  entries its bitmap uses - a PGS palette lives for a whole epoch and keeps
+  what earlier subtitles drew with; one UHD disc carries a full-PQ, 10000-nit
+  entry beside its 244-nit text. Objects shown together share one measure,
+  so a caption and a dimmer line beside it keep their contrast. The palette
+  is scaled in linear light through the PQ curve and rounded down, so nothing
+  comes out above the value asked for.
+- Every other subtitle is sRGB by the time it is drawn: text through libass,
+  SDR image subtitles, an HDR one converted for SDR output. Its white is the
+  interface's while the HDR composite converts the interface, 203 nits on
+  other HDR output and 120 on SDR; its brightest colour is measured against
+  that and scaled in linear light through the sRGB curve. It cannot be drawn
+  brighter than that white. Text is scaled while libass's output is turned
+  into a texture and put back afterwards, so libass's own change detection
+  still sees the frame it made.
+
+Alpha is left alone throughout, so edges and transparency do not change.
+Blu-ray menus are marked as such and keep their light, as do Kodi's own
+overlays such as the player debug information. DVD disc subpictures take
+another path and are not covered.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25341,7 +25341,33 @@ msgctxt "#39217"
+ msgid "Best"
+ msgstr ""
+ 
+-#empty strings from id 39218 to 39899
++#empty strings from id 39218 to 39219
++
++#. Label of setting "Player -> Subtitles -> Brightness"
++#: system/settings/settings.xml
++msgctxt "#39220"
++msgid "Brightness"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> Brightness"
++#: system/settings/settings.xml
++msgctxt "#39221"
++msgid "The most light a subtitle may have on screen, in nits. A subtitle authored brighter is dimmed to it, one authored dimmer keeps its light; text subtitles and SDR image subtitles can at most reach the interface's white. On SDR output the screen is taken to be 120 nits. Disc menus are left alone. \"As authored\" leaves subtitles as they come."
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> Brightness": leave subtitles as authored
++#: system/settings/settings.xml
++msgctxt "#39222"
++msgid "As authored"
++msgstr ""
++
++#. Value format of setting "Player -> Subtitles -> Brightness", in nits
++#: system/settings/settings.xml
++msgctxt "#39223"
++msgid "{0:d} nits"
++msgstr ""
++
++#empty strings from id 39224 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+ #. STR_LIST_AND_TWO
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -891,6 +891,18 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
++        <setting id="subtitles.brightness" type="integer" label="39220" help="39221">
++          <level>1</level>
++          <default>100</default> <!-- nits -->
++          <constraints>
++            <minimum label="39222">0</minimum> <!-- As authored -->
++            <step>10</step>
++            <maximum>400</maximum>
++          </constraints>
++          <control type="spinner" format="string">
++            <formatlabel>39223</formatlabel>
++          </control>
++        </setting>
+         <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
+           <level>3</level>
+           <default>0</default> <!-- OverrideStyles::DISABLED -->
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+@@ -61,6 +61,7 @@ public:
+     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
+     m_setForcedMargins = src.m_setForcedMargins;
+     m_stereoView = src.m_stereoView;
++    m_isMenu = src.m_isMenu;
+   }
+ 
+   virtual ~CDVDOverlay() = default;
+@@ -118,6 +119,7 @@ public:
+   double iPTSStartTime;
+   double iPTSStopTime;
+   bool bForced; // display, no matter what
++  bool m_isMenu{false}; //!< a disc menu, not a subtitle
+   bool replace; // replace by next nomatter what stoptime it has
+   unsigned long m_textureid;
+   DVDOverlayStereoView m_stereoView;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
+@@ -75,6 +75,9 @@ public:
+   }
+ 
+   std::vector<uint8_t> pixels;
++  //! Brightest light, in nits, of a PQ subtitle together with the other objects
++  //! shown with it, so that they keep their contrast; 0 until measured.
++  float m_groupPeakNits{0.0f};
+   std::vector<uint32_t> palette;
+ 
+   // pixels are already HDR, matching video's colorimetry
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -926,6 +926,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
+   if (ov->img && ov->cmd == BD_OVERLAY_DRAW)
+   {
+     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
++    overlay->m_isMenu = true;
+ 
+     if (ov->palette)
+     {
+@@ -989,6 +990,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
+   if (ov->argb && ov->cmd == BD_ARGB_OVERLAY_DRAW)
+   {
+     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
++    overlay->m_isMenu = true;
+ 
+     overlay->palette.clear();
+     size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+@@ -29,6 +29,9 @@
+ #include <algorithm>
+ #include <mutex>
+ #include <utility>
++#include <vector>
++
++#include <ass/ass.h>
+ 
+ using namespace KODI;
+ using namespace OVERLAY;
+@@ -158,6 +161,7 @@ void CRenderer::Render(int idx, float depth)
+       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
+ 
+   std::vector<SElement>& list = m_buffers[idx];
++  ShareSubtitlePeaks(list);
+   for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+   {
+     if (it->overlay_dvd)
+@@ -196,6 +200,7 @@ void CRenderer::RenderHDROverlays(int idx)
+   gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
+ 
+   std::vector<SElement>& list = m_buffers[idx];
++  ShareSubtitlePeaks(list);
+   for (std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+   {
+     if (it->overlay_dvd)
+@@ -645,6 +650,42 @@ void CRenderer::PrepareOverlays(int idx)
+     MarkDirty();
+ }
+ 
++void CRenderer::ShareSubtitlePeaks(std::vector<SElement>& list)
++{
++  if (OVERLAY::SubtitleBrightnessNits() <= 0.0f)
++    return;
++
++  // HDR image subtitle objects shown together - a caption and a sign, a line
++  // and its italics - share the brightest light among them, so holding them
++  // to the chosen nits keeps their contrast instead of lifting each to it.
++  for (SElement& e : list)
++  {
++    if (!e.overlay_dvd || !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
++      continue;
++    auto& img = static_cast<CDVDOverlayImage&>(*e.overlay_dvd);
++    if (img.m_groupPeakNits > 0.0f || !img.m_isHDROverlay || img.m_isMenu || img.palette.empty())
++      continue;
++
++    float peak = 0.0f;
++    std::vector<CDVDOverlayImage*> group;
++    for (SElement& other : list)
++    {
++      if (!other.overlay_dvd || !other.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
++        continue;
++      auto& o = static_cast<CDVDOverlayImage&>(*other.overlay_dvd);
++      if (!o.m_isHDROverlay || o.m_isMenu || o.palette.empty() ||
++          o.iPTSStartTime != img.iPTSStartTime)
++        continue;
++      peak = std::max(peak, OVERLAY::PQPalettePeakNits(o.palette, o.pixels.data(), o.linesize,
++                                                       o.width, o.height));
++      group.push_back(&o);
++    }
++    // none visible: measured anyway, so the group is not measured again
++    for (CDVDOverlayImage* o : group)
++      o->m_groupPeakNits = std::max(peak, 1e-3f);
++  }
++}
++
+ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
+ {
+   // If no images not execute the renderer
+@@ -664,9 +705,42 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
+     }
+   }
+ 
++  // A text subtitle is held to the chosen brightness. libass's colours are
++  // changed only while the texture is built: it compares its next frame
++  // against this one, and a change it did not make would read as a new frame.
++  std::vector<std::pair<ASS_Image*, uint32_t>> colours;
++  if (OVERLAY::SubtitleBrightnessNits() > 0.0f)
++  {
++    uint32_t brightest = 0;
++    for (ASS_Image* img = e.renderedImages; img; img = img->next)
++    {
++      if ((img->color & 0xff) == 0xff) // fully transparent
++        continue;
++      brightest = std::max({brightest, img->color >> 24, (img->color >> 16) & 0xff,
++                            (img->color >> 8) & 0xff});
++    }
++
++    if (const float light = OVERLAY::SrgbSubtitleLight(static_cast<uint8_t>(brightest));
++        light != 1.0f)
++    {
++      uint32_t lut[256];
++      for (int i = 0; i < 256; i++)
++        lut[i] = OVERLAY::ScaleSrgbLight(static_cast<uint8_t>(i), light);
++      for (ASS_Image* img = e.renderedImages; img; img = img->next)
++      {
++        colours.emplace_back(img, img->color);
++        img->color = lut[img->color >> 24] << 24 | lut[(img->color >> 16) & 0xff] << 16 |
++                     lut[(img->color >> 8) & 0xff] << 8 | (img->color & 0xff);
++      }
++    }
++  }
++
+   std::shared_ptr<COverlay> overlay =
+       COverlay::Create(e.renderedImages, e.renderedFrameWidth, e.renderedFrameHeight);
+ 
++  for (const auto& [img, colour] : colours)
++    img->color = colour;
++
+   m_textureCache[m_textureid] = overlay;
+   o.m_textureid = m_textureid;
+   m_textureid++;
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+@@ -193,6 +193,8 @@ namespace OVERLAY {
+       float renderedFrameHeight{0.0f};
+     };
+ 
++    //! Gives HDR image subtitle objects shown together one brightness measure.
++    void ShareSubtitlePeaks(std::vector<SElement>& list);
+     void Render(COverlay* o);
+     std::shared_ptr<COverlay> Convert(SElement& e);
+     // Build a COverlay (cached or freshly created) from the libass output
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+@@ -38,6 +38,7 @@
+ 
+ #define USE_PREMULTIPLIED_ALPHA 1
+ 
++
+ using namespace OVERLAY;
+ 
+ static void LoadTexture(GLenum target,
+@@ -226,13 +227,20 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+   {
+     m_pma = false;
+     const int passes = PixelArtPasses(o.source_width, o.source_height, o.width, o.height);
+-    if (passes > 0)
++    const float light =
++        o.m_isMenu || OVERLAY::SubtitleBrightnessNits() <= 0.0f
++            ? 1.0f
++            : OVERLAY::SrgbSubtitleLight(
++                  OVERLAY::RgbaBrightestCode(o.pixels.data(), o.linesize, o.width, o.height));
++    if (passes > 0 || light != 1.0f)
+     {
+       // Scale2x needs the rows contiguous, so drop the stride on the way in
+       std::vector<uint32_t> rgba(static_cast<size_t>(o.width) * o.height);
+       for (int y = 0; y < o.height; ++y)
+         std::memcpy(rgba.data() + static_cast<size_t>(y) * o.width,
+                     o.pixels.data() + static_cast<size_t>(y) * o.linesize, o.width * 4);
++      if (light != 1.0f)
++        OVERLAY::ScaleRgbaLight(rgba, light);
+ 
+       int width = o.width;
+       int height = o.height;
+@@ -247,18 +255,37 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+   }
+   else
+   {
+-    std::vector<uint32_t> convertedPalette;
+-    const std::vector<uint32_t>* paletteOverride = nullptr;
+-    if (OVERLAY::ShouldConvertPQPaletteToSRGB(o.m_isHDROverlay))
++    std::vector<uint32_t> palette = o.palette;
++    const bool toSRGB = OVERLAY::ShouldConvertPQPaletteToSRGB(o.m_isHDROverlay);
++    if (toSRGB)
++      OVERLAY::ConvertPQPaletteToSRGB(palette);
++
++    // Menus keep their light; a subtitle is held to the chosen nits.
++    if (const float nits = OVERLAY::SubtitleBrightnessNits(); !o.m_isMenu && nits > 0.0f)
+     {
+-      convertedPalette = o.palette;
+-      OVERLAY::ConvertPQPaletteToSRGB(convertedPalette);
+-      paletteOverride = &convertedPalette;
++      if (o.m_isHDROverlay && !toSRGB)
++      {
++        // An HDR subtitle carries its own light: one brighter than the chosen
++        // nits is brought down to it, everything in proportion; one authored
++        // dimmer keeps its light. Objects shown together share one measure.
++        const float peak = o.m_groupPeakNits > 0.0f
++                               ? o.m_groupPeakNits
++                               : OVERLAY::PQPalettePeakNits(palette, o.pixels.data(), o.linesize,
++                                                            o.width, o.height);
++        if (peak > nits)
++          OVERLAY::ScalePaletteLight(palette, true, nits / peak);
++      }
++      else if (const float light = OVERLAY::SrgbSubtitleLight(OVERLAY::PaletteBrightestCode(
++                   palette, o.pixels.data(), o.linesize, o.width, o.height));
++               light != 1.0f)
++      {
++        OVERLAY::ScalePaletteLight(palette, false, light);
++      }
+     }
+ 
+     m_pma = !!USE_PREMULTIPLIED_ALPHA;
+     uint32_t lut[256];
+-    BuildRGBALut(paletteOverride ? *paletteOverride : o.palette, m_pma, lut);
++    BuildRGBALut(palette, m_pma, lut);
+ 
+     // the direct back-buffer draw in Render bypasses the composite's
+     // limited-range encode, so apply it to the palette here
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -469,6 +469,22 @@ float LinearToSrgbComponent(float c)
+   c = std::clamp(c, 0.0f, 1.0f);
+   return (c <= 0.0031308f) ? (12.92f * c) : (1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f);
+ }
++
++// linear (1.0 == 10000 nits) -> PQ code value (0-1).
++float EncodePQ(float y)
++{
++  y = std::clamp(y, 0.0f, 1.0f);
++  const float p = std::pow(y, ST2084_m1);
++  return std::pow((ST2084_c1 + ST2084_c2 * p) / (1.0f + ST2084_c3 * p), ST2084_m2);
++}
++
++float SrgbToLinearComponent(float c)
++{
++  c = std::clamp(c, 0.0f, 1.0f);
++  return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
++}
++
++constexpr int PALETTE_SHIFT[3] = {PIXEL_RSHIFT, PIXEL_GSHIFT, PIXEL_BSHIFT};
+ } // namespace
+ 
+ void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette)
+@@ -514,6 +530,153 @@ void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette)
+   }
+ }
+ 
++namespace
++{
++//! Marks the palette entries a bitmap of 8-bit indices draws with.
++void MarkUsedIndices(const uint8_t* indices, int stride, int width, int height, bool used[256])
++{
++  std::fill(used, used + 256, false);
++  for (int y = 0; y < height; y++, indices += stride)
++    for (int x = 0; x < width; x++)
++      used[indices[x]] = true;
++}
++
++//! What white in an SDR picture is taken to be, in nits.
++constexpr float SDR_WHITE_NITS = 120.0f;
++
++//! ITU-R BT.2408 reference white, for HDR output without the composite.
++constexpr float REFERENCE_WHITE_NITS = 203.0f;
++} // namespace
++
++float PQPalettePeakNits(const std::vector<uint32_t>& palette,
++                        const uint8_t* indices,
++                        int stride,
++                        int width,
++                        int height)
++{
++  // Only the entries the bitmap draws with: a PGS palette lives for a whole
++  // epoch and keeps entries earlier subtitles used, up to full PQ white.
++  bool used[256];
++  MarkUsedIndices(indices, stride, width, height, used);
++
++  float peak = 0.0f;
++  for (size_t i = 0; i < palette.size() && i < 256; i++)
++  {
++    const uint32_t entry = palette[i];
++    if (!used[i] || ((entry >> PIXEL_ASHIFT) & 0xff) == 0)
++      continue;
++    for (const int shift : PALETTE_SHIFT)
++      peak = std::max(peak, DecodePQ(((entry >> shift) & 0xff) / 255.0f));
++  }
++  return peak * 10000.0f;
++}
++
++uint8_t PaletteBrightestCode(const std::vector<uint32_t>& palette,
++                             const uint8_t* indices,
++                             int stride,
++                             int width,
++                             int height)
++{
++  bool used[256];
++  MarkUsedIndices(indices, stride, width, height, used);
++
++  uint32_t brightest = 0;
++  for (size_t i = 0; i < palette.size() && i < 256; i++)
++  {
++    const uint32_t entry = palette[i];
++    if (!used[i] || ((entry >> PIXEL_ASHIFT) & 0xff) == 0)
++      continue;
++    for (const int shift : PALETTE_SHIFT)
++      brightest = std::max(brightest, (entry >> shift) & 0xff);
++  }
++  return static_cast<uint8_t>(brightest);
++}
++
++uint8_t RgbaBrightestCode(const uint8_t* rgba, int stride, int width, int height)
++{
++  uint32_t brightest = 0;
++  for (int y = 0; y < height; y++, rgba += stride)
++  {
++    for (int x = 0; x < width; x++)
++    {
++      uint32_t px;
++      std::memcpy(&px, rgba + static_cast<size_t>(x) * 4, 4);
++      if (((px >> PIXEL_ASHIFT) & 0xff) == 0)
++        continue;
++      for (const int shift : PALETTE_SHIFT)
++        brightest = std::max(brightest, (px >> shift) & 0xff);
++    }
++  }
++  return static_cast<uint8_t>(brightest);
++}
++
++float SubtitleBrightnessNits()
++{
++  return static_cast<float>(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++      CSettings::SETTING_SUBTITLES_BRIGHTNESS));
++}
++
++float SrgbWhiteNits()
++{
++  const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
++  // The composite converts the interface with its own peak, a PQ code; the
++  // same decode CGuiCompositeShaderGLES::PeakFromPQCode() applies, capped alike.
++  if (winSystem->IsHdrComposite())
++    return std::min(DecodePQ(winSystem->GetGuiSdrPeakLuminance()), 0.1f) * 10000.0f;
++  if (winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR)
++    return REFERENCE_WHITE_NITS;
++  return SDR_WHITE_NITS;
++}
++
++float SrgbSubtitleLight(uint8_t brightestCode)
++{
++  const float nits = SubtitleBrightnessNits();
++  if (nits <= 0.0f || brightestCode == 0)
++    return 1.0f;
++
++  const float peak = SrgbToLinearComponent(brightestCode / 255.0f) * SrgbWhiteNits();
++  return peak > nits ? nits / peak : 1.0f;
++}
++
++void ScalePaletteLight(std::vector<uint32_t>& palette, bool pq, float factor)
++{
++  for (uint32_t& entry : palette)
++  {
++    uint32_t out = entry & (0xffu << PIXEL_ASHIFT);
++    for (const int shift : PALETTE_SHIFT)
++    {
++      const float c = ((entry >> shift) & 0xff) / 255.0f;
++      // PQ rounds down: an 8-bit step is several nits at subtitle levels, and
++      // rounding up would put the result over the light it was scaled to.
++      const float scaled = pq ? EncodePQ(DecodePQ(c) * factor)
++                              : LinearToSrgbComponent(SrgbToLinearComponent(c) * factor);
++      out |= static_cast<uint32_t>(scaled * 255.0f + (pq ? 1e-3f : 0.5f)) << shift;
++    }
++    entry = out;
++  }
++}
++
++uint8_t ScaleSrgbLight(uint8_t code, float factor)
++{
++  const float scaled = LinearToSrgbComponent(SrgbToLinearComponent(code / 255.0f) * factor);
++  return static_cast<uint8_t>(scaled * 255.0f + 0.5f);
++}
++
++void ScaleRgbaLight(std::vector<uint32_t>& rgba, float factor)
++{
++  uint32_t lut[256];
++  for (int i = 0; i < 256; i++)
++    lut[i] = ScaleSrgbLight(static_cast<uint8_t>(i), factor);
++
++  for (uint32_t& px : rgba)
++  {
++    uint32_t out = px & (0xffu << PIXEL_ASHIFT);
++    for (const int shift : PALETTE_SHIFT)
++      out |= lut[(px >> shift) & 0xff] << shift;
++    px = out;
++  }
++}
++
+ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
+ {
+   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+@@ -10,6 +10,7 @@
+ 
+ #include <stdint.h>
+ #include <stdlib.h>
++#include <cstdint>
+ #include <vector>
+ 
+ class CDVDOverlayImage;
+@@ -47,6 +48,47 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay);
+ //! untouched.
+ void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette);
+ 
++//! Nits of the brightest channel of the visible PQ palette entries a bitmap of
++//! 8-bit indices actually uses.
++float PQPalettePeakNits(const std::vector<uint32_t>& palette,
++                        const uint8_t* indices,
++                        int stride,
++                        int width,
++                        int height);
++
++//! Brightest channel code of the visible palette entries a bitmap of 8-bit
++//! indices uses.
++uint8_t PaletteBrightestCode(const std::vector<uint32_t>& palette,
++                             const uint8_t* indices,
++                             int stride,
++                             int width,
++                             int height);
++
++//! Brightest channel code of the visible pixels of straight-alpha RGBA rows.
++uint8_t RgbaBrightestCode(const uint8_t* rgba, int stride, int width, int height);
++
++//! The chosen subtitle brightness in nits, or 0 to leave subtitles as authored.
++float SubtitleBrightnessNits();
++
++//! Nits the white of an sRGB overlay is shown at: the interface's white while
++//! the HDR composite converts the interface, 203 on other HDR output, 120 on SDR.
++float SrgbWhiteNits();
++
++//! Share of its light an sRGB subtitle keeps whose brightest channel is
++//! brightestCode: 1 unless that channel is brighter than the chosen nits.
++float SrgbSubtitleLight(uint8_t brightestCode);
++
++//! Scales the light of a palette's colours by factor in linear light, alpha
++//! untouched: the entries are PQ code values when pq is set, sRGB otherwise.
++//! PQ rounds down, so the result never exceeds the light asked for.
++void ScalePaletteLight(std::vector<uint32_t>& palette, bool pq, float factor);
++
++//! Scales the light of one sRGB channel code by factor, in linear light.
++uint8_t ScaleSrgbLight(uint8_t code, float factor);
++
++//! Scales the light of straight-alpha sRGB pixels by factor, alpha untouched.
++void ScaleRgbaLight(std::vector<uint32_t>& rgba, float factor);
++
+ //! paletteOverride, when non-null, is used in place of o.palette - e.g.
+ //! a palette already converted by ConvertPQPaletteToSRGB() above. o.pixels
+ //! (the per-pixel palette indices) is always taken from o itself either way.
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -186,6 +186,7 @@ public:
+   static constexpr auto SETTING_SUBTITLES_CHARSET = "subtitles.charset";
+   static constexpr auto SETTING_SUBTITLES_OVERRIDEFONTS = "subtitles.overridefonts";
+   static constexpr auto SETTING_SUBTITLES_OVERRIDESTYLES = "subtitles.overridestyles";
++  static constexpr auto SETTING_SUBTITLES_BRIGHTNESS = "subtitles.brightness";
+   static constexpr auto SETTING_SUBTITLES_LANGUAGES = "subtitles.languages";
+   static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
+   static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
