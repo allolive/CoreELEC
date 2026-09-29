@@ -8,9 +8,7 @@ ids in a single query, and use it from VideoThumbLoader in batches of 500.
 The rows are interpreted through the same helper the single-file path uses.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
-
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index 8b2f63d..8a857b8 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -19,6 +19,7 @@
@@ -55,7 +53,6 @@ index 8b2f63d..8a857b8 100644
  {
    item->m_pParent = this;
 diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
-index 7954bb0..e33f7a4 100644
 --- a/xbmc/utils/StreamDetails.h
 +++ b/xbmc/utils/StreamDetails.h
 @@ -139,7 +139,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
@@ -69,10 +66,9 @@ index 7954bb0..e33f7a4 100644
    bool operator !=(const CStreamDetails &that) const;
  
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index ef80614..d32a9a1 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -4789,6 +4789,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
+@@ -4840,6 +4840,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
    return retVal;
  }
  
@@ -99,7 +95,7 @@ index ef80614..d32a9a1 100644
 +      pDS->query(sql);
 +      while (!pDS->eof())
 +      {
-+        AddStreamDetailRow(*pDS, found[pDS->fv(0).get_asInt()]);
++        AddStreamDetailFromRow(*pDS, found[pDS->fv(0).get_asInt()]);
 +        pDS->next();
 +      }
 +      pDS->close();
@@ -126,14 +122,13 @@ index ef80614..d32a9a1 100644
 +  return ForEachIdChunk(fileIds, abort, readChunk);
 +}
 +
- bool CVideoDatabase::GetResumePoint(CVideoInfoTag& tag)
+ bool CVideoDatabase::GetFileMetadataForPath(const std::string& strPath,
+                                             std::map<std::string, CVideoInfoTag>& metadata)
  {
-   if (tag.m_iFileId < 0)
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index ce8cab4..1658417 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
-@@ -524,6 +524,19 @@ public:
+@@ -544,6 +544,20 @@ public:
    bool GetStreamDetails(CFileItem& item);
    bool GetStreamDetails(CVideoInfoTag& tag);
    bool GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details);
@@ -150,11 +145,11 @@ index ce8cab4..1658417 100644
 +  bool GetStreamDetailsForFiles(const std::vector<int>& fileIds,
 +                                std::unordered_map<int, CStreamDetails>& details,
 +                                const std::function<bool()>& abort = {});
-   bool GetDetailsByTypeAndId(CFileItem& item, VideoDbContentType type, int id);
-   CVideoInfoTag GetDetailsByTypeAndId(VideoDbContentType type, int id);
- 
++
+   /*! \brief Get play count, last played, resume point and stream details of all files of a path
+    Obtaining the metadata of many files one by one is expensive if the database connection has
+    high latency, as every single value requires its own round trip.
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index cee70e5..93b8aca 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
@@ -205,7 +200,7 @@ index cee70e5..93b8aca 100644
      {
        if (m_videoDatabase->GetStreamDetails(*pItem))
          pItem->SetInvalid();
-@@ -695,15 +712,18 @@ void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
+@@ -694,15 +711,18 @@ void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
    const auto window = std::span(m_vecItems).subspan(
        m_cachedWindowStart, std::min(PREFETCH_WINDOW, m_vecItems.size() - m_cachedWindowStart));
    m_cachedWindowStart += window.size();
@@ -224,7 +219,7 @@ index cee70e5..93b8aca 100644
    }
  }
  
-@@ -758,6 +778,24 @@ void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
+@@ -757,6 +777,24 @@ void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
    }
  }
  
@@ -250,7 +245,6 @@ index cee70e5..93b8aca 100644
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index fd6b537..cb89b86 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -11,10 +11,12 @@

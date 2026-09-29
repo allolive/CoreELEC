@@ -23,17 +23,16 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../VideoRenderers/OverlayRendererUtil.cpp    | 37 ++++++++++++++++---
  .../VideoRenderers/OverlayRendererUtil.h      |  7 ++++
  2 files changed, 39 insertions(+), 5 deletions(-)
-
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index d87c8df..aa1457f 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-@@ -19,11 +19,35 @@
+@@ -19,12 +19,36 @@
  #include "windowing/WinSystem.h"
  
  #include <algorithm>
 +#include <array>
  #include <cmath>
+ #include <cstring>
  
  namespace OVERLAY
  {
@@ -64,7 +63,7 @@ index d87c8df..aa1457f 100644
  namespace
  {
  //! Two samples count as the same paint within this per-channel distance.
-@@ -101,11 +125,14 @@ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int pas
+@@ -102,11 +126,14 @@ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int pas
  
  static uint32_t build_rgba(int a, int r, int g, int b, bool mergealpha)
  {
@@ -85,7 +84,6 @@ index d87c8df..aa1457f 100644
      return a << PIXEL_ASHIFT
           | r << PIXEL_RSHIFT
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
-index b4a2e56..af1a318 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 @@ -36,6 +36,13 @@ struct SQuads

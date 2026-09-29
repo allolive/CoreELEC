@@ -8,9 +8,7 @@ query, and use it from VideoThumbLoader in batches of 500 so filling a list
 costs one round trip per batch instead of one per item.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
-
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 5417148..ef80614 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -74,6 +74,7 @@
@@ -21,7 +19,7 @@ index 5417148..ef80614 100644
  #include <string>
  #include <unordered_set>
  #include <utility>
-@@ -4687,6 +4688,36 @@ bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
+@@ -4770,6 +4771,36 @@ bool CVideoDatabase::AddStreamDetailFromRow(Dataset& ds, CStreamDetails& details
    return false;
  }
  
@@ -55,10 +53,10 @@ index 5417148..ef80614 100644
 +}
 +} // namespace
 +
- bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
+ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
  {
-   CVideoInfoTag tag;
-@@ -5517,6 +5548,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
+   const std::string path = tag.m_strFileNameAndPath;
+@@ -5645,6 +5676,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
    return false;
  }
  
@@ -114,10 +112,9 @@ index 5417148..ef80614 100644
                                      ArtFallbackOptions fallback,
                                      KODI::ART::Artwork& art)
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index 49be8e8..ce8cab4 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
-@@ -864,6 +864,20 @@ public:
+@@ -893,6 +893,20 @@ public:
    bool GetArtForItem(int mediaId, const MediaType& mediaType, KODI::ART::Artwork& art);
    std::string GetArtForItem(int mediaId, const MediaType &mediaType, const std::string &artType);
  
@@ -139,7 +136,6 @@ index 49be8e8..ce8cab4 100644
  
    /*!
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 004db46..cee70e5 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -38,11 +38,20 @@
@@ -198,7 +194,7 @@ index 004db46..cee70e5 100644
      {
        item.AppendArt(artwork);
      }
-@@ -673,6 +687,92 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
+@@ -672,6 +686,92 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
      item.SetProperty("stereomode", CStereoscopicsManager::NormalizeStereoMode(stereoMode));
  }
  
@@ -292,7 +288,6 @@ index 004db46..cee70e5 100644
                                                               const int id)
  {
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index 1458762..fd6b537 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -13,6 +13,8 @@
