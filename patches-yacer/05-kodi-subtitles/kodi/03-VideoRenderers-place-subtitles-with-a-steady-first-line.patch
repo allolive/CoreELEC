@@ -1,0 +1,659 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 23:00:00 -0400
+Subject: [PATCH] VideoRenderers: place subtitles with a steady first line
+
+Disc subtitles are drawn where they were authored, and a UHD Blu-ray puts
+them over the picture: one scope title's English SDH bottom line ends at
+y=923 of its 1080 canvas, above the 139-pixel black bar, and its first line
+jumps 91 pixels between a one-line subtitle (top at 856) and a two-line one
+(top at 765). Text subtitles do the same from the other end: libass anchors a
+block at its last line and grows it upward. Kodi's own position setting only
+moves text subtitles, and only by their last line.
+
+Add Player > Subtitles > Placement, for image and text subtitles alike:
+
+- Black bars (the default): subtitles in the lower third are moved as one
+  block so that a two-line subtitle ends 20 pixels above the bottom of the
+  display, with every subtitle's first line where a two-line subtitle's
+  would be; those in the upper third go to 20 pixels below the top,
+  whatever their height.
+- Off: as before.
+
+Subtitles are only moved, never resized, and by whole screen pixels, so an
+image subtitle keeps its pixel-aligned draw. The two-line height is learned
+from the first two-line subtitle of a file and kept across seeks; until then
+it is guessed from a single line. A new canvas, frame, screen size or zoom
+starts it over. Image subtitles are counted in lines by their
+height on the canvas, text ones against the subtitle font's line height and
+line spacing. Text is moved while libass's output is turned into a texture
+and put back afterwards, so libass's own change detection still sees the
+frame it made and does not rebuild the texture every frame.
+Top and bottom blocks move independently, and lines authored as separate
+objects move together.
+
+Anything the rule cannot place is left where it was authored: subtitles in
+the middle of the picture, bottom blocks of more than two lines, mixed canvases,
+placements other than on the video or the screen (cropped encodes, whose
+subtitles keep the canvas's aspect ratio on the screen, are covered), text blocks that would
+leave the frame, and stereoscopic output. Positioned ASS signs in the lower
+or upper third are moved with the block; the rendered text carries no mark
+telling them apart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25367,7 +25367,27 @@ msgctxt "#39223"
+ msgid "{0:d} nits"
+ msgstr ""
+ 
+-#empty strings from id 39224 to 39899
++#. Label of setting "Player -> Subtitles -> Placement"
++#: system/settings/settings.xml
++msgctxt "#39224"
++msgid "Placement"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> Placement"
++#: system/settings/settings.xml
++msgctxt "#39225"
++msgid "Where subtitles in the lower and upper part of the picture are shown. \"Black bars\" moves them to the edges of the display, into the bars of a wide film, with the first line in one position for the whole film, whether a subtitle has one line or two. Subtitles in the middle of the picture, or of an unusual size, stay where they are."
++msgstr ""
++
++#empty strings from id 39226 to 39228
++
++#. Value of setting "Player -> Subtitles -> Placement": to the edges of the display
++#: system/settings/settings.xml
++msgctxt "#39229"
++msgid "Black bars"
++msgstr ""
++
++#empty strings from id 39230 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+ #. STR_LIST_AND_TWO
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -903,6 +903,17 @@
+             <formatlabel>39223</formatlabel>
+           </control>
+         </setting>
++        <setting id="subtitles.placement" type="integer" label="39224" help="39225">
++          <level>1</level>
++          <default>1</default> <!-- black bars -->
++          <constraints>
++            <options>
++              <option label="351">0</option> <!-- Off -->
++              <option label="39229">1</option> <!-- Black bars -->
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++        </setting>
+         <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
+           <level>3</level>
+           <default>0</default> <!-- OverrideStyles::DISABLED -->
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+@@ -27,6 +27,7 @@
+ #include "windowing/WinSystem.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <mutex>
+ #include <utility>
+ #include <vector>
+@@ -102,13 +103,20 @@ void CRenderer::Flush()
+     Release(buffer);
+ 
+   ReleaseCache();
++  // a seek keeps what was learned about this file's subtitles
++  const SPlacement image = m_imagePlacement;
++  const SPlacement text = m_textPlacement;
+   Reset();
++  m_imagePlacement = image;
++  m_textPlacement = text;
+ }
+ 
+ void CRenderer::Reset()
+ {
+   m_subtitlePosition = 0;
+   m_subtitlePosResInfo = -1;
++  m_imagePlacement = {};
++  m_textPlacement = {};
+ }
+ 
+ void CRenderer::Release(int idx)
+@@ -160,23 +168,31 @@ void CRenderer::Render(int idx, float depth)
+   const RenderStereoView stereoView =
+       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
+ 
+-  std::vector<SElement>& list = m_buffers[idx];
+-  ShareSubtitlePeaks(list);
+-  for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
++  ShareSubtitlePeaks(m_buffers[idx]);
++  std::vector<SElement*> elements;
++  std::vector<std::shared_ptr<COverlay>> overlays;
++  for (SElement& e : m_buffers[idx])
+   {
+-    if (it->overlay_dvd)
+-    {
+-      std::shared_ptr<COverlay> o = Convert(*it);
+-      if (!o)
+-        continue;
++    if (!e.overlay_dvd)
++      continue;
+ 
+-      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(it->overlay_dvd->m_stereoView,
+-                                                             stereoView, m_stereomode))
+-        continue;
++    std::shared_ptr<COverlay> o = Convert(e);
++    if (!o)
++      continue;
+ 
+-      if (!(hdrComposite && o->m_isHDROverlay))
+-        Render(o.get());
+-    }
++    if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(e.overlay_dvd->m_stereoView, stereoView,
++                                                           m_stereomode))
++      continue;
++
++    elements.push_back(&e);
++    overlays.push_back(std::move(o));
++  }
++
++  const std::vector<float> shifts = PlacementShifts(elements, overlays);
++  for (size_t i = 0; i < overlays.size(); i++)
++  {
++    if (!(hdrComposite && overlays[i]->m_isHDROverlay))
++      Render(overlays[i].get(), shifts[i]);
+   }
+ 
+   ReleaseUnused();
+@@ -199,22 +215,33 @@ void CRenderer::RenderHDROverlays(int idx)
+   const RENDER_ORDER renderOrder = gfxContext.GetRenderOrder();
+   gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
+ 
+-  std::vector<SElement>& list = m_buffers[idx];
+-  ShareSubtitlePeaks(list);
+-  for (std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
++  // every overlay goes into the grouping, so a top or bottom block is judged
++  // whole whichever pass draws each part of it
++  ShareSubtitlePeaks(m_buffers[idx]);
++  std::vector<SElement*> elements;
++  std::vector<std::shared_ptr<COverlay>> overlays;
++  for (SElement& e : m_buffers[idx])
+   {
+-    if (it->overlay_dvd)
+-    {
+-      std::shared_ptr<COverlay> o = Convert(*it);
+-      if (!o || !o->m_isHDROverlay)
+-        continue;
++    if (!e.overlay_dvd)
++      continue;
+ 
+-      if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(it->overlay_dvd->m_stereoView,
+-                                                             stereoView, m_stereomode))
+-        continue;
++    std::shared_ptr<COverlay> o = Convert(e);
++    if (!o)
++      continue;
+ 
+-      Render(o.get());
+-    }
++    if (!KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(e.overlay_dvd->m_stereoView, stereoView,
++                                                           m_stereomode))
++      continue;
++
++    elements.push_back(&e);
++    overlays.push_back(std::move(o));
++  }
++
++  const std::vector<float> shifts = PlacementShifts(elements, overlays);
++  for (size_t i = 0; i < overlays.size(); i++)
++  {
++    if (overlays[i]->m_isHDROverlay)
++      Render(overlays[i].get(), shifts[i]);
+   }
+ 
+   gfxContext.SetRenderOrder(renderOrder);
+@@ -222,7 +249,7 @@ void CRenderer::RenderHDROverlays(int idx)
+   ReleaseUnused();
+ }
+ 
+-void CRenderer::Render(COverlay* o)
++void CRenderer::Render(COverlay* o, float shiftY)
+ {
+   SRenderState state;
+   state.x = o->m_x;
+@@ -307,10 +334,303 @@ void CRenderer::Render(COverlay* o)
+   }
+ 
+   state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
++  state.y += shiftY;
+ 
+   o->Render(state);
+ }
+ 
++namespace
++{
++//! Subtitles > Placement.
++enum class Placement
++{
++  OFF = 0,
++  BLACK_BARS = 1, //!< to the edges of the display, into the bars of a wide film
++};
++
++//! Gap between a moved subtitle and the edge it is moved to, in screen pixels.
++constexpr float EDGE_MARGIN = 20.0f;
++
++//! The top and bottom edges subtitles are moved to, within a frame of the
++//! given height starting at y.
++std::pair<float, float> PlacementEdges(float y, float height)
++{
++  return {y + EDGE_MARGIN, y + height - EDGE_MARGIN};
++}
++
++//! A two-line image block against the height of one of its lines, until a real
++//! two-line subtitle has been seen: measured on UHD Blu-ray PGS, 67 against 158.
++constexpr float TWO_LINES_PER_LINE = 2.36f;
++
++//! Lines in an image subtitle block by its height on the canvas: 1, 2, or 0 when
++//! it is neither and is left alone. One line of disc subtitle text is 5-6% of
++//! the canvas height, two are 13-15%.
++int ImageSubtitleLines(float height, float canvasHeight)
++{
++  if (height < 0.10f * canvasHeight)
++    return 1;
++  if (height < 0.20f * canvasHeight)
++    return 2;
++  return 0;
++}
++
++//! Lines in a text subtitle block against the height of one line of the
++//! subtitle font, borders and shadows included: 1, 2, or 0 when it is neither.
++int TextSubtitleLines(float height, float lineHeight)
++{
++  if (height < 1.6f * lineHeight)
++    return 1;
++  if (height < 2.8f * lineHeight)
++    return 2;
++  return 0;
++}
++} // unnamed namespace
++
++bool CRenderer::PlacementActive()
++{
++  // Read here rather than in LoadSettings(), which only runs while text
++  // subtitles are being prepared: with image subtitles alone it never would.
++  if (m_placementStale.exchange(false))
++    m_placement = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++        CSettings::SETTING_SUBTITLES_PLACEMENT);
++  return static_cast<Placement>(m_placement) != Placement::OFF &&
++         (m_stereomode.empty() || m_stereomode == "mono");
++}
++
++float CRenderer::BottomBlockShift(
++    SPlacement& memory, float top, float end, int lines, float twoLinesGuess, float bottomEdge)
++{
++  const float block = end - top;
++
++  // The first line sits where a two-line subtitle's would, so it does not move
++  // between one line and two. Guessed until the first two-line subtitle of the
++  // file is seen, then fixed.
++  if (lines == 2 && !memory.learned)
++  {
++    memory.twoLineHeight = block;
++    memory.learned = true;
++  }
++
++  const float twoLines = memory.learned ? memory.twoLineHeight : twoLinesGuess;
++  // never past the edge: a block taller than two lines ends at it
++  const float firstLine = std::min(bottomEdge - twoLines, bottomEdge - block);
++  return firstLine - top;
++}
++
++std::vector<float> CRenderer::PlacementShifts(const std::vector<SElement*>& elements,
++                                              const std::vector<std::shared_ptr<COverlay>>& overlays)
++{
++  std::vector<float> shifts(overlays.size(), 0.0f);
++  if (!PlacementActive())
++    return shifts;
++
++  // Image subtitles in the lower third are one bottom block, those in the upper
++  // third one top block, each moved as a whole so lines authored as separate
++  // objects keep their spacing. Anything else stays where it was authored.
++  for (const bool bottom : {true, false})
++  {
++    std::vector<size_t> members;
++    float top = 0.0f; // on the canvas, for counting lines
++    float end = 0.0f;
++    float screenTop = 0.0f; // on screen, for moving them
++    float screenEnd = 0.0f;
++    float canvas = 0.0f;
++    bool usable = true;
++
++    for (size_t i = 0; i < overlays.size(); i++)
++    {
++      const auto& dvd = elements[i]->overlay_dvd;
++      if (!dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
++        continue;
++
++      const auto& img = static_cast<const CDVDOverlayImage&>(*dvd);
++      const float height = static_cast<float>(img.source_height);
++      if (height <= 0.0f)
++        continue;
++
++      const float y = static_cast<float>(img.y);
++      const float h = static_cast<float>(img.height);
++      const float centre = y + h / 2.0f;
++      if (bottom ? centre <= height * 2.0f / 3.0f : centre >= height / 3.0f)
++        continue;
++
++      // Where Render() puts it: the centre is mapped onto the video, or onto
++      // the view, and the size with it - or, keeping the canvas's aspect
++      // ratio, by the fit of the canvas into the view.
++      float sTop = 0.0f;
++      float sEnd = 0.0f;
++      switch (overlays[i]->m_align)
++      {
++        case COverlay::ALIGN_VIDEO:
++        case COverlay::ALIGN_SCREEN:
++        {
++          const CRect& area =
++              overlays[i]->m_align == COverlay::ALIGN_VIDEO ? m_rd : m_rv;
++          const float scale = area.Height() / height;
++          sTop = area.y1 + y * scale;
++          sEnd = area.y1 + (y + h) * scale;
++          break;
++        }
++        case COverlay::ALIGN_SCREEN_AR:
++        {
++          const float width = static_cast<float>(img.source_width);
++          if (width <= 0.0f)
++          {
++            usable = false;
++            break;
++          }
++          const float fit = std::min(m_rv.Width() / width, m_rv.Height() / height);
++          const float screenCentre = m_rv.y1 + centre / height * m_rv.Height();
++          sTop = screenCentre - h / 2.0f * fit;
++          sEnd = screenCentre + h / 2.0f * fit;
++          break;
++        }
++        default:
++          usable = false;
++          break;
++      }
++      if (!usable || sEnd <= sTop)
++      {
++        usable = false;
++        break;
++      }
++
++      if (members.empty())
++      {
++        top = y;
++        end = y + h;
++        screenTop = sTop;
++        screenEnd = sEnd;
++        canvas = height;
++      }
++      else if (height != canvas)
++      {
++        usable = false;
++        break;
++      }
++      top = std::min(top, y);
++      end = std::max(end, y + h);
++      screenTop = std::min(screenTop, sTop);
++      screenEnd = std::max(screenEnd, sEnd);
++      members.push_back(i);
++    }
++
++    if (members.empty() || !usable)
++      continue;
++
++    // Lines only matter at the bottom, where the first one is held still; a top
++    // block of any height goes to the top edge.
++    const int lines = ImageSubtitleLines(end - top, canvas);
++    if (bottom && lines == 0)
++      continue;
++
++    if (m_imagePlacement.reference != canvas)
++    {
++      m_imagePlacement = {};
++      m_imagePlacement.reference = canvas;
++    }
++
++    const auto [topEdge, bottomEdge] =
++        PlacementEdges(m_rv.y1, m_rv.Height());
++    const float shift = bottom ? BottomBlockShift(m_imagePlacement, screenTop, screenEnd, lines,
++                                                  (screenEnd - screenTop) * TWO_LINES_PER_LINE,
++                                                  bottomEdge)
++                               : topEdge - screenTop;
++
++    // whole screen pixels: a fraction would lose the pixel-aligned draw and blur it
++    for (const size_t i : members)
++      shifts[i] = std::round(shift);
++  }
++
++  return shifts;
++}
++
++int CRenderer::PlaceTextSubtitles(ASS_Image* images, int frameHeight, bool place)
++{
++  // Putting back undoes exactly the moves last made, whatever the settings are now.
++  if (!place)
++  {
++    for (const auto& [img, move] : m_textMoves)
++      img->dst_y -= move;
++    const int count = static_cast<int>(m_textMoves.size());
++    m_textMoves.clear();
++    return count;
++  }
++  m_textMoves.clear();
++
++  if (!images || frameHeight <= 0 || !PlacementActive() || !m_overlayStyle)
++    return 0;
++
++  const float height = static_cast<float>(frameHeight);
++  if (m_textPlacement.reference != height)
++  {
++    m_textPlacement = {};
++    m_textPlacement.reference = height;
++  }
++
++  // libass lays out on the frame, so the edges are in its pixels
++  const auto [topEdge, bottomEdge] =
++      PlacementEdges(0.0f, height);
++
++  // One line of text: Kodi's subtitle font size is set for a 720-line frame,
++  // and the line spacing setting adds up to a sixteenth of the frame per line.
++  const float lineHeight =
++      static_cast<float>(m_overlayStyle->fontSize) * height / 720.0f +
++      static_cast<float>(m_overlayStyle->lineSpacing) / 100.0f * height / 16.0f;
++
++  // The rendered pieces in the lower third are the bottom block, those in the
++  // upper third the top block; each is moved as a whole, as image subtitles are.
++  for (const bool bottom : {true, false})
++  {
++    float top = 0.0f;
++    float end = 0.0f;
++    bool found = false;
++    for (const ASS_Image* img = images; img; img = img->next)
++    {
++      if (img->w <= 0 || img->h <= 0)
++        continue;
++      const float y = static_cast<float>(img->dst_y);
++      const float h = static_cast<float>(img->h);
++      const float centre = y + h / 2.0f;
++      if (bottom ? centre <= height * 2.0f / 3.0f : centre >= height / 3.0f)
++        continue;
++      top = found ? std::min(top, y) : y;
++      end = found ? std::max(end, y + h) : y + h;
++      found = true;
++    }
++    if (!found)
++      continue;
++
++    const int lines = TextSubtitleLines(end - top, lineHeight);
++    if (bottom && lines == 0)
++      continue;
++
++    const float shift =
++        bottom ? BottomBlockShift(m_textPlacement, top, end, lines, (end - top) + lineHeight,
++                                  bottomEdge)
++               : topEdge - top;
++
++    const int move = static_cast<int>(std::lround(shift));
++    // moved only if the whole block stays on the frame
++    if (move == 0 || top + static_cast<float>(move) < 0.0f ||
++        end + static_cast<float>(move) > height)
++      continue;
++
++    for (ASS_Image* img = images; img; img = img->next)
++    {
++      if (img->w <= 0 || img->h <= 0)
++        continue;
++      const float centre = static_cast<float>(img->dst_y) + static_cast<float>(img->h) / 2.0f;
++      if (bottom ? centre > height * 2.0f / 3.0f : centre < height / 3.0f)
++      {
++        img->dst_y += move;
++        m_textMoves.emplace_back(img, move);
++      }
++    }
++  }
++  return static_cast<int>(m_textMoves.size());
++}
++
+ bool CRenderer::HasVisibleOverlay(int idx) const
+ {
+   std::unique_lock lock(m_section);
+@@ -349,6 +669,12 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
+     m_rv = view;
+     OnViewChange();
+   }
++  // a zoom or view mode rescales image subtitles: learn their heights anew
++  if (m_rd.Height() != dest.Height())
++  {
++    std::unique_lock lock(m_section);
++    m_imagePlacement = {};
++  }
+   m_rs = source;
+   m_rd = dest;
+ }
+@@ -356,6 +682,10 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
+ void CRenderer::OnViewChange()
+ {
+   m_isSettingsChanged = true;
++  // a new screen size rescales every subtitle: learn their heights anew
++  std::unique_lock lock(m_section);
++  m_imagePlacement = {};
++  m_textPlacement = {};
+ }
+ 
+ void CRenderer::SetStereoMode(const std::string &stereomode)
+@@ -735,11 +1065,16 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
+     }
+   }
+ 
++  // Placed the same way: moved while the texture is built, then put back.
++  const int moved = PlaceTextSubtitles(e.renderedImages, e.renderedFrameHeight, true);
++
+   std::shared_ptr<COverlay> overlay =
+       COverlay::Create(e.renderedImages, e.renderedFrameWidth, e.renderedFrameHeight);
+ 
+   for (const auto& [img, colour] : colours)
+     img->color = colour;
++  if (moved)
++    PlaceTextSubtitles(e.renderedImages, e.renderedFrameHeight, false);
+ 
+   m_textureCache[m_textureid] = overlay;
+   o.m_textureid = m_textureid;
+@@ -801,6 +1136,7 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
+     case ObservableMessageSettingsChanged:
+     {
+       m_isSettingsChanged = true;
++      m_placementStale = true;
+       break;
+     }
+     case ObservableMessagePositionChanged:
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+@@ -195,7 +195,35 @@ namespace OVERLAY {
+ 
+     //! Gives HDR image subtitle objects shown together one brightness measure.
+     void ShareSubtitlePeaks(std::vector<SElement>& list);
+-    void Render(COverlay* o);
++    void Render(COverlay* o, float shiftY = 0.0f);
++
++    //! What Subtitles > Placement has learned about a file's subtitles: the
++    //! height of a two-line block. Kept across seeks, so the first line stays put.
++    struct SPlacement
++    {
++      float twoLineHeight{0.0f};
++      bool learned{false};
++      //! the canvas or frame height it was learned on; a new one starts over
++      float reference{0.0f};
++    };
++
++    bool PlacementActive();
++    //! Shift that puts a bottom block [top, end) of one or two lines in place.
++    float BottomBlockShift(SPlacement& memory,
++                           float top,
++                           float end,
++                           int lines,
++                           float twoLinesGuess,
++                           float bottomEdge);
++    //! Vertical shift in screen pixels for each of overlays (the converted
++    //! elements, same order); 0 for anything left where it was authored.
++    std::vector<float> PlacementShifts(const std::vector<SElement*>& elements,
++                                       const std::vector<std::shared_ptr<COverlay>>& overlays);
++    //! Moves libass's rendered text the same way, in place, and with place
++    //! false puts back what it last moved. Returns how many pieces it touched.
++    int PlaceTextSubtitles(ASS_Image* images, int frameHeight, bool place);
++    //! The pieces of libass output last moved, so they can be put back.
++    std::vector<std::pair<ASS_Image*, int>> m_textMoves;
+     std::shared_ptr<COverlay> Convert(SElement& e);
+     // Build a COverlay (cached or freshly created) from the libass output
+     // already produced by PrepareOverlays. Does not call ass_render_frame.
+@@ -226,6 +254,10 @@ namespace OVERLAY {
+     CRect m_rs; // Source size
+     CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)
+     std::string m_stereomode;
++    int m_placement{0};
++    std::atomic<bool> m_placementStale{true};
++    SPlacement m_imagePlacement;
++    SPlacement m_textPlacement;
+     // Current subtitle position
+     int m_subtitlePosition{0};
+     // Current subtitle position from resolution info,
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -187,6 +187,7 @@ public:
+   static constexpr auto SETTING_SUBTITLES_OVERRIDEFONTS = "subtitles.overridefonts";
+   static constexpr auto SETTING_SUBTITLES_OVERRIDESTYLES = "subtitles.overridestyles";
+   static constexpr auto SETTING_SUBTITLES_BRIGHTNESS = "subtitles.brightness";
++  static constexpr auto SETTING_SUBTITLES_PLACEMENT = "subtitles.placement";
+   static constexpr auto SETTING_SUBTITLES_LANGUAGES = "subtitles.languages";
+   static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
+   static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
+diff --git a/xbmc/settings/SubtitlesSettings.cpp b/xbmc/settings/SubtitlesSettings.cpp
+--- a/xbmc/settings/SubtitlesSettings.cpp
++++ b/xbmc/settings/SubtitlesSettings.cpp
+@@ -40,7 +40,8 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
+        CSettings::SETTING_SUBTITLES_LANGUAGES,      CSettings::SETTING_SUBTITLES_STORAGEMODE,
+        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
+        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
+-       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING});
++       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING,
++       CSettings::SETTING_SUBTITLES_PLACEMENT});
+ }
+ 
+ CSubtitlesSettings::~CSubtitlesSettings()
