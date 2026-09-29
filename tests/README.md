@@ -38,3 +38,11 @@ itself. That needs no mocking framework and no production change.
 `tests/check-patch-stack.py` applies each package's patch stack to its pinned
 source - kodi, common_drivers, media_modules-aml, gpu-aml, bluez and
 CoreELEC-settings - and reports which apply.
+
+## Proving a change on a real library
+
+`subtitle-repair/` holds the Python reference the subtitle repairs of group 07
+were ported from, and `check_library.py`, which runs the reference and the C++
+over a list of real subtitle files: it proves every edit is one a rule allows
+and that both give the same bytes. The library is not in the repository, so it
+runs by hand, not under ctest.
