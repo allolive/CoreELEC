@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 23:30:00 -0400
+Subject: [PATCH] settings: gather our settings under System > Yacer
+
+Move every setting this build adds into one category below CoreELEC's:
+
+- Subtitles: Brightness (05_02), Placement (05_03),
+  from Player > Subtitles
+- Passthrough Audio: the audio lead (11_10) and dialogue normalisation defeat
+  (20_02), from System > CoreELEC, whose Passthrough Audio group was ours and
+  goes with them
+- HDR: HDR10+ to Dolby Vision (20_01), from System > CoreELEC
+
+Dialogue normalisation defeat now applies to AC-3 / E-AC-3 only by default;
+TrueHD Atmos and DTS can still be ticked.
+
+The setting ids are unchanged, so saved values carry over, and settings left
+behind still depend on them by id. Kodi's and CoreELEC's menus are back to
+their own settings.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25441,7 +25441,23 @@ msgctxt "#39225"
+ msgid "Where subtitles in the lower and upper part of the picture are shown. \"Black bars\" moves them to the edges of the display, into the bars of a wide film, with the first line in one position for the whole film, whether a subtitle has one line or two. Subtitles in the middle of the picture, or of an unusual size, stay where they are."
+ msgstr ""
+ 
+-#empty strings from id 39226 to 39228
++#. Label of settings category "System -> Yacer"
++#: system/settings/settings.xml
++msgctxt "#39226"
++msgid "Yacer"
++msgstr ""
++
++#. Help text of settings category "System -> Yacer"
++#: system/settings/settings.xml
++msgctxt "#39227"
++msgid "Settings added by this build: subtitle brightness and placement, passthrough audio and HDR conversion."
++msgstr ""
++
++#. Label of settings group "System -> Yacer -> HDR"
++#: system/settings/settings.xml
++msgctxt "#39228"
++msgid "HDR"
++msgstr ""
+ 
+ #. Value of setting "Player -> Subtitles -> Placement": to the edges of the display
+ #: system/settings/settings.xml
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -891,29 +891,6 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
+-        <setting id="subtitles.brightness" type="integer" label="39220" help="39221">
+-          <level>1</level>
+-          <default>100</default> <!-- nits -->
+-          <constraints>
+-            <minimum label="39222">0</minimum> <!-- As authored -->
+-            <step>10</step>
+-            <maximum>400</maximum>
+-          </constraints>
+-          <control type="spinner" format="string">
+-            <formatlabel>39223</formatlabel>
+-          </control>
+-        </setting>
+-        <setting id="subtitles.placement" type="integer" label="39224" help="39225">
+-          <level>1</level>
+-          <default>1</default> <!-- black bars -->
+-          <constraints>
+-            <options>
+-              <option label="351">0</option> <!-- Off -->
+-              <option label="39229">1</option> <!-- Black bars -->
+-            </options>
+-          </constraints>
+-          <control type="list" format="string" />
+-        </setting>
+         <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
+           <level>3</level>
+           <default>0</default> <!-- OverrideStyles::DISABLED -->
+@@ -4120,24 +4097,6 @@
+             <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+           </dependencies>
+         </setting>
+-        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="14314" help="14315">
+-          <requirement>HAVE_AMCODEC</requirement>
+-          <default>0</default>
+-          <constraints>
+-            <options>
+-              <option label="351">0</option>
+-              <option label="14305">1</option>
+-              <option label="14306">2</option>
+-            </options>
+-          </constraints>
+-          <control type="list" format="string" />
+-          <dependencies>
+-            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+-          </dependencies>
+-        </setting>
+         <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
+           <requirement>HAVE_AMCODEC</requirement>
+           <default>0</default>
+@@ -4160,6 +4119,33 @@
+           <control type="toggle" />
+         </setting>
+       </group>
++    </category>
++    <category id="yacer" label="39226" help="39227">
++      <group id="1" label="287">
++        <setting id="subtitles.brightness" type="integer" label="39220" help="39221">
++          <level>1</level>
++          <default>100</default> <!-- nits -->
++          <constraints>
++            <minimum label="39222">0</minimum> <!-- As authored -->
++            <step>10</step>
++            <maximum>400</maximum>
++          </constraints>
++          <control type="spinner" format="string">
++            <formatlabel>39223</formatlabel>
++          </control>
++        </setting>
++        <setting id="subtitles.placement" type="integer" label="39224" help="39225">
++          <level>1</level>
++          <default>1</default> <!-- black bars -->
++          <constraints>
++            <options>
++              <option label="351">0</option> <!-- Off -->
++              <option label="39229">1</option> <!-- Black bars -->
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++        </setting>
++      </group>
+       <group id="2" label="14321">
+         <setting id="coreelec.amlogic.audiolead" type="integer" label="14316" help="14317">
+           <requirement>HAVE_AMCODEC</requirement>
+@@ -4189,7 +4175,7 @@
+             <delimiter>,</delimiter>
+             <minimumitems>0</minimumitems>
+           </constraints>
+-          <default>0,1,2</default>
++          <default>0</default>
+           <dependencies>
+             <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
+           </dependencies>
+@@ -4198,6 +4184,26 @@
+           </control>
+         </setting>
+       </group>
++      <group id="3" label="39228">
++        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="14314" help="14315">
++          <requirement>HAVE_AMCODEC</requirement>
++          <default>0</default>
++          <constraints>
++            <options>
++              <option label="351">0</option>
++              <option label="14305">1</option>
++              <option label="14306">2</option>
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++          <dependencies>
++            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
++          </dependencies>
++        </setting>
++      </group>
+     </category>
+     <category id="cache" label="439" help="36399">
+       <visible>false</visible>
