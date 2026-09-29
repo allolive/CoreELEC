@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 13:07:14 -0400
+Subject: [PATCH] addons: ship the allolive repository as a trusted one
+
+Install repository.allolive with Kodi, enabled like the other optional
+system addons, and list it in ADDON_REPOS so Kodi treats it as an
+official repository: its addons update like the ones from Kodi's and
+CoreELEC's repositories, without the unknown-sources path.
+
+The addon.xml is the one https://allolive.github.io/kodi_addons
+publishes (allolive/kodi_addons, built from its releases.conf). A newer
+version published there installs into the user's addons and takes over,
+so the copy shipped here only has to be good enough to find it.
+---
+ addons/repository.allolive/addon.xml | 16 ++++++++++++++++
+ cmake/installdata/common/addons.txt  |  1 +
+ system/addon-manifest.xml            |  1 +
+ version.txt                          |  2 +-
+ 4 files changed, 19 insertions(+), 1 deletion(-)
+ create mode 100644 addons/repository.allolive/addon.xml
+
+diff --git a/addons/repository.allolive/addon.xml b/addons/repository.allolive/addon.xml
+new file mode 100644
+index 0000000000..b759e103ba
+--- /dev/null
++++ b/addons/repository.allolive/addon.xml
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<addon id="repository.allolive" version="1.1.0" name="Allolive Repository" provider-name="allolive">
++  <extension point="xbmc.addon.repository" name="Allolive Repository">
++    <dir minversion="21.90.0" maxversion="22.89.999">
++      <info compressed="false">https://allolive.github.io/kodi_addons/ce22/addons.xml</info>
++      <checksum>https://allolive.github.io/kodi_addons/ce22/addons.xml.md5</checksum>
++      <datadir zip="true">https://allolive.github.io/kodi_addons/ce22/</datadir>
++    </dir>
++  </extension>
++  <extension point="xbmc.addon.metadata">
++    <summary lang="en_GB">Allolive personal Kodi addon repository</summary>
++    <description lang="en_GB">Custom Kodi addons and skins.</description>
++    <platform>all</platform>
++    <license>GPL-2.0-or-later</license>
++  </extension>
++</addon>
+diff --git a/cmake/installdata/common/addons.txt b/cmake/installdata/common/addons.txt
+index 263e57bb66..7ae17e567b 100644
+--- a/cmake/installdata/common/addons.txt
++++ b/cmake/installdata/common/addons.txt
+@@ -24,6 +24,7 @@ addons/metadata.local/*
+ addons/metadata.themoviedb.org.python/*
+ addons/metadata.tvshows.themoviedb.org.python/*
+ addons/repository.xbmc.org/*
++addons/repository.allolive/*
+ addons/resource.images.weathericons.default/*
+ addons/resource.language.en_gb/*
+ addons/resource.uisounds.kodi/*
+diff --git a/system/addon-manifest.xml b/system/addon-manifest.xml
+index 314548d46c..35b72b832d 100644
+--- a/system/addon-manifest.xml
++++ b/system/addon-manifest.xml
+@@ -37,6 +37,7 @@
+   <addon>metadata.themoviedb.org.python</addon>
+   <addon>metadata.tvshows.themoviedb.org.python</addon>
+   <addon>repository.xbmc.org</addon>
++  <addon optional="true">repository.allolive</addon>
+   <addon>resource.images.weathericons.default</addon>
+   <addon>resource.language.en_gb</addon>
+   <addon>resource.uisounds.kodi</addon>
+diff --git a/version.txt b/version.txt
+index cfb6155cd1..c1fba34852 100644
+--- a/version.txt
++++ b/version.txt
+@@ -11,7 +11,7 @@ VERSION_MINOR 0
+ VERSION_TAG RC1
+ VERSION_CODE 21.90.901
+ ADDON_API 21.90.901
+-ADDON_REPOS repository.xbmc.org|https://addons.coreelec.org,repository.coreelec|https://addons.coreelec.org
++ADDON_REPOS repository.xbmc.org|https://addons.coreelec.org,repository.coreelec|https://addons.coreelec.org,repository.allolive|https://allolive.github.io/kodi_addons
+ APP_PACKAGE org.xbmc.kodi
+ PACKAGE_IDENTITY XBMCFoundation.Kodi
+ PACKAGE_PUBLISHER C62BD90A-CDD8-477F-96C3-B25992247B97
