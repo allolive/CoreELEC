@@ -6,7 +6,9 @@ Regular expressions use ASCII classes (re.ASCII) because std::wregex in the clas
 does: the two must mean the same thing by \\w, \\s, \\d, \\b and case folding."""
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+import ocr_engine as ocr
 
 
 
@@ -172,176 +174,8 @@ def fix_timing_of(cues: List[Cue]) -> List[Tuple[str, str, str]]:
 
 # -- OCR letters -----------------------------------------------------------------------------
 #
-# Letters a subtitle OCR confused, put back in English text. A word is changed only when it
-# is not a word, one of these confusions explains it, and undoing that gives a word:
-#
-# - a capital I among lower-case letters stands for l ("wouId", "IittIe", "Iike");
-# - a word starting with l and a consonant l can't precede starts with I ("lnspector", "lts");
-# - l on its own, or "lf", is I or If;
-# - a zero among letters is an o ("N0", "g0t");
-# - a final l after capitals is an I ("FBl").
-#
-# Nothing else is touched: a name or a word the list lacks stays as it is.
-
-_STANDALONE = {"l": "I", "lf": "If", "l'm": "I'm", "l'll": "I'll", "l've": "I've", "l'd": "I'd"}
-_SUFFIXES = ("'s", "'re", "'ve", "'ll", "'d", "n't", "'m")
-_APOSTROPHES = "'\u2019"
-_MARKUP = re.compile(r"(<[^>]*>|\{[^}]*\})")
-_EN_STOP = set("the and you to of it is that what in me this we he for have not be your do are "
-               "was on".split())
-_FR_STOP = set("le la les et vous tu de des est que qui pas je une un il ne dans pour ce".split())
-# around a lone "l" read as "I": what may come before it, and after it
-_BEFORE_LONE = "\"'([\u201c\u2018\u00bf\u00a1*.\u2026"
-_AFTER_LONE = ".,!?;:)]\"\u201d\u2019\u2026*"
-ENGLISH_SHARE = 0.6     # of a line's other words, for its letters to be corrected
-
-
-def is_word_char(c: str) -> bool:
-    """ASCII letters and digits, and any character beyond ASCII that is not white space,
-    punctuation or a symbol: an accented or non-Latin letter belongs to its word ("là",
-    "Hélène", "lähden"), so the "l" in it is not a word of its own."""
-    cp = ord(c)
-    if cp < 0x80:
-        return c.isalnum()
-    return not (c.isspace() or cp <= 0xBF or cp in (0xD7, 0xF7) or 0x2000 <= cp <= 0x2BFF
-                or 0x3000 <= cp <= 0x303F or 0xFE10 <= cp <= 0xFE6F or 0xFF00 <= cp <= 0xFF0F
-                or 0x1F000 <= cp <= 0x1FAFF or cp == 0xFEFF)
-
-
-def words_of(text: str) -> List[Tuple[int, int]]:
-    """The words of a text as (start, length): word characters, joined by an apostrophe
-    followed by more of them ("l'm", "couldn’t")."""
-    words = []
-    i = 0
-    while i < len(text):
-        if not is_word_char(text[i]):
-            i += 1
-            continue
-        start = i
-        while i < len(text) and is_word_char(text[i]):
-            i += 1
-        while i + 1 < len(text) and text[i] in _APOSTROPHES and is_word_char(text[i + 1]):
-            i += 1
-            while i < len(text) and is_word_char(text[i]):
-                i += 1
-        words.append((start, i - start))
-    return words
-
-
-def load_words(path: str) -> Set[str]:
-    with open(path, encoding="utf-8") as f:
-        return set(f.read().split())
-
-
-def looks_english(lines: Iterable[str]) -> bool:
-    words = [line[a:a + n].lower() for line in lines for a, n in words_of(line)][:4000]
-    en = sum(w in _EN_STOP for w in words)
-    fr = sum(w in _FR_STOP for w in words)
-    return en > 50 and en > 2 * fr
-
-
-def _plain(word: str) -> bool:
-    return all(c.isascii() or c == "\u2019" for c in word)
-
-
-class Fixer:
-    def __init__(self, words: Set[str]):
-        self.words = words
-
-    def known(self, word: str) -> bool:
-        w = word.lower().replace("\u2019", "'")
-        if w in self.words:
-            return True
-        return any(w.endswith(s) and w[:-len(s)] in self.words for s in _SUFFIXES)
-
-    def fix_word(self, w: str) -> Optional[str]:
-        """The word as it was before an OCR misread it, or None. Only plain English letters:
-        a word with an accent is another language's."""
-        if not _plain(w):
-            return None
-        straight = w.replace("\u2019", "'")
-        if straight in _STANDALONE:
-            return _STANDALONE[straight].replace("'", "\u2019") if straight != w else _STANDALONE[w]
-        if len(w) < 2 or self.known(w):
-            return None
-        candidates = []
-        if re.search(r"[a-z]I", w) or (len(w) >= 3 and re.match(r"I[a-z]", w)):
-            inner = re.sub(r"(?<=[a-z])I", "l", w)
-            candidates += [inner, "l" + inner[1:] if inner[0] == "I" else inner,
-                           w.replace("I", "l")]
-        if len(w) >= 3 and re.match(r"l[bcdfghjkmnpqrstvwxz]", w):
-            candidates.append("I" + w[1:])
-        letters = re.sub(r"[^A-Za-z]", "", w)
-        if re.search(r"[A-Za-z]0|0[A-Za-z]", w) and not re.search(r"[1-9]", w):
-            if letters.islower():
-                candidates.append(w.replace("0", "o"))
-            elif letters.isupper():
-                candidates.append(w.replace("0", "O"))
-        if re.fullmatch(r"[A-Z]{2,}l", w):
-            candidates.append(w[:-1] + "I")
-        # a capital after a small letter is no word's spelling ("alI" for "aII")
-        return next((c for c in candidates
-                     if c != w and not re.search(r"[a-z][A-Z]", c) and self.known(c)), None)
-
-    @staticmethod
-    def _alone(text: str, start: int, length: int) -> bool:
-        """A lone "l" stands for "I" only between spaces and sentence punctuation: joined by
-        a hyphen to a letter it is a stutter or a word spelt out ("l-l-low", "l-T-H"), inside
-        punctuation a damaged word ("Sa?l")."""
-        before = text[start - 1] if start else ""
-        if before == "-":
-            ahead = text[start - 2] if start >= 2 else ""
-            before_ok = ahead == "" or ahead.isspace()
-        else:
-            before_ok = before == "" or before.isspace() or before in _BEFORE_LONE
-        rest = text[start + length:]
-        after = rest[:1]
-        if after == "-":
-            # a dash that ends there ("l-- I'm sorry", "l- I hope") breaks off a word; one
-            # followed by a letter joins a stutter or a word spelt out
-            dashes = len(rest) - len(rest.lstrip("-"))
-            return before_ok and (dashes == len(rest) or rest[dashes].isspace())
-        return before_ok and (after == "" or after.isspace() or after in _AFTER_LONE)
-
-    def reads_as_english(self, line: str, skip: Set[int]) -> bool:
-        """Whether a line's other words are mostly English: a French line in an English
-        subtitle, or an English one in another, keeps its words as they are. Names are not
-        words of any language, so a word starting with a capital A-Z is not weighed, nor a
-        number; a line with nothing else ("lnside.", "Mr. Yadav? l'm Shahid Khan.") has
-        nothing against it."""
-        visible = "".join(p for i, p in enumerate(_MARKUP.split(line)) if not i % 2)
-        others = [visible[a:a + n] for k, (a, n) in enumerate(words_of(visible))
-                  if k not in skip and n >= 2 and not ("A" <= visible[a] <= "Z" or "0" <= visible[a] <= "9")]
-        return sum(self.known(w) for w in others) >= ENGLISH_SHARE * len(others)
-
-    def fix_line(self, line: str, on_fix: Callable[[str, str], None]) -> str:
-        visible = "".join(p for i, p in enumerate(_MARKUP.split(line)) if not i % 2)
-        pending = set()
-        for k, (a, n) in enumerate(words_of(visible)):
-            word = visible[a:a + n]
-            if self.fix_word(word) is not None and (
-                    word.replace("\u2019", "'") not in _STANDALONE or self._alone(visible, a, n)):
-                pending.add(k)
-        if not pending or not self.reads_as_english(line, pending):
-            return line
-
-        def fix_text(text: str) -> str:
-            out, last = [], 0
-            for a, n in words_of(text):
-                word = text[a:a + n]
-                fixed = self.fix_word(word)
-                if fixed is not None and (word.replace("\u2019", "'") not in _STANDALONE
-                                          or self._alone(text, a, n)):
-                    out.append(text[last:a] + fixed)
-                    on_fix(word, fixed)
-                else:
-                    out.append(text[last:a + n])
-                last = a + n
-            return "".join(out) + text[last:]
-
-        parts = _MARKUP.split(line)     # tags stay as they are; only the text between is read
-        return "".join(p if i % 2 else fix_text(p) for i, p in enumerate(parts))
-
+# Undone by the file's own pattern of misreadings, in any language a pack is installed for:
+# see ocr_engine.py.
 
 # -- the repairs -----------------------------------------------------------------------------
 #
@@ -353,7 +187,7 @@ class Fixer:
 # - music notes: a note that came out of OCR as "¶", as a pair of "J"s, or as "#" in a file that
 #   writes its notes that way, or as an emoji the subtitle font has no glyph for, becomes "♪";
 # - OCR letters (English only): "wouId", "lnspector", "N0" become "would", "Inspector", "NO"
-#   when the word list says so - see ocr.py;
+#   when the file repeats that misreading - see ocr_engine.py;
 # - timing: a line too short to be seen, or running into the next one - see timing.py;
 # - advertising: lines that sell something or credit the uploader are removed, and a cue left
 #   with nothing is dropped.
@@ -624,6 +458,8 @@ class Report:
     ad_lines: int = 0
     cues_dropped: int = 0
     ocr_fixes: int = 0
+    ocr_language: str = ""
+    ocr_pattern: List[str] = field(default_factory=list)
     timing_fixes: List[str] = field(default_factory=list)   # "overlap: old -> new", for the log
     removed: List[str] = field(default_factory=list)    # the ad lines, for the log
     corrected: List[str] = field(default_factory=list)  # "wouId -> would", for the log
@@ -637,13 +473,26 @@ class Report:
                     or self.timing_fixes)
 
 
-ENGLISH = {"en", "eng", "english"}
+DETECT_SHARE = 80       # percent of a file CLD2 must give one language to be believed
+
+
+def ocr_language(language: Optional[str], lines: List[str], packs: Dict[str, "ocr.Language"],
+                 detect: Optional[Callable[[str], Tuple[str, int, bool]]]) -> Optional["ocr.Language"]:
+    """The pack for a subtitle's language: the one its code names, or - with no code - the one
+    CLD2 reads it as, when it is sure."""
+    if language:
+        return ocr.pack_for(language, packs)
+    if detect is None:
+        return None
+    code, percent, reliable = detect("\n".join(ocr.visible(line_) for line_ in lines))
+    return ocr.pack_for(code, packs) if reliable and percent >= DETECT_SHARE else None
 
 
 def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
-          ocr: Optional[Fixer] = None, fix_timing: bool = True) -> Tuple[str, Report]:
-    """The repaired subtitle and what was done. OCR letters are put back only with a Fixer,
-    and only in English: named so, or unnamed and reading like it."""
+          packs: Optional[Dict[str, "ocr.Language"]] = None, fix_timing: bool = True,
+          detect: Optional[Callable[[str], Tuple[str, int, bool]]] = None) -> Tuple[str, Report]:
+    """The repaired subtitle and what was done. OCR misreadings are undone only with the packs,
+    in the pack's language: the one the subtitle's code names, or CLD2's reading of it."""
     report = Report()
     text, report.read_as = decode(data, language)
     if report.read_as == "unsure":
@@ -654,15 +503,6 @@ def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
     cue_indexes = [i for i, b in enumerate(blocks) if b.cue is not None]
     hash_notes = hash_is_note([line for b in blocks if b.cue for line in b.cue.lines])
     edges = set(cue_indexes[:EDGE_CUES] + cue_indexes[-EDGE_CUES:])
-    if ocr is not None:
-        english = (language.lower() in ENGLISH if language
-                   else looks_english(line for b in blocks if b.cue for line in b.cue.lines))
-        if not english:
-            ocr = None
-
-    def corrected(wrong: str, right: str) -> None:
-        report.ocr_fixes += 1
-        report.corrected.append(f"{wrong} -> {right}")
 
     kept = []
     for i, block in enumerate(blocks):
@@ -682,14 +522,26 @@ def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
             noted = fix_notes(fixed, hash_notes)
             if noted != fixed:
                 report.notes_fixed += 1
-            if ocr is not None:
-                noted = ocr.fix_line(noted, corrected)
             lines.append(noted)
         if cue.lines and all(_ONLY_TAGS.match(line) for line in lines):
             report.cues_dropped += 1
             continue
         cue.lines = lines
         kept.append(block)
+    cues = [b.cue for b in kept if b.cue]
+    pack = ocr_language(language, [line_ for c in cues for line_ in c.lines], packs or {}, detect) if packs else None
+    if pack is not None:
+        engine = ocr.Engine(pack, packs.values())
+        all_lines = [line_ for c in cues for line_ in c.lines]
+        engine.note_names(all_lines)
+        engine.learn(all_lines)
+        fixes: list = []
+        for c in cues:
+            c.lines = [engine.fix_line(line_, fixes) for line_ in c.lines]
+        report.ocr_fixes = len(fixes)
+        report.corrected += [f"{a} -> {b}" for a, b in fixes]
+        report.ocr_language = pack.code
+        report.ocr_pattern = [f"{a}->{b}" for a, b in engine.active()]
     if fix_timing:
         report.timing_fixes = [f"{what}: {old} -> {new}"
                                for what, old, new in fix_timing_of([b.cue for b in kept if b.cue])]

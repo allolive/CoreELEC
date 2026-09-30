@@ -42,7 +42,9 @@ CoreELEC-settings - and reports which apply.
 ## Proving a change on a real library
 
 `subtitle-repair/` holds the Python reference the subtitle repairs of group 07
-were ported from, and `check_library.py`, which runs the reference and the C++
-over a list of real subtitle files: it proves every edit is one a rule allows
-and that both give the same bytes. The library is not in the repository, so it
-runs by hand, not under ctest.
+are built from - `reference.py` for the repairs, `ocr_engine.py` for undoing a
+file's OCR misreadings - and `make_pack.py`, which builds a language pack from
+a Hunspell dictionary. `check_library.py` runs the reference over a list of
+real subtitle files and proves every edit is one a rule allows; with `--kodi`
+it also checks the C++ gives the same bytes. The library is not in the
+repository, so it runs by hand, not under ctest. `PLAN.md` is the plan.

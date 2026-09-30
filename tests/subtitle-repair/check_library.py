@@ -28,10 +28,11 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ocr_engine as E  # noqa: E402
 import reference as R  # noqa: E402
 
 NOTE_SOURCES = set("#\u00b6Jj\u00cc\u00ec") | {"\U0001F3B5", "\U0001F3B6", "\U0001F3BC", "\uFE0F"}
-OCR_PAIRS = {("I", "l"), ("l", "I"), ("0", "o"), ("0", "O")}
+CONFUSIONS: set = set()     # every (OCR wrote, was there) the installed packs know, set in main()
 TAG = re.compile(r"<[^>]*>|\{[^}]*\}")
 TIME = re.compile(r"(\d+):(\d+):(\d+)[,.](\d+)\s*\S*?-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
 POSITION = re.compile(r"\\an(\d)")
@@ -70,28 +71,44 @@ def times(line):
             ((g[4] * 60 + g[5]) * 60 + g[6]) * 1000 + int(m.group(8).ljust(3, "0")[:3]))
 
 
-def _word_around(text, start, end):
-    """The word the characters [start, end) of a text sit in."""
-    while start > 0 and R.is_word_char(text[start - 1]):
-        start -= 1
-    while end < len(text) and R.is_word_char(text[end]):
-        end += 1
-    return text[start:end]
+def ocr_edit(old, new):
+    """Whether new undoes any OCR misreading of old (not only music notes)."""
+    return any(op == "replace" and (old[a1:a2], new[b1:b2]) in CONFUSIONS
+               or (op == "replace" and a2 - a1 == b2 - b1 and old[a1:a2] != new[b1:b2]
+                   and not set(new[b1:b2]) <= {R.NOTE})
+               for op, a1, a2, b1, b2 in
+               difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes())
+
+
+def _word_level(old, new):
+    """Word by word: the same words and separators, each changed word one the confusions reach."""
+    a, b = E.words_in(old), E.words_in(new)
+    if len(a) != len(b):
+        return False
+    gaps_old = [old[x + n:y] for (x, n), (y, _) in zip(a, a[1:] + [(len(old), 0)], strict=False)]
+    gaps_new = [new[x + n:y] for (x, n), (y, _) in zip(b, b[1:] + [(len(new), 0)], strict=False)]
+    if old[:a[0][0] if a else len(old)] != new[:b[0][0] if b else len(new)] or gaps_old != gaps_new:
+        return False
+    for (x, n), (y, m) in zip(a, b, strict=True):
+        w, v = old[x:x + n], new[y:y + m]
+        if w != v and v not in E.candidates(w, sorted(CONFUSIONS)) and not (w == "1" and v == "I"):
+            return False
+    return True
 
 
 def allowed_edit(old, new):
+    """Whether new is old with only music-note glyphs changed and OCR misreadings undone."""
+    if _word_level(old, new):
+        return None
     for op, a1, a2, b1, b2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if op == "equal":
             continue
         src, dst = old[a1:a2], new[b1:b2]
-        # an OCR letter is only ever corrected in a plain English word: one changed inside a
-        # word with an accented or non-Latin letter ("là" to "Ià") is an over-correction
-        if set(src) | set(dst) <= {"I", "l", "0", "o", "O"} and not all(
-                ord(c) < 0x80 or c == "\u2019" for c in _word_around(old, a1, a2)):
-            return f"over-correction in {_word_around(old, a1, a2)!r}: {src!r} -> {dst!r}"
         if dst and set(dst) == {R.NOTE} and src and set(src) <= NOTE_SOURCES:
             continue
-        if op == "replace" and len(src) == len(dst) and all(p in OCR_PAIRS for p in zip(src, dst, strict=True)):
+        if op == "replace" and (src, dst) in CONFUSIONS:
+            continue
+        if op == "replace" and len(src) == len(dst) and all(x == y or (x, y) in CONFUSIONS for x, y in zip(src, dst, strict=True)):
             continue
         return f"{op} {src!r} -> {dst!r}"
     return None
@@ -121,11 +138,11 @@ def timing_problems(src, dst):
     return problems
 
 
-def check(path, fixer):
+def check(path, packs, detect):
     """(report, output, problems) for one file, from the reference."""
     data = Path(path).read_bytes()
     lang = R.language_of_path(path)
-    out, report = R.clean(data, lang, True, fixer)
+    out, report = R.clean(data, lang, True, packs, True, detect)
     if report.read_as == "unsure":
         return report, out, []
     utf = report.read_as.startswith(("utf-", "mixed:"))
@@ -152,6 +169,8 @@ def check(path, fixer):
             base = R.repair_chars(line, utf)
             if k < len(kept.lines):
                 why = allowed_edit(base, kept.lines[k])
+                if why is None and not report.ocr_pattern and ocr_edit(base, kept.lines[k]):
+                    why = "a misreading undone in a file with no pattern of them"
                 if why is None and TAG.findall(base) == TAG.findall(kept.lines[k]):
                     k += 1
                     continue
@@ -166,7 +185,7 @@ def check(path, fixer):
         problems.append(f"{len(kept_src)} source cues matched against {len(dst)}")
     else:
         problems += timing_problems(kept_src, dst)
-    again, second = R.clean(out.encode("utf-8"), lang, True, fixer)
+    again, second = R.clean(out.encode("utf-8"), lang, True, packs, True, detect)
     if again != out:
         problems.append(f"repairing again changes more: {second}")
     return report, out, problems
@@ -230,21 +249,39 @@ def compare_with_cpp(kodi, words, rows, work):
     return differ
 
 
+def cld2_detector(path):
+    """CLD2 through a C shim exporting cld2_detect(text, length, code, &percent, &reliable)."""
+    import ctypes
+    lib = ctypes.CDLL(path)
+
+    def detect(text):
+        raw = text.encode("utf-8")
+        code, percent, reliable = ctypes.create_string_buffer(16), ctypes.c_int(), ctypes.c_int()
+        lib.cld2_detect(raw, len(raw), code, ctypes.byref(percent), ctypes.byref(reliable))
+        return code.value.decode(), percent.value, bool(reliable.value)
+    return detect
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", help="a file listing the .srt files, one per line")
-    ap.add_argument("--kodi", required=True, type=Path, help="a tree prepare-tree.py made")
+    ap.add_argument("--packs", required=True, type=Path, help="a directory of language packs")
+    ap.add_argument("--cld2", help="the CLD2 shim library, to detect untagged files' language")
+    ap.add_argument("--kodi", type=Path, help="a tree prepare-tree.py made, to compare the C++")
     ap.add_argument("--residue", default="residue.json", help="where to write what still looks odd")
     args = ap.parse_args()
-    words = args.kodi / "system/subtitlecleanup/en_words.txt"
-    fixer = R.Fixer(R.load_words(str(words)))
+    packs = E.load_packs(args.packs)
+    detect = cld2_detector(args.cld2) if args.cld2 else None
+    CONFUSIONS.update(c for p in packs.values() for c in p.confusions)
     paths = [p for p in Path(args.paths).read_text().splitlines() if p.lower().endswith(".srt")]
     rows, failed, totals, residues = [], 0, collections.Counter(), {}
     for path in paths:
-        report, out, problems = check(path, fixer)
+        report, out, problems = check(path, packs, detect)
         rows.append((path, report, out))
         totals["changed"] += report.changed
         totals["left alone"] += report.read_as == "unsure"
+        totals["ocr files"] += bool(report.ocr_fixes)
+        totals["ocr fixes"] += report.ocr_fixes
         if problems:
             failed += 1
             print(f"FAIL {path}")
@@ -254,13 +291,17 @@ def main():
         if found:
             residues[path] = found
     Path(args.residue).write_text(json.dumps(residues, ensure_ascii=False, indent=1))
-    with tempfile.TemporaryDirectory() as work:
-        differ = compare_with_cpp(args.kodi, words, rows, Path(work))
-    for path in differ[:20]:
-        print(f"C++ DIFFERS {path}")
-    print(f"{len(paths)} files, {totals['changed']} repaired, {totals['left alone']} left alone; "
-          f"{failed} with an edit no rule explains, {len(differ)} where the C++ differs; "
-          f"what still looks odd is in {args.residue}")
+    differ = []
+    if args.kodi:
+        with tempfile.TemporaryDirectory() as work:
+            differ = compare_with_cpp(args.kodi, args.packs, rows, Path(work))
+        for path in differ[:20]:
+            print(f"C++ DIFFERS {path}")
+    print(f"{len(paths)} files, {totals['changed']} repaired, {totals['left alone']} left alone, "
+          f"{totals['ocr fixes']} OCR fixes in {totals['ocr files']} files; "
+          f"{failed} with an edit no rule explains"
+          + (f", {len(differ)} where the C++ differs" if args.kodi else "")
+          + f"; what still looks odd is in {args.residue}")
     return 1 if failed or differ else 0
 
 
