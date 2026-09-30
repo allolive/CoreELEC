@@ -31,8 +31,11 @@ letter rule checks against is SCOWL's, as Debian ships it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+ CMakeLists.txt                                |     2 +
  .../resources/strings.po                      |    50 +-
  cmake/installdata/common/common.txt           |     1 +
+ cmake/modules/FindCld2.cmake                  |    28 +
+ cmake/modules/FindHunspell.cmake              |    28 +
  system/settings/settings.xml                  |    29 +
  system/subtitlecleanup/en_words.LICENSE.txt   |   245 +
  system/subtitlecleanup/en_words.txt           | 92073 ++++++++++++++++
@@ -44,13 +47,29 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../DVDSubtitles/SubtitleCleanup.h            |   133 +
  .../DVDSubtitles/SubtitleCleanupSettings.cpp  |    45 +
  xbmc/settings/Settings.h                      |     4 +
- 13 files changed, 94465 insertions(+), 1 deletion(-)
+ 16 files changed, 94523 insertions(+), 1 deletion(-)
+ create mode 100644 cmake/modules/FindCld2.cmake
+ create mode 100644 cmake/modules/FindHunspell.cmake
  create mode 100644 system/subtitlecleanup/en_words.LICENSE.txt
  create mode 100644 system/subtitlecleanup/en_words.txt
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7404d0d8dd..31bafa0e17 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -277,7 +277,9 @@ set(optional_deps Alsa>=1.0.27
+                   Bluray>=0.9.3
+                   CAP
+                   CEC>=7.0.0
++                  Cld2
+                   DBus
++                  Hunspell
+                   Iso9660pp>=2.1.0
+                   LCMS2>=2.10
+                   LircClient
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
 index 2dcd019fb9..814173d031 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
@@ -122,6 +141,74 @@ index c8dee4b905..4f71940c4c 100644
  system/shaders/*
 +system/subtitlecleanup/*
  userdata/*
+diff --git a/cmake/modules/FindCld2.cmake b/cmake/modules/FindCld2.cmake
+new file mode 100644
+index 0000000000..8e4e9fd290
+--- /dev/null
++++ b/cmake/modules/FindCld2.cmake
+@@ -0,0 +1,28 @@
++#.rst:
++# FindCld2
++# --------
++# Finds the CLD2 language detector
++#
++# This will define the following target:
++#
++#   ${APP_NAME_LC}::Cld2 - The CLD2 language detector
++
++if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
++  include(cmake/scripts/common/ModuleHelpers.cmake)
++
++  set(${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC cld2)
++  set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}_DISABLE_VERSION ON)
++
++  SETUP_BUILD_VARS()
++
++  SETUP_FIND_SPECS()
++
++  SEARCH_EXISTING_PACKAGES()
++
++  if(${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME}_FOUND)
++    add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
++
++    set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAS_CLD2)
++    ADD_TARGET_COMPILE_DEFINITION()
++  endif()
++endif()
+diff --git a/cmake/modules/FindHunspell.cmake b/cmake/modules/FindHunspell.cmake
+new file mode 100644
+index 0000000000..513a776a6b
+--- /dev/null
++++ b/cmake/modules/FindHunspell.cmake
+@@ -0,0 +1,28 @@
++#.rst:
++# FindHunspell
++# ------------
++# Finds the hunspell library
++#
++# This will define the following target:
++#
++#   ${APP_NAME_LC}::Hunspell - The hunspell library
++
++if(NOT TARGET ${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME})
++  include(cmake/scripts/common/ModuleHelpers.cmake)
++
++  set(${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC hunspell)
++  set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}_DISABLE_VERSION ON)
++
++  SETUP_BUILD_VARS()
++
++  SETUP_FIND_SPECS()
++
++  SEARCH_EXISTING_PACKAGES()
++
++  if(${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME}_FOUND)
++    add_library(${APP_NAME_LC}::${CMAKE_FIND_PACKAGE_NAME} ALIAS PkgConfig::${${CMAKE_FIND_PACKAGE_NAME}_SEARCH_NAME})
++
++    set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_COMPILE_DEFINITIONS HAS_HUNSPELL)
++    ADD_TARGET_COMPILE_DEFINITION()
++  endif()
++endif()
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
 index f4bd60af50..faa1d2cb4c 100755
 --- a/system/settings/settings.xml
@@ -94690,3 +94777,6 @@ index 59cfc83772..be0f299cc2 100644
    static constexpr auto SETTING_SUBTITLES_LANGUAGES = "subtitles.languages";
    static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
    static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
+-- 
+2.53.0
+
