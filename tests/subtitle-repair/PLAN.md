@@ -14,7 +14,8 @@ The spec, agreed 2026-09-29:
   explains better, accents on words another language has, numbers and Roman numerals are left.
 - Hunspell is the dictionary; CLD2 the language detector. A language is a pack: its Hunspell
   dictionary and a profile (one-letter words, capitalised nouns, the lone "1"/"l" for "I",
-  alphabet, accents). English is built in; the others are add-ons.
+  alphabet, accents). Every language, English included, is an add-on the user chooses in the
+  Yacer settings; none is built in (each installed pack is held in memory).
 
 ## Milestones, in order
 
@@ -27,10 +28,12 @@ The spec, agreed 2026-09-29:
 3. The C++ engine in the patch, replacing the English-only rules; gtests; identical output to
    the reference on every corpus. Done 2026-09-30: 899 files, whole and cue by cue (tagged and
    detected), identical; 48 gtests, clean under ASan/UBSan.
-4. Kodi integration: the English pack built in, pack discovery, settings; full build; the box.
-   Built 2026-09-30 (20260930002101): English in system/subtitlecleanup/en, other packs from
-   enabled library add-ons carrying resources/subtitlerepair/<language>/, the track's language
-   through CDVDStreamInfo. Not yet on the box: timing and memory there still to measure.
-5. Packs for fr, es, de, it, nl, pt as add-ons in kodi_addons, generated from LibreOffice's
+4. Kodi integration: pack discovery, settings; full build; the box. Built 2026-09-30: packs
+   from the enabled add-ons whose id starts script.module.subtitlerepair., read again when
+   they change; System > Yacer > Subtitles > Languages lists what the repositories offer and
+   installs/uninstalls to match; the track's language through CDVDStreamInfo. On the box
+   (first build, English then built in): Phillip Morris 384 fixes, ~0.15 s repair, <=0.3 s
+   pack load.
+5. Packs for en, fr, es, de, it, nl, pt as add-ons in kodi_addons, generated from LibreOffice's
    dictionaries at a pinned revision. Done 2026-09-30 (script.module.subtitlerepair.<language>
    .allolive; the dictionaries are fetched at build time by revision and sha256).

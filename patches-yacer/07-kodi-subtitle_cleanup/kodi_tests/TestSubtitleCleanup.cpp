@@ -127,7 +127,7 @@ bool IsAdMidFilm(const std::string& line)
   return Clean(Srt({"a", "b", "c", line, "d", "e", "f"})).report.adLines == 1;
 }
 
-//! The English pack the patch installs.
+//! The English pack, as the English add-on ships it.
 const Packs& English()
 {
   static const Packs packs = LoadPacks(SUBTITLE_PACKS);
