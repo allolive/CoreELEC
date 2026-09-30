@@ -1,0 +1,557 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 23:53:31 +0000
+Subject: [PATCH] AML: keep Dolby Vision brightness matched to each picture
+
+Match the two Dolby Vision video layers by picture timestamp and keep
+that picture's base-layer timing through decoding. Missing or mistimed
+packets must not shift brightness metadata to another picture. Files with
+missing or incompatible layer timestamps can fail to pair instead of
+falling back to arrival order.
+
+Recognize older Matroska files that carry Dolby Vision across two tracks
+using their Blu-ray source IDs. Keep both tracks bound to each other even
+when the file has additional video tracks, in either stream order. Honor
+explicit Dolby Vision configuration records first.
+
+Keep the enhancement picture and its brightness metadata before HEVC end
+markers. Rewriting the metadata must not skip or repeat the following
+part of the picture when the serialized size changes.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
+@@ -0,0 +1,37 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <cmath>
++#include <optional>
++
++struct AMLDoviTiming
++{
++  double pts;
++  double dts;
++};
++
++// Both layers share the demuxer's time base. Prefer presentation timestamps;
++// decode timestamps are evidence only when a presentation timestamp is absent.
++// Missing or conflicting timestamps must never silently become arrival pairing.
++// Return the base layer's timing, regardless of which layer arrived second.
++inline std::optional<AMLDoviTiming> AMLDoviMatchTiming(
++    bool firstIsEL, AMLDoviTiming first, bool secondIsEL, AMLDoviTiming second,
++    double noPts, double tolerance)
++{
++  if (firstIsEL == secondIsEL)
++    return std::nullopt;
++  const auto valid = [noPts](double value)
++  { return value != noPts && std::isfinite(value); };
++  bool matches = false;
++  if (valid(first.pts) && valid(second.pts))
++    matches = std::abs(first.pts - second.pts) < tolerance;
++  else if (valid(first.dts) && valid(second.dts))
++    matches = std::abs(first.dts - second.dts) < tolerance;
++  if (!matches)
++    return std::nullopt;
++  return firstIsEL ? second : first;
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -15,6 +15,7 @@
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "DVDClock.h"
+ #include "DVDStreamInfo.h"
++#include "AMLDolbyVisionTiming.h"
+ #include "AMLCodec.h"
+ #include "ServiceBroker.h"
+ #include "utils/AMLUtils.h"
+@@ -420,8 +421,7 @@
+   m_processInfo.SetVideoDAR(m_hints.aspect);
+ 
+   m_has_keyframe = false;
+-  m_dualLayerPaired = false;
+-  m_dualLayerByArrival = false;
++  m_dualLayerUnmatchedWarned = false;
+ 
+   if (m_bitstream)
+   {
+@@ -521,6 +521,8 @@
+   bool IsHdr10Plus = false;
+   int data_added = false;
+   bool dual_layer_converted = false;
++  double picturePts = packet.pts;
++  double pictureDts = packet.dts;
+ 
+   if (pData)
+   {
+@@ -566,25 +568,22 @@
+         // Both layers carry the same container timestamp, and 2 ms is well
+         // under half a frame even at 120 fps without trusting a rate hint
+         const double tolerance = DVD_MSEC_TO_TIME(2);
+-        const bool byArrival = m_dualLayerByArrival;
++        std::optional<AMLDoviTiming> pairedTiming;
+         auto match = std::find_if(m_packages.begin(), m_packages.end(),
+-                                  [&packet, tolerance, byArrival](const DLDemuxPacket& queued)
++                                  [&packet, tolerance, &pairedTiming](const DLDemuxPacket& queued)
+                                   {
+-                                    if (std::get<2>(queued) == packet.isELPackage)
+-                                      return false;
+-                                    if (byArrival)
+-                                      return true;
+-                                    if (std::get<3>(queued) != DVD_NOPTS_VALUE &&
+-                                        packet.pts != DVD_NOPTS_VALUE)
+-                                      return fabs(std::get<3>(queued) - packet.pts) < tolerance;
+-                                    if (std::get<4>(queued) != DVD_NOPTS_VALUE &&
+-                                        packet.dts != DVD_NOPTS_VALUE)
+-                                      return fabs(std::get<4>(queued) - packet.dts) < tolerance;
+-                                    return true;
++                                    pairedTiming = AMLDoviMatchTiming(
++                                        std::get<2>(queued),
++                                        {std::get<3>(queued), std::get<4>(queued)},
++                                        packet.isELPackage, {packet.pts, packet.dts},
++                                        DVD_NOPTS_VALUE, tolerance);
++                                    return pairedTiming.has_value();
+                                   });
+ 
+         if (match != m_packages.end())
+         {
++          picturePts = pairedTiming->pts;
++          pictureDts = pairedTiming->dts;
+           // both tracks arrive in decode order, so anything queued ahead of
+           // the partner has lost its own
+           while (m_packages.begin() != match)
+@@ -628,9 +627,6 @@
+               }
+             }
+           }
+-          // only a pair that converted proves the timestamps line up
+-          if (dual_layer_converted)
+-            m_dualLayerPaired = true;
+         }
+ 
+         if (!dual_layer_converted)
+@@ -649,21 +645,14 @@
+           while (m_packages.size() > MAX_DUAL_LAYER_PACKAGES)
+             DropDualLayerFront();
+ 
+-          // a full queue holding both layers that never paired means they
+-          // carry offset timestamps: pair by arrival as before, from an empty
+-          // queue so the stale backlog does not skew every later pair. A queue
+-          // of one layer only is a missing partner and keeps waiting for it
+-          if (m_packages.size() == MAX_DUAL_LAYER_PACKAGES && !m_dualLayerPaired &&
+-              !m_dualLayerByArrival &&
+-              std::any_of(m_packages.begin(), m_packages.end(),
+-                          [&packet](const DLDemuxPacket& queued)
+-                          { return std::get<2>(queued) != packet.isELPackage; }))
++          // Keep waiting for a timestamp match, with bounded storage. Pairing
++          // by arrival after a missing packet would bind the next EL/RPU to the
++          // wrong base picture. Warn once instead of hiding that loss of sync.
++          if (m_packages.size() == MAX_DUAL_LAYER_PACKAGES && !m_dualLayerUnmatchedWarned)
+           {
+-            CLog::Log(LOGWARNING, "CDVDVideoCodecAmlogic::{}: dual layer timestamps never match, pairing by arrival", __FUNCTION__);
+-            m_dualLayerByArrival = true;
+-            while (!m_packages.empty())
+-              DropDualLayerFront();
+-            return true;
++            m_dualLayerUnmatchedWarned = true;
++            CLog::Log(LOGWARNING, "CDVDVideoCodecAmlogic::{}: dual layer queue full; "
++                      "dropping unmatched packets, timestamp pairing required", __FUNCTION__);
+           }
+           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
+             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
+@@ -711,11 +700,11 @@
+       else
+         m_has_keyframe = true;
+     }
+-    FrameRateTracking( pData, iSize, packet.dts, packet.pts);
++    FrameRateTracking( pData, iSize, pictureDts, picturePts);
+ 
+     if (!m_opened)
+     {
+-      if (packet.pts == DVD_NOPTS_VALUE)
++      if (picturePts == DVD_NOPTS_VALUE)
+         m_hints.ptsinvalid = true;
+ 
+       m_processInfo.SetDoviIsFEL(doviIsFEL);
+@@ -770,23 +759,23 @@
+     }
+   }
+ 
+-  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
++  data_added = m_Codec->AddData(pData, iSize, pictureDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : picturePts);
+ 
+   if (data_added && packet.pData)
+   {
+     // Decode timestamps cannot bound pictures reordered into presentation order.
+-    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && packet.pts != DVD_NOPTS_VALUE
+-                                  ? std::optional<double>{packet.pts}
++    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && picturePts != DVD_NOPTS_VALUE
++                                  ? std::optional<double>{picturePts}
+                                   : std::nullopt);
+ 
+     m_pendingMeta.Inherit(m_lastMeta);
+     m_lastMeta = m_pendingMeta;
+-    if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
++    if (m_hints.ptsinvalid || picturePts == DVD_NOPTS_VALUE)
+       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_pendingMeta);
+     else
+     {
+-      m_metadataSequencer.Commit(packet.pts, m_pendingMeta);
+-      m_lastCommitPts = packet.pts;
++      m_metadataSequencer.Commit(picturePts, m_pendingMeta);
++      m_lastCommitPts = picturePts;
+     }
+     m_pendingMeta = m_streamMeta;
+   }
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -118,8 +118,7 @@
+   static std::atomic<bool> m_InstanceGuard;
+ 
+   std::list<DLDemuxPacket> m_packages;
+-  bool m_dualLayerPaired{false};
+-  bool m_dualLayerByArrival{false};
++  bool m_dualLayerUnmatchedWarned{false};
+ 
+   uint32_t m_metadataToken{0};
+   bool m_metaLeadLogged{false};
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -32,6 +32,7 @@
+ #include "settings/SettingsComponent.h"
+ #include "threads/SystemClock.h"
+ #include "utils/AMLUtils.h"
++#include "utils/DolbyVisionLegacy.h"
+ #include "utils/FontUtils.h"
+ #include "utils/LanguageTag.h"
+ #include "utils/StreamUtils.h"
+@@ -88,6 +89,35 @@
+ 
+ namespace
+ {
++std::optional<DolbyVisionLegacyPair> LegacyDoviLayers(const AVFormatContext* context)
++{
++  if (!context || !context->iformat || !context->iformat->name ||
++      std::string_view(context->iformat->name).find("matroska") == std::string_view::npos ||
++      !aml_dolby_vision_enabled())
++    return std::nullopt;
++  std::vector<DolbyVisionLegacyTrack> tracks;
++  tracks.reserve(context->nb_streams);
++  for (unsigned int i = 0; i < context->nb_streams; ++i)
++  {
++    const auto* stream = context->streams[i];
++    const auto* source = av_dict_get(stream->metadata, "SOURCE_ID", nullptr, 0);
++    if (!source)
++      source = av_dict_get(stream->metadata, "SOURCE_ID-eng", nullptr, 0);
++    const auto* codec = stream->codecpar;
++    tracks.push_back({codec->codec_type == AVMEDIA_TYPE_VIDEO && codec->codec_id == AV_CODEC_ID_HEVC,
++                      source && source->value ? source->value : "", codec->width, codec->height});
++  }
++  const auto layers = DolbyVisionLegacyLayers(tracks);
++  if (layers)
++  {
++    const auto* el = context->streams[layers->enhancement]->codecpar;
++    if (av_packet_side_data_get(el->coded_side_data, el->nb_coded_side_data,
++                               AV_PKT_DATA_DOVI_CONF))
++      return std::nullopt;
++  }
++  return layers;
++}
++
+ const std::vector<std::string> font_mimetypes = {"application/x-truetype-font",
+                                                  "application/vnd.ms-opentype",
+                                                  "application/x-font-ttf",
+@@ -2068,19 +2098,45 @@
+         st->colorTransferCharacteristic = pStream->codecpar->color_trc;
+         st->colorRange = pStream->codecpar->color_range;
+         st->hdr_type = DetermineHdrType(pStream);
++        const auto legacyLayers = LegacyDoviLayers(m_pFormatContext);
++        if (legacyLayers && legacyLayers->enhancement == static_cast<size_t>(streamIdx))
++        {
++          // Seed the EL too: AddStream may encounter either layer first.
++          st->dovi.dv_version_major = 1;
++          st->dovi.dv_version_minor = 0;
++          st->dovi.dv_profile = 7;
++          st->dovi.dv_level = 6;
++          st->dovi.rpu_present_flag = 1;
++          st->dovi.el_present_flag = 1;
++          st->dovi.bl_present_flag = 1;
++          st->dovi.dv_bl_signal_compatibility_id = 6;
++          CLog::Log(LOGINFO, "DVDDemuxFFmpeg::AddStream - legacy Matroska Dolby Vision "
++                    "EL {} paired with BL {} from Blu-ray SOURCE_ID tags", streamIdx, legacyLayers->base);
++        }
+         if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
+           st->colorSpace = AVCOL_SPC_ICTCP;
+ 
+         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
+         const AVPacketSideData* sideData = nullptr;
+ 
++        // Keep both tagged layers bound to each other even after the BL is
++        // promoted to DV, regardless of stream order or additional video tracks.
++        const auto matchesLegacyPartner = [&](int candidate)
++        {
++          if (candidate < 0 || static_cast<unsigned int>(candidate) >= m_pFormatContext->nb_streams)
++            return false;
++          return !legacyLayers || legacyLayers->AllowsPairing(streamIdx, candidate);
++        };
++
+         // check if it's dual video stream and one of it is type DV
+         auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-          [&st](const std::pair<int, CDemuxStream*>& v)
++          [&st, &matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+           {
+             if (v.second->type != StreamType::VIDEO)
+               return false;
+ 
++            if (!matchesLegacyPartner(v.first))
++              return false;
+             CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
+             return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
+                    (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
+@@ -2100,11 +2156,13 @@
+             {
+               // force dovi side data to base layer stream
+               auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-                [](const std::pair<int, CDemuxStream*>& v)
++                [&matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+                 {
+                   if (v.second->type != StreamType::VIDEO)
+                     return false;
+ 
++                  if (!matchesLegacyPartner(v.first))
++                    return false;
+                   return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
+                 });
+ 
+@@ -2154,9 +2212,9 @@
+           {
+             CDemuxStreamVideo *el_video_stream = nullptr;
+             auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-              [](const std::pair<int, CDemuxStream*>& v)
++              [&matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+               {
+-                if (v.second->type != StreamType::VIDEO)
++                if (v.second->type != StreamType::VIDEO || !matchesLegacyPartner(v.first))
+                   return false;
+ 
+                 return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
+@@ -3144,7 +3202,10 @@
+ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
+ {
+   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+-  bool convert_dual_stream((pStream->id == 0x1015) && aml_dolby_vision_enabled());
++  const auto legacyLayers = LegacyDoviLayers(m_pFormatContext);
++  const bool convert_dual_stream =
++      ((pStream->id == 0x1015) && aml_dolby_vision_enabled()) ||
++      (legacyLayers && legacyLayers->enhancement == static_cast<size_t>(pStream->index));
+ 
+   if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                               pStream->codecpar->nb_coded_side_data,
+diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
+--- a/xbmc/utils/BitstreamConverter.cpp
++++ b/xbmc/utils/BitstreamConverter.cpp
+@@ -19,6 +19,8 @@
+ #include "HevcSei.h"
+ 
+ #include <algorithm>
++#include <utility>
++#include <vector>
+ 
+ extern "C"
+ {
+@@ -638,8 +640,9 @@
+           {
+             uint32_t nal_buf_size = iSize;
+             AVIOContext *pb;
+-            uint32_t offset = 0, size_eos;
+-            uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
++            uint32_t offset = 0;
++            uint8_t *buf=NULL, *end, *start;
++            std::vector<std::pair<const uint8_t*, uint32_t>> endNals;
+ 
+             if (avio_open_dyn_buf(&pb) < 0)
+               return false;
+@@ -657,11 +660,11 @@
+               size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+               buf += 4;
+               nal_type = (buf[0] >> 1) & 0x3f;
+-
+-              if (nal_type == AVC_NAL_END_SEQUENCE)
++              const uint32_t inputSize = size;
++
++              if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
+               {
+-                buf_eos = buf;
+-                size_eos = size;
++                endNals.emplace_back(buf, size);
+               }
+               else if (nal_type == HEVC_NAL_UNSPEC62)
+               {
+@@ -693,12 +696,12 @@
+                 CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: nal_type: {}, size: {}",
+                   nal_type, size);
+ 
+-              buf += size;
++              buf += inputSize;
+             }
+ 
+-            // append end of sequence if exist
+-            if (buf_eos)
+-              BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_eos, size_eos, AVC_NAL_END_SEQUENCE);
++            // A terminator flushes the picture: its RPU must already be present.
++            for (const auto& [data, size] : endNals)
++              BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, (data[0] >> 1) & 0x3f);
+ 
+             av_free(start);
+ 
+@@ -871,8 +874,10 @@
+ 
+   if (pData_bl && pData_el)
+   {
+-    uint32_t offset = 0, size_eos;
+-    uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
++    uint32_t offset = 0;
++    uint8_t *buf=NULL, *end, *start;
++    std::vector<std::pair<const uint8_t*, uint32_t>> endNals;
++    std::vector<std::pair<const uint8_t*, uint32_t>> elEndNals;
+ 
+     uint32_t bl_frame_nal_buf_size = iSize_bl;
+     uint32_t el_frame_nal_buf_size = iSize_el;
+@@ -901,13 +906,10 @@
+       buf += 4;
+       nal_type = (buf[0] >> 1) & 0x3f;
+ 
+-      if (nal_type != AVC_NAL_END_SEQUENCE)
++      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
++        endNals.emplace_back(buf, size);
++      else
+         BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
+-      else
+-      {
+-        buf_eos = buf;
+-        size_eos = size;
+-      }
+       CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
+         nal_type, size);
+ 
+@@ -926,8 +928,11 @@
+       size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+       buf += 4;
+       nal_type = (buf[0] >> 1) & 0x3f;
+-
+-      if (nal_type == HEVC_NAL_UNSPEC62)
++      const uint32_t inputSize = size;
++
++      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
++        elEndNals.emplace_back(buf, size);
++      else if (nal_type == HEVC_NAL_UNSPEC62)
+       {
+         const uint8_t *nalu_62_data = buf;
+ #ifdef HAVE_LIBDOVI
+@@ -956,12 +961,15 @@
+         CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: EL nal_type: {}, size: {}",
+           nal_type, size);
+ 
+-      buf += size;
+-    }
+-
+-    // append end of sequence if exist
+-    if (buf_eos)
+-      BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_eos, size_eos, AVC_NAL_END_SEQUENCE);
++      buf += inputSize;
++    }
++
++    // Complete both layers and the RPU before either decoder sees a terminator.
++    if (!m_convert_dovi)
++      for (const auto& [data, size] : elEndNals)
++        BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, HEVC_NAL_UNSPEC63);
++    for (const auto& [data, size] : endNals)
++      BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, (data[0] >> 1) & 0x3f);
+ 
+     if (!m_convert_bitstream)
+       av_free(start);
+diff --git a/xbmc/utils/DolbyVisionLegacy.h b/xbmc/utils/DolbyVisionLegacy.h
+new file mode 100644
+--- /dev/null
++++ b/xbmc/utils/DolbyVisionLegacy.h
+@@ -0,0 +1,70 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <optional>
++#include <string_view>
++#include <vector>
++
++struct DolbyVisionLegacyTrack
++{
++  bool hevc;
++  std::string_view sourceId;
++  int width;
++  int height;
++};
++
++struct DolbyVisionLegacyPair
++{
++  size_t base;
++  size_t enhancement;
++
++  // Neither member may be reassigned after AddStream promotes the BL to DV.
++  // Unrelated tracks retain the normal container-signalled pairing rules.
++  bool AllowsPairing(size_t first, size_t second) const
++  {
++    if (first == base || second == enhancement)
++      return first == base && second == enhancement;
++    if (first == enhancement || second == base)
++      return first == enhancement && second == base;
++    return true;
++  }
++};
++
++// Older mkvmerge versions retain Blu-ray PIDs in SOURCE_ID but do not write a
++// Dolby Vision configuration record. Accept only a unique tagged UHD BL/EL pair;
++// two video tracks, a title containing "DV", or a 1080p track alone prove nothing.
++inline std::optional<DolbyVisionLegacyPair> DolbyVisionLegacyLayers(
++    const std::vector<DolbyVisionLegacyTrack>& tracks)
++{
++  std::optional<size_t> base;
++  std::optional<size_t> enhancement;
++  for (size_t i = 0; i < tracks.size(); ++i)
++  {
++    const auto& track = tracks[i];
++    if (!track.hevc)
++      continue;
++    if (track.sourceId == "001015")
++    {
++      if (enhancement)
++        return std::nullopt;
++      enhancement = i;
++    }
++    if (track.sourceId == "001011")
++    {
++      if (base || track.width != 3840 || track.height != 2160)
++        return std::nullopt;
++      base = i;
++    }
++  }
++  if (!base || !enhancement)
++    return std::nullopt;
++  const auto& el = tracks[*enhancement];
++  if (!((el.width == 1920 && el.height == 1080) ||
++        (el.width == 3840 && el.height == 2160)))
++    return std::nullopt;
++  return DolbyVisionLegacyPair{*base, *enhancement};
++}

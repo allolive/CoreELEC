@@ -17,6 +17,11 @@ CoreELEC options: "Disable Dolby Vision support" moves to second place,
 zero" defaults to off, and DV LED mode and level 5 are greyed out while
 Dolby Vision support is disabled.
 
+Refresh brightness metadata for every converted picture so decoding
+pictures out of display order does not delay a scene change. Converted
+HDR10+ therefore uses no Dolby Vision temporal smoothing. Video that
+already carries Dolby Vision keeps its original metadata.
+
 Co-authored-by: cpm-code <162544069+cpm-code@users.noreply.github.com>
 Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Co-authored-by: doppingkoala <doppingkoala@users.noreply.github.com>
@@ -835,7 +840,6 @@ index 0000000..7a1b63e
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
 new file mode 100644
-index 0000000..8eddb86
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
 @@ -0,0 +1,70 @@
@@ -895,12 +899,12 @@ index 0000000..8eddb86
 +  bool ConvertedThisAu() const { return m_session.ConvertedThisAu(); }
 +
 +  //! \brief The decoder refused the access unit and will be re-offered it, so
-+  //! give back the cache key generation already committed. Forcing a refresh
-+  //! would invent a scene cut on every mid-shot stall.
++  //! restore the fallback accounting. The serialized RPU stays cached and
++  //! every picture refreshes, so retrying cannot change its refresh flag.
 +  void RollbackAu() { m_session.RollbackAu(); }
 +
-+  //! \brief A seek breaks the shot: the next RPU carries scene_refresh_flag=1
-+  //! so the display re-anchors rather than smoothing on. Cached RPUs are kept.
++  //! \brief Reset fallback accounting on seek. Cached RPUs are kept; every
++  //! converted picture carries scene_refresh_flag=1, including after a seek.
 +  void OnFlush() { m_session.Reset(); }
 +
 +private:
@@ -911,10 +915,9 @@ index 0000000..8eddb86
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
 new file mode 100644
-index 0000000..6574f44
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,667 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -1254,10 +1257,11 @@ index 0000000..6574f44
 +              pq.cmv40 ? "CMv4.0" : "CMv2.9");
 +  }
 +
-+  // Metadata unchanged: stay in the shot, emit the flag=0 hold variant. This
-+  // equality test is the scene-cut detector - HDR10+ is piecewise-constant.
-+  if (pq == cache.last_pq && !cache.last_rpu_hold.empty())
-+    return cache.last_rpu_hold;
++  // Cache serialization, not a scene decision. Access units arrive in decode
++  // order; a future reference picture may precede the first displayed picture
++  // of a new scene. Each converted picture therefore carries its own refresh.
++  if (pq == cache.last_pq && !cache.last_rpu.empty())
++    return cache.last_rpu;
 +
 +  // declared outside the guard: it is read below whether or not libdovi is built in
 +  bool generated = false;
@@ -1296,40 +1300,34 @@ index 0000000..6574f44
 +          fmt::format(R"(,{{"Level9":{{"length":1,"source_primary_index":{}}}}})", pq.l9_index);
 +  }
 +
-+  // A 2-frame shot: list[0] carries scene_refresh_flag=1 (metadata just
-+  // changed), list[1] carries flag=0 for the identical frames that follow.
++  // HDR10+ supplies picture statistics, not authored DV scene boundaries.
++  // Long-play mode refreshes every picture without guessing a cut from decode
++  // order. This intentionally forgoes DV's temporal smoothing between pictures.
 +  std::string json = fmt::format(
-+      // long_play_mode false, where pannal uses true: it flags every frame as a
-+      // scene cut, and list[1] below has to be the flag=0 variant.
-+      R"({{"profile":"8.1","cm_version":"{}","long_play_mode":false,"length":2,)"
++      R"({{"profile":"8.1","cm_version":"{}","long_play_mode":true,"length":1,)"
 +      R"("source_min_pq":{},"source_max_pq":{},)"
 +      R"("level6":{{"max_display_mastering_luminance":{},"min_display_mastering_luminance":{},)"
 +      R"("max_content_light_level":{},"max_frame_average_light_level":{}}},)"
 +      R"("default_metadata_blocks":[{{"Level1":{{"min_pq":{},"max_pq":{},"avg_pq":{}}}}},{}{}],)"
-+      R"("shots":[{{"start":0,"duration":2}}]}})",
++      R"("shots":[{{"start":0,"duration":1}}]}})",
 +      pq.cmv40 ? "V40" : "V29", pq.source_min_pq, pq.source_max_pq,
 +      pq.max_display_mastering_luminance, pq.min_display_mastering_luminance,
 +      pq.max_content_light_level, pq.max_frame_average_light_level, pq.min_pq, pq.max_pq, pq.avg_pq,
 +      L2_BLOCKS, extra);
 +
 +  const DoviRpuOpaqueList* list = dovi_generate_from_json(json.c_str());
-+  if (list && list->len >= 2 && list->list && list->list[0] && list->list[1])
++  if (list && list->len >= 1 && list->list && list->list[0])
 +  {
 +    const DoviData* d0 = dovi_write_unspec62_nalu(list->list[0]);
-+    const DoviData* d1 = dovi_write_unspec62_nalu(list->list[1]);
-+    if (d0 && d0->data && d1 && d1->data)
++    if (d0 && d0->data && d0->len > 0)
 +    {
-+      cache.last_rpu_refresh.assign(d0->data, d0->data + d0->len);
-+      cache.last_rpu_hold.assign(d1->data, d1->data + d1->len);
-+      // cache the key only once both RPUs are produced, so a generation failure
-+      // retries next frame instead of pinning a stale pair
++      cache.last_rpu.assign(d0->data, d0->data + d0->len);
++      // Commit bytes and key together; a serialization failure must retry.
 +      cache.last_pq = pq;
 +      generated = true;
 +    }
 +    if (d0)
 +      dovi_data_free(d0);
-+    if (d1)
-+      dovi_data_free(d1);
 +  }
 +  // Block validation reports on the individual RPU, not on list->error.
 +  if (list && list->error)
@@ -1343,8 +1341,7 @@ index 0000000..6574f44
 +    dovi_rpu_list_free(list);
 +#endif
 +
-+  // Generation failed: return nothing rather than a stale refresh RPU, which
-+  // would signal a scene cut carrying the wrong peak and average.
++  // Leave the last complete serialization available to the fallback policy.
 +  if (!generated)
 +  {
 +    const int level = cache.warned_generation_failed ? LOGDEBUG : LOGWARNING;
@@ -1361,13 +1358,14 @@ index 0000000..6574f44
 +            pq.min_display_mastering_luminance, pq.max_content_light_level,
 +            pq.max_frame_average_light_level);
 +
-+  // metadata changed -> this frame is the shot start (flag=1)
-+  return cache.last_rpu_refresh;
++  return cache.last_rpu;
 +}
 +
 +namespace
 +{
 +// HEVC NAL types we care about in the assembled access unit.
++constexpr uint8_t NAL_EOS = 36;
++constexpr uint8_t NAL_EOB = 37;
 +constexpr uint8_t NAL_SEI_PREFIX = 39;
 +constexpr uint8_t NAL_UNSPEC62 = 62; // Dolby Vision RPU
 +constexpr uint8_t NAL_UNSPEC63 = 63; // Dolby Vision EL
@@ -1423,14 +1421,34 @@ index 0000000..6574f44
 +                                              std::vector<uint8_t>& out)
 +{
 +  m_convertedThisAu = false;
-+  m_cache.BeginAu();
++  m_savedHoldRun = m_holdRun;
++  m_savedHoldWarned = m_holdWarned;
 +
-+  if (!in || inSize <= 0)
++  if (m_nativeDovi || !in || inSize <= 0)
 +    return false;
 +
 +  const std::vector<AnnexBNal> nals = SplitAnnexB(in, inSize);
 +  if (nals.empty())
 +    return false;
++
++  // Container signalling can be missing on remuxes. Inspect the whole access
++  // unit before generating anything: native RPUs/EL must survive verbatim.
++  // Once seen, leave this stream alone, including after seeks or metadata gaps.
++  size_t lastSlice = nals.size();
++  for (size_t n = 0; n < nals.size(); ++n)
++  {
++    const auto& nal = nals[n];
++    const uint8_t type = (in[nal.offset] >> 1) & 0x3F;
++    if (type == NAL_UNSPEC62 || type == NAL_UNSPEC63)
++    {
++      m_nativeDovi = true;
++      CLog::Log(LOGINFO, "{} - native Dolby Vision NAL found; disabling HDR10+ conversion",
++                __FUNCTION__);
++      return false;
++    }
++    if (type <= 31 && nal.size >= 2)
++      lastSlice = n;
++  }
 +
 +  // Pass 1: collect static HDR metadata from every prefix SEI and note which NAL
 +  // carries the HDR10+ payload. The MDCV may sit after the T.35 NAL.
@@ -1486,11 +1504,21 @@ index 0000000..6574f44
 +    // must not keep the HDR10+ SEI even when its body was rejected.
 +    if (CHevcSei::FindHdr10PlusSeiMessage(clearBuf, messages))
 +    {
-+      strippedSeis.emplace_back(n, CHevcSei::RemoveHdr10PlusFromSeiNalu(nal, nals[n].size));
++      auto stripped = CHevcSei::RemoveHdr10PlusFromSeiNalu(nal, nals[n].size);
++      // The shared helper removes one message, not every matching message.
++      // Repeat only while another HDR10+ header remains; preserve other SEIs.
++      while (!stripped.empty() && CHevcSei::ContainsHdr10Plus(stripped.data(), stripped.size()))
++        stripped = CHevcSei::RemoveHdr10PlusFromSeiNalu(stripped.data(), stripped.size());
++      strippedSeis.emplace_back(n, std::move(stripped));
 +      if (const auto meta = ExtractHdr10Plus(messages, clearBuf))
 +        hdr10plus = *meta;
 +    }
 +  }
++
++  // Parameter sets, SEIs or a drain marker alone are not a picture. Keep their
++  // static metadata above, but do not emit an RPU for a packet without a picture.
++  if (lastSlice == nals.size())
++    return false;
 +
 +  // No usable metadata is the same case as a failed generation: hold on the cached
 +  // RPU rather than emit a Dolby Vision access unit with none.
@@ -1500,41 +1528,41 @@ index 0000000..6574f44
 +
 +  if (!rpu.empty())
 +  {
-+    m_rpu = std::move(rpu);
 +    m_holdRun = 0;
 +    m_holdWarned = false;
 +  }
-+  else if (m_rpu.empty())
++  else
 +  {
-+    // Cold cache: nothing to stand in. Leave the access unit alone and let the
-+    // stream play as native HDR10+; the decoder is not in DV mode yet.
-+    return false;
++    // Missing or rejected HDR10+ cannot provide this picture's measurements.
++    // Keep the existing fallback policy, with the same per-picture refresh.
++    rpu = m_cache.last_rpu;
++    if (rpu.empty())
++      return false;
++    if (++m_holdRun >= MAX_HOLD_RUN && !m_holdWarned)
++    {
++      m_holdWarned = true;
++      CLog::Log(LOGWARNING,
++                "{} - no RPU generated for {} access units; "
++                "continuing on the last cached RPU",
++                __FUNCTION__, MAX_HOLD_RUN);
++    }
 +  }
-+  else if (++m_holdRun >= MAX_HOLD_RUN && !m_holdWarned)
-+  {
-+    m_holdWarned = true;
-+    CLog::Log(LOGWARNING,
-+              "{} - no RPU generated for {} access units; "
-+              "continuing on the last cached RPU",
-+              __FUNCTION__, MAX_HOLD_RUN);
-+  }
-+
-+  if (m_rpu.empty())
-+    return false;
 +
 +  // Pass 2: rebuild the access unit, HDR10+ SEI replaced by its stripped form.
 +  out.clear();
-+  out.reserve(static_cast<size_t>(inSize) + m_rpu.size() + 8);
++  out.reserve(static_cast<size_t>(inSize) + rpu.size() + 8);
++  bool rpuWritten = false;
 +  for (size_t n = 0; n < nals.size(); ++n)
 +  {
 +    const uint8_t* nal = in + nals[n].offset;
 +    const uint8_t type = (nal[0] >> 1) & 0x3F;
-+
-+    // This access unit is becoming Dolby Vision, so a native RPU/EL is dropped.
-+    // A remux that kept in-band RPUs but lost its dvcC gets ours instead.
-+    if (type == NAL_UNSPEC62 || type == NAL_UNSPEC63)
-+      continue;
-+
++    // EOS flushes the current picture in the Amlogic decoder. Its RPU must
++    // precede that boundary, while remaining after every slice of the picture.
++    if (!rpuWritten && n > lastSlice && (type == NAL_EOS || type == NAL_EOB))
++    {
++      AppendNal(out, rpu.data(), static_cast<int>(rpu.size()), true);
++      rpuWritten = true;
++    }
 +    const bool first = out.empty();
 +    const auto stripped = std::find_if(strippedSeis.begin(), strippedSeis.end(),
 +                                       [n](const auto& s) { return s.first == n; });
@@ -1548,7 +1576,8 @@ index 0000000..6574f44
 +  }
 +
 +  // x265 always writes UNSPEC62 with a four-byte start code
-+  AppendNal(out, m_rpu.data(), static_cast<int>(m_rpu.size()), true);
++  if (!rpuWritten)
++    AppendNal(out, rpu.data(), static_cast<int>(rpu.size()), true);
 +
 +  m_converted = true;
 +  m_convertedThisAu = true;
@@ -1558,10 +1587,9 @@ index 0000000..6574f44
 +} // namespace KODI::AML::HDR
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
 new file mode 100644
-index 0000000..6fd79cc
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,130 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -1621,27 +1649,13 @@ index 0000000..6fd79cc
 +// Per-stream RPU cache; never shared between decodes.
 +struct Hdr10PlusRpuCache
 +{
-+  std::vector<uint8_t> last_rpu_refresh;
-+  std::vector<uint8_t> last_rpu_hold;
++  std::vector<uint8_t> last_rpu;
 +  Hdr10PlusPqValues last_pq = {};
-+  Hdr10PlusPqValues saved_pq = {};
 +  bool warned_no_histogram = false;
 +  bool warned_peak_clamped = false;
 +  bool warned_no_mdcv = false;
 +  bool announced_cm = false;
 +  bool warned_generation_failed = false;
-+
-+  //! \brief Snapshot the key before an access unit is built.
-+  void BeginAu() { saved_pq = last_pq; }
-+
-+  //! \brief The decoder refused the access unit; the identical packet is
-+  //! re-offered, so restore the key rather than invent a scene cut.
-+  void RollbackAu() { last_pq = saved_pq; }
-+
-+  //! \brief Seek/flush: zero the key so the next call regenerates and emits the
-+  //! refresh variant. On a generation failure the fallback re-emits the last
-+  //! RPU, hold variant included.
-+  void InvalidateKey() { last_pq = {}; saved_pq = {}; }
 +};
 +
 +std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
@@ -1675,22 +1689,20 @@ index 0000000..6fd79cc
 +  //! \brief The decoder refused this access unit and will be re-offered it.
 +  void RollbackAu()
 +  {
-+    m_cache.RollbackAu();
-+    if (m_holdRun > 0)
-+      --m_holdRun;
++    m_holdRun = m_savedHoldRun;
++    m_holdWarned = m_savedHoldWarned;
 +  }
 +
-+  //! \brief Seek/flush: the next RPU must re-anchor the display.
++  //! \brief Seek/flush: reset fallback accounting. Every RPU refreshes already.
 +  void Reset()
 +  {
-+    m_cache.InvalidateKey();
 +    m_convertedThisAu = false;
 +    m_holdRun = 0;
 +    m_holdWarned = false;
 +  }
 +
 +private:
-+  // consecutive access units served from the stale hold RPU; crossing this
++  // consecutive access units served from cached metadata; crossing this
 +  // warns once and playback continues - disarming mid-session would flip the
 +  // decoder out of DV mid-stream
 +  static constexpr unsigned int MAX_HOLD_RUN = 240;
@@ -1698,11 +1710,13 @@ index 0000000..6fd79cc
 +  Hdr10PlusRpuCache m_cache;
 +  HDRStaticMetadataInfo m_static{};
 +  DvCmMode m_cmMode{DvCmMode::V29};
-+  std::vector<uint8_t> m_rpu;
++  bool m_nativeDovi{false};
 +  bool m_converted{false};
 +  bool m_convertedThisAu{false};
 +  unsigned int m_holdRun{0};
++  unsigned int m_savedHoldRun{0};
 +  bool m_holdWarned{false};
++  bool m_savedHoldWarned{false};
 +};
 +
 +} // namespace KODI::AML::HDR
@@ -1729,12 +1743,11 @@ index aa21f60..2b6cc23 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index a5f3e74..2dd52f3 100644
+index 72077cd..fd70c7a 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -16,6 +16,7 @@
- #include "DVDClock.h"
- #include "DVDStreamInfo.h"
+@@ -18,5 +18,6 @@
+ #include "AMLDolbyVisionTiming.h"
  #include "AMLCodec.h"
 +#include "AMLHdr10PlusHook.h"
  #include "ServiceBroker.h"
@@ -1757,15 +1770,7 @@ index a5f3e74..2dd52f3 100644
    }
  
    if (m_hints.contentLightMetadata)
-@@ -682,6 +686,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-       if (!m_bitstream->CanStartDecode())
-       {
-         CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
-+        m_h10p.RollbackAu();
-         m_pendingMeta = m_streamMeta;
-         if (dual_layer_converted)
-           DropDualLayerFront();
-@@ -689,6 +694,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -689,6 +693,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        pData = m_bitstream->GetConvertBuffer();
        iSize = m_bitstream->GetConvertSize();
@@ -1774,8 +1779,8 @@ index a5f3e74..2dd52f3 100644
        doviIsFEL = m_bitstream->GetDoviIsFEL();
        IsHdr10Plus = m_bitstream->GetIsHdrPlus();
        if (IsHdr10Plus && m_stripHdr10Plus &&
-@@ -717,6 +724,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-       if (packet.pts == DVD_NOPTS_VALUE)
+@@ -717,6 +723,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+       if (picturePts == DVD_NOPTS_VALUE)
          m_hints.ptsinvalid = true;
  
 +      m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
@@ -1783,7 +1788,7 @@ index a5f3e74..2dd52f3 100644
        m_processInfo.SetDoviIsFEL(doviIsFEL);
        m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
  
-@@ -743,7 +752,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -743,7 +751,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      return true;
    }
  
@@ -1793,7 +1798,7 @@ index a5f3e74..2dd52f3 100644
    {
      const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                 packet.iSideDataElems,
-@@ -794,6 +804,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -794,6 +803,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    if (data_added && dual_layer_converted)
      DropDualLayerFront();
  
@@ -1803,7 +1808,7 @@ index a5f3e74..2dd52f3 100644
    return data_added;
  }
  
-@@ -858,6 +871,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -858,6 +870,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
    if (m_Codec)
      m_Codec->Reset();
  
