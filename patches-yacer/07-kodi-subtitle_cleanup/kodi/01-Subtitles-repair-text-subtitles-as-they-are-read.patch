@@ -40,11 +40,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../DVDCodecs/Overlay/DVDOverlayCodecText.h   |    11 +
  .../VideoPlayer/DVDSubtitles/CMakeLists.txt   |     3 +
  .../DVDSubtitles/DVDSubtitleStream.cpp        |    39 +
- .../DVDSubtitles/SubtitleCleanup.cpp          |  1677 +
+ .../DVDSubtitles/SubtitleCleanup.cpp          |  1678 +
  .../DVDSubtitles/SubtitleCleanup.h            |   133 +
  .../DVDSubtitles/SubtitleCleanupSettings.cpp  |    45 +
  xbmc/settings/Settings.h                      |     4 +
- 13 files changed, 94361 insertions(+), 1 deletion(-)
+ 13 files changed, 94362 insertions(+), 1 deletion(-)
  create mode 100644 system/subtitlecleanup/en_words.LICENSE.txt
  create mode 100644 system/subtitlecleanup/en_words.txt
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
@@ -92700,10 +92700,10 @@ index 3fbe53f17b..2ebeabf08e 100644
    }
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
 new file mode 100644
-index 0000000000..ed47877110
+index 0000000000..91eae7c912
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
-@@ -0,0 +1,1677 @@
+@@ -0,0 +1,1678 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -94234,8 +94234,9 @@ index 0000000000..ed47877110
 +    else
 +      words.back().push_back(c);
 +  }
++  // the code nearest the extension is the subtitle's: "…-bg.REMUX-Danishbits.da.srt" is Danish
 +  const size_t from = words.size() > 3 ? words.size() - 3 : 0;
-+  for (size_t i = from; i < words.size(); ++i)
++  for (size_t i = words.size(); i-- > from;)
 +    if (CodepageFor(words[i]))
 +      return words[i];
 +  return {};
@@ -94383,7 +94384,7 @@ index 0000000000..ed47877110
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
 new file mode 100644
-index 0000000000..194815f15a
+index 0000000000..6d22242a3b
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
 @@ -0,0 +1,133 @@
@@ -94465,7 +94466,7 @@ index 0000000000..194815f15a
 +};
 +
 +//! The language one of the last three words of a subtitle file's name gives ("en", "fre",
-+//! "Arabic"), or empty.
++//! "Arabic"), the one nearest the extension first, or empty.
 +std::string LanguageOfPath(const std::string& path);
 +
 +/*!

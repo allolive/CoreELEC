@@ -298,7 +298,8 @@ def language_of_path(path: str) -> Optional[str]:
     ("Film.en.forced.srt", "Film_English.srt", "Arabic.srt")."""
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
-    return language_of(re.split(r"[._ ]", stem)[-3:])
+    # the code nearest the extension is the subtitle's: "...-bg.REMUX-Danishbits.da.srt" is Danish
+    return language_of(list(reversed(re.split(r"[._ ]", stem)[-3:])))
 
 
 def codepage_for(language: Optional[str]) -> Optional[str]:

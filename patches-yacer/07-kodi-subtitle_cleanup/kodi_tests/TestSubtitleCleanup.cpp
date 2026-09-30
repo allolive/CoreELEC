@@ -341,6 +341,8 @@ TEST(SubtitleCleanup, FindsTheLanguageInTheFileName)
   EXPECT_EQ(LanguageOfPath("/m/Film/Subs/2_English.srt"), "English");
   EXPECT_EQ(LanguageOfPath("smb://nas/Film/Arabic.srt"), "Arabic");
   EXPECT_EQ(LanguageOfPath("/m/Film/Film.forced.srt"), "");
+  EXPECT_EQ(LanguageOfPath("/m/Film/Film-bg.REMUX-Danishbits.da.srt"), "da");
+  EXPECT_EQ(LanguageOfPath("/m/Film/Film HQ NL Subs.en.srt"), "en");
 }
 
 // -- OCR letters ----------------------------------------------------------------------------
