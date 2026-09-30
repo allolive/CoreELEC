@@ -47,25 +47,25 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
 -#empty strings from id 39218 to 39899
 +#empty strings from id 39218 to 39219
 +
-+#. Label of setting "Player -> Subtitles -> Brightness"
++#. Label of setting "Player -> Subtitles -> Max brightness"
 +#: system/settings/settings.xml
 +msgctxt "#39220"
-+msgid "Brightness"
++msgid "Max brightness"
 +msgstr ""
 +
-+#. Help text of setting "Player -> Subtitles -> Brightness"
++#. Help text of setting "Player -> Subtitles -> Max brightness"
 +#: system/settings/settings.xml
 +msgctxt "#39221"
 +msgid "The most light a subtitle may have on screen, in nits. A subtitle authored brighter is dimmed to it, one authored dimmer keeps its light; text subtitles and SDR image subtitles can at most reach the interface's white. On SDR output the screen is taken to be 120 nits. Disc menus are left alone. \"As authored\" leaves subtitles as they come."
 +msgstr ""
 +
-+#. Value of setting "Player -> Subtitles -> Brightness": leave subtitles as authored
++#. Value of setting "Player -> Subtitles -> Max brightness": leave subtitles as authored
 +#: system/settings/settings.xml
 +msgctxt "#39222"
 +msgid "As authored"
 +msgstr ""
 +
-+#. Value format of setting "Player -> Subtitles -> Brightness", in nits
++#. Value format of setting "Player -> Subtitles -> Max brightness", in nits
 +#: system/settings/settings.xml
 +msgctxt "#39223"
 +msgid "{0:d} nits"

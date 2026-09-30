@@ -26,7 +26,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  2 files changed, 100 insertions(+), 78 deletions(-)
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 6f82e6a78a..3cf4d4f7a6 100644
+index 1b4fbc1108..451a9deb65 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -25441,7 +25441,23 @@ msgctxt "#39225"
@@ -52,10 +52,10 @@ index 6f82e6a78a..3cf4d4f7a6 100644
 +msgid "HDR"
 +msgstr ""
  
- #. Value of setting "Player -> Subtitles -> Placement": to the edges of the display
+ #. Value of setting "Player -> Subtitles -> Alter placement": to the edges of the display
  #: system/settings/settings.xml
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index fcd4546bf7..e2b2b60b30 100755
+index fcd4546bf7..4fc729aeb9 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -891,64 +891,6 @@
@@ -183,14 +183,6 @@ index fcd4546bf7..e2b2b60b30 100755
 +          <default>true</default>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="39232" help="39233">
-+          <level>1</level>
-+          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
 +        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="39234" help="39235">
 +          <level>1</level>
 +          <default></default>
@@ -206,6 +198,14 @@ index fcd4546bf7..e2b2b60b30 100755
 +          </control>
 +        </setting>
 +        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="39236" help="39237">
++          <level>1</level>
++          <default>true</default>
++          <dependencies>
++            <dependency type="enable" setting="subtitles.repair">true</dependency>
++          </dependencies>
++          <control type="toggle" />
++        </setting>
++        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="39232" help="39233">
 +          <level>1</level>
 +          <default>true</default>
 +          <dependencies>

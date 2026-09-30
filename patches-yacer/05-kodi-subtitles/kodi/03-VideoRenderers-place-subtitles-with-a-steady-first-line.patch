@@ -50,13 +50,13 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
  msgstr ""
  
 -#empty strings from id 39224 to 39899
-+#. Label of setting "Player -> Subtitles -> Placement"
++#. Label of setting "Player -> Subtitles -> Alter placement"
 +#: system/settings/settings.xml
 +msgctxt "#39224"
-+msgid "Placement"
++msgid "Alter placement"
 +msgstr ""
 +
-+#. Help text of setting "Player -> Subtitles -> Placement"
++#. Help text of setting "Player -> Subtitles -> Alter placement"
 +#: system/settings/settings.xml
 +msgctxt "#39225"
 +msgid "Where subtitles in the lower and upper part of the picture are shown. \"Black bars\" moves them to the edges of the display, into the bars of a wide film, with the first line in one position for the whole film, whether a subtitle has one line or two. Subtitles in the middle of the picture, or of an unusual size, stay where they are."
@@ -64,7 +64,7 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
 +
 +#empty strings from id 39226 to 39228
 +
-+#. Value of setting "Player -> Subtitles -> Placement": to the edges of the display
++#. Value of setting "Player -> Subtitles -> Alter placement": to the edges of the display
 +#: system/settings/settings.xml
 +msgctxt "#39229"
 +msgid "Black bars"
