@@ -14,6 +14,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -114,9 +115,12 @@ std::vector<uint8_t> Passthrough(const std::vector<uint8_t>& frame, bool defeat)
       break;
     offset += static_cast<unsigned int>(used);
   }
-  if (out == nullptr || outSize == 0)
+  // AddData allocates the packet for its caller. Keep ownership while copying
+  // it into the returned frame, including the empty-output and exception paths.
+  const std::unique_ptr<uint8_t[]> packet(out);
+  if (!packet || outSize == 0)
     return {};
-  return std::vector<uint8_t>(out, out + outSize);
+  return std::vector<uint8_t>(packet.get(), packet.get() + outSize);
 }
 } // namespace
 

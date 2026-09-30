@@ -25,3 +25,10 @@ yacer_add_test(
   KODI_SOURCES xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
   INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
+
+if(YACER_SANITIZE)
+  # The clock fixture leaves its reference-clock pointer empty and does not
+  # link that thread implementation or its RTTI. Only vptr instrumentation
+  # needs that absent RTTI; keep ASan and the remaining UBSan checks enabled.
+  target_compile_options(test_11_coreelec_av_sync_AMLGenlock PRIVATE -fno-sanitize=vptr)
+endif()

@@ -16,10 +16,10 @@ foreach(file IN ITEMS
     "en_GB.dic;04e90f34f5263bf26780e9c4a442e9ad16584e227af49ddd1b3b21b01df5b29c")
   list(GET file 0 name)
   list(GET file 1 sha)
-  if(NOT EXISTS "${pack}/${name}")
-    file(DOWNLOAD "${dictionaries}/${name}" "${pack}/${name}"
-         EXPECTED_HASH SHA256=${sha} TLS_VERIFY ON)
-  endif()
+  # EXPECTED_HASH reuses a verified file without downloading. An existence
+  # check alone also accepts the empty file left by a failed download.
+  file(DOWNLOAD "${dictionaries}/${name}" "${pack}/${name}"
+       EXPECTED_HASH SHA256=${sha} TLS_VERIFY ON)
 endforeach()
 file(WRITE "${pack}/profile.txt"
   "codes = en eng english\n"
