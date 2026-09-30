@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 12:00:00 -0400
+Subject: [PATCH] VideoPlayer: preserve the resume hold across callback seeks
+
+An onPlayBackResumed seek could discard an armed preparation together with
+its renderer hold and target. The callback barrier then had nothing left to
+prepare and resumed through the ordinary path, losing coordinated A/V startup.
+
+Retire only the old audio preparation while a callback request owns the hold.
+The existing flush supplies a fresh output generation and seek target; the
+barrier prepares that target once all callback seeks have completed. Ordinary
+seeks and control cancellation keep their existing recovery path.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -5624,12 +5624,22 @@
+ {
+   m_syncStartPtsWait.reset();
+   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
+-  // A callback seek replaces output without cancelling its resume request.
+-  // An ordinary seek during audio preparation returns to normal startup.
+-  if (!m_seekingResumePreroll &&
+-      (m_resumePreroll.Active() ||
+-       (m_resumePictureGeneration != 0 && !m_resumeGate.IsHolding())))
+-    CancelResumePreroll(true);
++  // A callback seek replaces the prepared audio, but still owns the frozen
++  // picture and the resume request. Keep those until its final target can be
++  // prepared after the callback barrier; stale reports cannot revive the old
++  // preparation. The stream flush below retires its audio generation.
++  if (!m_seekingResumePreroll)
++  {
++    if (m_resumeGate.IsHolding() && m_resumePictureGeneration != 0)
++    {
++      m_resumePreroll.Cancel();
++      m_resumePrerollPaused = false;
++      m_resumePrerollFailed = false;
++      m_resumePrerollReleaseTime = 0.0;
++    }
++    else if (m_resumePreroll.Active() || m_resumePictureGeneration != 0)
++      CancelResumePreroll(true);
++  }
+   m_resumeGate.InvalidateOutput();
+   if (m_resumePictureGeneration != 0)
+   {

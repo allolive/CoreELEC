@@ -248,6 +248,7 @@ TEST(AudioPreroll, AReplacementGenerationInheritsNeitherPositionNorReadiness)
   EXPECT_FALSE(status.inSync) << "the replacement inherited sync readiness";
 
   Feed(preroll, 400000, 20000);
+  ASSERT_TRUE(preroll.PrepareRelease(2));
   EXPECT_TRUE(preroll.End(2));
   EXPECT_FALSE(preroll.Active());
   EXPECT_FALSE(preroll.Observe({0, true, true, true}, 200).inSync) << "an ended run stayed ready";
@@ -407,3 +408,59 @@ TEST(AudioPreroll, EveryFailureHasAReadableName)
         << "a failure reaches the log with no diagnostic";
 }
 } // namespace
+
+TEST(AudioPreroll, ReadinessKeepsThePreservedPacketUntilCommit)
+{
+  CAudioPreroll preroll;
+  ASSERT_TRUE(preroll.Begin(1, 1000000));
+  Feed(preroll, 500000, 20000);
+  EXPECT_FALSE(preroll.End(1)) << "commit without readiness must not release";
+  ASSERT_TRUE(preroll.PrepareRelease(1));
+  EXPECT_TRUE(preroll.Active());
+  EXPECT_TRUE(preroll.Held());
+  EXPECT_TRUE(preroll.HoldPacket(520000, 20000, true, true));
+  EXPECT_FALSE(preroll.Accepted(520000, 20000, 100, 100, 0));
+  EXPECT_FALSE(preroll.SetTarget(1, 1100000));
+  EXPECT_FALSE(preroll.PrepareRelease(1)) << "duplicate readiness";
+  const auto status = preroll.Observe({10000, true, true, false}, 1000);
+  EXPECT_EQ(AudioPrerollStatus::Phase::ReadyToRelease, status.phase);
+  EXPECT_TRUE(status.mainHeld);
+  EXPECT_DOUBLE_EQ(520000, status.submittedEndPts);
+  EXPECT_TRUE(preroll.End(1));
+  EXPECT_FALSE(preroll.Active());
+  EXPECT_FALSE(preroll.Held());
+}
+
+TEST(AudioPreroll, CancelledReadinessCannotCommitOrReleaseItsReplacement)
+{
+  CAudioPreroll preroll;
+  ASSERT_TRUE(preroll.Begin(1, 1000000));
+  Feed(preroll, 500000, 20000);
+  ASSERT_TRUE(preroll.PrepareRelease(1));
+  ASSERT_TRUE(preroll.Cancel(1));
+  EXPECT_FALSE(preroll.End(1));
+  ASSERT_TRUE(preroll.Begin(2, 2000000));
+  Feed(preroll, 1500000, 20000);
+  EXPECT_FALSE(preroll.End(1));
+  EXPECT_FALSE(preroll.End(2));
+  EXPECT_FALSE(preroll.Held());
+  ASSERT_TRUE(preroll.PrepareRelease(2));
+  EXPECT_FALSE(preroll.Cancel(1));
+  EXPECT_TRUE(preroll.Active());
+  EXPECT_TRUE(preroll.Held());
+}
+
+TEST(AudioPreroll, FailureBetweenReadinessAndCommitKeepsOutputHeld)
+{
+  CAudioPreroll preroll;
+  EXPECT_FALSE(preroll.PrepareRelease(1));
+  ASSERT_TRUE(preroll.Begin(1, 1000000));
+  EXPECT_FALSE(preroll.PrepareRelease(1)) << "unbuffered readiness";
+  Feed(preroll, 500000, 20000);
+  ASSERT_TRUE(preroll.PrepareRelease(1));
+  preroll.Fail();
+  EXPECT_FALSE(preroll.End(1));
+  EXPECT_TRUE(preroll.Held());
+  EXPECT_TRUE(preroll.Failed());
+  EXPECT_TRUE(preroll.Cancel(1));
+}

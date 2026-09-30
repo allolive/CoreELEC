@@ -1,0 +1,310 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 12:00:00 -0400
+Subject: [PATCH] VideoPlayer: commit audio only after accepting resume readiness
+
+The audio thread used to consume the preserved target packet and enable sync
+correction before the player accepted its acknowledgement. A newer pause or
+seek could reject that acknowledgement after output had already escaped.
+
+Report readiness while submission remains held. The player validates the
+snapshot, anchors the clock and releases the video hold before committing
+audio. Cancellation and stale commits cannot reopen a replacement generation.
+Discard the correction window at commit, after the final clock anchor. Keep
+the generation until both audio commit and video submission acknowledge it,
+so a stalled or failed commit still has bounded recovery.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/AudioPreroll.h
++++ b/xbmc/cores/VideoPlayer/AudioPreroll.h
+@@ -13,7 +13,7 @@
+ 
+ struct AudioPrerollCommand
+ {
+-  enum class Action { Begin, End, Cancel, SetTarget };
++  enum class Action { Begin, PrepareRelease, End, Cancel, SetTarget };
+   Action action{Action::Cancel};
+   uint64_t generation{0};
+   double targetPts{DVD_NOPTS_VALUE};
+@@ -24,7 +24,7 @@
+ // never evidence that an HDMI receiver decoded or presented a payload.
+ struct AudioPrerollStatus
+ {
+-  enum class Phase { Buffered, Progress, AtBoundary, Released, Failed };
++  enum class Phase { Buffered, Progress, AtBoundary, ReadyToRelease, Released, Failed };
+   enum class Failure
+   {
+     None, Timestamp, Duration, Format, Continuity, PartialWrite, NoLead,
+@@ -95,6 +95,7 @@
+     m_failed = false;
+     m_failure = {};
+     m_held = false;
++    m_releasePending = false;
+     m_seenRunningUnsynced = false;
+     return true;
+   }
+@@ -110,7 +111,7 @@
+ 
+   bool Active() const { return m_active; }
+   bool Failed() const { return m_failed; }
+-  bool Held() const { return m_held; }
++  bool Held() const { return m_held || m_releasePending; }
+   bool Buffered() const { return ValidPts(m_firstPts); }
+   uint64_t Generation() const { return m_generation; }
+   bool Matches(uint64_t generation) const { return m_active && generation == m_generation; }
+@@ -137,19 +138,32 @@
+       return false;
+     m_active = false;
+     m_held = false;
++    m_releasePending = false;
++    return true;
++  }
++
++  // A readiness report is not permission to consume the preserved packet.
++  // Freeze submission and retain correction suppression until the coordinator
++  // has checked the report, anchored the clock and released the video hold.
++  bool PrepareRelease(uint64_t generation)
++  {
++    if (!Matches(generation) || m_failed || !Buffered() || m_releasePending)
++      return false;
++    m_releasePending = true;
+     return true;
+   }
+ 
+   bool End(uint64_t generation)
+   {
+-    if (!Matches(generation) || m_failed)
++    if (!Matches(generation) || m_failed || !m_releasePending)
+       return false;
+     return Cancel(generation);
+   }
+ 
+   bool SetTarget(uint64_t generation, double targetPts)
+   {
+-    if (!Matches(generation) || m_failed || !ValidPts(targetPts) || targetPts < m_targetPts)
++    if (!Matches(generation) || m_failed || m_releasePending || !ValidPts(targetPts) ||
++        targetPts < m_targetPts)
+       return false;
+     m_targetPts = targetPts;
+     m_held = false; // Re-evaluate the preserved packet against the rounded target.
+@@ -161,7 +175,7 @@
+   {
+     if (!m_active)
+       return false;
+-    if (m_failed)
++    if (m_failed || m_releasePending)
+       return true;
+     if (!timestamped || !ValidPts(pts))
+     {
+@@ -193,7 +207,7 @@
+   bool Accepted(double pts, double duration, unsigned int written, unsigned int packetBytes,
+                 unsigned int previousBytes)
+   {
+-    if (!m_active || m_failed)
++    if (!m_active || m_failed || m_releasePending)
+       return false;
+     // RAW progress is meaningful only for a complete packet. A timeout after
+     // partial acceptance requires cancellation; never extrapolate its duration.
+@@ -228,12 +242,13 @@
+   {
+     AudioPrerollStatus status = m_failure;
+     status.phase = m_failed ? AudioPrerollStatus::Phase::Failed
++                           : m_releasePending ? AudioPrerollStatus::Phase::ReadyToRelease
+                            : m_held ? AudioPrerollStatus::Phase::AtBoundary : phase;
+     status.generation = m_generation;
+     status.firstPts = m_firstPts;
+     status.submittedEndPts = m_submittedEndPts;
+     status.hostUs = hostUs;
+-    status.mainHeld = m_held;
++    status.mainHeld = Held();
+     if (!sink.valid || !sink.running)
+       m_seenRunningUnsynced = false;
+     if (sink.valid && std::isfinite(sink.delayUs) && sink.delayUs >= 0)
+@@ -273,5 +288,6 @@
+   bool m_active{false};
+   bool m_failed{false};
+   bool m_held{false};
++  bool m_releasePending{false};
+   bool m_seenRunningUnsynced{false};
+ };
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -413,7 +413,7 @@
+         if (m_preroll.SetTarget(command.generation, command.targetPts))
+           onlyPrioMsgs = true; // Submit/recheck the owned frame before another codec AddData.
+       }
+-      else if (command.action == AudioPrerollCommand::Action::End)
++      else if (command.action == AudioPrerollCommand::Action::PrepareRelease)
+       {
+         if (m_preroll.Matches(command.generation))
+         {
+@@ -424,11 +424,10 @@
+             m_preroll.Fail(AudioPrerollStatus::Failure::NotInSync);
+             PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
+           }
+-          else if (m_preroll.End(command.generation))
++          else if (m_preroll.PrepareRelease(command.generation))
+           {
+-            ResetPrerollCorrections();
+-            status.phase = AudioPrerollStatus::Phase::Released;
+-            status.mainHeld = false;
++            status.phase = AudioPrerollStatus::Phase::ReadyToRelease;
++            status.mainHeld = true;
+             m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
+                 CDVDMsg::PLAYER_AUDIO_PREROLL, status));
+             onlyPrioMsgs = true;
+@@ -443,6 +442,27 @@
+           status.hostUs = m_pClock->GetAbsoluteClock();
+           m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
+               CDVDMsg::PLAYER_AUDIO_PREROLL, status));
++        }
++      }
++      else if (command.action == AudioPrerollCommand::Action::End)
++      {
++        // Only the player can commit after accepting ReadyToRelease. Until
++        // this command, Held() prevents output and corrections stay suppressed.
++        if (m_preroll.End(command.generation))
++        {
++          ResetPrerollCorrections();
++          AudioPrerollStatus status;
++          status.phase = AudioPrerollStatus::Phase::Released;
++          status.generation = command.generation;
++          status.hostUs = m_pClock->GetAbsoluteClock();
++          m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
++              CDVDMsg::PLAYER_AUDIO_PREROLL, status));
++          onlyPrioMsgs = true;
++        }
++        else if (m_preroll.Matches(command.generation))
++        {
++          m_preroll.Fail(AudioPrerollStatus::Failure::Aborted);
++          PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
+         }
+       }
+       else if (m_preroll.Cancel(command.generation))
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -4101,9 +4101,26 @@
+ 
+ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
+ {
++  // A reset may invalidate audio after readiness was accepted but before its
++  // commit is consumed. The video generation still owns the first-picture
++  // handoff; recover it instead of leaving failed audio held indefinitely.
++  if (!m_resumePreroll.Active() && m_resumePictureGeneration != 0 &&
++      status.generation == m_resumePictureGeneration &&
++      status.phase == AudioPrerollStatus::Phase::Failed)
++  {
++    RecoverResumePreroll("audio commit failed");
++    return;
++  }
++  if (!m_resumePreroll.Active() && m_resumePictureGeneration != 0 &&
++      status.generation == m_resumePictureGeneration &&
++      status.phase == AudioPrerollStatus::Phase::Released)
++  {
++    m_resumeAudioCommitPending = false;
++    return;
++  }
+   if (!m_resumePreroll.Active() || status.generation != m_resumePreroll.Generation())
+     return;
+-  if (status.phase == AudioPrerollStatus::Phase::Released && m_resumePreroll.Releasing())
++  if (status.phase == AudioPrerollStatus::Phase::ReadyToRelease && m_resumePreroll.Releasing())
+   {
+     // A newer user command can be behind this acknowledgement in the FIFO.
+     // Retire the old target before it becomes visible; recovery leaves the
+@@ -4121,9 +4138,9 @@
+     const double now = m_clock.GetAbsoluteClock();
+     const double age = now - status.hostUs;
+     const double playing = status.estimatedPlayingPts + age;
+-    // Audio authorization can already have submitted payload. If the
+-    // acknowledgement misses the presentation deadline, recover by seeking
+-    // the target rather than pretending that output can be rolled back.
++    // Audio is still holding its decoded packet with corrections suppressed.
++    // Rejecting this report cannot release that packet; recovery cancels and
++    // flushes it before the next output generation.
+     // Clock and audio were anchored to each other at the audio start, and the
+     // clock has run at normal speed since while the engine established sync.
+     // Neither can have moved away from the other by more than that elapsed
+@@ -4156,8 +4173,8 @@
+       return;
+     }
+     // Spend the small acquisition residual while the picture is still held.
+-    // Audio's End acknowledgement has discarded the cached error window, so
+-    // the next ordinary packet cannot immediately reuse that pre-anchor error.
++    // Audio still suppresses correction. The commit below discards the error
++    // window after this anchor, before ordinary packets may correct it again.
+     // The clock moves before the release deliberately: once released, the
+     // render thread may schedule the picture, and it must do so against the
+     // clock the audio is actually on.
+@@ -4169,6 +4186,13 @@
+       m_resumePrerollFailed = true;
+       return;
+     }
++    m_resumeAudioCommitPending = true;
++    m_VideoPlayerAudio->SendMessage(
++        std::make_shared<CDVDMsgType<AudioPrerollCommand>>(
++            CDVDMsg::AUDIO_PREROLL,
++            AudioPrerollCommand{AudioPrerollCommand::Action::End,
++                                status.generation, video.firstPts}),
++        1);
+     m_resumePreroll.Cancel();
+     m_resumePrerollReleaseTime = now;
+     m_playSpeed = DVD_PLAYSPEED_NORMAL;
+@@ -4336,6 +4360,7 @@
+   m_resumePrerollTarget.reset();
+   m_resumePrerollReleaseTime = 0.0;
+   m_resumePrerollFailed = false;
++  m_resumeAudioCommitPending = false;
+   if (generation != 0)
+   {
+     m_renderManager.CancelVideoPreroll(generation);
+@@ -4409,19 +4434,27 @@
+     {
+       const auto video = m_renderManager.GetVideoPreroll();
+       if (video.generation != m_resumePictureGeneration || video.failed ||
+-          (!video.submitted && m_resumePrerollReleaseTime > 0.0 &&
++          ((m_resumeAudioCommitPending || !video.submitted) &&
++           m_resumePrerollReleaseTime > 0.0 &&
+            m_clock.GetAbsoluteClock() - m_resumePrerollReleaseTime > DVD_MSEC_TO_TIME(2000)))
+       {
+-        RecoverResumePreroll("first target picture was not submitted");
++        RecoverResumePreroll("audio commit or first target picture did not complete");
+         return true;
+       }
+-      if (video.released && video.submitted)
++      if (video.released && video.submitted && !m_resumeAudioCommitPending)
+       {
+         CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - submitted generation={} target={:.6f}",
+                   m_resumePictureGeneration, video.firstPts / DVD_TIME_BASE);
+         m_resumePictureGeneration = 0;
+         m_resumePrerollTarget.reset();
+         m_resumePrerollReleaseTime = 0.0;
++      }
++      if (m_resumeAudioCommitPending)
++      {
++        // Keep servicing acknowledgements and controls. A source read can
++        // block longer than the commit deadline, just as during readiness.
++        CThread::Sleep(1ms);
++        return true;
+       }
+     }
+     return false;
+@@ -4492,7 +4525,7 @@
+     m_VideoPlayerAudio->SendMessage(
+         std::make_shared<CDVDMsgType<AudioPrerollCommand>>(
+             CDVDMsg::AUDIO_PREROLL,
+-            AudioPrerollCommand{AudioPrerollCommand::Action::End,
++            AudioPrerollCommand{AudioPrerollCommand::Action::PrepareRelease,
+                                 decision.generation, decision.targetPts}),
+         1);
+     return true;
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -628,6 +628,7 @@
+   bool m_seekingResumePreroll = false;
+   bool m_resumePrerollPaused = false;
+   bool m_resumePrerollFailed = false;
++  bool m_resumeAudioCommitPending = false;
+   int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
+   struct SSpeedState
+   {

@@ -25,3 +25,8 @@ Speaker and panel alignment still need matched hardware tests.
 Holding the picture across a passthrough resume needs the render loop to keep
 turning, so a frame the GUI skipped is presented rather than drawn and thrown
 away; without that the player waits for a buffer that never comes back.
+
+Patch 22 keeps the Dolby Vision FEL exclusion in the CoreELEC adapter series.
+The condition is unchanged: decoder reset cannot retain FEL composition while
+preparation withholds new frames, so those streams use ordinary resume. The
+Kodi-only series no longer refers to CoreELEC's `GetDoviIsFEL()` API.

@@ -98,3 +98,19 @@ yacer_add_test(
   SOURCES TestVideoPrerollGate.cpp
   INCLUDES ${YACER_SHIMS} ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
+
+# Exact player message handlers/prologue, with controllable collaborators. The
+# full image compiles the actual class contracts; this suite tests their ordering.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${KODI_SOURCE}/xbmc/cores/VideoPlayer/VideoPlayer.cpp"
+  "${KODI_SOURCE}/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp"
+  "${CMAKE_SOURCE_DIR}/player_preroll_sections.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/player_preroll_sections.py"
+  "${KODI_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/PrerollPlayerSections.inc"
+  COMMAND_ERROR_IS_FATAL ANY)
+yacer_add_test(
+  NAME PlayerPrerollWiring
+  SOURCES TestPlayerPrerollWiring.cpp
+  INCLUDES ${CMAKE_CURRENT_BINARY_DIR}
+)
