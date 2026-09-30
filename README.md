@@ -78,8 +78,8 @@ cannot conflict with them.
 - **`tree-patches/`** — the few upstream files that are changed, as patches. If
   upstream moves that code the patch stops applying and the build stops with it,
   rather than quietly restoring an older copy.
-- **`overlay/`** — anything else added to the tree, copied in as-is. Empty
-  today. A path that already exists upstream is refused rather than overwritten:
+- **`overlay/`** — anything else added to the tree, copied in as-is: today
+  the hunspell and cld2 packages the subtitle repair links into Kodi. A path that already exists upstream is refused rather than overwritten:
   replacing a whole upstream file would silently revert whatever they changed in
   it, with nothing to notice.
 

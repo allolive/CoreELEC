@@ -1,0 +1,21 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] Build Kodi with hunspell and cld2 for the subtitle repair
+
+The subtitle repair (patches-yacer 07) undoes a subtitle's OCR misreadings
+against the language's dictionary, and tells the language of a subtitle that
+names none. Hunspell is the dictionary and CLD2 the detector; both are small
+static libraries linked into Kodi, and both are optional there: without them
+Kodi builds and still repairs encodings, notes, ads and timing, just not OCR.
+
+diff --git a/projects/Amlogic-ce/packages/mediacenter/kodi/package.mk b/projects/Amlogic-ce/packages/mediacenter/kodi/package.mk
+--- a/projects/Amlogic-ce/packages/mediacenter/kodi/package.mk
++++ b/projects/Amlogic-ce/packages/mediacenter/kodi/package.mk
+@@ -9,7 +9,7 @@
+ PKG_LICENSE="GPL"
+ PKG_SITE="http://www.kodi.tv"
+ PKG_URL="https://github.com/CoreELEC/xbmc/archive/${PKG_VERSION}.tar.gz"
+-PKG_DEPENDS_TARGET="toolchain JsonSchemaBuilder:host TexturePacker:host Python3 zlib systemd lzo pcre2 swig:host libass curl exiv2 fontconfig fribidi tinyxml tinyxml2 libjpeg-turbo freetype libcdio taglib libxml2 libxslt nlohmann-json sqlite ffmpeg crossguid libfmt lirc libfstrcmp flatbuffers:host flatbuffers libudfread spdlog obu_util libdovi"
++PKG_DEPENDS_TARGET="toolchain JsonSchemaBuilder:host TexturePacker:host Python3 zlib systemd lzo pcre2 swig:host libass curl exiv2 fontconfig fribidi tinyxml tinyxml2 libjpeg-turbo freetype libcdio taglib libxml2 libxslt nlohmann-json sqlite ffmpeg crossguid libfmt lirc libfstrcmp flatbuffers:host flatbuffers libudfread spdlog obu_util libdovi hunspell cld2"
+ PKG_DEPENDS_UNPACK="commons-lang3 commons-text groovy"
+ PKG_DEPENDS_HOST="toolchain"
+ PKG_LONGDESC="A free and open source cross-platform media player."
