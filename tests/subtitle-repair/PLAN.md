@@ -28,5 +28,9 @@ The spec, agreed 2026-09-29:
    the reference on every corpus. Done 2026-09-30: 899 files, whole and cue by cue (tagged and
    detected), identical; 48 gtests, clean under ASan/UBSan.
 4. Kodi integration: the English pack built in, pack discovery, settings; full build; the box.
+   Built 2026-09-30 (20260930002101): English in system/subtitlecleanup/en, other packs from
+   enabled library add-ons carrying resources/subtitlerepair/<language>/, the track's language
+   through CDVDStreamInfo. Not yet on the box: timing and memory there still to measure.
 5. Packs for fr, es, de, it, nl, pt as add-ons in kodi_addons, generated from LibreOffice's
-   dictionaries at a pinned revision.
+   dictionaries at a pinned revision. Done 2026-09-30 (script.module.subtitlerepair.<language>
+   .allolive; the dictionaries are fetched at build time by revision and sha256).
