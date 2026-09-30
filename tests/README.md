@@ -46,5 +46,11 @@ are built from - `reference.py` for the repairs, `ocr_engine.py` for undoing a
 file's OCR misreadings - and `make_pack.py`, which builds a language pack from
 a Hunspell dictionary. `check_library.py` runs the reference over a list of
 real subtitle files and proves every edit is one a rule allows; with `--kodi`
-it also checks the C++ gives the same bytes. The library is not in the
-repository, so it runs by hand, not under ctest. `PLAN.md` is the plan.
+(and `--native`, a prefix with Hunspell and CLD2 built for the host) it also
+checks the C++ gives the same bytes and the same report, and with `--streams`
+the same cue by cue, as a track inside the video, with the track's language
+and without. The library is not in the repository, so it runs by hand, not
+under ctest. `PLAN.md` is the plan.
+
+The group's gtest suite links Hunspell: install `libhunspell-dev`, or point
+`PKG_CONFIG_PATH` at a build of it.

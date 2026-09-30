@@ -34,6 +34,8 @@ MANY_WORDS = 10         # unless the misreading recurs across this many differen
 LANGUAGE_SHARE = 0.6    # of a line's other words, for the line to count as the language
 OTHER_MARGIN = 0.2      # how much better another language must explain a line to claim it
 MAX_CANDIDATES = 256
+DETECT_PERCENT = 80     # of a text the detector must give one language to be believed
+DETECT_CUES = 50        # a track that names no language is read every this many cues
 
 # (what the OCR wrote, what was there); a pack adds the accents its language drops
 CONFUSIONS: List[Tuple[str, str]] = [
@@ -458,14 +460,46 @@ def repair_file(lines: List[str], language: Language, others: Iterable[Language]
     return [engine.fix_line(line_, fixes) for line_ in lines], engine.active()
 
 
+def detected(lines: List[str], packs: Dict[str, Language], detect) -> Tuple[Optional[Language], bool]:
+    """The pack the detector surely reads the lines in, and whether it is sure at all."""
+    code, percent, reliable = detect("\n".join(visible(line_) for line_ in lines))
+    sure = reliable and percent >= DETECT_PERCENT
+    return (pack_for(code, packs) if sure else None), sure
+
+
 class Stream:
     """A track inside the video, cue by cue: each cue first adds to what is known of the track -
-    its names, its misreadings - and is then corrected with what is known so far."""
+    its names, its misreadings - and is then corrected with what is known so far.
 
-    def __init__(self, language: Language, others: Iterable[Language]):
-        self.engine = Engine(language, others)
+    A track that names no language is read by the detector every DETECT_CUES cues until it is
+    sure; its cues so far are then learnt from. A track surely in a language no pack is for is
+    left as it is."""
+
+    def __init__(self, packs: Dict[str, Language], language: Optional[str] = None, detect=None):
+        self.packs = packs
+        pack = pack_for(language, packs) if language else None
+        self.engine = Engine(pack, packs.values()) if pack else None
+        self.detect = None if language else detect
+        self.undetected: List[str] = []
+        self.cues = 0
 
     def cue(self, lines: List[str], fixes: Optional[list] = None) -> List[str]:
-        self.engine.note_names(lines)
-        self.engine.learn(lines)
+        if self.engine is None and self.detect is not None:
+            self.undetected += lines
+            self.cues += 1
+            if self.cues % DETECT_CUES == 0:
+                pack, sure = detected(self.undetected, self.packs, self.detect)
+                if pack is not None:
+                    self.engine = Engine(pack, self.packs.values())
+                    self.engine.note_names(self.undetected)
+                    self.engine.learn(self.undetected)
+                if sure:
+                    self.detect, self.undetected = None, []
+            if self.engine is None:
+                return lines
+        elif self.engine is not None:
+            self.engine.note_names(lines)
+            self.engine.learn(lines)
+        if self.engine is None:
+            return lines
         return [self.engine.fix_line(line_, fixes) for line_ in lines]

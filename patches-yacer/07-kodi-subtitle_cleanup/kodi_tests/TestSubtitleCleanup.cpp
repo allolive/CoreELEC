@@ -9,6 +9,9 @@
 #include "cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+#include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <sstream>
@@ -77,11 +80,12 @@ struct Result
 
 Result Clean(const std::string& data,
            const std::string& language = "",
-           const CWordList* words = nullptr,
-           Options options = Options())
+           const Packs* packs = nullptr,
+           Options options = Options(),
+           const Detector& detect = {})
 {
   Result r;
-  r.cleaned = CleanSubRip(data, language, options, words, r.out, r.report);
+  r.cleaned = CleanSubRip(data, language, options, packs, detect, r.out, r.report);
   return r;
 }
 
@@ -123,17 +127,78 @@ bool IsAdMidFilm(const std::string& line)
   return Clean(Srt({"a", "b", "c", line, "d", "e", "f"})).report.adLines == 1;
 }
 
-const CWordList& Words()
+//! The English pack the patch installs.
+const Packs& English()
 {
-  static CWordList words = [] {
-    std::ifstream in(SUBTITLE_WORDS);
-    std::stringstream text;
-    text << in.rdbuf();
-    CWordList list;
-    list.Load(text.str());
-    return list;
+  static const Packs packs = LoadPacks(SUBTITLE_PACKS);
+  return packs;
+}
+
+void Write(const std::filesystem::path& path, const std::string& text)
+{
+  std::ofstream(path, std::ios::binary) << text;
+}
+
+//! English and a small French pack: enough words for a French subtitle, and the French for a
+//! few an English one has too.
+const Packs& EnglishAndFrench()
+{
+  static const Packs packs = [] {
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("subtitle-packs-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(root / "fr");
+    std::filesystem::copy(SUBTITLE_PACKS "/en", root / "en",
+                          std::filesystem::copy_options::recursive);
+    Write(root / "fr" / "profile.txt",
+          "codes = fr fre fra french\n"
+          "dictionaries = fr\n"
+          "one_letter_words = a A à À y Y ô Ô\n"
+          "capitalised_nouns = no\n"
+          "alphabet = ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÉàâçèéêëîïôùûü\n"
+          "accents = A:À E:É a:àâ c:ç e:èéêë i:îï o:ô u:ùûü\n");
+    Write(root / "fr" / "fr.aff", "SET UTF-8\n");
+    const char* words[] = {"la",     "le",   "les",   "il",    "elle",   "est",   "là",
+                           "ici",    "je",   "ne",    "sais",  "pas",    "vous",  "voulez",
+                           "maison", "dans", "que",   "qui",   "un",     "une",   "et",
+                           "de",     "ce",   "merci", "oui",   "non",    "écoutez", "été",
+                           "très",   "café", "thé",   "mère",  "père",   "déjà",  "où",
+                           "a",      "bu",   "du",    "tu",    "viens",  "mon",   "ami",
+                           "vérité", "désolé", "suis"};
+    std::string dic = std::to_string(std::size(words)) + "\n";
+    for (const char* w : words)
+      dic += std::string(w) + "\n";
+    Write(root / "fr" / "fr.dic", dic);
+    Packs loaded = LoadPacks(root.string());
+    std::filesystem::remove_all(root);
+    return loaded;
   }();
-  return words;
+  return packs;
+}
+
+//! An English file whose OCR reads "I" as "l" all through: in several words, many times.
+std::vector<std::string> MisreadsI()
+{
+  return {"l know what you mean.", "l'm sure of it.", "l'll be there.", "Can l come?",
+          "l think so.",           "l'm not going.",  "What do l do?",  "l'll call you."};
+}
+
+std::string SrtOf(const std::vector<std::string>& texts)
+{
+  std::string out;
+  for (size_t i = 0; i < texts.size(); ++i)
+  {
+    if (i)
+      out += "\n\n";
+    out += std::to_string(i + 1) + "\n" + Stamp(static_cast<int>(i + 1) * 1000) + " --> " +
+           Stamp(static_cast<int>(i + 1) * 1000 + 900) + "\n" + texts[i];
+  }
+  return out + "\n";
+}
+
+std::vector<std::string> Plus(std::vector<std::string> a, const std::vector<std::string>& b)
+{
+  a.insert(a.end(), b.begin(), b.end());
+  return a;
 }
 } // namespace
 
@@ -347,82 +412,167 @@ TEST(SubtitleCleanup, FindsTheLanguageInTheFileName)
 
 // -- OCR letters ----------------------------------------------------------------------------
 
-TEST(SubtitleCleanup, PutsBackOcrLettersInEnglish)
+TEST(SubtitleCleanup, LoadsTheEnglishPack)
 {
-  const Result r = Clean(Srt({"l know what you mean, l'm sure.", "<i>He wouId never couIdn’t</i>",
-                            "The lnspector from the FBl.", "N0, l’ll g0t it."}),
-                       "en", &Words());
-  EXPECT_EQ(Cues(r.out), (std::vector<std::string>{"I know what you mean, I'm sure.",
-                                                   "<i>He would never couldn’t</i>",
-                                                   "The Inspector from the FBI.",
-                                                   "NO, I’ll got it."}));
-  EXPECT_EQ(r.report.ocrFixes, 9);
+  ASSERT_EQ(English().size(), 1u);
+  EXPECT_EQ(English()[0]->Name(), "en");
+  EXPECT_TRUE(English()[0]->HasCode("ENG"));
+  EXPECT_TRUE(English()[0]->Word(L"colour"));
+  EXPECT_TRUE(English()[0]->Word(L"color"));
+  EXPECT_FALSE(English()[0]->Word(L"wouId"));
 }
 
-TEST(SubtitleCleanup, LeavesNamesShortWordsAndTagsAlone)
+TEST(SubtitleCleanup, UndoesAMisreadingTheFileRepeats)
+{
+  const Result r = Clean(SrtOf(Plus(MisreadsI(), {"<i>l was there.</i>"})), "en", &English());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[0], "I know what you mean.");
+  EXPECT_EQ(cues[1], "I'm sure of it.");
+  EXPECT_EQ(cues[3], "Can I come?");
+  EXPECT_EQ(cues[8], "<i>I was there.</i>");
+  EXPECT_EQ(r.report.ocrFixes, 9);
+  EXPECT_EQ(r.report.ocrLanguage, "en");
+  EXPECT_EQ(r.report.ocrPattern, "l->I");
+}
+
+TEST(SubtitleCleanup, LeavesAMisreadingThatIsAnException)
+{
+  // one "l" for "I" among many written right is an exception, not the file's pattern
+  std::vector<std::string> texts;
+  for (int i = 0; i < 12; ++i)
+    texts.push_back("I know. I'm sure. I'll go.");
+  texts.push_back("l know.");
+  const std::string text = SrtOf(texts);
+  const Result r = Clean(text, "en", &English());
+  EXPECT_EQ(r.out, text);
+  EXPECT_EQ(r.report.ocrPattern, "");
+}
+
+TEST(SubtitleCleanup, LeavesACleanFileWithOddWordsAlone)
 {
   const std::string text = Srt({"Gary, Isabelle and Ig went to lx.",
-                                "<font color=\"#llllll\">Hello.</font>", "Nest0r waited."});
-  const Result r = Clean(text, "en", &Words());
+                                "<font color=\"#llllll\">Hello.</font>", "Nest0r waited.",
+                                "Episode 1: the beginning.", "Louis II was king."});
+  const Result r = Clean(text, "en", &English());
   EXPECT_EQ(r.out, text);
   EXPECT_EQ(r.report.ocrFixes, 0);
 }
 
-TEST(SubtitleCleanup, LeavesOcrLettersAloneOutsideEnglish)
+TEST(SubtitleCleanup, LeavesOcrLettersAloneWithoutAPackForTheLanguage)
 {
-  const std::string text = Srt({"l'homme est là, il le sait."});
-  EXPECT_EQ(Clean(text, "fr", &Words()).out, text);
+  const std::string text = SrtOf(MisreadsI());
+  EXPECT_EQ(Clean(text, "da", &English()).out, text);
+  EXPECT_EQ(Clean(text, "fr", &English()).out, text);
+  EXPECT_EQ(Clean(text, "en", nullptr).out, text);
+  Options off;
+  off.fixOcr = false;
+  EXPECT_EQ(Clean(text, "en", &English(), off).out, text);
 }
 
-TEST(SubtitleCleanup, CorrectsAnUnnamedFileThatReadsAsEnglish)
+TEST(SubtitleCleanup, AsksTheDetectorOnlyForAFileThatNamesNoLanguage)
 {
-  std::string english;
-  std::string french;
-  for (int i = 0; i < 20; ++i)
-  {
-    english += "What do you want? It is not me, you know that. ";
-    french += "Je ne sais pas ce que vous voulez, il est dans la maison. ";
-  }
-  const Result r = Clean(Srt({english, "l was there."}), "", &Words());
-  EXPECT_EQ(Cues(r.out)[1], "I was there.");
-  EXPECT_EQ(r.report.ocrFixes, 1);
-  EXPECT_EQ(Clean(Srt({french, "l was there."}), "", &Words()).report.ocrFixes, 0);
+  int asked = 0;
+  const Detector english = [&](const std::string& text) {
+    ++asked;
+    EXPECT_NE(text.find("l know what you mean."), std::string::npos);
+    return Detection{"en", 97, true};
+  };
+  const std::string text = SrtOf(MisreadsI());
+  EXPECT_EQ(Cues(Clean(text, "", &English(), Options(), english).out)[0],
+            "I know what you mean.");
+  EXPECT_EQ(asked, 1);
+  Clean(text, "en", &English(), Options(), english);
+  EXPECT_EQ(asked, 1);
+
+  const Detector unsure = [](const std::string&) { return Detection{"en", 97, false}; };
+  const Detector mixed = [](const std::string&) { return Detection{"en", 70, true}; };
+  EXPECT_EQ(Clean(text, "", &English(), Options(), unsure).out, text);
+  EXPECT_EQ(Clean(text, "", &English(), Options(), mixed).out, text);
+  EXPECT_EQ(Clean(text, "", &English()).out, text);
 }
 
 TEST(SubtitleCleanup, NeverTouchesAnLInsideAnAccentedWord)
 {
-  const std::string text =
-      Srt({"Oh là là!", "Miss Hélène, may I drink", "Noël Coward once said,",
-           "Vielleicht läuft es super,", "Bella Reál in a dead heat."});
-  const Result r = Clean(text, "en", &Words());
-  EXPECT_EQ(r.out, text);
-  EXPECT_EQ(r.report.ocrFixes, 0);
+  const Result r = Clean(SrtOf(Plus(MisreadsI(), {"Oh là là!", "Miss Hélène, may l drink",
+                                                  "Vielleicht läuft es super,"})),
+                         "en", &English());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[8], "Oh là là!");
+  EXPECT_EQ(cues[9], "Miss Hélène, may I drink");
+  EXPECT_EQ(cues[10], "Vielleicht läuft es super,");
 }
 
 TEST(SubtitleCleanup, LeavesStuttersSpellingAndDamagedWordsAlone)
 {
-  const std::string text = Srt({"Ba-ba-ba-batter-r-ry l-l-l-low.", "and lithic... l-T-H...",
-                                "Sa?l! Sa?l!", "just north of the l-20 junction."});
-  const Result r = Clean(text, "en", &Words());
-  EXPECT_EQ(r.out, text);
+  const std::vector<std::string> odd = {"Ba-ba-ba-batter-r-ry l-l-l-low.", "and lithic... l-T-H...",
+                                        "Sa?l! Sa?l!", "just north of the l-20 junction."};
+  const std::vector<std::string> cues =
+      Cues(Clean(SrtOf(Plus(MisreadsI(), odd)), "en", &English()).out);
+  EXPECT_EQ(std::vector<std::string>(cues.begin() + 8, cues.end()), odd);
 }
 
-TEST(SubtitleCleanup, LeavesAForeignLineInsideAnEnglishSubtitle)
+TEST(SubtitleCleanup, LeavesALineAnotherLanguageExplainsBetter)
 {
-  const std::string text = Srt({"la somma sapienza e 'l primo amore.", "Comment? Qui est là ? Je ne sais pas.",
-                                "- Can l have a macchiato,"});
-  const Result r = Clean(text, "en", &Words());
-  EXPECT_EQ(r.out, text);
+  const Result r = Clean(SrtOf(Plus(MisreadsI(), {"Je ne sais pas, il est là.",
+                                                  "- Can l have a café,"})),
+                         "en", &EnglishAndFrench());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[8], "Je ne sais pas, il est là.");
+  EXPECT_EQ(cues[9], "- Can I have a café,");
 }
 
-TEST(SubtitleCleanup, StillCorrectsWhatAnOcrReallyMisread)
+TEST(SubtitleCleanup, LeavesNamesTheFileUsesMidSentence)
 {
-  const Result r = Clean(Srt({"l-- I'm sorry...", "lnside.", "l am Vidya Bagchi.",
-                              "'l love you.'", "of aII the things we got", "to teII Dewey."}),
-                         "en", &Words());
-  EXPECT_EQ(Cues(r.out), (std::vector<std::string>{"I-- I'm sorry...", "Inside.",
-                                                   "I am Vidya Bagchi.", "'I love you.'",
-                                                   "of all the things we got", "to tell Dewey."}));
+  // the file drops "d" for "cl" all through, but "Moclan" is a name it uses mid-sentence
+  const Result r = Clean(SrtOf({"l coulcl go.", "She woulcl know.", "We shoulcl stay.",
+                                "They coulcl try.", "You woulcl see.", "Ask Moclan.",
+                                "Where is Moclan?"}),
+                         "en", &English());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[1], "She would know.");
+  EXPECT_EQ(cues[5], "Ask Moclan.");
+  EXPECT_EQ(cues[6], "Where is Moclan?");
+}
+
+TEST(SubtitleCleanup, PutsBackOnlyTheAccentsTheFileDropsAllThrough)
+{
+  // "é" is dropped all through; "è" once and "É" once are exceptions
+  const Result r = Clean(SrtOf({"Il a ete ici.", "La verite est la.", "Je suis desole.",
+                                "Il a ete la.", "La verite, merci.", "Ecoutez, je suis la.",
+                                "La mere est la."}),
+                         "fr", &EnglishAndFrench());
+  EXPECT_EQ(Cues(r.out), (std::vector<std::string>{
+                             "Il a été ici.", "La vérité est la.", "Je suis désolé.",
+                             "Il a été la.", "La vérité, merci.", "Ecoutez, je suis la.",
+                             "La mere est la."}));
+  EXPECT_EQ(r.report.ocrPattern, "e->é");
+}
+
+TEST(SubtitleCleanup, LeavesAnAccentOffAWordAnotherLanguageHas)
+{
+  const std::vector<std::string> caps = {"IL A ETE ICI.",  "LA VERITE EST LA.",
+                                         "JE SUIS DESOLE.", "IL A ETE LA.",
+                                         "LA VERITE, MERCI.", "LE THE EST LA."};
+  const Result r = Clean(SrtOf(caps), "fr", &EnglishAndFrench());
+  EXPECT_EQ(Cues(r.out)[0], "IL A ÉTÉ ICI.");
+  EXPECT_EQ(Cues(r.out)[5], "LE THE EST LA.");
+  // with no English installed, nothing says "THE" is a word
+  const Packs french = {EnglishAndFrench()[1]};
+  ASSERT_EQ(french[0]->Name(), "fr");
+  EXPECT_EQ(Cues(Clean(SrtOf(caps), "fr", &french).out)[5], "LE THÉ EST LA.");
+}
+
+TEST(SubtitleCleanup, ReadsALoneOneAsIOnlyBeforeAWordIGoesWith)
+{
+  // the file writes "1" for "I" in words ("1'm"), so a lone "1" before "know" is "I" too
+  const Result r = Clean(SrtOf({"1'm here.", "1'll go.", "1've seen it.", "1'm sure.", "1'll try.",
+                                "1 know.", "1 day left.", "Chapter 1."}),
+                         "en", &English());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[0], "I'm here.");
+  EXPECT_EQ(cues[5], "I know.");
+  EXPECT_EQ(cues[6], "1 day left.");
+  EXPECT_EQ(cues[7], "Chapter 1.");
 }
 
 // -- timing ---------------------------------------------------------------------------------
@@ -475,7 +625,7 @@ TEST(SubtitleCleanup, LeavesTimingAloneWhenAskedTo)
 
 TEST(CueCleaner, RepairsACueAndDropsOneThatWasAllAdvertising)
 {
-  CCueCleaner cleaner(Options(), nullptr);
+  CCueCleaner cleaner(Options(), nullptr, "", {});
   std::string text = "â™ª Hey ¶\r\nwww.addic7ed.com";
   EXPECT_TRUE(cleaner.Clean(text));
   EXPECT_EQ(text, "♪ Hey ♪");
@@ -485,14 +635,14 @@ TEST(CueCleaner, RepairsACueAndDropsOneThatWasAllAdvertising)
 
 TEST(CueCleaner, LeavesAnEmptyCueToKodi)
 {
-  CCueCleaner cleaner(Options(), nullptr);
+  CCueCleaner cleaner(Options(), nullptr, "", {});
   std::string text;
   EXPECT_TRUE(cleaner.Clean(text));
 }
 
 TEST(CueCleaner, LearnsThatHashIsTheNoteFromTheCuesSoFar)
 {
-  CCueCleaner cleaner(Options(), nullptr);
+  CCueCleaner cleaner(Options(), nullptr, "", {});
   std::string first = "# Love is in the air";
   EXPECT_TRUE(cleaner.Clean(first));
   EXPECT_EQ(first, "# Love is in the air");
@@ -503,20 +653,62 @@ TEST(CueCleaner, LearnsThatHashIsTheNoteFromTheCuesSoFar)
   EXPECT_EQ(third, "♪ Yeah yeah");
 }
 
-TEST(CueCleaner, CorrectsLettersOnceTheTrackReadsAsEnglish)
+TEST(CueCleaner, CorrectsLettersOnceTheTrackShowsItsMisreadings)
 {
-  CCueCleaner cleaner(Options(), &Words());
+  CCueCleaner cleaner(Options(), &English(), "en", {});
   std::string early = "l was there.";
   cleaner.Clean(early);
   EXPECT_EQ(early, "l was there.");
-  for (int i = 0; i < 20; ++i)
-  {
-    std::string line = "What do you want? It is not me, you know that.";
-    cleaner.Clean(line);
-  }
+  for (std::string text : MisreadsI())
+    cleaner.Clean(text);
   std::string later = "l was there.";
   cleaner.Clean(later);
   EXPECT_EQ(later, "I was there.");
+}
+
+TEST(CueCleaner, ReadsTheLanguageOfATrackThatNamesNone)
+{
+  int asked = 0;
+  CCueCleaner cleaner(Options(), &English(), "", [&](const std::string&) {
+    ++asked;
+    return Detection{"en", 95, true};
+  });
+  std::string text;
+  for (int i = 0; i < DETECT_CUES - 1; ++i)
+  {
+    text = MisreadsI()[static_cast<size_t>(i) % MisreadsI().size()];
+    cleaner.Clean(text);
+  }
+  EXPECT_EQ(asked, 0);
+  EXPECT_EQ(text, MisreadsI()[static_cast<size_t>(DETECT_CUES - 2) % MisreadsI().size()]);
+  text = "l was there.";
+  cleaner.Clean(text);
+  EXPECT_EQ(asked, 1);
+  EXPECT_EQ(text, "I was there.");
+  for (int i = 0; i < DETECT_CUES; ++i)
+  {
+    text = "l know.";
+    cleaner.Clean(text);
+  }
+  EXPECT_EQ(asked, 1);
+  EXPECT_EQ(text, "I know.");
+}
+
+TEST(CueCleaner, LeavesATrackSurelyInALanguageWithNoPack)
+{
+  int asked = 0;
+  CCueCleaner cleaner(Options(), &English(), "", [&](const std::string&) {
+    ++asked;
+    return Detection{"da", 99, true};
+  });
+  std::string text;
+  for (int i = 0; i < 3 * DETECT_CUES; ++i)
+  {
+    text = "l know.";
+    cleaner.Clean(text);
+  }
+  EXPECT_EQ(asked, 1);
+  EXPECT_EQ(text, "l know.");
 }
 
 TEST(CueCleaner, ReadsTheScreenPosition)

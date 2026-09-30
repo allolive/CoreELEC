@@ -22,9 +22,11 @@ The spec, agreed 2026-09-29:
    Python Unicode methods the C++ cannot reproduce), packs read from files, learning only from
    the subtitle's language, per-language facts from the profile, a cue-by-cue mode for tracks
    inside the video. Re-run on every corpus; every change against the current engine reviewed.
-2. CoreELEC packages: hunspell and cld2; Kodi finds them (optional dependencies).
+2. CoreELEC packages: hunspell and cld2; Kodi finds them (optional dependencies). Done
+   2026-09-30: both cross-compile static, Kodi's configure reports them enabled.
 3. The C++ engine in the patch, replacing the English-only rules; gtests; identical output to
-   the reference on every corpus.
+   the reference on every corpus. Done 2026-09-30: 899 files, whole and cue by cue (tagged and
+   detected), identical; 48 gtests, clean under ASan/UBSan.
 4. Kodi integration: the English pack built in, pack discovery, settings; full build; the box.
 5. Packs for fr, es, de, it, nl, pt as add-ons in kodi_addons, generated from LibreOffice's
    dictionaries at a pinned revision.

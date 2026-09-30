@@ -87,6 +87,14 @@ jobs:
         timeout-minutes: 10
         run: python3 CoreELEC-yacer/tests/prepare-tree.py --out "${RUNNER_TEMP}/kodi"
 
+      # The subtitle repair's OCR letters are Hunspell's dictionaries; the suite
+      # links the library the way Kodi does. 24.04 carries the 1.7.2 the build
+      # pins.
+      - name: Install Hunspell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libhunspell-dev
+
       # RelWithDebInfo without NDEBUG: several suites still assert(), and a
       # build type that compiles those out would run them as no-ops.
       - name: Configure

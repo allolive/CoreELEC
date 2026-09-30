@@ -68,9 +68,11 @@ set(YACER_SHIMS "${CMAKE_CURRENT_SOURCE_DIR}/shims")
 #   SOURCES       test sources, relative to the group's own directory
 #   KODI_SOURCES  production translation units to compile in, relative to the tree
 #   INCLUDES      extra include directories
+#   DEFINES       compile definitions
+#   LIBRARIES     libraries to link, such as a pkg-config imported target
 #   STANDARD      C++ standard, default 17
 function(yacer_add_test)
-  cmake_parse_arguments(TEST "" "NAME;STANDARD" "SOURCES;KODI_SOURCES;INCLUDES;DEFINES" ${ARGN})
+  cmake_parse_arguments(TEST "" "NAME;STANDARD" "SOURCES;KODI_SOURCES;INCLUDES;DEFINES;LIBRARIES" ${ARGN})
   if(NOT TEST_NAME OR NOT TEST_SOURCES)
     message(FATAL_ERROR "yacer_add_test needs NAME and SOURCES")
   endif()
@@ -123,7 +125,7 @@ function(yacer_add_test)
     target_include_directories(${target} SYSTEM PRIVATE "${KODI_SOURCE}/.yacer-include")
   endif()
 
-  target_link_libraries(${target} PRIVATE GTest::gmock_main)
+  target_link_libraries(${target} PRIVATE GTest::gmock_main ${TEST_LIBRARIES})
   # fmt is staged as headers, so anything that reaches Kodi's string helpers
   # uses its header-only form rather than linking a built library.
   # TARGET_POSIX is what the tree compiles with; without it Kodi's own

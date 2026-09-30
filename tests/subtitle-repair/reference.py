@@ -186,8 +186,8 @@ def fix_timing_of(cues: List[Cue]) -> List[Tuple[str, str, str]]:
 #   was UTF-8 once read as Windows-1252 ("â™ª", "Ã©") is put back;
 # - music notes: a note that came out of OCR as "¶", as a pair of "J"s, or as "#" in a file that
 #   writes its notes that way, or as an emoji the subtitle font has no glyph for, becomes "♪";
-# - OCR letters (English only): "wouId", "lnspector", "N0" become "would", "Inspector", "NO"
-#   when the file repeats that misreading - see ocr_engine.py;
+# - OCR letters, in any language a pack is installed for: "wouId", "lnspector", "N0" become
+#   "would", "Inspector", "NO" when the file repeats that misreading - see ocr_engine.py;
 # - timing: a line too short to be seen, or running into the next one - see timing.py;
 # - advertising: lines that sell something or credit the uploader are removed, and a cue left
 #   with nothing is dropped.
@@ -381,17 +381,23 @@ def _visible(line: str) -> str:
     return re.sub(r"<[^>]*>|\{[^}]*\}", "", line)
 
 
+def hash_evidence(line: str) -> Tuple[bool, bool]:
+    """Whether a line is wrapped in "#" ("#ah-ah-ah#"), or opens with it and a space."""
+    v = _visible(line).strip().lstrip("- ")
+    if len(v) >= 2 and v[0] == "#" and v[-1] == "#":
+        return True, False
+    return False, v.startswith("# ") and len(v) > 2
+
+
 def hash_is_note(lines: List[str]) -> bool:
     """Whether this file writes its music notes as "#". A hashtag ("#260", "#random") is text,
     so "#" is read as a note only in a file with lines wrapped in it ("#ah-ah-ah#") or opening
     with it and a space ("# Love is in the air") - a hashtag never has a space after it."""
     wrapped = opened = 0
     for line in lines:
-        v = _visible(line).strip().lstrip("- ")
-        if len(v) >= 2 and v[0] == "#" and v[-1] == "#":
-            wrapped += 1
-        elif v.startswith("# ") and len(v) > 2:
-            opened += 1
+        w, o = hash_evidence(line)
+        wrapped += w
+        opened += o
         if wrapped >= 2 or opened >= 3:
             return True
     return False
@@ -473,9 +479,6 @@ class Report:
                     or self.timing_fixes)
 
 
-DETECT_SHARE = 80       # percent of a file CLD2 must give one language to be believed
-
-
 def ocr_language(language: Optional[str], lines: List[str], packs: Dict[str, "ocr.Language"],
                  detect: Optional[Callable[[str], Tuple[str, int, bool]]]) -> Optional["ocr.Language"]:
     """The pack for a subtitle's language: the one its code names, or - with no code - the one
@@ -484,8 +487,7 @@ def ocr_language(language: Optional[str], lines: List[str], packs: Dict[str, "oc
         return ocr.pack_for(language, packs)
     if detect is None:
         return None
-    code, percent, reliable = detect("\n".join(ocr.visible(line_) for line_ in lines))
-    return ocr.pack_for(code, packs) if reliable and percent >= DETECT_SHARE else None
+    return ocr.detected(lines, packs, detect)[0]
 
 
 def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
@@ -546,3 +548,37 @@ def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
         report.timing_fixes = [f"{what}: {old} -> {new}"
                                for what, old, new in fix_timing_of([b.cue for b in kept if b.cue])]
     return serialize(kept, renumber=report.cues_dropped > 0), report
+
+
+class CueCleaner:
+    """The same repairs for cues that arrive one at a time, from a track inside the video: what
+    a whole file shows up front - whether it writes notes as "#", its misreadings, its language
+    when the track names none - is learnt as the cues come. Timing is the player's."""
+
+    def __init__(self, remove_ads: bool = True, packs: Optional[Dict[str, "ocr.Language"]] = None,
+                 language: Optional[str] = None, detect=None):
+        self.remove_ads = remove_ads
+        self.wrapped = self.opened = 0
+        self.stream = ocr.Stream(packs, language, detect) if packs else None
+
+    def clean(self, text: str) -> Optional[str]:
+        """The cue repaired, or None when nothing is left to show."""
+        if not text:
+            return text
+        original = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        for line in original:
+            w, o = hash_evidence(line)
+            self.wrapped += w
+            self.opened += o
+        hash_notes = self.wrapped >= 2 or self.opened >= 3
+        lines = []
+        for line in original:
+            fixed = repair_chars(line, True)
+            if self.remove_ads and _is_ad(fixed, False):
+                continue
+            lines.append(fix_notes(fixed, hash_notes))
+        if all(_ONLY_TAGS.match(line_) for line_ in lines):
+            return None
+        if self.stream is not None:
+            lines = self.stream.cue(lines)
+        return "\n".join(lines)

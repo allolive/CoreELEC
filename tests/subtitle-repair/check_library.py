@@ -45,18 +45,44 @@ HARNESS = r'''
 using namespace KODI::SUBTITLES::CLEANUP;
 static std::string Slurp(const std::string& p)
 { std::ifstream f(p, std::ios::binary); std::stringstream s; s << f.rdbuf(); return s.str(); }
+static std::vector<std::string> Fields(const std::string& row)
+{
+  std::vector<std::string> f(1);
+  for (const char c : row)
+    if (c == '\t') f.emplace_back(); else f.back().push_back(c);
+  return f;
+}
+// argv[1]: the packs; argv[2]: rows of "file<TAB>path<TAB>out" or "cues<TAB>path<TAB>out<TAB>language"
 int main(int, char** argv)
 {
-  CWordList words; words.Load(Slurp(argv[1]));
+  const Packs packs = LoadPacks(argv[1]);
   std::ifstream list(argv[2]); std::string row;
   while (std::getline(list, row))
   {
-    const size_t tab = row.find('\t');
-    const std::string path = row.substr(0, tab), out = row.substr(tab + 1);
-    std::string text; Report report;
-    const bool cleaned = CleanSubRip(Slurp(path), LanguageOfPath(path), Options(), &words, text, report);
-    std::ofstream(out, std::ios::binary) << (cleaned ? text : "") ;
-    std::cout << report.readAs << '\t' << report.Changed() << '\t' << LanguageOfPath(path) << '\n';
+    const std::vector<std::string> f = Fields(row);
+    if (f[0] == "file")
+    {
+      std::string text; Report report;
+      const bool cleaned = CleanSubRip(Slurp(f[1]), LanguageOfPath(f[1]), Options(), &packs,
+                                       DetectLanguage, text, report);
+      std::ofstream(f[2], std::ios::binary) << (cleaned ? text : "");
+      std::cout << report.readAs << '\t' << report.Changed() << '\t' << LanguageOfPath(f[1])
+                << '\t' << report.ocrFixes << '\t' << report.ocrLanguage << '\t'
+                << report.ocrPattern << '\n';
+      continue;
+    }
+    // cues, one after another, each ended by a NUL; a dropped cue comes out as "\x01"
+    CCueCleaner cleaner(Options(), &packs, f.size() > 3 ? f[3] : "", DetectLanguage);
+    const std::string all = Slurp(f[1]);
+    std::ofstream out(f[2], std::ios::binary);
+    for (size_t at = 0; at < all.size();)
+    {
+      const size_t end = all.find('\0', at);
+      std::string text = all.substr(at, end - at);
+      out << (cleaner.Clean(text) ? text : "\x01") << '\0';
+      at = end + 1;
+    }
+    std::cout << "cues\n";
   }
 }
 '''
@@ -227,25 +253,55 @@ def residue(out):
     return found
 
 
-def compare_with_cpp(kodi, words, rows, work):
-    """Every file through SubtitleCleanup.cpp; the paths whose output or verdict differs."""
+def compare_with_cpp(kodi, native, packs_dir, rows, work, streams, packs, detect):
+    """Every file through SubtitleCleanup.cpp, whole and (with streams) cue by cue as a track in
+    the video with and without a language; the paths where it differs from the reference."""
     source = work / "harness.cpp"
     source.write_text(HARNESS)
     binary = work / "harness"
-    subprocess.run(["g++", "-std=c++17", "-O2", f"-I{kodi}/xbmc", "-o", str(binary), str(source),
-                    f"{kodi}/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp"], check=True)
-    listing = work / "list.tsv"
-    listing.write_text("".join(f"{path}\t{work}/{i}.out\n" for i, (path, _, _) in enumerate(rows)))
-    verdicts = subprocess.run([str(binary), str(words), str(listing)], check=True,
-                              capture_output=True, text=True).stdout.splitlines()
+    subprocess.run(["g++", "-std=c++17", "-O2", "-DHAS_HUNSPELL", "-DHAS_CLD2",
+                    f"-I{kodi}/xbmc", f"-I{native}/include/hunspell", f"-I{native}/include/cld2",
+                    "-o", str(binary), str(source),
+                    f"{kodi}/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp",
+                    f"-L{native}/lib", f"-Wl,-rpath,{native}/lib", "-lhunspell-1.7", "-lcld2_full"],
+                   check=True)
+    listing, expected_cues = [], {}
+    for i, (path, _, _) in enumerate(rows):
+        listing.append(f"file\t{path}\t{work}/{i}.out\n")
+        if not streams:
+            continue
+        data = Path(path).read_bytes()
+        text, read_as = R.decode(data, R.language_of_path(path))
+        if read_as == "unsure":
+            continue
+        cues = ["\n".join(b.cue.lines) for b in R.parse(text) if b.cue]
+        (work / f"{i}.cues").write_bytes(b"".join(c.encode("utf-8") + b"\0" for c in cues))
+        for tag, language in (("tagged", R.language_of_path(path) or ""), ("untagged", "")):
+            cleaner = R.CueCleaner(True, packs, language or None, detect)
+            expected_cues[(i, tag)] = [cleaner.clean(c) for c in cues]
+            listing.append(f"cues\t{work}/{i}.cues\t{work}/{i}.{tag}\t{language}\n")
+    (work / "list.tsv").write_text("".join(listing))
+    verdicts = [v for v in subprocess.run([str(binary), str(packs_dir), str(work / "list.tsv")],
+                                          check=True, capture_output=True,
+                                          text=True).stdout.splitlines() if v != "cues"]
     differ = []
     for i, ((path, report, out), verdict) in enumerate(zip(rows, verdicts, strict=True)):
-        read_as, changed, lang = (verdict.split("\t") + [""])[:3]
+        read_as, changed, lang, fixes, ocr_lang, pattern = (verdict.split("\t") + [""] * 6)[:6]
         cpp = (work / f"{i}.out").read_bytes().decode("utf-8")
         expected = "" if report.read_as == "unsure" else out
         if (cpp != expected or read_as != report.read_as or changed != str(int(report.changed))
-                or lang != (R.language_of_path(path) or "")):
+                or lang != (R.language_of_path(path) or "") or fixes != str(report.ocr_fixes)
+                or ocr_lang != report.ocr_language or pattern != " ".join(report.ocr_pattern)):
             differ.append(path)
+            continue
+        for tag in ("tagged", "untagged"):
+            if (i, tag) not in expected_cues:
+                continue
+            got = (work / f"{i}.{tag}").read_bytes().split(b"\0")[:-1]
+            got = [None if g == b"\x01" else g.decode("utf-8") for g in got]
+            if got != expected_cues[(i, tag)]:
+                differ.append(f"{path} (cue by cue, {tag})")
+                break
     return differ
 
 
@@ -268,6 +324,10 @@ def main():
     ap.add_argument("--packs", required=True, type=Path, help="a directory of language packs")
     ap.add_argument("--cld2", help="the CLD2 shim library, to detect untagged files' language")
     ap.add_argument("--kodi", type=Path, help="a tree prepare-tree.py made, to compare the C++")
+    ap.add_argument("--native", type=Path, help="with --kodi: a prefix holding include/hunspell, "
+                    "include/cld2 and lib/ with libhunspell-1.7 and libcld2_full")
+    ap.add_argument("--streams", action="store_true",
+                    help="with --kodi: also compare the cue-by-cue repair of video tracks")
     ap.add_argument("--residue", default="residue.json", help="where to write what still looks odd")
     args = ap.parse_args()
     packs = E.load_packs(args.packs)
@@ -294,7 +354,8 @@ def main():
     differ = []
     if args.kodi:
         with tempfile.TemporaryDirectory() as work:
-            differ = compare_with_cpp(args.kodi, args.packs, rows, Path(work))
+            differ = compare_with_cpp(args.kodi, args.native, args.packs, rows, Path(work),
+                                      args.streams, packs, detect)
         for path in differ[:20]:
             print(f"C++ DIFFERS {path}")
     print(f"{len(paths)} files, {totals['changed']} repaired, {totals['left alone']} left alone, "
