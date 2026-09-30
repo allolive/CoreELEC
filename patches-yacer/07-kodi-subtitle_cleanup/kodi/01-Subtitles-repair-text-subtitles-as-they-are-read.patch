@@ -42,8 +42,10 @@ its cues come.
 The language is the one the file name or the track gives or, when neither
 does, CLD2's reading of the text when it is sure. A pack is a language's
 Hunspell dictionaries and a short profile; English, LibreOffice's en_US
-and en_GB, is installed with Kodi. Hunspell and CLD2 are optional
-dependencies: without them the other repairs still run.
+and en_GB, is installed with Kodi; another language is a library add-on
+carrying resources/subtitlerepair/<language>/, read when Kodi starts.
+Hunspell and CLD2 are optional dependencies: without them the other
+repairs still run.
 
 CDVDStreamInfo now carries the language the container declares for a
 stream, so the text codec knows a track's language. Nothing else reads
@@ -75,9 +77,9 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../DVDSubtitles/DVDSubtitleStream.cpp        |    43 +
  .../DVDSubtitles/SubtitleCleanup.cpp          |  2291 +
  .../DVDSubtitles/SubtitleCleanup.h            |   265 +
- .../DVDSubtitles/SubtitleCleanupSettings.cpp  |    45 +
+ .../DVDSubtitles/SubtitleCleanupSettings.cpp  |    68 +
  xbmc/settings/Settings.h                      |     4 +
- 23 files changed, 152185 insertions(+), 1 deletion(-)
+ 23 files changed, 152208 insertions(+), 1 deletion(-)
  create mode 100644 cmake/modules/FindCld2.cmake
  create mode 100644 cmake/modules/FindHunspell.cmake
  create mode 100644 system/subtitlecleanup/en/README_en_GB.txt
@@ -152476,10 +152478,10 @@ index 0000000000..1590e7ca72
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
 new file mode 100644
-index 0000000000..ee25faf0ed
+index 0000000000..4a1e54bd2e
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,68 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -152491,11 +152493,17 @@ index 0000000000..ee25faf0ed
 +#include "SubtitleCleanup.h"
 +
 +#include "ServiceBroker.h"
++#include "addons/AddonManager.h"
++#include "addons/IAddon.h"
++#include "addons/addoninfo/AddonType.h"
++#include "filesystem/Directory.h"
 +#include "filesystem/SpecialProtocol.h"
 +#include "settings/Settings.h"
 +#include "settings/SettingsComponent.h"
++#include "utils/URIUtils.h"
 +#include "utils/log.h"
 +
++#include <algorithm>
 +#include <mutex>
 +
 +namespace KODI::SUBTITLES::CLEANUP
@@ -152516,7 +152524,24 @@ index 0000000000..ee25faf0ed
 +  static Packs packs;
 +  static std::once_flag loaded;
 +  std::call_once(loaded, [] {
++    // English comes with Kodi; another language is an add-on carrying
++    // resources/subtitlerepair/<language>/, read when Kodi starts
 +    packs = LoadPacks(CSpecialProtocol::TranslatePath("special://xbmc/system/subtitlecleanup"));
++    ADDON::VECADDONS addons;
++    CServiceBroker::GetAddonMgr().GetAddons(addons, ADDON::AddonType::SCRIPT_MODULE);
++    for (const auto& addon : addons)
++    {
++      const std::string dir = CSpecialProtocol::TranslatePath(
++          URIUtils::AddFileToFolder(addon->Path(), "resources", "subtitlerepair"));
++      if (!XFILE::CDirectory::Exists(dir))
++        continue;
++      for (auto& pack : LoadPacks(dir))
++        if (std::none_of(packs.begin(), packs.end(),
++                         [&](const auto& p) { return p->Name() == pack->Name(); }))
++          packs.push_back(std::move(pack));
++    }
++    std::sort(packs.begin(), packs.end(),
++              [](const auto& a, const auto& b) { return a->Name() < b->Name(); });
 +    if (packs.empty())
 +      CLog::Log(LOGWARNING, "Subtitle repair: no language packs, misread letters stay");
 +    for (const auto& pack : packs)
