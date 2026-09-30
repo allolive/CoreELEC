@@ -70,11 +70,25 @@ def times(line):
             ((g[4] * 60 + g[5]) * 60 + g[6]) * 1000 + int(m.group(8).ljust(3, "0")[:3]))
 
 
+def _word_around(text, start, end):
+    """The word the characters [start, end) of a text sit in."""
+    while start > 0 and R.is_word_char(text[start - 1]):
+        start -= 1
+    while end < len(text) and R.is_word_char(text[end]):
+        end += 1
+    return text[start:end]
+
+
 def allowed_edit(old, new):
     for op, a1, a2, b1, b2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if op == "equal":
             continue
         src, dst = old[a1:a2], new[b1:b2]
+        # an OCR letter is only ever corrected in a plain English word: one changed inside a
+        # word with an accented or non-Latin letter ("là" to "Ià") is an over-correction
+        if set(src) | set(dst) <= {"I", "l", "0", "o", "O"} and not all(
+                ord(c) < 0x80 or c == "\u2019" for c in _word_around(old, a1, a2)):
+            return f"over-correction in {_word_around(old, a1, a2)!r}: {src!r} -> {dst!r}"
         if dst and set(dst) == {R.NOTE} and src and set(src) <= NOTE_SOURCES:
             continue
         if op == "replace" and len(src) == len(dst) and all(p in OCR_PAIRS for p in zip(src, dst, strict=True)):

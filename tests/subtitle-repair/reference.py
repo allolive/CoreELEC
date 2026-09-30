@@ -185,11 +185,47 @@ def fix_timing_of(cues: List[Cue]) -> List[Tuple[str, str, str]]:
 
 _STANDALONE = {"l": "I", "lf": "If", "l'm": "I'm", "l'll": "I'll", "l've": "I've", "l'd": "I'd"}
 _SUFFIXES = ("'s", "'re", "'ve", "'ll", "'d", "n't", "'m")
-_WORD = re.compile("[A-Za-z0-9]+(?:['\u2019][A-Za-z]+)*")
+_APOSTROPHES = "'\u2019"
 _MARKUP = re.compile(r"(<[^>]*>|\{[^}]*\})")
 _EN_STOP = set("the and you to of it is that what in me this we he for have not be your do are "
                "was on".split())
 _FR_STOP = set("le la les et vous tu de des est que qui pas je une un il ne dans pour ce".split())
+# around a lone "l" read as "I": what may come before it, and after it
+_BEFORE_LONE = "\"'([\u201c\u2018\u00bf\u00a1*.\u2026"
+_AFTER_LONE = ".,!?;:)]\"\u201d\u2019\u2026*"
+ENGLISH_SHARE = 0.6     # of a line's other words, for its letters to be corrected
+
+
+def is_word_char(c: str) -> bool:
+    """ASCII letters and digits, and any character beyond ASCII that is not white space,
+    punctuation or a symbol: an accented or non-Latin letter belongs to its word ("là",
+    "Hélène", "lähden"), so the "l" in it is not a word of its own."""
+    cp = ord(c)
+    if cp < 0x80:
+        return c.isalnum()
+    return not (c.isspace() or cp <= 0xBF or cp in (0xD7, 0xF7) or 0x2000 <= cp <= 0x2BFF
+                or 0x3000 <= cp <= 0x303F or 0xFE10 <= cp <= 0xFE6F or 0xFF00 <= cp <= 0xFF0F
+                or 0x1F000 <= cp <= 0x1FAFF or cp == 0xFEFF)
+
+
+def words_of(text: str) -> List[Tuple[int, int]]:
+    """The words of a text as (start, length): word characters, joined by an apostrophe
+    followed by more of them ("l'm", "couldn’t")."""
+    words = []
+    i = 0
+    while i < len(text):
+        if not is_word_char(text[i]):
+            i += 1
+            continue
+        start = i
+        while i < len(text) and is_word_char(text[i]):
+            i += 1
+        while i + 1 < len(text) and text[i] in _APOSTROPHES and is_word_char(text[i + 1]):
+            i += 1
+            while i < len(text) and is_word_char(text[i]):
+                i += 1
+        words.append((start, i - start))
+    return words
 
 
 def load_words(path: str) -> Set[str]:
@@ -198,10 +234,14 @@ def load_words(path: str) -> Set[str]:
 
 
 def looks_english(lines: Iterable[str]) -> bool:
-    words = [w.lower() for line in lines for w in _WORD.findall(line)][:4000]
+    words = [line[a:a + n].lower() for line in lines for a, n in words_of(line)][:4000]
     en = sum(w in _EN_STOP for w in words)
     fr = sum(w in _FR_STOP for w in words)
     return en > 50 and en > 2 * fr
+
+
+def _plain(word: str) -> bool:
+    return all(c.isascii() or c == "\u2019" for c in word)
 
 
 class Fixer:
@@ -215,6 +255,10 @@ class Fixer:
         return any(w.endswith(s) and w[:-len(s)] in self.words for s in _SUFFIXES)
 
     def fix_word(self, w: str) -> Optional[str]:
+        """The word as it was before an OCR misread it, or None. Only plain English letters:
+        a word with an accent is another language's."""
+        if not _plain(w):
+            return None
         straight = w.replace("\u2019", "'")
         if straight in _STANDALONE:
             return _STANDALONE[straight].replace("'", "\u2019") if straight != w else _STANDALONE[w]
@@ -223,7 +267,8 @@ class Fixer:
         candidates = []
         if re.search(r"[a-z]I", w) or (len(w) >= 3 and re.match(r"I[a-z]", w)):
             inner = re.sub(r"(?<=[a-z])I", "l", w)
-            candidates += [inner, "l" + inner[1:] if inner[0] == "I" else inner]
+            candidates += [inner, "l" + inner[1:] if inner[0] == "I" else inner,
+                           w.replace("I", "l")]
         if len(w) >= 3 and re.match(r"l[bcdfghjkmnpqrstvwxz]", w):
             candidates.append("I" + w[1:])
         letters = re.sub(r"[^A-Za-z]", "", w)
@@ -234,18 +279,68 @@ class Fixer:
                 candidates.append(w.replace("0", "O"))
         if re.fullmatch(r"[A-Z]{2,}l", w):
             candidates.append(w[:-1] + "I")
-        return next((c for c in candidates if c != w and self.known(c)), None)
+        # a capital after a small letter is no word's spelling ("alI" for "aII")
+        return next((c for c in candidates
+                     if c != w and not re.search(r"[a-z][A-Z]", c) and self.known(c)), None)
+
+    @staticmethod
+    def _alone(text: str, start: int, length: int) -> bool:
+        """A lone "l" stands for "I" only between spaces and sentence punctuation: joined by
+        a hyphen to a letter it is a stutter or a word spelt out ("l-l-low", "l-T-H"), inside
+        punctuation a damaged word ("Sa?l")."""
+        before = text[start - 1] if start else ""
+        if before == "-":
+            ahead = text[start - 2] if start >= 2 else ""
+            before_ok = ahead == "" or ahead.isspace()
+        else:
+            before_ok = before == "" or before.isspace() or before in _BEFORE_LONE
+        rest = text[start + length:]
+        after = rest[:1]
+        if after == "-":
+            # a dash that ends there ("l-- I'm sorry", "l- I hope") breaks off a word; one
+            # followed by a letter joins a stutter or a word spelt out
+            dashes = len(rest) - len(rest.lstrip("-"))
+            return before_ok and (dashes == len(rest) or rest[dashes].isspace())
+        return before_ok and (after == "" or after.isspace() or after in _AFTER_LONE)
+
+    def reads_as_english(self, line: str, skip: Set[int]) -> bool:
+        """Whether a line's other words are mostly English: a French line in an English
+        subtitle, or an English one in another, keeps its words as they are. Names are not
+        words of any language, so a word starting with a capital A-Z is not weighed, nor a
+        number; a line with nothing else ("lnside.", "Mr. Yadav? l'm Shahid Khan.") has
+        nothing against it."""
+        visible = "".join(p for i, p in enumerate(_MARKUP.split(line)) if not i % 2)
+        others = [visible[a:a + n] for k, (a, n) in enumerate(words_of(visible))
+                  if k not in skip and n >= 2 and not ("A" <= visible[a] <= "Z" or "0" <= visible[a] <= "9")]
+        return sum(self.known(w) for w in others) >= ENGLISH_SHARE * len(others)
 
     def fix_line(self, line: str, on_fix: Callable[[str, str], None]) -> str:
-        def word(m: "re.Match[str]") -> str:
-            fixed = self.fix_word(m.group(0))
-            if fixed is None:
-                return m.group(0)
-            on_fix(m.group(0), fixed)
-            return fixed
+        visible = "".join(p for i, p in enumerate(_MARKUP.split(line)) if not i % 2)
+        pending = set()
+        for k, (a, n) in enumerate(words_of(visible)):
+            word = visible[a:a + n]
+            if self.fix_word(word) is not None and (
+                    word.replace("\u2019", "'") not in _STANDALONE or self._alone(visible, a, n)):
+                pending.add(k)
+        if not pending or not self.reads_as_english(line, pending):
+            return line
+
+        def fix_text(text: str) -> str:
+            out, last = [], 0
+            for a, n in words_of(text):
+                word = text[a:a + n]
+                fixed = self.fix_word(word)
+                if fixed is not None and (word.replace("\u2019", "'") not in _STANDALONE
+                                          or self._alone(text, a, n)):
+                    out.append(text[last:a] + fixed)
+                    on_fix(word, fixed)
+                else:
+                    out.append(text[last:a + n])
+                last = a + n
+            return "".join(out) + text[last:]
 
         parts = _MARKUP.split(line)     # tags stay as they are; only the text between is read
-        return "".join(p if i % 2 else _WORD.sub(word, p) for i, p in enumerate(parts))
+        return "".join(p if i % 2 else fix_text(p) for i, p in enumerate(parts))
 
 
 # -- the repairs -----------------------------------------------------------------------------

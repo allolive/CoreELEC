@@ -389,6 +389,42 @@ TEST(SubtitleCleanup, CorrectsAnUnnamedFileThatReadsAsEnglish)
   EXPECT_EQ(Clean(Srt({french, "l was there."}), "", &Words()).report.ocrFixes, 0);
 }
 
+TEST(SubtitleCleanup, NeverTouchesAnLInsideAnAccentedWord)
+{
+  const std::string text =
+      Srt({"Oh là là!", "Miss Hélène, may I drink", "Noël Coward once said,",
+           "Vielleicht läuft es super,", "Bella Reál in a dead heat."});
+  const Result r = Clean(text, "en", &Words());
+  EXPECT_EQ(r.out, text);
+  EXPECT_EQ(r.report.ocrFixes, 0);
+}
+
+TEST(SubtitleCleanup, LeavesStuttersSpellingAndDamagedWordsAlone)
+{
+  const std::string text = Srt({"Ba-ba-ba-batter-r-ry l-l-l-low.", "and lithic... l-T-H...",
+                                "Sa?l! Sa?l!", "just north of the l-20 junction."});
+  const Result r = Clean(text, "en", &Words());
+  EXPECT_EQ(r.out, text);
+}
+
+TEST(SubtitleCleanup, LeavesAForeignLineInsideAnEnglishSubtitle)
+{
+  const std::string text = Srt({"la somma sapienza e 'l primo amore.", "Comment? Qui est là ? Je ne sais pas.",
+                                "- Can l have a macchiato,"});
+  const Result r = Clean(text, "en", &Words());
+  EXPECT_EQ(r.out, text);
+}
+
+TEST(SubtitleCleanup, StillCorrectsWhatAnOcrReallyMisread)
+{
+  const Result r = Clean(Srt({"l-- I'm sorry...", "lnside.", "l am Vidya Bagchi.",
+                              "'l love you.'", "of aII the things we got", "to teII Dewey."}),
+                         "en", &Words());
+  EXPECT_EQ(Cues(r.out), (std::vector<std::string>{"I-- I'm sorry...", "Inside.",
+                                                   "I am Vidya Bagchi.", "'I love you.'",
+                                                   "of all the things we got", "to tell Dewey."}));
+}
+
 // -- timing ---------------------------------------------------------------------------------
 
 TEST(SubtitleCleanup, TrustsTimingThatWorks)

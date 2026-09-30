@@ -40,11 +40,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../DVDCodecs/Overlay/DVDOverlayCodecText.h   |    11 +
  .../VideoPlayer/DVDSubtitles/CMakeLists.txt   |     3 +
  .../DVDSubtitles/DVDSubtitleStream.cpp        |    39 +
- .../DVDSubtitles/SubtitleCleanup.cpp          |  1678 +
+ .../DVDSubtitles/SubtitleCleanup.cpp          |  1781 +
  .../DVDSubtitles/SubtitleCleanup.h            |   133 +
  .../DVDSubtitles/SubtitleCleanupSettings.cpp  |    45 +
  xbmc/settings/Settings.h                      |     4 +
- 13 files changed, 94362 insertions(+), 1 deletion(-)
+ 13 files changed, 94465 insertions(+), 1 deletion(-)
  create mode 100644 system/subtitlecleanup/en_words.LICENSE.txt
  create mode 100644 system/subtitlecleanup/en_words.txt
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
@@ -92700,10 +92700,10 @@ index 3fbe53f17b..2ebeabf08e 100644
    }
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
 new file mode 100644
-index 0000000000..91eae7c912
+index 0000000000..9dd71bee8c
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
-@@ -0,0 +1,1678 @@
+@@ -0,0 +1,1781 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -93745,31 +93745,45 @@ index 0000000000..91eae7c912
 +
 +// -- OCR letters -----------------------------------------------------------------------------
 +
-+bool IsWordStart(wchar_t c)
++//! ASCII letters and digits, and any character beyond ASCII that is not white space,
++//! punctuation or a symbol: an accented or non-Latin letter belongs to its word ("là",
++//! "Hélène", "lähden"), so the "l" in it is not a word of its own.
++bool IsWordChar(wchar_t c)
 +{
-+  return IsAsciiLetter(c) || IsAsciiDigit(c);
++  const uint32_t cp = static_cast<uint32_t>(c);
++  if (cp < 0x80)
++    return IsAsciiLetter(c) || IsAsciiDigit(c);
++  return !(IsSpace(c) || cp <= 0xBF || cp == 0xD7 || cp == 0xF7 ||
++           (cp >= 0x2000 && cp <= 0x2BFF) || (cp >= 0x3000 && cp <= 0x303F) ||
++           (cp >= 0xFE10 && cp <= 0xFE6F) || (cp >= 0xFF00 && cp <= 0xFF0F) ||
++           (cp >= 0x1F000 && cp <= 0x1FAFF) || cp == 0xFEFF);
 +}
 +
-+//! The words of a text: [A-Za-z0-9]+(?:['’][A-Za-z]+)*, as (start, length).
++bool IsApostrophe(wchar_t c)
++{
++  return c == L'\'' || c == 0x2019;
++}
++
++//! The words of a text as (start, length): word characters, joined by an apostrophe followed
++//! by more of them ("l'm", "couldn’t").
 +std::vector<std::pair<size_t, size_t>> Words(const std::wstring& text)
 +{
 +  std::vector<std::pair<size_t, size_t>> words;
 +  size_t i = 0;
 +  while (i < text.size())
 +  {
-+    if (!IsWordStart(text[i]))
++    if (!IsWordChar(text[i]))
 +    {
 +      ++i;
 +      continue;
 +    }
 +    const size_t start = i;
-+    while (i < text.size() && IsWordStart(text[i]))
++    while (i < text.size() && IsWordChar(text[i]))
 +      ++i;
-+    while (i + 1 < text.size() && (text[i] == L'\'' || text[i] == 0x2019) &&
-+           IsAsciiLetter(text[i + 1]))
++    while (i + 1 < text.size() && IsApostrophe(text[i]) && IsWordChar(text[i + 1]))
 +    {
 +      ++i;
-+      while (i < text.size() && IsAsciiLetter(text[i]))
++      while (i < text.size() && IsWordChar(text[i]))
 +        ++i;
 +    }
 +    words.emplace_back(start, i - start);
@@ -93814,6 +93828,10 @@ index 0000000000..91eae7c912
 +  return en > 50 && en > 2 * fr;
 +}
 +
++// A line is read as English, for its letters to be corrected, when at least this share of its
++// other words are English.
++constexpr double ENGLISH_SHARE = 0.6;
++
 +class CFixer
 +{
 +public:
@@ -93836,23 +93854,14 @@ index 0000000000..91eae7c912
 +    return false;
 +  }
 +
++  //! The word as it was before an OCR misread it. Only plain English letters: a word with an
++  //! accent is another language's.
 +  std::optional<std::wstring> FixWord(const std::wstring& w) const
 +  {
-+    static const std::pair<const wchar_t*, const wchar_t*> standalone[] = {
-+        {L"l", L"I"},       {L"lf", L"If"},     {L"l'm", L"I'm"},
-+        {L"l'll", L"I'll"}, {L"l've", L"I've"}, {L"l'd", L"I'd"}};
-+    std::wstring straight = w;
-+    std::replace(straight.begin(), straight.end(), static_cast<wchar_t>(0x2019), L'\'');
-+    for (const auto& [from, to] : standalone)
-+    {
-+      if (straight == from)
-+      {
-+        std::wstring fixed(to);
-+        if (straight != w)
-+          std::replace(fixed.begin(), fixed.end(), L'\'', static_cast<wchar_t>(0x2019));
-+        return fixed;
-+      }
-+    }
++    if (!std::all_of(w.begin(), w.end(), [](wchar_t c) { return c < 0x80 || c == 0x2019; }))
++      return std::nullopt;
++    if (const std::optional<std::wstring> lone = Lone(w))
++      return lone;
 +    if (w.size() < 2 || Known(w))
 +      return std::nullopt;
 +
@@ -93868,6 +93877,9 @@ index 0000000000..91eae7c912
 +          inner[i] = L'l';
 +      candidates.push_back(inner);
 +      candidates.push_back(inner[0] == L'I' ? L"l" + inner.substr(1) : inner);
++      std::wstring all = w;
++      std::replace(all.begin(), all.end(), L'I', L'l');
++      candidates.push_back(all);
 +    }
 +    if (w.size() >= 3 && w[0] == L'l' &&
 +        std::wstring(L"bcdfghjkmnpqrstvwxz").find(w[1]) != std::wstring::npos)
@@ -93902,13 +93914,32 @@ index 0000000000..91eae7c912
 +      candidates.push_back(w.substr(0, w.size() - 1) + L"I");
 +
 +    for (const std::wstring& c : candidates)
-+      if (c != w && Known(c))
++    {
++      // a capital after a small letter is no word's spelling ("alI" for "aII")
++      bool mixed = false;
++      for (size_t i = 0; i + 1 < c.size(); ++i)
++        mixed = mixed || (IsAsciiLower(c[i]) && IsAsciiUpper(c[i + 1]));
++      if (c != w && !mixed && Known(c))
 +        return c;
++    }
 +    return std::nullopt;
 +  }
 +
 +  std::wstring FixLine(const std::wstring& line, Report* report) const
 +  {
++    const std::wstring visible = Visible(line);
++    const std::vector<std::pair<size_t, size_t>> words = Words(visible);
++    std::vector<bool> pending(words.size(), false);
++    bool any = false;
++    for (size_t k = 0; k < words.size(); ++k)
++    {
++      const auto [at, len] = words[k];
++      pending[k] = Fixable(visible, at, len);
++      any = any || pending[k];
++    }
++    if (!any || !ReadsAsEnglish(visible, words, pending))
++      return line;
++
 +    return MapText(line, [&](const std::wstring& text) {
 +      std::wstring out;
 +      size_t last = 0;
@@ -93916,7 +93947,7 @@ index 0000000000..91eae7c912
 +      {
 +        out += text.substr(last, at - last);
 +        const std::wstring word = text.substr(at, len);
-+        const std::optional<std::wstring> fixed = FixWord(word);
++        const std::optional<std::wstring> fixed = Fixable(text, at, len) ? FixWord(word) : std::nullopt;
 +        if (fixed)
 +        {
 +          if (report)
@@ -93935,6 +93966,78 @@ index 0000000000..91eae7c912
 +  }
 +
 +private:
++  //! "l", "lf", "l'm"...: what an OCR makes of "I", "If", "I'm".
++  static std::optional<std::wstring> Lone(const std::wstring& w)
++  {
++    static const std::pair<const wchar_t*, const wchar_t*> lone[] = {
++        {L"l", L"I"},       {L"lf", L"If"},     {L"l'm", L"I'm"},
++        {L"l'll", L"I'll"}, {L"l've", L"I've"}, {L"l'd", L"I'd"}};
++    std::wstring straight = w;
++    std::replace(straight.begin(), straight.end(), static_cast<wchar_t>(0x2019), L'\'');
++    for (const auto& [from, to] : lone)
++    {
++      if (straight == from)
++      {
++        std::wstring fixed(to);
++        if (straight != w)
++          std::replace(fixed.begin(), fixed.end(), L'\'', static_cast<wchar_t>(0x2019));
++        return fixed;
++      }
++    }
++    return std::nullopt;
++  }
++
++  //! A lone "l" stands for "I" only between spaces and sentence punctuation: joined by a hyphen
++  //! to a letter it is a stutter or a word spelt out ("l-l-low", "l-T-H"), inside punctuation a
++  //! damaged word ("Sa?l"). A dash that ends there ("l-- I'm sorry") breaks off a word.
++  static bool Alone(const std::wstring& text, size_t start, size_t length)
++  {
++    static const std::wstring beforeLone = L"\"'([\u201c\u2018\u00bf\u00a1*.\u2026";
++    static const std::wstring afterLone = L".,!?;:)]\"\u201d\u2019\u2026*";
++    bool beforeOk;
++    if (start && text[start - 1] == L'-')
++      beforeOk = start < 2 || IsSpace(text[start - 2]);
++    else
++      beforeOk = !start || IsSpace(text[start - 1]) ||
++                 beforeLone.find(text[start - 1]) != std::wstring::npos;
++    const size_t end = start + length;
++    if (end < text.size() && text[end] == L'-')
++    {
++      size_t after = end;
++      while (after < text.size() && text[after] == L'-')
++        ++after;
++      return beforeOk && (after == text.size() || IsSpace(text[after]));
++    }
++    return beforeOk && (end == text.size() || IsSpace(text[end]) ||
++                        afterLone.find(text[end]) != std::wstring::npos);
++  }
++
++  bool Fixable(const std::wstring& text, size_t at, size_t len) const
++  {
++    const std::wstring word = text.substr(at, len);
++    return FixWord(word) && (!Lone(word) || Alone(text, at, len));
++  }
++
++  //! Whether a line's other words are mostly English: a French line in an English subtitle, or
++  //! an English one in another, keeps its words as they are. Names are not words of any
++  //! language, so a word starting with a capital A-Z is not weighed, nor a number.
++  bool ReadsAsEnglish(const std::wstring& visible,
++                      const std::vector<std::pair<size_t, size_t>>& words,
++                      const std::vector<bool>& skip) const
++  {
++    int others = 0;
++    int known = 0;
++    for (size_t k = 0; k < words.size(); ++k)
++    {
++      const auto [at, len] = words[k];
++      if (skip[k] || len < 2 || IsAsciiUpper(visible[at]) || IsAsciiDigit(visible[at]))
++        continue;
++      ++others;
++      known += Known(visible.substr(at, len));
++    }
++    return known >= ENGLISH_SHARE * others;
++  }
++
 +  const CWordList& m_words;
 +};
 +
