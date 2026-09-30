@@ -22,11 +22,11 @@ their own settings.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
  .../resources/strings.po                      |  18 +-
- system/settings/settings.xml                  | 186 +++++++++---------
- 2 files changed, 113 insertions(+), 91 deletions(-)
+ system/settings/settings.xml                  | 160 +++++++++---------
+ 2 files changed, 100 insertions(+), 78 deletions(-)
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 348ca22c4c..8381b0164f 100644
+index 6f82e6a78a..3cf4d4f7a6 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -25441,7 +25441,23 @@ msgctxt "#39225"
@@ -55,10 +55,10 @@ index 348ca22c4c..8381b0164f 100644
  #. Value of setting "Player -> Subtitles -> Placement": to the edges of the display
  #: system/settings/settings.xml
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 3138257e9f..cc5ad39e74 100755
+index fcd4546bf7..e2b2b60b30 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -891,77 +891,6 @@
+@@ -891,64 +891,6 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -98,15 +98,7 @@ index 3138257e9f..cc5ad39e74 100755
 -          </dependencies>
 -          <control type="toggle" />
 -        </setting>
--        <setting id="subtitles.repairocr" type="boolean" parent="subtitles.repair" label="39234" help="39235">
--          <level>1</level>
--          <default>true</default>
--          <dependencies>
--            <dependency type="enable" setting="subtitles.repair">true</dependency>
--          </dependencies>
--          <control type="toggle" />
--        </setting>
--        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repairocr" label="39238" help="39239">
+-        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="39234" help="39235">
 -          <level>1</level>
 -          <default></default>
 -          <constraints>
@@ -114,12 +106,7 @@ index 3138257e9f..cc5ad39e74 100755
 -            <delimiter>,</delimiter>
 -          </constraints>
 -          <dependencies>
--            <dependency type="enable">
--              <and>
--                <condition setting="subtitles.repair">true</condition>
--                <condition setting="subtitles.repairocr">true</condition>
--              </and>
--            </dependency>
+-            <dependency type="enable" setting="subtitles.repair">true</dependency>
 -          </dependencies>
 -          <control type="list" format="string">
 -            <multiselect>true</multiselect>
@@ -136,7 +123,7 @@ index 3138257e9f..cc5ad39e74 100755
          <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
-@@ -4168,24 +4097,6 @@
+@@ -4155,24 +4097,6 @@
              <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
            </dependencies>
          </setting>
@@ -161,7 +148,7 @@ index 3138257e9f..cc5ad39e74 100755
          <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
            <requirement>HAVE_AMCODEC</requirement>
            <default>0</default>
-@@ -4208,6 +4119,81 @@
+@@ -4195,6 +4119,68 @@
            <control type="toggle" />
          </setting>
        </group>
@@ -204,15 +191,7 @@ index 3138257e9f..cc5ad39e74 100755
 +          </dependencies>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="subtitles.repairocr" type="boolean" parent="subtitles.repair" label="39234" help="39235">
-+          <level>1</level>
-+          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repairocr" label="39238" help="39239">
++        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="39234" help="39235">
 +          <level>1</level>
 +          <default></default>
 +          <constraints>
@@ -220,12 +199,7 @@ index 3138257e9f..cc5ad39e74 100755
 +            <delimiter>,</delimiter>
 +          </constraints>
 +          <dependencies>
-+            <dependency type="enable">
-+              <and>
-+                <condition setting="subtitles.repair">true</condition>
-+                <condition setting="subtitles.repairocr">true</condition>
-+              </and>
-+            </dependency>
++            <dependency type="enable" setting="subtitles.repair">true</dependency>
 +          </dependencies>
 +          <control type="list" format="string">
 +            <multiselect>true</multiselect>
@@ -243,7 +217,7 @@ index 3138257e9f..cc5ad39e74 100755
        <group id="2" label="14321">
          <setting id="coreelec.amlogic.audiolead" type="integer" label="14316" help="14317">
            <requirement>HAVE_AMCODEC</requirement>
-@@ -4237,7 +4223,7 @@
+@@ -4224,7 +4210,7 @@
              <delimiter>,</delimiter>
              <minimumitems>0</minimumitems>
            </constraints>
@@ -252,7 +226,7 @@ index 3138257e9f..cc5ad39e74 100755
            <dependencies>
              <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
            </dependencies>
-@@ -4246,6 +4232,26 @@
+@@ -4233,6 +4219,26 @@
            </control>
          </setting>
        </group>

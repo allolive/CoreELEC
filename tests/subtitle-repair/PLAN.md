@@ -31,7 +31,7 @@ The spec, agreed 2026-09-29:
 4. Kodi integration: pack discovery, settings; full build; the box. Built 2026-09-30: packs
    from the enabled add-ons whose id starts script.module.subtitlerepair., read again when
    they change; System > Yacer > Subtitles > Languages lists what the repositories offer and
-   installs/uninstalls to match; the track's language through CDVDStreamInfo. On the box
+   installs/uninstalls to match - it is "Correct misread letters" itself, empty = off; the track's language through CDVDStreamInfo. On the box
    (first build, English then built in): Phillip Morris 384 fixes, ~0.15 s repair, <=0.3 s
    pack load.
 5. Packs for en, fr, es, de, it, nl, pt as add-ons in kodi_addons, generated from LibreOffice's
