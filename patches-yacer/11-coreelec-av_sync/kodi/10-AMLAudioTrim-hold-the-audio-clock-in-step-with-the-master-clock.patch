@@ -64,7 +64,7 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4110,6 +4110,25 @@
+@@ -4156,6 +4156,25 @@
            <control type="toggle" />
          </setting>
        </group>
@@ -653,7 +653,7 @@ new file mode 100644
 +    return;
 +
 +  // Looked for on the dither tick rather than every frame: this is a stat of a
-+  // file on the app thread, and a quarter second is soon enough to notice.
++  // file on the presenting thread, and a quarter second is soon enough to notice.
 +  if (now - m_lastDither >= DITHER && !Armed())
 +  {
 +    if (m_everWrote && m_applied != 0)
@@ -968,7 +968,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  #include "AMLLatency.h"
  #include "DynamicDll.h"
  
-@@ -51,6 +52,11 @@
+@@ -54,6 +55,11 @@
  
  namespace
  {
@@ -980,7 +980,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  std::mutex pollSyncMutex;
  
-@@ -2586,6 +2592,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2728,6 +2734,7 @@ void CAMLCodec::CloseDecoder()
    m_dll->codec_close(&am_private->vcodec);
    dumpfile_close(am_private);
    m_opened = false;
@@ -988,7 +988,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
    // After m_opened, so a frame still queued in the renderer cannot tick this
    // back to life: the measured path belongs to this decoder, and whatever plays
-@@ -2656,6 +2663,11 @@ void CAMLCodec::Reset()
+@@ -2798,6 +2805,11 @@ void CAMLCodec::Reset()
    CAMLLatency::GetInstance().Restart();
    m_genlock.Restart();
  
@@ -1000,7 +1000,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2906,12 +2918,114 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3223,12 +3235,114 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
        clock->GetSpeedAdjust() != 0.0)
    {
      CAMLLatency::GetInstance().NoteClockDisturbed();
@@ -1117,7 +1117,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  }
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
-@@ -3098,6 +3212,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3415,6 +3529,7 @@ void CAMLCodec::SetSpeed(int speed)
    // skipped the pause.
    CAMLLatency::GetInstance().NoteClockDisturbed();
    m_genlock.Restart();
@@ -1128,10 +1128,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -109,6 +109,11 @@ private:
+@@ -144,6 +144,11 @@ private:
  
    DllLibAmCodec   *m_dll;
-   bool             m_opened;
+   std::atomic<bool> m_opened;
 +  //! Whether the audio was a bitstream last frame, so the trim is given back
 +  //! once on the way out rather than on every frame after it.
 +  bool             m_trimWasPassthrough{false};
@@ -1365,7 +1365,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlay
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -766,6 +766,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -786,6 +786,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
    // A saturated reading is withheld as well as refused: it is the clamp, not a
    // measurement, and a reader that acted on it would be acting on the same
    // figure the correction above declines to use.
@@ -1376,7 +1376,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -472,6 +472,7 @@ public:
+@@ -477,6 +477,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";

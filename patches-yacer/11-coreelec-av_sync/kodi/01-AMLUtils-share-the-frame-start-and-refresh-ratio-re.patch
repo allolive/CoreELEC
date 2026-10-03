@@ -67,10 +67,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -34,6 +34,7 @@ public:
- 
-   // Player functions
-   virtual bool IsGuiLayer() override { return false; };
+@@ -45,6 +45,7 @@ public:
+   virtual bool WaitVsync() override;
+   virtual void PresentFrame(int index) override;
+   virtual void WakeVsyncPresent() override;
 +  bool TakeClockSync(double refreshesPerFrame) override;
  
    // Feature support
@@ -78,7 +78,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/x
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -1385,6 +1385,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1522,6 +1522,7 @@ void CRenderManager::CheckEnableClockSync()
  {
    // refresh rate can be a multiple of video fps
    double diff = 1.0;
@@ -86,7 +86,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/core
  
    if (m_fps != 0)
    {
-@@ -1397,6 +1398,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1534,6 +1535,7 @@ void CRenderManager::CheckEnableClockSync()
      }
  
      diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
@@ -94,7 +94,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/core
      if (diff < 1.0)
        diff = 1.0 / diff;
  
-@@ -1404,7 +1406,10 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1541,7 +1543,10 @@ void CRenderManager::CheckEnableClockSync()
      diff = std::abs(std::round(diff) - diff);
    }
  
@@ -344,7 +344,7 @@ diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDis
    void aml_init_drmDevice();
    void aml_drmDevice_vsync();
    std::string aml_get_drmDevice_mode();
-@@ -152,6 +153,7 @@ public:
+@@ -153,6 +154,7 @@ public:
  
    void aml_refresh_display_caps();
    int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }

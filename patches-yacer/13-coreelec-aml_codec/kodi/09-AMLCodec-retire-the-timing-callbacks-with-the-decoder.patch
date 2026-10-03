@@ -4,18 +4,18 @@ Date: Wed, 16 Sep 2026 13:19:02 -0400
 Subject: [PATCH] AMLCodec: retire the timing callbacks with the decoder
 
 The renderer ticks the latency and genlock loops from a queued frame, which
-holds the codec past CloseDecoder. m_opened was a plain bool read on that
-thread, so a tick could pass the check and publish after Forget had run,
-carrying one decoder's measurements into the next. Make it atomic and take a
-mutex around the retirement and both callbacks.
+holds the codec past CloseDecoder. A tick could pass the m_opened check and
+publish after Forget had run, carrying one decoder's measurements into the
+next. Take a mutex around the retirement and both callbacks, after the poll
+device is released so the presenter's step never waits on it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index d7681b0..e5677ea 100644
+index 47eec82cca..0b7932833f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2509,7 +2509,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2654,7 +2654,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
  
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
@@ -30,7 +30,9 @@ index d7681b0..e5677ea 100644
  
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
-@@ -2643,9 +2649,12 @@ void CAMLCodec::CloseDecoder()
+@@ -2790,13 +2796,16 @@ void CAMLCodec::CloseDecoder()
+     m_dll->codec_close(&am_private->vcodec);
+   }
    dumpfile_close(am_private);
 -  m_opened = false;
    m_trimWasPassthrough = false;
@@ -48,7 +50,9 @@ index d7681b0..e5677ea 100644
 +    CAMLLatency::GetInstance().Forget();
 +  }
  
-@@ -2975,9 +2984,13 @@ void CAMLCodec::SetPollDevice(int dev)
+   am_packet_release(&am_private->am_pkt);
+   am_private->extradata = {};
+@@ -3310,9 +3319,13 @@ bool CAMLCodec::WaitPresentStep(uint64_t& seen, int fenceFd)
  
  void CAMLCodec::LatencyTick(uint64_t omxPts)
  {
@@ -64,7 +68,7 @@ index d7681b0..e5677ea 100644
      return;
  
    // Trick play and a slewed clock have no steady relationship to measure
-@@ -3100,8 +3113,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3435,8 +3448,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
  {
@@ -80,19 +84,10 @@ index d7681b0..e5677ea 100644
  
    // Trick play and live streams have the player driving the clock, so there is
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index b4a87ed..ef56ec3 100644
+index 6993f098fd..ad377b0d4a 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -108,7 +108,7 @@ private:
-   std::string   GetHDRStaticMetadata(bool dv_enable);
- 
-   DllLibAmCodec   *m_dll;
--  bool             m_opened;
-+  std::atomic<bool> m_opened;
-   //! Whether the audio was a bitstream last frame, so the trim is given back
-   //! once on the way out rather than on every frame after it.
-   bool             m_trimWasPassthrough{false};
-@@ -141,6 +141,8 @@ private:
+@@ -179,6 +179,8 @@ private:
  
    PosixFilePtr     m_amlVideoFile;
    std::mutex       m_amlVideoFileMutex;

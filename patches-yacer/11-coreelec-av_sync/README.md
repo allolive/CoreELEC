@@ -22,9 +22,11 @@ scheduled target frame. It also resets the extra CoreELEC audio-acquisition
 observations at preparation boundaries. No separate addon is required.
 Speaker and panel alignment still need matched hardware tests.
 
-Holding the picture across a passthrough resume needs the render loop to keep
-turning, so a frame the GUI skipped is presented rather than drawn and thrown
-away; without that the player waits for a buffer that never comes back.
+Frames reach the decoder from CoreELEC's vsync presenter, which keeps turning
+whatever the GUI does, so the picture hold needs nothing from the render loop.
+The timing patches observe each refresh in the presenter's vsync wait and act
+where it hands a frame over; the render loop does both only when the presenter
+is not running.
 
 Patch 22 keeps the Dolby Vision FEL exclusion in the CoreELEC adapter series.
 The condition is unchanged: decoder reset cannot retain FEL composition while

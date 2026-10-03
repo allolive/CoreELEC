@@ -9,6 +9,10 @@ GetDisplayLatency() falls back to (NoOfBuffers() + 1) / fps, which at 23.976 is
 It is arithmetic on a vestigial number, and the renderer schedules every frame
 against it. Report what the pipeline actually measures.
 
+The refresh is observed on the thread that presents frames, once per vsync it
+wakes on (or once per render pass where the vsync presenter is not running),
+and the measurement is taken where the frame is handed to the decoder.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 ---
@@ -24,7 +28,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  #include "DynamicDll.h"
  
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
-@@ -2452,6 +2454,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2594,6 +2596,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
    m_opened = true;
@@ -32,7 +36,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
    SetSpeed(m_speed);
-@@ -2584,6 +2587,11 @@ void CAMLCodec::CloseDecoder()
+@@ -2726,6 +2729,11 @@ void CAMLCodec::CloseDecoder()
    dumpfile_close(am_private);
    m_opened = false;
  
@@ -44,7 +48,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
    free(am_private->hdr_buf.data);
-@@ -2645,6 +2653,8 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2787,6 +2795,8 @@ void CAMLCodec::CloseAmlVideo()
  
  void CAMLCodec::Reset()
  {
@@ -53,8 +57,8 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -2880,6 +2890,28 @@ void CAMLCodec::SetPollDevice(int dev)
-   m_pollDevice = dev;
+@@ -3197,6 +3207,28 @@ bool CAMLCodec::WaitPresentStep(uint64_t& seen, int fenceFd)
+   return true;
  }
  
 +void CAMLCodec::LatencyTick(uint64_t omxPts)
@@ -82,7 +86,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
    int ret;
-@@ -3031,6 +3063,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3348,6 +3380,7 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -93,15 +97,15 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -86,6 +86,7 @@ public:
-   static int    OMXDurationToNs(int duration);
+@@ -88,6 +88,7 @@ public:
    int           GetAmlDuration() const;
    int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+   bool          IsOpen() const { return m_opened; }
 +  void          LatencyTick(uint64_t omxPts);
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
-@@ -109,7 +110,7 @@ private:
+@@ -144,7 +145,7 @@ private:
    bool             m_drain = false;
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
@@ -1069,7 +1073,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -724,8 +724,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+@@ -733,8 +733,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
    const double latencyTweak = static_cast<double>(
        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
            refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
@@ -1093,36 +1097,74 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -239,6 +240,19 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
- {
-   ManageRenderArea();
- 
-+  // This is the thread that schedules frames, and the one PrepareNextRender()
-+  // runs on, so it reads the vblank phase live rather than from the cache.
-+  auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
-+  winSystem->RegisterRenderThread();
-+
-+  // Every pass, not every frame: the refresh the driver puts a frame up on is
-+  // only resolvable to the rate this is polled at. It must also stay ahead of
-+  // the ReleaseFrame() below - the measurement arms with the refresh this saw,
-+  // and is only safe while that cannot be later than the hand-over. Reversed,
-+  // the count reads one low, and the lowest-wins rule in CAMLLatency has no way
-+  // back from a low reading.
-+  CAMLLatency::GetInstance().Poll();
-+
-   CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
-   if(amli && amli->m_amlCodec)
-   {
-@@ -247,6 +261,9 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
-     {
+@@ -251,6 +252,9 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE);
-       amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
+       if (setVideoRect)
+         amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
 +      // Refreshes what the decode thread and the debug overlay read.
-+      winSystem->SampleFrameLatency();
++      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->SampleFrameLatency();
 +      amli->m_amlCodec->LatencyTick(pts);
-       amli->m_amlCodec = nullptr; //Mark frame as processed
+       std::shared_ptr<CAMLCodec> codec = std::move(amli->m_amlCodec); //Mark frame as processed
        m_prevVPts = pts;
-     }
+       return codec;
+@@ -275,10 +279,26 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+     return;
+   }
+ 
++  ObserveRefresh();
+   QueueFrame(index, true);
+   CAMLCodec::PollFrame();
+ }
+ 
++void CRendererAML::ObserveRefresh()
++{
++  // On the thread that schedules frames, the one PrepareNextRender() runs on,
++  // so it reads the vblank phase live rather than from the cache.
++  static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->RegisterRenderThread();
++
++  // Every refresh, not every frame: the refresh the driver puts a frame up on is
++  // only resolvable to the rate this is polled at. It must also stay ahead of
++  // the hand-over - the measurement arms with the refresh this saw, and is only
++  // safe while that cannot be later than the hand-over. Reversed, the count
++  // reads one low, and the lowest-wins rule in CAMLLatency has no way back from
++  // a low reading.
++  CAMLLatency::GetInstance().Poll();
++}
++
+ bool CRendererAML::StartVsyncPresent()
+ {
+   m_lastWakeVsync = false;
+@@ -305,15 +325,19 @@ bool CRendererAML::WaitVsync()
+       case CAMLCodec::VsyncWake::VSYNC:
+       case CAMLCodec::VsyncWake::TIMEOUT:
+         m_lastWakeVsync = wake == CAMLCodec::VsyncWake::VSYNC;
++        ObserveRefresh();
+         return true;
+       case CAMLCodec::VsyncWake::STEP:
+         // a requested step leaves the GUI pacing as it is
++        ObserveRefresh();
+         return true;
+       case CAMLCodec::VsyncWake::HANDOVER:
+       case CAMLCodec::VsyncWake::NO_DEVICE:
+         // no frame goes out and the first vsync after the handover picks again; only a
+         // real vsync keeps the GUI paced
+         m_lastWakeVsync = wake == CAMLCodec::VsyncWake::HANDOVER;
++        if (m_lastWakeVsync)
++          ObserveRefresh();
+         CAMLCodec::PublishPresentStep(m_lastWakeVsync);
+         break;
+       case CAMLCodec::VsyncWake::INTERRUPTED:
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+@@ -54,6 +54,7 @@ public:
+ private:
+   void Reset();
+   std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect);
++  void ObserveRefresh();
+ 
+   static const int m_numRenderBuffers = NUM_BUFFERS;
+ 
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp

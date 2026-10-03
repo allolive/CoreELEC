@@ -11,10 +11,10 @@ running.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 7140ece..64cb2cf 100644
+index 1ec1bab18f..9fca904cdc 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2910,7 +2910,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3227,7 +3227,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    }
  
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
@@ -25,7 +25,7 @@ index 7140ece..64cb2cf 100644
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 00905bb..4c24519 100644
+index 1942583eeb..3ed2309b4e 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -35,6 +35,12 @@ constexpr uint64_t MAX_VBLANKS = 4;
@@ -103,7 +103,7 @@ index 00905bb..4c24519 100644
    // Decided on every presented frame. Settled once per report instead, it would
    // spend the first minute of every file false - so the check would never run,
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index aad2d1d..2401f6d 100644
+index aad2d1d5c2..c950e2d0c8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -83,7 +83,13 @@ public:
@@ -126,7 +126,7 @@ index aad2d1d..2401f6d 100644
    uint64_t m_candidate{0};  //!< a lower one, not yet believed
    unsigned int m_agreed{0}; //!< how many times running it has turned up
 +  bool m_settled{false};    //!< the answer is fixed until the next seek
-+  bool m_clockSync{false};  //!< the regime, for the settled line. App thread only.
++  bool m_clockSync{false};  //!< the regime, for the settled line. Presenting thread only.
  
    //! \brief What the last poll read, so the report does not read it again.
    bool m_pollValid{false};
