@@ -1,0 +1,192 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:07:25 -0400
+Subject: [PATCH] video_sink: report the frame-alternative eye of every vsync
+
+With a frame-alternative 3D output mode (MODE_3D_OUT_FA_*) the video layer
+shows the two halves of each frame on alternate vsyncs, chosen by
+toggle_3d_fa_frame in the vsync interrupt. The GUI and shutter glasses
+driven from outside have to switch with it, and nothing reported which eye
+a vsync carries.
+
+Record the eye with the av_probe interrupt-entry stamp, under one
+seqcount, and:
+- add /sys/class/video/fa_sync: a read blocks until the next such vsync
+  and returns "<vsync> <ns> <L|R|->", or "off" after 100 ms without one;
+- export amvideo_get_fa_eye() for the GUI (0 left, 1 right, 2 blank, with
+  the vsync count as a generation);
+- add fa_swap_eyes (parameter): the first half is the right eye, for
+  right-eye-first sources and the viewer's swap.
+The A frame selects vd1's second picture (psel, as VPP_PIC1_FIRST does), so
+it is reported as the right eye; measured with a left-white right-black
+source and the post-processor CRC. The waiter is woken from the vsync
+interrupt only when someone waits; the FIQ build records but does not wake.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
+index 431e6ec..5cc8f5d 100644
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -5371,6 +5371,86 @@ static void av_probe_stamp(void)
+ 	raw_write_seqcount_end(&av_probe_seq);
+ }
+ 
++#ifdef TV_3D_FUNCTION_OPEN
++/*
++ * Frame-sequential 3D: the GUI and an external shutter-glasses emitter have to
++ * switch eye with the picture, and only this interrupt knows which half the
++ * toggle just picked. Publish it with the vsync stamp; the vsync count doubles
++ * as the generation readers wait on.
++ */
++static DECLARE_WAIT_QUEUE_HEAD(fa_sync_wq);
++static seqcount_t fa_sync_seq = SEQCNT_ZERO(fa_sync_seq);
++static u32 fa_sync_vsync;
++static u64 fa_sync_ns;
++static int fa_sync_eye;
++/* the source carries the right eye first (or the viewer asked to swap) */
++static bool fa_swap_eyes;
++module_param(fa_swap_eyes, bool, 0664);
++MODULE_PARM_DESC(fa_swap_eyes, "frame-alternative 3D: the first half is the right eye");
++
++/* 0 left view, 1 right view, 2 blank; the A frame shows vd1's second picture */
++static int fa_eye_view(int toggle)
++{
++	if (toggle != OUT_FA_A_FRAME && toggle != OUT_FA_B_FRAME)
++		return 2;
++	return (toggle == OUT_FA_A_FRAME) ^ fa_swap_eyes;
++}
++
++static void fa_sync_publish(void)
++{
++	if (!(process_3d_type & MODE_3D_OUT_FA_MASK))
++		return;
++	raw_write_seqcount_begin(&fa_sync_seq);
++	fa_sync_vsync = av_probe_vsync;
++	fa_sync_ns = av_probe_isr_ns;
++	fa_sync_eye = toggle_3d_fa_frame;
++	raw_write_seqcount_end(&fa_sync_seq);
++#ifndef FIQ_VSYNC
++	if (wq_has_sleeper(&fa_sync_wq))
++		wake_up_interruptible(&fa_sync_wq);
++#endif
++}
++
++static void fa_sync_read(u32 *vsync, u64 *ns, int *eye)
++{
++	unsigned int seq;
++
++	do {
++		seq = read_seqcount_begin(&fa_sync_seq);
++		*vsync = fa_sync_vsync;
++		*ns = fa_sync_ns;
++		*eye = fa_eye_view(fa_sync_eye);
++	} while (read_seqcount_retry(&fa_sync_seq, seq));
++}
++
++/*
++ * The eye the video layer shows from the next vsync: 0 (left view), 1 (right
++ * view) or 2 (blank), and in *gen a count that moves on every vsync that
++ * chose one. -1 when no frame-alternative output mode is set.
++ */
++int amvideo_get_fa_eye(u32 *gen)
++{
++	u32 vsync;
++	u64 ns;
++	int eye;
++
++	if (!(process_3d_type & MODE_3D_OUT_FA_MASK))
++		return -1;
++	fa_sync_read(&vsync, &ns, &eye);
++	if (gen)
++		*gen = vsync;
++	return eye;
++}
++#else
++static inline void fa_sync_publish(void) {}
++
++int amvideo_get_fa_eye(u32 *gen)
++{
++	return -1;
++}
++#endif
++EXPORT_SYMBOL(amvideo_get_fa_eye);
++
+ #ifdef FIQ_VSYNC
+ void vsync_fisr_in(void)
+ #else
+@@ -5389,6 +5469,7 @@ static irqreturn_t vsync_isr_in(int irq, void *dev_id)
+ 	if (debug_flag & DEBUG_FLAG_VSYNC_DONONE)
+ 		return IRQ_HANDLED;
+ 	post_vsync_process();
++	fa_sync_publish();
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -10943,6 +11024,41 @@ static ssize_t av_probe_show
+ 		mono, vsync, line, vpp_crc_result);
+ }
+ 
++#ifdef TV_3D_FUNCTION_OPEN
++/*
++ * One line per vsync while a frame-alternative output mode is set:
++ *
++ *   <vsync> <ns> <eye>
++ *
++ * vsync and ns are the av_probe interrupt-entry stamp (CLOCK_MONOTONIC), eye is
++ * L (left view), R (right view) or - (blank), as chosen by the toggle in that
++ * interrupt. A read blocks until the next such vsync and returns "off" after 100 ms without one, so a
++ * reader rereading from offset 0 gets every frame it keeps up with; the vsync
++ * count shows any it missed.
++ */
++static ssize_t fa_sync_show
++	(struct class *cla,
++	struct class_attribute *attr,
++	char *buf)
++{
++	u32 from = READ_ONCE(fa_sync_vsync);
++	long left;
++	u32 vsync;
++	u64 ns;
++	int eye;
++
++	left = wait_event_interruptible_timeout(fa_sync_wq,
++		READ_ONCE(fa_sync_vsync) != from, msecs_to_jiffies(100));
++	if (left < 0)
++		return left;
++	if (!left)
++		return sysfs_emit(buf, "off\n");
++	fa_sync_read(&vsync, &ns, &eye);
++	return sysfs_emit(buf, "%u %llu %c\n", vsync, ns,
++		eye == 0 ? 'L' : eye == 1 ? 'R' : '-');
++}
++#endif
++
+ static ssize_t vpp_crc_show
+ 	(struct class *cla,
+ 	struct class_attribute *attr,
+@@ -13500,6 +13616,9 @@ static struct class_attribute amvideo_class_attrs[] = {
+ 	       path_select_show,
+ 	       path_select_store),
+ 	__ATTR_RO(av_probe),
++#ifdef TV_3D_FUNCTION_OPEN
++	__ATTR_RO(fa_sync),
++#endif
+ 	__ATTR(vpp_crc,
+ 	       0664,
+ 	       vpp_crc_show,
+diff --git a/include/linux/amlogic/media/video_sink/vpp.h b/include/linux/amlogic/media/video_sink/vpp.h
+index 38c2030..07ebdc3 100644
+--- a/include/linux/amlogic/media/video_sink/vpp.h
++++ b/include/linux/amlogic/media/video_sink/vpp.h
+@@ -10,6 +10,10 @@
+ #include <linux/amlogic/media/video_sink/vpp_afd.h>
+ 
+ #define TV_3D_FUNCTION_OPEN
++
++/* frame-alternative 3D: the eye of the next output frame, see video.c */
++int amvideo_get_fa_eye(u32 *gen);
++
+ #define TV_REVERSE
+ 
+ extern bool super_scaler;

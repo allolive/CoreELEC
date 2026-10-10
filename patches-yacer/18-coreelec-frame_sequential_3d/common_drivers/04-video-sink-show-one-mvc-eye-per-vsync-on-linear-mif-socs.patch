@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:07:25 -0400
+Subject: [PATCH] video_sink: show one MVC eye per vsync on linear-MIF SoCs
+
+For MVC in frame-alternative output, switch_3d_view_per_vsync() selected
+one of vd1's two pictures per vsync through the MIF picture select (psel
+0x4000000 / 0). On linear-MIF SoCs (S6 among them) the screen then showed
+the film twice, a top and a bottom copy, the top roughly following the
+eyes, the bottom stuttering and ghosting.
+
+On those SoCs keep vd1 on its first picture and load the eye each vsync
+carries into it instead: the second view on A frames, as psel does and as
+fa_sync reports them (right eye), the first on B frames. Seen after, on
+an S6 with an LG G5: one full picture, alternating eyes.
+
+This holds for a frame kept on screen too: a pause (or seek) resets the
+decoder and keeps a copy of the frame shown, which went down the psel path
+with stale pictures (eyes reversed, or one eye twice). The kept copy is
+loaded like any frame, from its own canvas configs, or, for decoders that
+name canvas indices, from both views' canvases recorded when the frame was
+swapped in, since the next decoder reprograms those indices.
+
+A banking frame (the LB/RB first modes) keeps the eye on screen, as this
+display module does for other video, rather than showing the left one.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/video_sink/video_hw.c b/drivers/media/video_sink/video_hw.c
+index 482e396..c0c3e77 100644
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -5593,6 +5593,86 @@ s32 config_3d_vd2_blend(struct video_layer_s *layer,
+ 	return 0;
+ }
+ 
++/*
++ * MVC frame-alternative output on a linear-MIF SoC: vd1 shows one picture,
++ * loaded each vsync with the eye that vsync carries: the second view on A
++ * frames (as psel does, and fa_sync reports them as the right eye), the
++ * first on B frames.
++ *
++ * Both views' canvases are recorded when the frame is swapped in: a frame
++ * kept on screen after its decoder is gone (pause and seek reset the
++ * decoder) still names the decoder's canvas indices, which the next
++ * decoder reprograms with its own buffers. That is for decoders that name
++ * canvas indices; where the vdec canvas is supported (the S6 among them)
++ * the frame carries its canvas configs, which the kept copy keeps, and
++ * those are loaded instead.
++ */
++static struct canvas_s fa_mvc_cs[2][3];
++static u32 fa_mvc_canvas[2];
++static bool fa_mvc_cs_valid;
++
++static void fa_mvc_record_canvas(struct vframe_s *vf,
++				 struct canvas_s *cs0, struct canvas_s *cs1,
++				 struct canvas_s *cs2)
++{
++	int i;
++
++	/* a kept copy swapped in again: its indices may not be its own now */
++	if (fa_mvc_cs_valid && is_local_vf(vf) &&
++	    fa_mvc_canvas[0] == vf->canvas0Addr &&
++	    fa_mvc_canvas[1] == vf->canvas1Addr)
++		return;
++	for (i = 0; i < 2; i++) {
++		fa_mvc_cs[i][0] = cs0[i];
++		fa_mvc_cs[i][1] = cs1[i];
++		fa_mvc_cs[i][2] = cs2[i];
++	}
++	fa_mvc_canvas[0] = vf->canvas0Addr;
++	fa_mvc_canvas[1] = vf->canvas1Addr;
++	fa_mvc_cs_valid = true;
++}
++
++static void fa_mvc_show_eye(struct video_layer_s *layer,
++			    struct vframe_s *vf, bool second)
++{
++	struct hw_vd_reg_s *vd_mif_reg = &layer->vd_mif_reg;
++	u8 vpp_index = layer->vpp_index;
++	int view = second ? 1 : 0;
++
++	cur_dev->rdma_func[vpp_index].rdma_wr(vd_mif_reg->vd_if0_luma_psel, 0);
++	cur_dev->rdma_func[vpp_index].rdma_wr(vd_mif_reg->vd_if0_chroma_psel, 0);
++	if (!vf->canvas0Addr)
++		return;
++	if (vf->canvas1Addr != (u32)-1) {
++		struct canvas_s cs0, cs1, cs2;
++		u32 addr = second ? vf->canvas1Addr : vf->canvas0Addr;
++
++		if (fa_mvc_cs_valid &&
++		    fa_mvc_canvas[0] == vf->canvas0Addr &&
++		    fa_mvc_canvas[1] == vf->canvas1Addr) {
++			set_vd_mif_linear_cs(layer, &fa_mvc_cs[view][0],
++					     &fa_mvc_cs[view][1],
++					     &fa_mvc_cs[view][2], vf, 0);
++			return;
++		}
++		/* not recorded: only the decoder's own frame may be read live */
++		if (is_local_vf(vf))
++			return;
++		canvas_read(addr & 0xff, &cs0);
++		canvas_read((addr >> 8) & 0xff, &cs1);
++		canvas_read((addr >> 16) & 0xff, &cs2);
++		set_vd_mif_linear_cs(layer, &cs0, &cs1, &cs2, vf, 0);
++	} else {
++		/* the configs travel with the frame, kept copies included */
++		struct canvas_config_s *cfg = second ? &vf->canvas1_config[0] :
++						       &vf->canvas0_config[0];
++
++		if (!vf->plane_num || !cfg->phy_addr)
++			return;
++		set_vd_mif_linear(layer, cfg, vf->plane_num, vf, 0);
++	}
++}
++
+ void switch_3d_view_per_vsync(struct video_layer_s *layer)
+ {
+ 	struct vpp_frame_par_s *cur_frame_par;
+@@ -5625,6 +5705,18 @@ void switch_3d_view_per_vsync(struct video_layer_s *layer)
+ 	vd2_mif_reg = &vd_layer[1].vd_mif_reg;
+ 	vd_afbc_reg = &layer->vd_afbc_reg;
+ 
++	/* never the psel path here: vd1's second picture is not kept current */
++	if (FA_enable && cur_dev->mif_linear && layer->layer_id == 0 &&
++	    (dispbuf->type & VIDTYPE_MVC)) {
++		/* a banking frame (LB/RB first) keeps the eye on screen: this
++		 * display module does not blank one either
++		 */
++		if (toggle_3d_fa_frame != OUT_FA_BANK_FRAME)
++			fa_mvc_show_eye(layer, dispbuf,
++					toggle_3d_fa_frame == OUT_FA_A_FRAME);
++		return;
++	}
++
+ 	src_start_x_lines = 0;
+ 	src_end_x_lines =
+ 		(dispbuf->type & VIDTYPE_COMPRESS) ?
+@@ -9691,6 +9783,7 @@ static void canvas_update_for_3d(struct video_layer_s *layer,
+ 			canvas_read(cur_canvas_tbl[1], &cs1[0]);
+ 			canvas_read(cur_canvas_tbl[2], &cs2[0]);
+ 			if (is_mvc) {
++				fa_mvc_record_canvas(vf, cs0, cs1, cs2);
+ 				set_vd_mif_linear_cs(&vd_layer[1],
+ 					&cs0[1], &cs1[1], &cs2[1],
+ 					vf,

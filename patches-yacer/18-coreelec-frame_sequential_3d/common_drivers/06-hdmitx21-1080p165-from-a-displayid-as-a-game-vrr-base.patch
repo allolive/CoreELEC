@@ -1,0 +1,395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 07:12:12 -0400
+Subject: [PATCH] hdmitx21: 1080p165 from a DisplayID, as a game-VRR base
+
+Frame-sequential 3D runs the film on game VRR at a multiple of its rate
+(24p at 96 Hz). The TV draws each picture as fast as the base mode sends
+it: on 1080p120 that is 8 ms of a 10.4 ms frame, leaving the shutter
+glasses 2.4 ms in which the screen shows one eye only. A 165 Hz base
+draws it in 5.6 ms and doubles that time. TVs that take 1080p165 (an LG
+G5 among them) list it in a DisplayID extension block only.
+
+- A VESA timing HDMIV_27_1920x1080p165hz: 401 MHz, 2080 x 1169, as the
+  G5's DisplayID Type I timing (reduced blanking, hsync +, vsync -).
+- The EDID parser reads DisplayID 1.x Type I timings and keeps those
+  that match a VESA timing of the table.
+- Validity: 1080p165 passes the board's refresh limit and hdmitx21's
+  VESA filter; the S6 PLL is computed from the pixel clock.
+- A VESA timing sends AVI VIC 0 (the u8 took the low bits of the vic,
+  another format) and is decided as RGB 8-bit in DRM too, as
+  hdmitx21_set_display sends it.
+- Game VRR on it: the rate is no longer capped at 120 Hz but at the base,
+  rounded to the whole Hz DRM names it by; lines per frame are worked out
+  in 64 bits from the pixel clock, so a VESA rate needs no table; vrr_rate
+  takes "<rate> 1" for 1000/1001 of it on a base with no 1000/1001 twin
+  (95.904 Hz on 1080p165), set and used under one lock and cleared by
+  DRM's own hints; the carried line remainder restarts with each rate;
+  struct vrr_conf_para keeps the base vic in 32 bits (a VESA vic in 8
+  bits named another mode and gave ~163 lines a frame); a frame is never
+  shorter than the mode's own (DRM names 164.917 Hz 165).
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/drm/meson_hdmi.c b/drivers/drm/meson_hdmi.c
+--- a/drivers/drm/meson_hdmi.c
++++ b/drivers/drm/meson_hdmi.c
+@@ -421,6 +421,14 @@
+ 		}
+ 	}
+ 
++	/* VESA timings go out as RGB 8-bit (hdmitx21_set_display); decide it
++	 * here too, so the TMDS clock is worked out for what is sent
++	 */
++	if (vic >= HDMITX_VESA_OFFSET) {
++		attr->colorformat = HDMI_COLORSPACE_RGB;
++		attr->bitdepth = colordepth_to_bitdepth(COLORDEPTH_24B);
++	}
++
+ 	DRM_INFO("[%s]:[%s,eotf:%d,vic:%d]=>attr[%s,%dbit]\n", __func__,
+ 		outputmode, common->hdmi_current_eotf_type, vic,
+ 		colour_sampling[attr->colorformat], attr->bitdepth);
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx.h b/drivers/media/vout/hdmitx21/hdmi_tx.h
+--- a/drivers/media/vout/hdmitx21/hdmi_tx.h
++++ b/drivers/media/vout/hdmitx21/hdmi_tx.h
+@@ -138,7 +138,7 @@
+ 	enum vrr_type type;
+ 	u8 vrr_enabled;
+ 	u8 fva_factor; /* should be larger than 0 */
+-	u8 brr_vic;
++	u32 brr_vic; /* a VESA vic does not fit in 8 bits */
+ 	int duration;
+ 	/* EDID capability, refer to 2.1A P380 */
+ 	u8 fapa_end_extended:1;
+@@ -457,6 +457,7 @@
+ void hdmitx_vrr_set_maxlncnt(u32 max_lcnt);
+ u32 hdmitx_vrr_get_maxlncnt(void);
+ int hdmitx_set_fr_hint(int duration, void *data);
++int hdmitx_set_fr_hint_frac(int duration, bool frac);
+ void hdmitx_unregister_vrr(struct hdmitx_dev *hdev);
+ void hdmitx_register_vrr(struct hdmitx_dev *hdev);
+ ssize_t _vrr_cap_show(struct device *dev, struct device_attribute *attr,
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -3848,7 +3848,8 @@
+ 
+ /*
+  * vrr_rate: the game-VRR rate x100 on the current mode (9600 = 96 Hz), 0 to
+- * leave VRR. /sys/class/display/fr_hint cannot carry it: with DRM in charge
++ * leave VRR; "9600 1" is 1000/1001 of it (95.904 Hz), for a base mode with no
++ * 1000/1001 twin of its own. /sys/class/display/fr_hint cannot carry it: with DRM in charge
+  * its vout server is a stub, and the decoders also send it frame durations
+  * in other units.
+  */
+@@ -3856,11 +3857,12 @@
+ 			      struct device_attribute *attr,
+ 			      const char *buf, size_t count)
+ {
+-	int rate;
++	int rate, frac = 0;
+ 
+-	if (kstrtoint(buf, 10, &rate) || rate < 0)
++	/* "<rate>", or "<rate> 1" for 1000/1001 of it on a mode without a twin */
++	if (sscanf(buf, "%d %d", &rate, &frac) < 1 || rate < 0)
+ 		return -EINVAL;
+-	hdmitx_set_fr_hint(rate, NULL);
++	hdmitx_set_fr_hint_frac(rate, frac == 1);
+ 	return count;
+ }
+ 
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_video.c b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_video.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+@@ -51,6 +51,9 @@
+ 	info->quantization_range = HDMI_QUANTIZATION_RANGE_LIMITED;
+ 	info->nups = HDMI_NUPS_UNKNOWN;
+ 	info->video_code = para->timing.vic;
++	/* a VESA timing has no CTA VIC: the u8 would name another format */
++	if (para->timing.vic >= HDMITX_VESA_OFFSET)
++		info->video_code = 0;
+ 	if (para->timing.vic == HDMI_95_3840x2160p30_16x9 ||
+ 	    para->timing.vic == HDMI_94_3840x2160p25_16x9 ||
+ 	    para->timing.vic == HDMI_93_3840x2160p24_16x9 ||
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+@@ -912,7 +912,12 @@
+ }
+ 
+ /* lines carried between frames so game-vrr averages the exact rate */
+-static u32 game_vtotal_rem;
++static u64 game_vtotal_rem;
++static u64 game_vtotal_den;	/* the divisor game_vtotal_rem is counted in */
++/* the game-vrr rate is 1000/1001 of the one given, on a base mode without a
++ * 1000/1001 twin (a VESA timing): 95.904 Hz on 1080p165
++ */
++static bool game_vrr_frac;
+ 
+ static void vrr_init_game_para(struct tx_vrr_params *para)
+ {
+@@ -928,6 +933,7 @@
+ 		fva_factor = 1; /* at least be 1 */
+ 	para->frame_cnt = 0;
+ 	game_vtotal_rem = 0;
++	game_vtotal_den = 0;
+ 	memset(&para->emp_vrr_pkt, 0, sizeof(para->emp_vrr_pkt));
+ 
+ 	memset(vrr_pkt, 0, sizeof(*vrr_pkt));
+@@ -1532,7 +1538,20 @@
+ /* rate: Unit *100. Example, 1080p23.976Hz, rate = 2397 */
+ static DEFINE_MUTEX(fr_hint_mutex);
+ 
+-static int hdmitx_set_fr_hint_locked(int rate, void *data);
++static int hdmitx_set_fr_hint_locked(int rate, void *data, bool frac);
++
++/* the vrr_rate attribute: the rate, or 1000/1001 of it on a mode with no
++ * 1000/1001 twin
++ */
++int hdmitx_set_fr_hint_frac(int rate, bool frac)
++{
++	int ret;
++
++	mutex_lock(&fr_hint_mutex);
++	ret = hdmitx_set_fr_hint_locked(rate, NULL, frac);
++	mutex_unlock(&fr_hint_mutex);
++	return ret;
++}
+ 
+ /* reached from DRM (encoder enable) and from the vrr_rate attribute */
+ int hdmitx_set_fr_hint(int rate, void *data)
+@@ -1540,12 +1559,12 @@
+ 	int ret;
+ 
+ 	mutex_lock(&fr_hint_mutex);
+-	ret = hdmitx_set_fr_hint_locked(rate, data);
++	ret = hdmitx_set_fr_hint_locked(rate, data, false);
+ 	mutex_unlock(&fr_hint_mutex);
+ 	return ret;
+ }
+ 
+-static int hdmitx_set_fr_hint_locked(int rate, void *data)
++static int hdmitx_set_fr_hint_locked(int rate, void *data, bool frac)
+ {
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 	struct hdmitx_common *tx_comm = &hdev->tx_comm;
+@@ -1557,6 +1576,8 @@
+ 
+ 	vrr_debug_info("%s[%d] rate %d\n", __func__, __LINE__, rate);
+ 	hdmitx_vrr_disable();
++	/* after the disable: the vsync handler reads it */
++	game_vrr_frac = frac;
+ 
+ 	/* check current rate, should less or equal than current rate of BRR */
+ 	tmp_rate = fmt_para->timing.v_freq / 10;
+@@ -1567,6 +1588,10 @@
+ 		tmp_rate = 6000;
+ 	if (tmp_rate > 5990 * 2 && tmp_rate < 6010 * 2)
+ 		tmp_rate = 12000;
++	/* a VESA rate a little under its whole Hz, as DRM names it (164.917) */
++	if (DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 > tmp_rate &&
++	    DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 - tmp_rate <= tmp_rate / 1000)
++		tmp_rate = DIV_ROUND_CLOSEST(tmp_rate, 100) * 100;
+ 	/* if rate is 0, then disable VRR packet */
+ 	if (rate == 0) {
+ 		/* When disable VRR, here must clear vrr_para_tmp.
+@@ -1592,7 +1617,7 @@
+ 		HDMITX_INFO("disable VRR/EMP packet\n");
+ 		return 0;
+ 	}
+-	if (rate < 2397 || rate > 12000 || rate > tmp_rate) {
++	if (rate < 2397 || rate > tmp_rate) {
+ 		HDMITX_INFO("vrr rate over range %d [2397~%d]\n", rate, tmp_rate);
+ 		return 0;
+ 	}
+@@ -1644,7 +1669,8 @@
+ 		para.duration = rate;
+ 	}
+ 	updata_vinfo_sync_duration(&tx_comm->hdmitx_vinfo, rate,
+-		tx_comm->frac_rate_policy,
++		para.type == T_VRR_GAME && !fmt_para->frac_mode ?
++		game_vrr_frac : tx_comm->frac_rate_policy,
+ 		(fmt_para->timing.v_freq + 999) / 1000);
+ 
+ 	para.vrr_enabled = 1;
+@@ -1719,22 +1745,37 @@
+ 	struct vrr_conf_para *conf = &vrr->conf_params;
+ 	const struct hdmi_timing *timing = NULL;
+ 	u32 vtotal_tmp = 0;
+-	u32 rem;
++	u64 num, den, rem;
+ 
+ 	timing = hdmitx_mode_vic_to_hdmi_timing(conf->brr_vic);
+-	if (!timing || !conf->duration) {
++	if (!timing || !conf->duration || !timing->h_total) {
+ 		vrr_debug_info("%s[%d] failed to get timing of brr_vic %d\n",
+ 			__func__, __LINE__, conf->brr_vic);
+ 		return;
+ 	}
+-	vtotal_tmp = timing->v_total * timing->v_freq / 10;
+-	rem = vtotal_tmp % conf->duration;
+-	vtotal_tmp = vtotal_tmp / conf->duration;
++	/* lines a frame at the rate: pixel clock / (h_total * rate), the rate
++	 * x100; a mode's 1000/1001 twin scales its clock and rate alike
++	 */
++	num = (u64)timing->pixel_freq * 100000;
++	den = (u64)timing->h_total * conf->duration;
++	if (game_vrr_frac && !hdev->tx_comm.fmt_para.frac_mode) {
++		num *= 1001;
++		den *= 1000;
++	}
++	vtotal_tmp = div64_u64_rem(num, den, &rem);
++	/* a new rate (the 1000/1001 flag alone changes no conf): start afresh */
++	if (den != game_vtotal_den) {
++		game_vtotal_den = den;
++		game_vtotal_rem = 0;
++	}
+ 	game_vtotal_rem += rem;
+-	if (game_vtotal_rem >= conf->duration) {
+-		game_vtotal_rem -= conf->duration;
++	if (game_vtotal_rem >= den) {
++		game_vtotal_rem -= den;
+ 		vtotal_tmp++;
+ 	}
++	/* never shorter than the mode: DRM names 164.917 Hz 165 */
++	if (vtotal_tmp < timing->v_total)
++		vtotal_tmp = timing->v_total;
+ 	vrr->game_val.vtotal_fixed = vtotal_tmp;
+ 	vrr_debug_info("game-vrr vtotal = %d\n", vrr->game_val.vtotal_fixed);
+ 
+diff --git a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
+--- a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
++++ b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
+@@ -626,8 +626,9 @@
+ 	if (!tx_hw || !global_tx_hw->chip_data)
+ 		return -EINVAL;
+ 
+-	/*hdmitx21 VESA mode is not supported yet*/
+-	if (vic == HDMI_0_UNKNOWN || vic > HDMI_CEA_VIC_END)
++	/*hdmitx21 VESA mode is not supported yet, but for 1080p165 (RGB 8-bit)*/
++	if (vic == HDMI_0_UNKNOWN ||
++	    (vic > HDMI_CEA_VIC_END && vic != HDMIV_27_1920x1080p165hz))
+ 		return -EINVAL;
+ 
+ 	timing = hdmitx_mode_vic_to_hdmi_timing(vic);
+diff --git a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
+--- a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
+@@ -76,15 +76,21 @@
+ 		if (timing->v_active >= 2160 && timing->v_freq >= 5000)
+ 			return -ERANGE;
+ 
+-	/* filter max refreshrate. */
+-	if (timing->v_freq > (tx_comm->max_refreshrate * 1000)) {
++	/* filter max refreshrate. 1080p165 comes from the sink's own list, and
++	 * its clock is below 4k60's: the board's 1080p limit does not apply
++	 */
++	if (vic != HDMIV_27_1920x1080p165hz &&
++	    timing->v_freq > (tx_comm->max_refreshrate * 1000)) {
+ 		/* HDMITX_INFO("validate refreshrate (%s)-(%d) fail\n", */
+ 		/* timing->name, timing->v_freq); */
+ 		return -EACCES;
+ 	}
+ 
+ 	/* ip level filter */
+-	if (hdmitx_hw_validate_mode(tx_comm->tx_hw, vic, tx_comm->max_refreshrate) != 0)
++	if (hdmitx_hw_validate_mode(tx_comm->tx_hw, vic,
++				    vic == HDMIV_27_1920x1080p165hz ?
++				    max_t(u32, tx_comm->max_refreshrate, 165) :
++				    tx_comm->max_refreshrate) != 0)
+ 		return -EPERM;
+ 
+ 	return 0;
+diff --git a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
+--- a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
+@@ -468,6 +468,51 @@
+ 	}
+ }
+ 
++/* DisplayID 1.x Type I detailed timing (20 bytes): keep it when it is one of
++ * our VESA timings. A 1080p165 TV lists that mode only here.
++ */
++static void displayid_type1_timing(struct rx_cap *prxcap, const u8 *t)
++{
++	struct dtd d = {0};
++	const struct hdmi_timing *timing;
++	u32 clk = (t[0] | t[1] << 8 | t[2] << 16) + 1;	/* 10 kHz */
++
++	/* struct dtd keeps the clock in 16 bits; skip interlaced timings */
++	if (clk > 0xffff || (t[3] & 0x10))
++		return;
++	d.pixel_clock = clk;
++	d.h_active = (t[4] | t[5] << 8) + 1;
++	d.h_blank = (t[6] | t[7] << 8) + 1;
++	d.h_sync_offset = (t[8] | (t[9] & 0x7f) << 8) + 1;
++	d.h_sync = (t[10] | t[11] << 8) + 1;
++	d.v_active = (t[12] | t[13] << 8) + 1;
++	d.v_blank = (t[14] | t[15] << 8) + 1;
++	d.v_sync_offset = (t[16] | (t[17] & 0x7f) << 8) + 1;
++	d.v_sync = (t[18] | t[19] << 8) + 1;
++	timing = hdmitx_mode_match_dtd_timing(&d);
++	if (timing && timing->vic >= HDMITX_VESA_OFFSET)
++		store_vesa_idx(prxcap, timing->vic);
++}
++
++/* a DisplayID 1.x extension block (tag 0x70): its Type I timings */
++static void edid_parse_displayid(struct rx_cap *prxcap, const u8 *blk)
++{
++	int pos = 5, end, len, j;
++
++	if ((blk[1] >> 4) != 1)
++		return;
++	end = 5 + min_t(int, blk[2], 121);
++	while (pos + 3 <= end) {
++		len = blk[pos + 2];
++		if (!len || pos + 3 + len > end)
++			break;
++		if (blk[pos] == 0x03)
++			for (j = 0; j + 20 <= len; j += 20)
++				displayid_type1_timing(prxcap, &blk[pos + 3 + j]);
++		pos += 3 + len;
++	}
++}
++
+ static void store_cea_idx(struct rx_cap *prxcap, enum hdmi_vic vic)
+ {
+ 	int i;
+@@ -2733,6 +2778,9 @@
+ 		if (edid_buf[i * 0x80] == 0x02 || edid_check & 0x01)
+ 			hdmitx_edid_cta_block_parse(prxcap, &edid_buf[i * 0x80]);
+ 	}
++	for (i = 1; i <= cta_block_count && i < EDID_MAX_BLOCK; i++)
++		if (edid_buf[i * 0x80] == 0x70)
++			edid_parse_displayid(prxcap, &edid_buf[i * 0x80]);
+ 
+ 	edid_check_pcm_declare(prxcap);
+ 	/*
+diff --git a/drivers/media/vout/hdmitx_common/hdmitx_mode.c b/drivers/media/vout/hdmitx_common/hdmitx_mode.c
+--- a/drivers/media/vout/hdmitx_common/hdmitx_mode.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_mode.c
+@@ -399,9 +399,12 @@
+ 		2482, 82, 20, 30, 32, 2400, 1252, 52, 17, 5, 30, 1200, 1, 1, 1, 2, 1},
+ 	{HDMIV_26_3840x1080p60hz, "3840x1080p60hzV", NULL, 1, 67500, 60000, 297000,
+ 		4400, 560, 176, 88, 296, 3840, 1125, 45, 4, 5, 36, 1080, 1, 1, 1, 32, 6},
++	/* reduced blanking, as 165 Hz TVs list it in a DisplayID extension */
++	{HDMIV_27_1920x1080p165hz, "1920x1080p165hzV", NULL, 1, 192788, 164917, 401000,
++		2080, 160, 48, 32, 80, 1920, 1169, 89, 3, 5, 81, 1080, 1, 1, 0, 16, 9, 1, 1},
+ };
+ 
+-#define VESA_TIMING_END HDMIV_26_3840x1080p60hz
++#define VESA_TIMING_END HDMIV_27_1920x1080p165hz
+ 
+ /*return NULL for invalid hdmi_timing.*/
+ const struct hdmi_timing *hdmitx_mode_index_to_hdmi_timing(u32 idx)
+diff --git a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
+--- a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
++++ b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
+@@ -209,6 +209,7 @@
+ 	HDMIV_24_3440x1440p60hz,
+ 	HDMIV_25_2400x1200p90hz,
+ 	HDMIV_26_3840x1080p60hz,
++	HDMIV_27_1920x1080p165hz,
+ 	/*not supported in timing*/
+ 	HDMIV_2560x1080p60hz,
+ 	HDMIV_2560x1440p60hz,

@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 12:00:00 -0400
+Subject: [PATCH] hdmitx21: vrr: refuse a rate before touching VRR, and leave
+ it cleanly
+
+A vrr_rate write the mode cannot take (under 23.97 Hz, over the mode's
+rate, or with vrr_mode not game or QMS) went through
+hdmitx_set_fr_hint_locked(), which switches VRR off first and then
+returned 0, and the store returned success: VRR was left half on, the
+VRR packet still sent, the line count frozen at the stretched value and
+vinfo still at the old rate. The attribute now checks the rate first and
+returns -EINVAL, VRR untouched.
+
+Going back to rate 0 gave back vinfo's rate but not the line count, so
+leaving game VRR without a mode set (Kodi quitting, its crash recovery,
+a film with no usable multiple) left ENCP_VIDEO_MAX_LNCNT stretched; it
+now restores the mode's v_total. The VRR packet is cleared when VRR was
+in use even if vrr_mode already went to none, and a mode with no rate
+(after a hotplug dropped it) keeps vinfo's rate rather than setting 0.
+
+Both wait for a vsync handler already running (synchronize_irq) after
+switching VRR off, so it cannot write the stretched line count and the
+VRR packet back after the restore.
+
+The DRM path (hdmitx_set_fr_hint) keeps its behaviour; the rate limit
+moves to hdmitx_vrr_max_rate(), shared by both.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+index 7825b4d..2130452 100644
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -3857,13 +3857,13 @@ static ssize_t vrr_rate_store(struct device *dev,
+ 			      struct device_attribute *attr,
+ 			      const char *buf, size_t count)
+ {
+-	int rate, frac = 0;
++	int rate, frac = 0, ret;
+ 
+ 	/* "<rate>", or "<rate> 1" for 1000/1001 of it on a mode without a twin */
+ 	if (sscanf(buf, "%d %d", &rate, &frac) < 1 || rate < 0)
+ 		return -EINVAL;
+-	hdmitx_set_fr_hint_frac(rate, frac == 1);
+-	return count;
++	ret = hdmitx_set_fr_hint_frac(rate, frac == 1);
++	return ret < 0 ? ret : count;
+ }
+ 
+ static DEVICE_ATTR_WO(vrr_rate);
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+index 9b0e705..adc2c0e 100644
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+@@ -9,6 +9,7 @@
+ #include <linux/kernel.h>
+ #include <linux/delay.h>
+ #include <linux/init.h>
++#include <linux/interrupt.h>
+ #include <linux/device.h>
+ #include <linux/platform_device.h>
+ #include <linux/cdev.h>
+@@ -1540,14 +1541,43 @@ static DEFINE_MUTEX(fr_hint_mutex);
+ 
+ static int hdmitx_set_fr_hint_locked(int rate, void *data, bool frac);
+ 
++/* the highest rate x100 VRR can take on the current mode */
++static int hdmitx_vrr_max_rate(void)
++{
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
++	struct hdmitx_common *tx_comm = &hdev->tx_comm;
++	int tmp_rate = tx_comm->fmt_para.timing.v_freq / 10;
++
++	/* TODO, BRR mode should have frac_rate_policy as 0 */
++	if (tx_comm->frac_rate_policy == 1)
++		tmp_rate = tmp_rate + 2 + tmp_rate / 1000;
++	if (tmp_rate > 5990 && tmp_rate < 6010)
++		tmp_rate = 6000;
++	if (tmp_rate > 5990 * 2 && tmp_rate < 6010 * 2)
++		tmp_rate = 12000;
++	/* a VESA rate a little under its whole Hz, as DRM names it (164.917) */
++	if (DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 > tmp_rate &&
++	    DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 - tmp_rate <= tmp_rate / 1000)
++		tmp_rate = DIV_ROUND_CLOSEST(tmp_rate, 100) * 100;
++	return tmp_rate;
++}
++
+ /* the vrr_rate attribute: the rate, or 1000/1001 of it on a mode with no
+- * 1000/1001 twin
++ * 1000/1001 twin. A rate it cannot take is refused before VRR is touched,
++ * so a refused write leaves VRR as it was.
+  */
+ int hdmitx_set_fr_hint_frac(int rate, bool frac)
+ {
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 	int ret;
+ 
+ 	mutex_lock(&fr_hint_mutex);
++	if (rate && (rate < 2397 || rate > hdmitx_vrr_max_rate() ||
++		     (hdev->tx_comm.vrr_mode != T_VRR_GAME &&
++		      hdev->tx_comm.vrr_mode != T_VRR_QMS))) {
++		mutex_unlock(&fr_hint_mutex);
++		return -EINVAL;
++	}
+ 	ret = hdmitx_set_fr_hint_locked(rate, NULL, frac);
+ 	mutex_unlock(&fr_hint_mutex);
+ 	return ret;
+@@ -1576,43 +1606,46 @@ static int hdmitx_set_fr_hint_locked(int rate, void *data, bool frac)
+ 
+ 	vrr_debug_info("%s[%d] rate %d\n", __func__, __LINE__, rate);
+ 	hdmitx_vrr_disable();
++	/* a vsync handler already past its vrr_enabled check would write the
++	 * stretched line count and the VRR packet back after us
++	 */
++	if (hdev->irq_vrr_vsync)
++		synchronize_irq(hdev->irq_vrr_vsync);
+ 	/* after the disable: the vsync handler reads it */
+ 	game_vrr_frac = frac;
+ 
+ 	/* check current rate, should less or equal than current rate of BRR */
+-	tmp_rate = fmt_para->timing.v_freq / 10;
+-	/* TODO, BRR mode should have frac_rate_policy as 0 */
+-	if (tx_comm->frac_rate_policy == 1)
+-		tmp_rate = tmp_rate + 2 + tmp_rate / 1000;
+-	if (tmp_rate > 5990 && tmp_rate < 6010)
+-		tmp_rate = 6000;
+-	if (tmp_rate > 5990 * 2 && tmp_rate < 6010 * 2)
+-		tmp_rate = 12000;
+-	/* a VESA rate a little under its whole Hz, as DRM names it (164.917) */
+-	if (DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 > tmp_rate &&
+-	    DIV_ROUND_CLOSEST(tmp_rate, 100) * 100 - tmp_rate <= tmp_rate / 1000)
+-		tmp_rate = DIV_ROUND_CLOSEST(tmp_rate, 100) * 100;
++	tmp_rate = hdmitx_vrr_max_rate();
+ 	/* if rate is 0, then disable VRR packet */
+ 	if (rate == 0) {
+ 		/* When disable VRR, here must clear vrr_para_tmp.
+ 		 * So when enter VRR next time, vrr packet will be updated again
+ 		 */
+-		if (tx_comm->hdmitx_vinfo.brr_duration) {
+-			/* give back the base mode's rate, as the mode set left it */
++		bool was_vrr = tx_comm->hdmitx_vinfo.brr_duration;
++
++		if (was_vrr) {
++			/* give back the base mode's rate and line count, as the
++			 * mode set left them (none after a hotplug dropped it)
++			 */
+ 			struct vinfo_s *vinfo = &tx_comm->hdmitx_vinfo;
+ 			u32 v_freq = fmt_para->timing.v_freq;
+ 
+-			if (v_freq % 1000 == 0) {
++			if (!v_freq) {
++				/* nothing to give back */
++			} else if (v_freq % 1000 == 0) {
+ 				vinfo->sync_duration_num = v_freq / 1000;
+ 				vinfo->sync_duration_den = 1;
+ 			} else {
+ 				vinfo->sync_duration_num = v_freq;
+ 				vinfo->sync_duration_den = 1000;
+ 			}
++			hdmitx_vrr_set_maxlncnt(fmt_para->timing.v_total);
+ 		}
+ 		tx_comm->hdmitx_vinfo.brr_duration = 0;
+ 		memset(&vrr_para.vrr_para_tmp, 0, sizeof(vrr_para.vrr_para_tmp));
+-		if (hdev->tx_comm.vrr_mode == T_VRR_QMS || hdev->tx_comm.vrr_mode == T_VRR_GAME)
++		/* also when vrr_mode went to none before the rate went to 0 */
++		if (was_vrr || hdev->tx_comm.vrr_mode == T_VRR_QMS ||
++		    hdev->tx_comm.vrr_mode == T_VRR_GAME)
+ 			hdmi_vrr_disable_emp_packet(&vrr_para);
+ 		HDMITX_INFO("disable VRR/EMP packet\n");
+ 		return 0;

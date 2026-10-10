@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:50:53 -0400
+Subject: [PATCH] video_sink: switch vd2 off when MVC is shown as one picture
+
+layer_swap_frame() switches vd2 on for an MVC frame's second eye when no
+3D-to-2D mode is set. The first frames of an MVC film come before the
+player sets its 3D mode, so vd2 came on; once the mode was set (3D to 2D,
+or frame-alternative, which counts as one) nothing switched it off, and
+the compose mode kept it blended into the lower half: the film showed as
+a top picture with a flat, rarely updated copy under it.
+
+Switch vd2 off when the frame is MVC, a 3D-to-2D mode is set and vd2 has
+no frame of its own. Seen on an S6: one full picture after.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/video_sink/video_hw.c b/drivers/media/video_sink/video_hw.c
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -11137,6 +11137,15 @@
+ 	if (vd_layer[0].enabled && !vd_layer[1].enabled &&
+ 		(is_mvc || video_lcevc.vd2_vd1_shared_vf))
+ 		enable_video_layer2();
++	/*
++	 * MVC shown as one picture (3D to 2D, frame-alternative): vd2 may have
++	 * been switched on for the second eye by frames that came before the 3D
++	 * mode was set, and it would stay blended into the lower half.
++	 */
++	if (layer_id == 0 && (vf->type & VIDTYPE_MVC) && is_enable_3d_to_2d() &&
++	    vd_layer[1].enabled && !vd_layer[1].dispbuf &&
++	    !video_lcevc.vd2_vd1_shared_vf)
++		disable_video_layer2(true);
+ 	if (first_picture || sr_phase_changed)
+ 		layer->new_vpp_setting = true;
+ 	layer->dispbuf = vf;

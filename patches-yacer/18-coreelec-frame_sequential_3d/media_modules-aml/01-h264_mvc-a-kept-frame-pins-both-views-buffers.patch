@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 18:58:05 -0400
+Subject: [PATCH] h264_mvc: a kept frame pins both views' buffers
+
+When the decoder is removed (a pause or seek resets it), the frame on
+screen is kept and its memory pinned through the vframe's mem_handle and
+mem_head_handle. For MVC these named view 1's buffer and, as the head, the
+view-0 slot of view 1's buffer number (or a slot left from an earlier
+frame when view 0 came second), so view 0's real buffer was freed and
+reused while on screen: garbage in the paused picture of frame-sequential
+3D, which shows both views.
+
+Set both handles once a frame has both views: the head is view 0's buffer,
+mem_handle view 1's, at the index init_canvas allocated it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -1032,6 +1032,28 @@
+ 	spin_unlock_irqrestore(&mvc_rp_lock, flags);
+ }
+ 
++/*
++ * The handles the video keeper pins when playback stops on this frame:
++ * view 0's picture as the head handle, view 1's as the main one, indexed
++ * as init_canvas() allocated them (view 1's after its reference buffer),
++ * so that neither is freed while the frame stays on screen.
++ */
++static void set_vf_mem_handles(struct vframe_s *vf,
++			       const struct mvc_info_s *idx)
++{
++	vf->mem_head_handle = NULL;
++	vf->mem_handle = NULL;
++	if (idx->view0_buf_id >= 0)
++		vf->mem_head_handle =
++			decoder_bmmu_box_get_mem_handle(mm_blk_handle,
++				VF_BUFFER_IDX(idx->view0_buf_id));
++	if (idx->view1_buf_id >= 0)
++		vf->mem_handle =
++			decoder_bmmu_box_get_mem_handle(mm_blk_handle,
++				VF_BUFFER_IDX(idx->view1_buf_id) +
++				total_dec_frame_buffering[1] + 1);
++}
++
+ #ifdef HANDLE_h264mvc_IRQ
+ static irqreturn_t vh264mvc_isr(int irq, void *dev_id)
+ #else
+@@ -1149,26 +1171,7 @@
+ 						drop_status;
+ 				}
+ 				vf = &vfpool[slot];
+-
+-				if (display_view_id == 0) {
+-					vf->mem_handle =
+-					decoder_bmmu_box_get_mem_handle(
+-						mm_blk_handle,
+-						VF_BUFFER_IDX(display_buff_id));
+-
+-				} else if (display_view_id == 1) {
+-					vf->mem_head_handle =
+-					decoder_bmmu_box_get_mem_handle(
+-						mm_blk_handle,
+-						VF_BUFFER_IDX(display_buff_id));
+-
+-					vf->mem_handle =
+-					decoder_bmmu_box_get_mem_handle(
+-						mm_blk_handle,
+-						VF_BUFFER_IDX(display_buff_id)
+-						+ total_dec_frame_buffering[0]
+-						+ 1);
+-				}
++				set_vf_mem_handles(vf, &vfpool_idx[slot]);
+ 
+ 
+ 

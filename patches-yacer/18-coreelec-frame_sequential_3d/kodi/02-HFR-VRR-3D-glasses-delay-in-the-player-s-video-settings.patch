@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 03:19:08 -0400
+Subject: [PATCH] HFR VRR: 3D glasses delay in the player's video settings
+
+Frame-sequential 3D drives shutter glasses from the box: an emitter
+switches the eyes a set time after each refresh, and that time is tuned
+by eye while a 3D film plays. Put it where the audio offset is tuned, in
+the player's settings, with the same slider.
+
+- videoscreen.fs3ddelay, a display setting (System -> Display ->
+  Stereoscopic 3D): microseconds after the refresh, -5300 to 5300 in
+  steps of 100, 0 by default. That is just over half a frame either way
+  at 95.904 Hz (a frame lasts 10427 us there, and less at any faster
+  rate): a whole frame later is the same as Swap left/right, so half a
+  frame each way and the swap reach every timing. It belongs to the TV
+  and the glasses, not to a film, so it is global rather than a per-film
+  video setting. Kodi does
+  not use it itself; whatever drives the glasses reads it (the Shutter 3D
+  add-on, over JSON-RPC, which only serves visible settings).
+- The video settings dialog shows it next to the stereoscopic mode and
+  Swap left/right while a 3D film plays, where the platform supports HFR
+  VRR, as a slider that opens the skin's slider popup like the audio
+  offset does. A change applies at once and is saved when the dialog
+  closes.
+- The setting stays visible in System settings on purpose: JSON-RPC
+  serves only visible settings.
+
+Shared code: the dialog and the setting are generic Kodi; the only
+platform question is whether the render system supports HFR VRR.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 1f05532..cb10f7d 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22604,7 +22604,25 @@ msgctxt "#36512"
+ msgid "Active 3D for 120 Hz VRR displays"
+ msgstr ""
+ 
+-#empty strings from id 36513 to 36519
++#: system/settings/settings.xml
++#: xbmc/video/dialogs/GUIDialogVideoSettings.cpp
++msgctxt "#36513"
++msgid "3D glasses delay"
++msgstr ""
++
++#: system/settings/settings.xml
++#: xbmc/video/dialogs/GUIDialogVideoSettings.cpp
++msgctxt "#36514"
++msgid "{0:d} µs"
++msgstr ""
++
++#. Description of setting with label #36513 "3D glasses delay"
++#: system/settings/settings.xml
++msgctxt "#36515"
++msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. Half a frame either way covers every timing: if it still improves at one end, turn on Invert stereoscopic 3D mode and carry on from the other end."
++msgstr ""
++
++#empty strings from id 36516 to 36519
+ #end of reserved strings for 3d modes
+ 
+ #. Name of a setting, asking the user for the default playback mode (2D, 3D, ask) of stereoscopic videos
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 755ccd3..096af8c 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -3416,6 +3416,21 @@
+           </updates>
+           <control type="list" format="integer"/>
+         </setting>
++        <!-- kept visible: JSON-RPC serves only visible settings, and the glasses' driver reads it there -->
++        <setting id="videoscreen.fs3ddelay" type="integer" label="36513" help="36515">
++          <level>2</level>
++          <default>0</default>
++          <constraints>
++            <minimum>-5300</minimum>
++            <step>100</step>
++            <maximum>5300</maximum>
++          </constraints>
++          <control type="slider" format="integer">
++            <popup>true</popup>
++            <heading>36513</heading>
++            <formatlabel>36514</formatlabel>
++          </control>
++        </setting>
+       </group>
+       <group id="5" label="496">
+         <setting id="videoscreen.noofbuffers" type="integer" label="36043" help="36552">
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 4841eac..5fdc160 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -395,6 +395,7 @@ public:
+   static constexpr auto SETTING_VIDEOSCREEN_STEREOSCOPICMODE = "videoscreen.stereoscopicmode";
+   static constexpr auto SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE =
+       "videoscreen.preferedstereoscopicmode";
++  static constexpr auto SETTING_VIDEOSCREEN_FS3DDELAY = "videoscreen.fs3ddelay";
+   static constexpr auto SETTING_VIDEOSCREEN_NOOFBUFFERS = "videoscreen.noofbuffers";
+   static constexpr auto SETTING_VIDEOSCREEN_3DLUT = "videoscreen.cms3dlut";
+   static constexpr auto SETTING_VIDEOSCREEN_DISPLAYPROFILE = "videoscreen.displayprofile";
+diff --git a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
+index 659c82e..61cbef0 100644
+--- a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
++++ b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
+@@ -13,10 +13,12 @@
+ #include "addons/Skin.h"
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
++#include "cores/DataCacheCore.h"
+ #include "dialogs/GUIDialogYesNo.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "profiles/ProfileManager.h"
++#include "rendering/RenderSystem.h"
+ #include "resources/LocalizeStrings.h"
+ #include "resources/ResourcesComponent.h"
+ #include "settings/MediaSettings.h"
+@@ -56,6 +58,7 @@
+ 
+ #define SETTING_VIDEO_STEREOSCOPICMODE    "video.stereoscopicmode"
+ #define SETTING_VIDEO_STEREOSCOPICINVERT  "video.stereoscopicinvert"
++#define SETTING_VIDEO_FS3DDELAY           "video.fs3ddelay"
+ 
+ #define SETTING_VIDEO_MAKE_DEFAULT        "video.save"
+ #define SETTING_VIDEO_CALIBRATION         "video.calibration"
+@@ -208,6 +211,14 @@ void CGUIDialogVideoSettings::OnSettingChanged(const std::shared_ptr<const CSett
+     vs.m_StereoInvert = std::static_pointer_cast<const CSettingBool>(setting)->GetValue();
+     appPlayer->SetVideoSettings(vs);
+   }
++  else if (settingId == SETTING_VIDEO_FS3DDELAY)
++  {
++    // the display's, not the film's: a global setting, read by whatever drives the glasses
++    CServiceBroker::GetSettingsComponent()->GetSettings()->SetInt(
++        CSettings::SETTING_VIDEOSCREEN_FS3DDELAY,
++        std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
++    m_fs3dDelayChanged = true;
++  }
+ }
+ 
+ void CGUIDialogVideoSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
+@@ -250,6 +261,16 @@ void CGUIDialogVideoSettings::OnSettingAction(const std::shared_ptr<const CSetti
+     Save();
+ }
+ 
++void CGUIDialogVideoSettings::OnDeinitWindow(int nextWindowID)
++{
++  if (m_fs3dDelayChanged)
++  {
++    CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
++    m_fs3dDelayChanged = false;
++  }
++  CGUIDialogSettingsManualBase::OnDeinitWindow(nextWindowID);
++}
++
+ bool CGUIDialogVideoSettings::Save()
+ {
+   const std::shared_ptr<CProfileManager> profileManager = CServiceBroker::GetSettingsComponent()->GetProfileManager();
+@@ -464,6 +485,14 @@ void CGUIDialogVideoSettings::InitializeSettings()
+   entries.emplace_back(36504, static_cast<int>(RenderStereoMode::SPLIT_VERTICAL));
+   AddSpinner(groupStereoscopic, SETTING_VIDEO_STEREOSCOPICMODE, 36535, SettingLevel::Basic, videoSettings.m_StereoMode, entries);
+   AddToggle(groupStereoscopic, SETTING_VIDEO_STEREOSCOPICINVERT, 36536, SettingLevel::Basic, videoSettings.m_StereoInvert);
++  // frame-sequential 3D: when the eyes switch, like the audio offset; tuned on a 3D film
++  const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
++  if (CServiceBroker::GetRenderSystem()->SupportsStereo(RenderStereoMode::HFR_VRR) &&
++      !layout.empty() && layout != "mono")
++    AddSlider(groupStereoscopic, SETTING_VIDEO_FS3DDELAY, 36513, SettingLevel::Basic,
++              CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++                  CSettings::SETTING_VIDEOSCREEN_FS3DDELAY),
++              36514, -5300, 100, 5300, 36513, usePopup);
+ 
+   // general settings
+   AddButton(groupSaveAsDefault, SETTING_VIDEO_MAKE_DEFAULT, 12376, SettingLevel::Basic);
+diff --git a/xbmc/video/dialogs/GUIDialogVideoSettings.h b/xbmc/video/dialogs/GUIDialogVideoSettings.h
+index 2689815..214d6d3 100644
+--- a/xbmc/video/dialogs/GUIDialogVideoSettings.h
++++ b/xbmc/video/dialogs/GUIDialogVideoSettings.h
+@@ -39,6 +39,8 @@ protected:
+ 
+   static std::string FormatFlags(StreamFlags flags);
+ 
++  void OnDeinitWindow(int nextWindowID) override;
++
+   // specialization of CGUIDialogSettingsBase
+   bool AllowResettingSettings() const override { return false; }
+   bool Save() override;
+@@ -50,4 +52,5 @@ protected:
+ private:
+   int m_videoStream;
+   bool m_viewModeChanged = false;
++  bool m_fs3dDelayChanged = false;
+ };

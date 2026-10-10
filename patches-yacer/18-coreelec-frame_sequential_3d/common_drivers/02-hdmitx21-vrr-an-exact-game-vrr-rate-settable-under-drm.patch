@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:07:25 -0400
+Subject: [PATCH] hdmitx21: vrr: an exact game-VRR rate, settable under DRM
+
+Game-VRR on a 2D sink is how frame-sequential 3D runs a film at a whole
+multiple of its rate (24p at 96 Hz). Four things stood in the way:
+
+- The rate could not be set: with DRM in charge, the vout server behind
+  /sys/class/display/fr_hint is the hdmitx_common stub, and the DRM path
+  only enables VRR for QMS. Forwarding fr_hint is no answer either: the
+  decoders send it frame durations in 1/96000 s, which would set 23.976
+  content to 40 Hz. Add amhdmitx0/vrr_rate (rate x100, 0 to leave), which
+  only userspace writes, and serialise hdmitx_set_fr_hint().
+- Game-VRR rounded every frame to whole lines (96 Hz on a 120 Hz base:
+  1406 for 1406.25, 178 ppm fast). Carry the remainder frame to frame; on
+  the 119.88 Hz twin the same ratio lands on 95.904 Hz (measured: 960
+  vsyncs in 10.0100 s).
+- The EMP announced a 60 Hz base whatever the mode; announce the mode's.
+- Leaving VRR kept the VRR rate in vinfo, so the video layer went on
+  timing frames for 96 Hz on a 120 Hz output; give the base rate back.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+index 13e5f48..adbbc25 100644
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+@@ -3845,6 +3845,26 @@ static DEVICE_ATTR_RW(config);
+ #ifndef CONFIG_AMLOGIC_ZAPPER_CUT
+ static DEVICE_ATTR_RO(vrr_cap);
+ static DEVICE_ATTR_RW(vrr_mode);
++
++/*
++ * vrr_rate: the game-VRR rate x100 on the current mode (9600 = 96 Hz), 0 to
++ * leave VRR. /sys/class/display/fr_hint cannot carry it: with DRM in charge
++ * its vout server is a stub, and the decoders also send it frame durations
++ * in other units.
++ */
++static ssize_t vrr_rate_store(struct device *dev,
++			      struct device_attribute *attr,
++			      const char *buf, size_t count)
++{
++	int rate;
++
++	if (kstrtoint(buf, 10, &rate) || rate < 0)
++		return -EINVAL;
++	hdmitx_set_fr_hint(rate, NULL);
++	return count;
++}
++
++static DEVICE_ATTR_WO(vrr_rate);
+ #endif
+ static DEVICE_ATTR_RW(aud_mute);
+ static DEVICE_ATTR_RO(lipsync_cap);
+@@ -4954,6 +4974,7 @@ static int amhdmitx_probe(struct platform_device *pdev)
+ #ifndef CONFIG_AMLOGIC_ZAPPER_CUT
+ 	ret = device_create_file(dev, &dev_attr_vrr_cap);
+ 	ret = device_create_file(dev, &dev_attr_vrr_mode);
++	ret = device_create_file(dev, &dev_attr_vrr_rate);
+ #endif
+ 	ret = device_create_file(dev, &dev_attr_lipsync_cap);
+ 	ret = device_create_file(dev, &dev_attr_hdmi_hdr_status);
+@@ -5180,6 +5201,7 @@ static int amhdmitx_remove(struct platform_device *pdev)
+ #ifndef CONFIG_AMLOGIC_ZAPPER_CUT
+ 	device_remove_file(dev, &dev_attr_vrr_cap);
+ 	device_remove_file(dev, &dev_attr_vrr_mode);
++	device_remove_file(dev, &dev_attr_vrr_rate);
+ 	device_remove_file(dev, &dev_attr_vrr_cap);
+ #endif
+ 	device_remove_file(dev, &dev_attr_ll_mode);
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+index 7e80d0e..7f4115e 100644
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+@@ -911,6 +911,9 @@ static enum TARGET_FRAME_RATE vsync_match_to_tfr(const u16 duration)
+ 	return (enum TARGET_FRAME_RATE)i;
+ }
+ 
++/* lines carried between frames so game-vrr averages the exact rate */
++static u32 game_vtotal_rem;
++
+ static void vrr_init_game_para(struct tx_vrr_params *para)
+ {
+ 	struct vrr_conf_para *conf = &para->conf_params;
+@@ -924,6 +927,7 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
+ 	if (fva_factor == 0)
+ 		fva_factor = 1; /* at least be 1 */
+ 	para->frame_cnt = 0;
++	game_vtotal_rem = 0;
+ 	memset(&para->emp_vrr_pkt, 0, sizeof(para->emp_vrr_pkt));
+ 
+ 	memset(vrr_pkt, 0, sizeof(*vrr_pkt));
+@@ -945,6 +949,8 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
+ 
+ 	timing = hdmitx_mode_vic_to_hdmi_timing(brr_vic);
+ 	brr_vfront = timing ? timing->v_front : 1920;
++	if (timing)
++		brr_rate = (timing->v_freq + 500) / 1000;
+ 	hdmi_emp_frame_set_member(vrr_pkt, CONF_VRR_EN, 1);
+ 	hdmi_emp_frame_set_member(vrr_pkt, CONF_FACTOR_M1, fva_factor - 1);
+ 	hdmi_emp_frame_set_member(vrr_pkt, CONF_BASE_VFRONT, brr_vfront);
+@@ -1524,7 +1530,22 @@ static void updata_vinfo_sync_duration(struct vinfo_s *vinfo,
+ }
+ 
+ /* rate: Unit *100. Example, 1080p23.976Hz, rate = 2397 */
++static DEFINE_MUTEX(fr_hint_mutex);
++
++static int hdmitx_set_fr_hint_locked(int rate, void *data);
++
++/* reached from DRM (encoder enable) and from the vrr_rate attribute */
+ int hdmitx_set_fr_hint(int rate, void *data)
++{
++	int ret;
++
++	mutex_lock(&fr_hint_mutex);
++	ret = hdmitx_set_fr_hint_locked(rate, data);
++	mutex_unlock(&fr_hint_mutex);
++	return ret;
++}
++
++static int hdmitx_set_fr_hint_locked(int rate, void *data)
+ {
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 	struct hdmitx_common *tx_comm = &hdev->tx_comm;
+@@ -1551,6 +1572,19 @@ int hdmitx_set_fr_hint(int rate, void *data)
+ 		/* When disable VRR, here must clear vrr_para_tmp.
+ 		 * So when enter VRR next time, vrr packet will be updated again
+ 		 */
++		if (tx_comm->hdmitx_vinfo.brr_duration) {
++			/* give back the base mode's rate, as the mode set left it */
++			struct vinfo_s *vinfo = &tx_comm->hdmitx_vinfo;
++			u32 v_freq = fmt_para->timing.v_freq;
++
++			if (v_freq % 1000 == 0) {
++				vinfo->sync_duration_num = v_freq / 1000;
++				vinfo->sync_duration_den = 1;
++			} else {
++				vinfo->sync_duration_num = v_freq;
++				vinfo->sync_duration_den = 1000;
++			}
++		}
+ 		tx_comm->hdmitx_vinfo.brr_duration = 0;
+ 		memset(&vrr_para.vrr_para_tmp, 0, sizeof(vrr_para.vrr_para_tmp));
+ 		if (hdev->tx_comm.vrr_mode == T_VRR_QMS || hdev->tx_comm.vrr_mode == T_VRR_GAME)
+@@ -1685,15 +1719,22 @@ static void hdmitx_vrr_game_handler(struct hdmitx_dev *hdev)
+ 	struct vrr_conf_para *conf = &vrr->conf_params;
+ 	const struct hdmi_timing *timing = NULL;
+ 	u32 vtotal_tmp = 0;
++	u32 rem;
+ 
+ 	timing = hdmitx_mode_vic_to_hdmi_timing(conf->brr_vic);
+-	if (!timing) {
++	if (!timing || !conf->duration) {
+ 		vrr_debug_info("%s[%d] failed to get timing of brr_vic %d\n",
+ 			__func__, __LINE__, conf->brr_vic);
+ 		return;
+ 	}
+ 	vtotal_tmp = timing->v_total * timing->v_freq / 10;
++	rem = vtotal_tmp % conf->duration;
+ 	vtotal_tmp = vtotal_tmp / conf->duration;
++	game_vtotal_rem += rem;
++	if (game_vtotal_rem >= conf->duration) {
++		game_vtotal_rem -= conf->duration;
++		vtotal_tmp++;
++	}
+ 	vrr->game_val.vtotal_fixed = vtotal_tmp;
+ 	vrr_debug_info("game-vrr vtotal = %d\n", vrr->game_val.vtotal_fixed);
+ 

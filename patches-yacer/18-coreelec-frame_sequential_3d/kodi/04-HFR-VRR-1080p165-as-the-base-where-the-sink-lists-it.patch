@@ -1,0 +1,242 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 16:14:01 -0400
+Subject: [PATCH] HFR VRR: 1080p165 as the base where the sink lists it
+
+The TV draws each picture at the base mode's speed: 8 ms on 1080p120,
+5.6 ms on 1080p165, leaving the shutter glasses twice the time in which
+the screen shows one eye. Where the sink lists 1920x1080p165hzV (the
+kernel reads it from a DisplayID) and its VRR range reaches 165, HFR VRR
+runs on it:
+
+- vrr_rate is the rate itself, the largest even multiple of the film
+  rate within 120 Hz, with "<rate> 1" for a 1000/1001 film (the mode has
+  no 1000/1001 twin), so 23.976 fps plays at 95.904 Hz as before.
+- If the mode cannot be set, 1080p120 is used, and 165 is not tried again
+  until the sink's modes change.
+- "...hzV" modes stay out of Kodi's resolution list unless
+  /flash/vesa.enable asks for VESA modes, as before.
+
+Leaving VRR writes vrr_rate 0 before vrr_mode none: the kernel takes a
+rate only in game VRR, so the other order left the stretched line count
+and the VRR packet behind.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index edc2de8..8dbb244 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -1101,14 +1101,26 @@ void CAMLDisplay::aml_refresh_display_caps()
+         CSysfsPath(FS3D_OSD).Exists() && CSysfsPath("/sys/class/video/fa_sync").Exists())
+     {
+       CSysfsPath vrr_cap{"/sys/class/amhdmitx/amhdmitx0/vrr_cap"};
++      int vrr_max = 0;
+       for (const auto& line : StringUtils::Split(vrr_cap.Get<std::string>().value_or(""), "\n"))
+       {
+         std::vector<std::string> kv = StringUtils::Split(line, ":");
+         if (kv.size() == 2 && StringUtils::Trim(kv[0]) == "vrr_min")
+           support_fs3d = std::atoi(StringUtils::Trim(kv[1]).c_str()) > 0;
++        else if (kv.size() == 2 && StringUtils::Trim(kv[0]) == "vrr_max")
++          vrr_max = std::atoi(StringUtils::Trim(kv[1]).c_str());
+       }
+       if (support_fs3d)
+-        support_fs3d = m_amlDRMUtils->aml_get_drmDevice_modes().find(FS3D_MODE) != std::string::npos;
++      {
++        // a faster base mode where the sink has one: the picture is drawn in
++        // less of each frame, leaving the glasses more time with one eye
++        const std::string modes = m_amlDRMUtils->aml_get_drmDevice_modes();
++        const bool fast = modes.find(FS3D_MODE_165) != std::string::npos && vrr_max >= 165 &&
++                          modes != m_fs3d_165_failed;
++        support_fs3d = fast || modes.find(FS3D_MODE) != std::string::npos;
++        m_fs3d_mode = fast ? FS3D_MODE_165 : FS3D_MODE;
++        m_fs3d_hz = fast ? 165 : 120;
++      }
+     }
+     if (support_fs3d != m_support_fs3d)
+       CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D {}", __FUNCTION__,
+@@ -1190,14 +1202,23 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+  * eyes; the GUI is drawn once, the same for both. ALLM keeps the TV out of motion
+  * smoothing, which would blend the eyes. Leaving puts all of it back.
+  */
+-void CAMLDisplay::fs3d_apply(bool on, int vrr_rate)
++void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
+ {
+   if (on)
+   {
+     CSysfsPath(FS3D_ALLM, std::string("1"));
+-    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode",
+-               std::string(vrr_rate ? "game-vrr" : "none"));
+-    CSysfsPath(FS3D_VRR_RATE, vrr_rate);
++    if (vrr_rate)
++    {
++      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("game-vrr"));
++      // "<rate> 1": 1000/1001 of the rate, on a base mode without such a twin
++      CSysfsPath(FS3D_VRR_RATE, StringUtils::Format("{} {}", vrr_rate, vrr_frac ? 1 : 0));
++    }
++    else
++    {
++      // the rate goes back first: the kernel takes it only in game VRR
++      CSysfsPath(FS3D_VRR_RATE, 0);
++      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
++    }
+     CSysfsPath(FS3D_OSD, 0);
+   }
+   else
+@@ -1223,6 +1244,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     fs3d_apply(false, 0);
+     m_fs3d_active = false;
+     m_fs3d_vrr_rate = 0;
++    m_fs3d_vrr_frac = false;
+     CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
+     return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+   }
+@@ -1234,13 +1256,17 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+ 
+   // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
+   // A 1000/1001 film rate takes the 119.88 Hz twin, so VRR lands on it exactly.
++  // On 1080p165 there is no twin: VRR is told the 1000/1001 rate itself.
++  const bool fast = m_fs3d_hz == 165;
++  const bool fracFilm = fps > 0 &&
++                        std::fabs(fps * 1.001f - std::round(fps * 1.001f)) < 0.01f &&
++                        std::fabs(fps - std::round(fps)) > 0.01f;
+   RESOLUTION_INFO base = res;
+-  base.strId = FS3D_MODE;
++  base.strId = m_fs3d_mode;
+   base.iScreenWidth = FS3D_WIDTH;
+   base.iScreenHeight = FS3D_HEIGHT;
+-  base.fRefreshRate = 120.0f;
+-  if (fps > 0 && std::fabs(fps * 1.001f - std::round(fps * 1.001f)) < 0.01f &&
+-      std::fabs(fps - std::round(fps)) > 0.01f)
++  base.fRefreshRate = static_cast<float>(m_fs3d_hz);
++  if (!fast && fracFilm)
+     base.fRefreshRate = FractionalRate(120);
+ 
+   // the 120/119.88 twins share a mode name: switch when the policy differs
+@@ -1256,11 +1282,20 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
+   if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
+   {
+-    CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, FS3D_MODE);
++    CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, m_fs3d_mode);
++    if (fast)
++    {
++      // back to 1080p120, which it also has, until the sink's modes change
++      m_fs3d_165_failed = m_amlDRMUtils->aml_get_drmDevice_modes();
++      m_fs3d_mode = FS3D_MODE;
++      m_fs3d_hz = 120;
++      return set_fs3d_resolution(res, framebuffer_name, stereo_mode, true, hotplug_mode_switch);
++    }
+     if (m_fs3d_active)
+       fs3d_apply(false, 0);
+     m_fs3d_active = false;
+     m_fs3d_vrr_rate = 0;
++    m_fs3d_vrr_frac = false;
+     // until the sink is read again: the film is not held back waiting for it
+     m_support_fs3d = false;
+     return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+@@ -1269,21 +1304,39 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   // The largest even multiple of the film rate the base carries. vrr_rate is in
+   // the base mode's nominal units (the driver scales the base line rate by it),
+   // so on the 119.88 Hz twin 9600 is 95.904 Hz.
+-  int multiple = fps > 0 ? static_cast<int>(base.fRefreshRate * 1.0001f / fps) : 0;
+-  multiple -= multiple % 2;
+-  const int vrr_rate = multiple >= 2 && fps * multiple >= 40.0f
+-                           ? static_cast<int>(fps * multiple / base.fRefreshRate * 12000.0f + 0.5f)
+-                           : 0;
++  // On 1080p165 vrr_rate is the rate itself, with the 1000/1001 flag, and the
++  // multiple stays within 120 Hz: more would shorten the time with one eye.
++  int vrr_rate = 0;
++  bool vrr_frac = false;
++  if (fast)
++  {
++    const float fpsNom = fracFilm ? std::round(fps * 1.001f) : fps;
++    int multiple = fpsNom > 0 ? static_cast<int>(120.5f / fpsNom) : 0;
++    multiple -= multiple % 2;
++    if (multiple >= 2 && fpsNom * multiple >= 40.0f)
++    {
++      vrr_rate = static_cast<int>(std::lround(fpsNom * multiple * 100.0f));
++      vrr_frac = fracFilm;
++    }
++  }
++  else
++  {
++    int multiple = fps > 0 ? static_cast<int>(base.fRefreshRate * 1.0001f / fps) : 0;
++    multiple -= multiple % 2;
++    if (multiple >= 2 && fps * multiple >= 40.0f)
++      vrr_rate = static_cast<int>(fps * multiple / base.fRefreshRate * 12000.0f + 0.5f);
++  }
+   // the same mode and rate again need no rewrite: the sink can take one as a change
+-  if (switch_mode || vrr_rate != m_fs3d_vrr_rate)
+-    fs3d_apply(true, vrr_rate);
++  if (switch_mode || vrr_rate != m_fs3d_vrr_rate || vrr_frac != m_fs3d_vrr_frac)
++    fs3d_apply(true, vrr_rate, vrr_frac);
+   m_fs3d_vrr_rate = vrr_rate;
++  m_fs3d_vrr_frac = vrr_frac;
+   m_fs3d_res = res;
+   m_fs3d_fps = fps;
+   m_fs3d_active = true;
+ 
+-  CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D, {:.3f} fps at vrr_rate {}",
+-            __FUNCTION__, fps, vrr_rate);
++  CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D on {}, {:.3f} fps at vrr_rate {}{}",
++            __FUNCTION__, m_fs3d_mode, fps, vrr_rate, vrr_frac ? " (1000/1001)" : "");
+   return true;
+ }
+ 
+@@ -1324,6 +1377,7 @@ void CAMLDisplay::aml_fs3d_leave()
+   fs3d_apply(false, 0);
+   m_fs3d_active = false;
+   m_fs3d_vrr_rate = 0;
++  m_fs3d_vrr_frac = false;
+ }
+ 
+ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
+@@ -1591,6 +1645,11 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
+   RESOLUTION_INFO res;
+   for (std::vector<std::string>::const_iterator i = probe_str.begin(); i != probe_str.end(); ++i)
+   {
++    // VESA timings (1080p165 for HFR VRR) only on request, as before
++    std::string name = *i;
++    StringUtils::Trim(name);
++    if (!vesa.Exists() && StringUtils::EndsWith(name, "hzV"))
++      continue;
+     if (((StringUtils::StartsWith(i->c_str(), "4k2k")) && (aml_support_h264_4k2k() > AML_NO_H264_4K2K)) || !(StringUtils::StartsWith(i->c_str(), "4k2k")))
+     {
+       if (aml_mode_to_resolution(i->c_str(), &res))
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 9328a3c..5e08459 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -204,8 +204,10 @@ public:
+   bool aml_display_support_dv() const
+     { return m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE; }
+   bool aml_display_support_3d() const { return m_support_3d; }
+-  //! frame-sequential 3D: the sink sees 2D 1080p 120 Hz, the eyes alternate per vsync
++  //! frame-sequential 3D: the sink sees 2D 1080p 120 Hz (or 165), the eyes alternate per vsync
+   static constexpr const char* FS3D_MODE = "1920x1080p120hz";
++  //! or 1080p 165 Hz, where the sink lists it: the same eyes, drawn in 5.6 ms not 8
++  static constexpr const char* FS3D_MODE_165 = "1920x1080p165hzV";
+   static constexpr int FS3D_WIDTH = 1920;
+   static constexpr int FS3D_HEIGHT = 1080;
+   static constexpr const char* FS3D_SWAP = "/sys/module/aml_media/parameters/fa_swap_eyes";
+@@ -227,7 +229,7 @@ public:
+ private:
+   bool set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
+     const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
+-  void fs3d_apply(bool on, int vrr_rate);
++  void fs3d_apply(bool on, int vrr_rate, bool vrr_frac = false);
+   static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
+   static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
+   static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
+@@ -246,4 +248,10 @@ private:
+   //! the check for a 3D left behind by a Kodi that died has been made
+   std::atomic<bool> m_fs3d_recovery_checked{false};
+   int m_fs3d_vrr_rate = 0;
++  bool m_fs3d_vrr_frac = false;
++  //! the base mode HFR VRR runs on, and its rate: 165 where the sink offers it
++  std::string m_fs3d_mode{FS3D_MODE};
++  int m_fs3d_hz = 120;
++  //! the sink's mode list when 1080p165 could not be set: not tried again on it
++  std::string m_fs3d_165_failed;
+ };

@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 00:30:13 -0400
+Subject: [PATCH] AML MVC: start at a picture with its own SPS and PPS
+
+A resume or a seek in Pacific Rim (3D Blu-ray remux, mk3d) that landed at
+12:11.773 never showed a picture: the MVC decoder took the IDR and the
+pictures after it but output none, and the player waited on it for good.
+The same film resumed half a second earlier played.
+
+The file's header (avcC + mvcC) carries a PPS for each view that differs
+from the ones in the stream (28ea805fcc03 / 284aadf300c0 against
+28ea83f300c0 / 284aad3f300c). About 60% of the IDRs repeat the stream's
+SPS and PPS, at most 0.84 s apart; the rest carry none and rely on the
+ones before. Played through, the decoder has the stream's. Opened or
+flushed at an IDR without them, it has only the header's, which the
+bitstream converter puts in front of that IDR, and with those the MVC
+decoder outputs nothing.
+
+So after an open, MVC pictures are dropped until one carries its own SPS,
+subset SPS and PPS (both views'), for two seconds of pictures at most; a
+file that never repeats them then starts from the header as before. A
+flush (seek, chapter) waits again only once the stream's own sets have
+turned out to differ from the header's (a set not found verbatim in the
+header): a file whose sets are the header's, or that has none, loses no
+pictures on a seek. Only MVC: H.264 and HEVC decode whatever IDR they
+start at.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 912ce5b..8d0a125 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -126,6 +126,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+   m_hints = hints;
+   m_hints.pClock = hints.pClock;
+ 
++  m_mvcParams = MvcParams::UNKNOWN;
++  m_mvcParamsWait = 0;
++  m_mvcParamsSkipped = 0;
+   m_nalLengthSize = 0;
+   m_streamMeta = {};
+   m_stripHdr10Plus = false;
+@@ -216,7 +219,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+       }
+ 
+       if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
++      {
+         m_pFormatName = "am-h264mvc";
++        m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
++      }
+       else
+         m_pFormatName = "am-h264";
+ 
+@@ -512,6 +518,92 @@ void CDVDVideoCodecAmlogic::Close(void)
+   m_opened = false;
+ }
+ 
++/*
++ * MVC remuxes can carry a stale PPS in their header (avcC/mvcC): on one Blu-ray
++ * remux both PPS of the header differed from the ones every in-stream SPS/PPS
++ * carried. The film's own sets reach the decoder from the stream and stay in use
++ * for the IDRs that repeat none, so playing on works; but a decoder opened or
++ * flushed at such an IDR has only the header's, the MVC decoder takes none of
++ * its pictures and the player waits on it for good (a resume or seek that lands
++ * there). So after an open, MVC pictures are held back until one carries its
++ * own SPS, subset SPS and PPS, at most about two seconds; a file that never
++ * repeats them then plays from the header as before. A flush waits again only
++ * when the stream's own sets have turned out to differ from the header's, so a
++ * file whose sets match the header, or that has none, loses nothing on a seek.
++ */
++int CDVDVideoCodecAmlogic::MvcParamsWaitLimit(const CDVDStreamInfo& hints)
++{
++  const double fps = hints.fpsrate > 0 && hints.fpsscale > 0
++                         ? static_cast<double>(hints.fpsrate) / hints.fpsscale
++                         : 24.0;
++  return std::max(1, static_cast<int>(fps * 2.0 + 0.5));
++}
++
++// Whether the picture carries SPS, subset SPS and PPS; notes whether they are
++// the header's (the converted header, as m_hints holds it, has them verbatim).
++bool CDVDVideoCodecAmlogic::MvcParamsScan(const uint8_t* data, uint32_t size)
++{
++  bool sps = false;
++  bool subsetSps = false;
++  bool pps = false;
++  bool own = false;
++  const uint8_t* header = m_hints.extradata.GetData();
++  const size_t headerSize = header ? m_hints.extradata.GetSize() : 0;
++  const int lengthSize = m_nalLengthSize > 0 ? m_nalLengthSize : 4;
++  for (uint32_t i = 0; i + lengthSize < size;)
++  {
++    uint32_t nalSize = 0;
++    for (int b = 0; b < lengthSize; b++)
++      nalSize = (nalSize << 8) | data[i + b];
++    i += lengthSize;
++    if (nalSize == 0 || nalSize > size - i)
++      break;
++    const uint8_t type = data[i] & 0x1f;
++    sps |= type == 7; // SPS
++    subsetSps |= type == 15; // the second view's SPS
++    pps |= type == 8; // PPS
++    if ((type == 7 || type == 15 || type == 8) &&
++        std::search(header, header + headerSize, data + i, data + i + nalSize) ==
++            header + headerSize)
++      own = true;
++    i += nalSize;
++  }
++  if (own && m_mvcParams != MvcParams::OWN)
++  {
++    CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: MVC stream carries parameter sets that "
++              "differ from its header's", __FUNCTION__);
++    m_mvcParams = MvcParams::OWN;
++  }
++  else if ((sps || subsetSps || pps) && m_mvcParams != MvcParams::OWN)
++    m_mvcParams = MvcParams::HEADER;
++  return sps && subsetSps && pps;
++}
++
++bool CDVDVideoCodecAmlogic::MvcParamsReady(const uint8_t* data, uint32_t size)
++{
++  if (MvcParamsScan(data, size))
++  {
++    if (m_mvcParamsSkipped)
++      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: MVC starts after {} pictures, at one with its "
++                "own SPS and PPS", __FUNCTION__, m_mvcParamsSkipped);
++    m_mvcParamsWait = 0;
++    return true;
++  }
++  if (++m_mvcParamsSkipped >= m_mvcParamsWait)
++  {
++    CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: no MVC picture with its own SPS and PPS in {}; "
++              "starting from the header's", __FUNCTION__, m_mvcParamsSkipped);
++    if (m_mvcParams == MvcParams::UNKNOWN)
++      m_mvcParams = MvcParams::NONE;
++    m_mvcParamsWait = 0;
++    return true;
++  }
++  if (m_mvcParamsSkipped == 1)
++    CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: MVC waits for a picture with its own SPS and "
++              "PPS", __FUNCTION__);
++  return false;
++}
++
+ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
+   // Enhancement-layer packets are sent with drop false, so taking the flag as it
+@@ -671,6 +763,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+       }
+       else
+       {
++        if (m_mvcParamsWait)
++        {
++          if (!MvcParamsReady(pData, iSize))
++          {
++            m_pendingMeta = m_streamMeta;
++            return true;
++          }
++        }
++        else if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') &&
++                 m_mvcParams != MvcParams::OWN)
++          MvcParamsScan(pData, iSize);
+         if (!m_bitstream->Convert(pData, iSize))
+         {
+           m_pendingMeta = m_streamMeta;
+@@ -867,6 +970,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
+ 
+   m_mpeg2_sequence_pts = 0;
+   m_has_keyframe = false;
++  if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && m_mvcParams == MvcParams::OWN)
++  {
++    m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
++    m_mvcParamsSkipped = 0;
++  }
+   m_seekPreroll.Reset();
+   m_metadataSequencer.Reset();
+   m_pendingMeta = m_streamMeta;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 13a2b5b..8ef04c2 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -125,6 +125,23 @@ private:
+   bool m_stripHdr10Plus{false};
+   bool m_dualLayer{false};
+   int m_nalLengthSize{0};
++  //! MVC: what the stream's own parameter sets have shown so far
++  enum class MvcParams
++  {
++    UNKNOWN, //!< none seen yet
++    HEADER, //!< the header's, byte for byte: a flush needs no wait
++    OWN, //!< some differ from the header's: a flush waits for them
++    NONE, //!< a wait found none: the stream does not repeat them
++  };
++  MvcParams m_mvcParams{MvcParams::UNKNOWN};
++  //! MVC: pictures held back after an open, or a flush of a stream with its
++  //! own parameter sets, until one carries them, and how many so far; 0 once
++  //! one has, or for other codecs
++  int m_mvcParamsWait{0};
++  int m_mvcParamsSkipped{0};
++  static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
++  bool MvcParamsScan(const uint8_t* data, uint32_t size);
++  bool MvcParamsReady(const uint8_t* data, uint32_t size);
+   double m_lastCommitPts{0.0};
+   //! Which decoded pictures still answer the player's drop request.
+   CAMLSeekPreroll m_seekPreroll;

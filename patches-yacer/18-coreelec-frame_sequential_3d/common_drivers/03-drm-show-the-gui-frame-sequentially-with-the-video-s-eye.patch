@@ -1,0 +1,320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:07:25 -0400
+Subject: [PATCH] drm: show the GUI frame-sequentially with the video's eye
+
+For frame-sequential 3D the GUI has to change eye with the video on every
+vsync. The legacy OSD driver had a frame-alternative mode; the DRM VPU
+pipeline the GUI goes through on S6 has none, and it writes the OSD
+registers only on an atomic commit, into a vsync RDMA table the hardware
+then replays every vsync (the DRM RDMA irq count rises by the refresh rate
+with no new config).
+
+With osd_fa_3d (aml_drm parameter) set to 1 (side by side) or 2 (top and
+bottom), the client draws both eyes into one framebuffer:
+- the primary plane on VPP0 scans out one half, so the scaler is set up
+  half to full by the usual path;
+- every commit writes the OSD fetch window for the eye the video layer
+  chose for the next frame, with the mode and the eye offset it was built
+  for, and always writes it so the window is in every table;
+- the VPU vsync irq, which runs after the video vsync handler on the
+  shared line, moves the window inside the armed table when the eye moves
+  on, in one pass over the table (rdma_table_patch_regs(), under
+  rdma_lock).
+A vsync the video handler dropped leaves the generation, so the GUI keeps
+the video's eye; with the video in 2D the GUI shows the first eye; a GFCD
+(AFBC/AFRC) plane is left alone.
+
+Measured on an S905X5: the window registers alternate between the two
+halves on successive vsyncs, on the eye the video shows.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/drm/meson_plane.c b/drivers/drm/meson_plane.c
+index eafb397..caa5791 100644
+--- a/drivers/drm/meson_plane.c
++++ b/drivers/drm/meson_plane.c
+@@ -363,6 +363,15 @@ meson_plane_position_calc(struct meson_vpu_osd_layer_info *plane_info,
+ 	plane_info->src_y = state->src_y >> 16;
+ 	plane_info->src_w = (state->src_w >> 16) & 0xffff;
+ 	plane_info->src_h = (state->src_h >> 16) & 0xffff;
++	/* frame-sequential 3D: the GUI holds both eyes, scan out one half */
++	if (crtc->index == 0) {
++		int fa = meson_osd_fa_mode();
++
++		if (fa == 1)
++			plane_info->src_w >>= 1;
++		else if (fa == 2)
++			plane_info->src_h >>= 1;
++	}
+ 
+ 	DRM_DEBUG("original source: src_x=%d, src_y=%d, src_w=%d, src_h=%d\n",
+ 		plane_info->src_x, plane_info->src_y, plane_info->src_w, plane_info->src_h);
+diff --git a/drivers/drm/meson_vpu.c b/drivers/drm/meson_vpu.c
+index 9205ce9..fcb59c5 100644
+--- a/drivers/drm/meson_vpu.c
++++ b/drivers/drm/meson_vpu.c
+@@ -170,6 +170,7 @@ static irqreturn_t am_meson_vpu_irq(int irq, void *arg)
+ 		return IRQ_NONE;
+ 
+ 	am_meson_crtc_handle_vsync(amcrtc);
++	meson_osd_fa_vsync(amcrtc->crtc_index);
+ 	amcrtc->priv->pan_async_commit_ran = false;
+ 
+ 	return IRQ_HANDLED;
+diff --git a/drivers/drm/meson_vpu_pipeline.h b/drivers/drm/meson_vpu_pipeline.h
+index 98dc2e1..64a35b1 100644
+--- a/drivers/drm/meson_vpu_pipeline.h
++++ b/drivers/drm/meson_vpu_pipeline.h
+@@ -75,6 +75,10 @@
+ 
+ extern u32 frame_seq[MESON_MAX_OSDS];
+ 
++/* frame-sequential 3D GUI, see meson_vpu_osd_mif.c */
++int meson_osd_fa_mode(void);
++void meson_osd_fa_vsync(int crtc_index);
++
+ enum meson_policy_id {
+ 	GFCD_ODD_SIZE = 0,
+ 	GFCD_GLOBAL_ALPHA = 1,
+diff --git a/drivers/drm/meson_vpu_util.c b/drivers/drm/meson_vpu_util.c
+index 5335565..11d5cbc 100644
+--- a/drivers/drm/meson_vpu_util.c
++++ b/drivers/drm/meson_vpu_util.c
+@@ -139,6 +139,19 @@ int meson_vpu_write_reg(u32 addr, u32 val)
+ #endif
+ }
+ 
++/* rewrite registers' values in the armed vsync table of one VPP */
++int meson_vpu_patch_regs(int vpp_index, const u32 *addr, const u32 *val, int n)
++{
++#ifdef CONFIG_AMLOGIC_MEDIA_RDMA
++	if (vpp_index < 0 || vpp_index >= RDMA_COUNT ||
++	    drm_vsync_rdma_handle[vpp_index] == -1)
++		return 0;
++	return rdma_table_patch_regs(drm_vsync_rdma_handle[vpp_index], addr, val, n);
++#else
++	return 0;
++#endif
++}
++
+ int meson_vpu_write_reg_bits(u32 addr, u32 val, u32 start, u32 len)
+ {
+ #ifdef CONFIG_AMLOGIC_MEDIA_RDMA
+diff --git a/drivers/drm/meson_vpu_util.h b/drivers/drm/meson_vpu_util.h
+index dd53121..694db93 100644
+--- a/drivers/drm/meson_vpu_util.h
++++ b/drivers/drm/meson_vpu_util.h
+@@ -32,6 +32,7 @@ struct osd_scope_s {
+ 
+ u32 meson_vpu_read_reg(u32 addr);
+ int meson_vpu_write_reg(u32 addr, u32 val);
++int meson_vpu_patch_regs(int vpp_index, const u32 *addr, const u32 *val, int n);
+ int meson_vpu_write_reg_bits(u32 addr, u32 val, u32 start, u32 len);
+ int meson_vpu1_write_reg_bits(u32 addr, u32 val, u32 start, u32 len);
+ int meson_vpu1_write_reg_bits_g12b(u32 addr, u32 val, u32 start, u32 len);
+diff --git a/drivers/drm/vpu-hw/meson_vpu_osd_mif.c b/drivers/drm/vpu-hw/meson_vpu_osd_mif.c
+index 49bcb33..aa7a4ad 100644
+--- a/drivers/drm/vpu-hw/meson_vpu_osd_mif.c
++++ b/drivers/drm/vpu-hw/meson_vpu_osd_mif.c
+@@ -24,6 +24,7 @@
+ #include "meson_vpu_reg.h"
+ #include "meson_vpu_util.h"
+ #include <linux/amlogic/media/registers/register.h>
++#include <linux/amlogic/media/video_sink/vpp.h>
+ 
+ u32 frame_seq[MESON_MAX_OSDS];
+ 
+@@ -1449,6 +1450,84 @@ static int osd_format_is_rgbx(u32 pixel_format)
+ 	return is_rgbx;
+ }
+ 
++/*
++ * Frame-sequential 3D GUI. The GUI framebuffer holds both eyes (1: side by
++ * side, 2: top and bottom), the plane scans out one half of it, and every
++ * vsync the fetch window moves to the half for the eye the video layer shows
++ * on that frame. A commit writes the window with the current eye; between
++ * commits the DRM table is replayed every vsync, so the vsync hook rewrites
++ * the window inside that table.
++ */
++static int osd_fa_3d;
++module_param(osd_fa_3d, int, 0664);
++MODULE_PARM_DESC(osd_fa_3d, "frame-sequential 3D GUI: 0 off, 1 side by side, 2 top and bottom");
++
++struct osd_fa_block {
++	bool valid;
++	bool vertical;			/* top and bottom: the eyes are rows apart */
++	u32 shift;			/* from the first eye's half to the second's */
++	u32 w1_reg;
++	u32 w2_reg;
++	struct osd_scope_s scope;	/* the first half */
++};
++
++static struct osd_fa_block osd_fa[MESON_MAX_OSDS];
++static DEFINE_SPINLOCK(osd_fa_lock);
++static int osd_fa_eye;
++static u32 osd_fa_gen;
++
++int meson_osd_fa_mode(void)
++{
++	return (osd_fa_3d == 1 || osd_fa_3d == 2) ? osd_fa_3d : 0;
++}
++
++static struct osd_scope_s osd_fa_scope(const struct osd_fa_block *b, int eye)
++{
++	struct osd_scope_s s = b->scope;
++
++	if (eye == 1 && b->vertical) {
++		s.v_start += b->shift;
++		s.v_end += b->shift;
++	} else if (eye == 1) {
++		s.h_start += b->shift;
++		s.h_end += b->shift;
++	}
++	return s;
++}
++
++/* from the VPU vsync irq, after the video layer chose the next frame's eye */
++void meson_osd_fa_vsync(int crtc_index)
++{
++	u32 adr[2 * MESON_MAX_OSDS], val[2 * MESON_MAX_OSDS];
++	struct osd_scope_s s;
++	unsigned long flags;
++	int eye, i, n = 0;
++	u32 gen;
++
++	if (crtc_index != 0 || !meson_osd_fa_mode())
++		return;
++	eye = amvideo_get_fa_eye(&gen);
++	if (eye < 0 || gen == osd_fa_gen)
++		return;
++	osd_fa_gen = gen;
++	if (eye > 1)
++		return;			/* blank frame: keep the last eye */
++	spin_lock_irqsave(&osd_fa_lock, flags);
++	osd_fa_eye = eye;
++	for (i = 0; i < MESON_MAX_OSDS; i++) {
++		if (!osd_fa[i].valid)
++			continue;
++		s = osd_fa_scope(&osd_fa[i], eye);
++		adr[n] = osd_fa[i].w1_reg;
++		val[n++] = (s.h_end << 16) | s.h_start;
++		adr[n] = osd_fa[i].w2_reg;
++		val[n++] = (s.v_end << 16) | s.v_start;
++	}
++	spin_unlock_irqrestore(&osd_fa_lock, flags);
++	if (n)
++		meson_vpu_patch_regs(0, adr, val, n);
++}
++
+ static void osd_set_state(struct meson_vpu_block *vblk,
+ 			  struct meson_vpu_block_state *state,
+ 			  struct meson_vpu_block_state *old_state)
+@@ -1498,6 +1577,9 @@ static void osd_set_state(struct meson_vpu_block *vblk,
+ 		process_unit = mvos->process_unit;
+ 		if (process_unit == GFCD_AFBC || process_unit == GFCD_AFRC) {
+ 			MESON_DRM_BLOCK("set gfcd %d.\n", process_unit);
++			/* the frame-sequential GUI moves the MIF window only */
++			if (vblk->index < MESON_MAX_OSDS)
++				osd_fa[vblk->index].valid = false;
+ 			osd_gfcd_axi_input_en(vblk, reg_ops, reg, vblk->index, 1);
+ 			osd_gfcd_dout_en(vblk, reg_ops, reg, vblk->index, 1);
+ 			if (osd->mali_src_en_switch)
+@@ -1518,6 +1600,9 @@ static void osd_set_state(struct meson_vpu_block *vblk,
+ 
+ 	flush_reg = osd_check_config(mvos, old_mvos);
+ 	MESON_DRM_BLOCK("flush_reg-%d index-%d\n", flush_reg, vblk->index);
++	/* frame-sequential 3D needs the window in every table, to move it */
++	if (meson_osd_fa_mode() && crtc_index == 0)
++		flush_reg = 1;
+ 	if (!flush_reg &&
+ 		meson_drm_read_reg(reg->viu_osd_tcolor_ag3) == frame_seq[vblk->index]) {
+ 		/*after v7 chips, always linear addr*/
+@@ -1582,6 +1667,29 @@ static void osd_set_state(struct meson_vpu_block *vblk,
+ 		osd_canvas_index[vblk->index] ^= 1;
+ 	}
+ 
++	if (vblk->index < MESON_MAX_OSDS &&
++	    (osd_fa[vblk->index].valid || meson_osd_fa_mode())) {
++		struct osd_fa_block *b = &osd_fa[vblk->index];
++		unsigned long flags;
++		int eye = amvideo_get_fa_eye(NULL);
++
++		spin_lock_irqsave(&osd_fa_lock, flags);
++		b->valid = meson_osd_fa_mode() && crtc_index == 0;
++		if (b->valid) {
++			if (eye == 0 || eye == 1)
++				osd_fa_eye = eye;
++			else if (eye < 0)
++				osd_fa_eye = 0;	/* video in 2D: the first eye */
++			b->vertical = meson_osd_fa_mode() == 2;
++			b->shift = b->vertical ? mvos->src_h : mvos->src_w;
++			b->w1_reg = reg->viu_osd_blk0_cfg_w1;
++			b->w2_reg = reg->viu_osd_blk0_cfg_w2;
++			b->scope = scope_src;
++			scope_src = osd_fa_scope(b, osd_fa_eye);
++		}
++		spin_unlock_irqrestore(&osd_fa_lock, flags);
++	}
++
+ 	osd_rpt_y_config(vblk, reg_ops, reg);
+ 	osd_input_size_config(vblk, reg_ops, reg, scope_src);
+ 	osd_color_config(vblk, reg_ops, reg, pixel_format, mvos->pixel_blend, afbc_en);
+diff --git a/drivers/media/common/rdma/rdma_mgr.c b/drivers/media/common/rdma/rdma_mgr.c
+index e2f77d1..94ac2c8 100644
+--- a/drivers/media/common/rdma/rdma_mgr.c
++++ b/drivers/media/common/rdma/rdma_mgr.c
+@@ -1430,6 +1430,40 @@ int rdma_write_reg(int handle, u32 adr, u32 val)
+ }
+ EXPORT_SYMBOL(rdma_write_reg);
+ 
++/*
++ * Rewrite in place the values the armed table gives registers adr[0..n-1]. A
++ * vsync table is replayed every vsync until the next rdma_config(), so the
++ * new values go out from the next vsync on. One pass over the table; returns
++ * how many entries were rewritten.
++ */
++int rdma_table_patch_regs(int handle, const u32 *adr, const u32 *val, int n)
++{
++	struct rdma_device_info *info = &rdma_info;
++	struct rdma_instance_s *ins;
++	unsigned long flags;
++	int i, k, hits = 0;
++
++	if (handle < 0 || handle >= RDMA_NUM || n <= 0)
++		return 0;
++	ins = &info->rdma_ins[handle];
++	spin_lock_irqsave(&rdma_lock, flags);
++	if (ins->rdma_table_addr && ins->rdma_table_mirror) {
++		for (i = 0; i < ins->rdma_write_count; i++) {
++			for (k = 0; k < n; k++) {
++				if (ins->rdma_table_mirror[i << 1] != adr[k])
++					continue;
++				ins->rdma_table_addr[(i << 1) + 1] = val[k];
++				ins->rdma_table_mirror[(i << 1) + 1] = val[k];
++				hits++;
++				break;
++			}
++		}
++	}
++	spin_unlock_irqrestore(&rdma_lock, flags);
++	return hits;
++}
++EXPORT_SYMBOL(rdma_table_patch_regs);
++
+ int rdma_write_reg_bits(int handle, u32 adr, u32 val, u32 start, u32 len)
+ {
+ 	int i, j = 0;
+diff --git a/include/linux/amlogic/media/rdma/rdma_mgr.h b/include/linux/amlogic/media/rdma/rdma_mgr.h
+index ccb8a99..6db05cb 100644
+--- a/include/linux/amlogic/media/rdma/rdma_mgr.h
++++ b/include/linux/amlogic/media/rdma/rdma_mgr.h
+@@ -72,6 +72,8 @@ u32 rdma_read_reg(int handle, u32 adr);
+ 
+ int rdma_write_reg(int handle, u32 adr, u32 val);
+ 
++int rdma_table_patch_regs(int handle, const u32 *adr, const u32 *val, int n);
++
+ int rdma_write_reg_bits(int handle, u32 adr, u32 val, u32 start, u32 len);
+ 
+ int rdma_clear(int handle);

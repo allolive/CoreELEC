@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 10:26:25 -0400
+Subject: [PATCH] HFR VRR: actions and infolabels for the 3D glasses delay and Invert
+
+A skin can offer the 3D glasses delay and the eye swap where it offers
+the audio and subtitle offsets (its stream select dialogs) rather than
+only inside the player's video settings:
+
+- Action fs3ddelay (273) opens the slider dialog for the 3D glasses
+  delay, as audiodelay does for the audio offset, with the setting's own
+  range and step. A change applies at once; it is a display setting, not
+  the film's, saved with the others when Kodi exits (as the volume is),
+  not on every step of the slider.
+- Action stereoinvert (274) swaps the eyes of the playing video (its
+  Invert stereoscopic 3D mode, saved with the film like the dialog's
+  toggle) and says which way it now is.
+- Player.Fs3dDelay shows the delay ("1300 µs") and the boolean
+  Player.StereoInvert whether the eyes are swapped, for button labels.
+
+Shared code: actions, infolabels and the player controller are generic
+Kodi; nothing here is Amlogic-specific.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
+index 0800996..723512a 100644
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -862,7 +862,7 @@ constexpr std::array<InfoMap, 7> integer_bools = {{
+ ///     <p>
+ ///   }
+ // clang-format off
+-constexpr std::array<InfoMap, 60> player_labels = {{
++constexpr std::array<InfoMap, 62> player_labels = {{
+     {"hasmedia",              PLAYER_HAS_MEDIA},
+     {"hasaudio",              PLAYER_HAS_AUDIO},
+     {"hasvideo",              PLAYER_HAS_VIDEO},
+@@ -899,6 +899,8 @@ constexpr std::array<InfoMap, 60> player_labels = {{
+     {"volume",                PLAYER_VOLUME},
+     {"subtitledelay",         PLAYER_SUBTITLE_DELAY},
+     {"audiodelay",            PLAYER_AUDIO_DELAY},
++    {"fs3ddelay",             PLAYER_FS3D_DELAY},
++    {"stereoinvert",          PLAYER_STEREO_INVERT},
+     {"chapter",               PLAYER_CHAPTER},
+     {"chaptercount",          PLAYER_CHAPTERCOUNT},
+     {"chaptername",           PLAYER_CHAPTERNAME},
+diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+index 8f38ea6..adc9765 100644
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -83,7 +83,9 @@ constexpr uint32_t PLAYER_SCENE_MARKERS              = 71;
+ constexpr uint32_t PLAYER_HAS_SCENE_MARKERS          = 72;
+ constexpr uint32_t PLAYER_BOOKMARKS                  = 73;
+ constexpr uint32_t PLAYER_HAS_BOOKMARKS              = 74;
+-// unused id 75 to 80
++constexpr uint32_t PLAYER_FS3D_DELAY                 = 75;
++constexpr uint32_t PLAYER_STEREO_INVERT              = 76;
++// unused id 77 to 80
+ 
+ // Keep player infolabels that work with offset and position together
+ constexpr uint32_t PLAYER_PATH                       = 81;
+diff --git a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
+index 905438e..044f66e 100644
+--- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
+@@ -28,6 +28,8 @@
+ #include "guilib/guiinfo/GUIInfoLabels.h"
+ #include "resources/LocalizeStrings.h"
+ #include "resources/ResourcesComponent.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
+ #include "utils/StringUtils.h"
+ #include "utils/URIUtils.h"
+ #include "utils/Variant.h"
+@@ -199,6 +201,12 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
+     case PLAYER_AUDIO_DELAY:
+       value = StringUtils::Format("{:2.3f} s", m_appPlayer->GetVideoSettings().m_AudioDelay);
+       return true;
++    case PLAYER_FS3D_DELAY:
++      value = StringUtils::Format(
++          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36514),
++          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++              CSettings::SETTING_VIDEOSCREEN_FS3DDELAY));
++      return true;
+     case PLAYER_CHAPTER:
+       value = StringUtils::Format("{:02}", m_appPlayer->GetChapter());
+       return true;
+@@ -508,6 +516,9 @@ bool CPlayerGUIInfo::GetBool(bool& value,
+     case PLAYER_IS_LIVE:
+       value = m_appPlayer->IsLiveStream();
+       return true;
++    case PLAYER_STEREO_INVERT:
++      value = m_appPlayer->GetVideoSettings().m_StereoInvert;
++      return true;
+     case PLAYER_PLAYING:
+       value = m_appPlayer->GetPlaySpeed() == 1.0f;
+       return true;
+diff --git a/xbmc/input/actions/ActionIDs.h b/xbmc/input/actions/ActionIDs.h
+index 16f1fdb..b784316 100644
+--- a/xbmc/input/actions/ActionIDs.h
++++ b/xbmc/input/actions/ActionIDs.h
+@@ -471,6 +471,12 @@ constexpr const int ACTION_DIALOG_SELECT_AUDIO = 271;
+ //! Open the dialog window to select a subtitle stream
+ constexpr const int ACTION_DIALOG_SELECT_SUBTITLE = 272;
+ 
++//! Show the slider for the 3D glasses delay (HFR VRR)
++constexpr const int ACTION_FS3D_DELAY = 273;
++
++//! Swap the eyes of the playing 3D video (its Invert stereoscopic 3D mode)
++constexpr const int ACTION_STEREO_INVERT = 274;
++
+ // Voice actions
+ constexpr const int ACTION_VOICE_RECOGNIZE = 300;
+ 
+diff --git a/xbmc/input/actions/ActionTranslator.cpp b/xbmc/input/actions/ActionTranslator.cpp
+index 242f63c..94d414a 100644
+--- a/xbmc/input/actions/ActionTranslator.cpp
++++ b/xbmc/input/actions/ActionTranslator.cpp
+@@ -60,6 +60,8 @@ constexpr auto ActionMappings = make_map<ActionName, ActionID>({
+     {"dialogselectvideo", ACTION_DIALOG_SELECT_VIDEO},
+     {"dialogselectaudio", ACTION_DIALOG_SELECT_AUDIO},
+     {"dialogselectsubtitle", ACTION_DIALOG_SELECT_SUBTITLE},
++    {"fs3ddelay", ACTION_FS3D_DELAY},
++    {"stereoinvert", ACTION_STEREO_INVERT},
+     {"playerdebug", ACTION_PLAYER_DEBUG},
+     {"playerdebugvideo", ACTION_PLAYER_DEBUG_VIDEO},
+     {"codecinfo", ACTION_PLAYER_PROCESS_INFO},
+diff --git a/xbmc/video/PlayerController.cpp b/xbmc/video/PlayerController.cpp
+index e585ae8..5498f64 100644
+--- a/xbmc/video/PlayerController.cpp
++++ b/xbmc/video/PlayerController.cpp
+@@ -29,6 +29,7 @@
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+ #include "settings/SubtitlesSettings.h"
++#include "settings/lib/Setting.h"
+ #include "utils/StringUtils.h"
+ #include "utils/Variant.h"
+ #include "video/PlayerControllerActions.h"
+@@ -38,6 +39,7 @@
+ #include "windowing/WinSystem.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ 
+ using namespace KODI;
+ using namespace UTILS;
+@@ -226,6 +228,33 @@ bool CPlayerController::OnAction(const CAction &action)
+         return true;
+       }
+ 
++      case ACTION_FS3D_DELAY:
++      {
++        // the setting's own range and step, the slider of its row in the video settings
++        const auto setting = std::static_pointer_cast<const CSettingInt>(
++            CServiceBroker::GetSettingsComponent()->GetSettings()->GetSetting(
++                CSettings::SETTING_VIDEOSCREEN_FS3DDELAY));
++        if (!setting)
++          return false;
++        ShowSlider(action.GetID(), 36513, static_cast<float>(setting->GetValue()),
++                   static_cast<float>(setting->GetMinimum()),
++                   static_cast<float>(setting->GetStep()),
++                   static_cast<float>(setting->GetMaximum()), true);
++        return true;
++      }
++
++      case ACTION_STEREO_INVERT:
++      {
++        CVideoSettings vs = appPlayer->GetVideoSettings();
++        vs.m_StereoInvert = !vs.m_StereoInvert;
++        appPlayer->SetVideoSettings(vs);
++        const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++        CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info, strings.Get(36536),
++                                              strings.Get(vs.m_StereoInvert ? 16041 : 16039),
++                                              DisplTime, false, MsgTime);
++        return true;
++      }
++
+       case ACTION_AUDIO_DELAY:
+       {
+         float videoAudioDelayRange = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAudioDelayRange;
+@@ -669,6 +698,19 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
+     std::string strValue = StringUtils::Format("{:.0f}px", slider->GetFloatValue());
+     slider->SetTextValue(strValue);
+   }
++  else if (m_sliderAction == ACTION_FS3D_DELAY)
++  {
++    const int value = static_cast<int>(std::lround(slider->GetFloatValue()));
++    slider->SetTextValue(StringUtils::Format(
++        CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36514), value));
++    // a display setting rather than the film's: it applies with or without a
++    // player, and is saved with the others when Kodi exits (as the volume is),
++    // not on every step of the slider
++    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++    if (settings->GetInt(CSettings::SETTING_VIDEOSCREEN_FS3DDELAY) != value)
++      settings->SetInt(CSettings::SETTING_VIDEOSCREEN_FS3DDELAY, value);
++    return;
++  }
+   else if (m_sliderAction == ACTION_VOLAMP_UP ||
+           m_sliderAction == ACTION_VOLAMP_DOWN ||
+           m_sliderAction == ACTION_VOLAMP)

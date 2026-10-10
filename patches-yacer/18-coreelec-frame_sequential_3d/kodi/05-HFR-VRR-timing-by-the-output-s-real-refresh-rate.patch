@@ -1,0 +1,339 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 17:30:20 -0400
+Subject: [PATCH] HFR VRR: timing by the output's real refresh rate
+
+In HFR VRR the output refreshes at an even multiple of the film rate
+(95.904 Hz for 23.976 fps) while Kodi's resolution, and GetFPS(), keep the
+film's rate. Everything that counts in refreshes took each one as 41.7 ms
+instead of 10.4: the measured pipeline of 2 refreshes was published as
+83.4 ms instead of 20.9, so the picture went out ~62 ms early; the
+renderer counted one refresh per frame instead of four; genlock folded its
+phase over the wrong period; the alignment the audio trim steers by was
+~31 ms off. Separately, advancedsettings' <latency><refresh> could not tell
+a 3D film from a 2D one at the same rate, while the TV's own delay differs
+a lot between the two (game mode).
+
+- CWinSystemBase::GetVsyncRate(): the rate the display refreshes at, the
+  resolution's (GetFPS) by default. The Amlogic window system returns the
+  output's real rate in HFR VRR, which CAMLDisplay keeps when it sets VRR.
+- Refresh-counting timing uses it: AMLLatency, the genlock rate and the
+  vsync liveness bound in AMLCodec, the frame-latency sample, the
+  renderer's frame time, refreshes-per-frame ratio and preroll lead, and
+  the buffer-count latency fallback.
+- Every GetLatencyTweak() lookup uses it too, so a latency can be given
+  for 3D alone, e.g. <refresh><min>95</min><max>121</max><delay>..</delay>,
+  and the renderer looks its tweak up again when the rate changes under
+  the same resolution (HFR VRR entered or left by the codec's request).
+- Left as it is: VideoSyncAML (only with "sync playback to display",
+  which the Amlogic window system turns off).
+
+Shared code: the window system, renderer and graphic context are generic
+Kodi; the renderer's frame timing has no platform hook, so it asks the
+window system, which answers GetFPS() everywhere else.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 41d41e0..bfa938a 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -103,7 +103,7 @@ void DrainVsyncKick()
+ // the kernel reports no missing vsync; this is the VideoSyncAML bound for the same flag
+ std::chrono::milliseconds VsyncLivenessBound()
+ {
+-  const float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++  const float fps = CServiceBroker::GetWinSystem()->GetVsyncRate();
+   return std::chrono::milliseconds(static_cast<int>(3000.0f / (fps > 1.0f ? fps : 60.0f)));
+ }
+ 
+@@ -3490,9 +3490,8 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
+     return;
+   }
+ 
+-  m_genlock.Update(
+-      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()), *clock,
+-      m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
++  m_genlock.Update(static_cast<double>(CServiceBroker::GetWinSystem()->GetVsyncRate()), *clock,
++                   m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+ }
+ 
+ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 9e7c8ad..d20efff 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -400,7 +400,9 @@ void CAMLLatency::Poll()
+     StandDown();
+   }
+ 
+-  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
++  // The display's own rate: in HFR VRR the vblanks counted below come at an
++  // even multiple of the resolution's.
++  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetVsyncRate());
+   if (rate <= 0.0)
+     return;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 73a4b2c..912ce5b 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -805,7 +805,7 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+ 
+   const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
+                          m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = winSystem->GetVsyncRate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index ed9fa4a..9b67846 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -129,7 +129,7 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
+   if (!m_pRenderer->BeginVideoPreroll(generation))
+     return false;
+   m_videoPreroll.Begin(generation, target);
+-  const double fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++  const double fps = CServiceBroker::GetWinSystem()->GetVsyncRate();
+   m_videoPrerollLead = std::max(100000.0, std::max(0.0, m_displayLatency) +
+                                            2.0 * DVD_TIME_BASE / std::max(1.0, fps) + 10000.0);
+   m_forceNext = false;
+@@ -456,7 +456,12 @@ void CRenderManager::FrameMove()
+ 
+     if (m_renderState == STATE_UNCONFIGURED)
+       return;
+-    else if (m_renderState == STATE_CONFIGURING)
++
++    // a rate the platform changed under the same resolution: the tweak follows
++    if (CServiceBroker::GetWinSystem()->GetVsyncRate() != m_latencyRefresh)
++      UpdateLatencyTweak();
++
++    if (m_renderState == STATE_CONFIGURING)
+     {
+       lock.unlock();
+       std::unique_lock threadLock(m_presentThreadLock);
+@@ -1052,7 +1057,8 @@ void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
+ 
+ void CRenderManager::UpdateLatencyTweak()
+ {
+-  float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++  float fps = CServiceBroker::GetWinSystem()->GetVsyncRate();
++  m_latencyRefresh = fps;
+   const RESOLUTION_INFO res = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+   const bool isHDREnabled = CServiceBroker::GetWinSystem()->GetOSHDRStatus() == HDR_STATUS::HDR_ON;
+   const bool isHDRUsed = isHDREnabled && (m_picture.hdrType != StreamHdrType::HDR_TYPE_NONE);
+@@ -1364,9 +1370,10 @@ void CRenderManager::PrepareNextRender()
+     return;
+ 
+   const double frameOnScreen = m_dvdClock.GetClock();
++  // a refresh, not a frame: the two differ where the output runs at a multiple
++  // of the resolution's rate
+   const double frametime =
+-      1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
+-      DVD_TIME_BASE;
++      1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetVsyncRate()) * DVD_TIME_BASE;
+ 
+   m_displayLatency = DVD_MSEC_TO_TIME(
+       m_latencyTweak +
+@@ -1541,7 +1548,7 @@ void CRenderManager::CheckEnableClockSync()
+       fps *= clockspeed;
+     }
+ 
+-    diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
++    diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetVsyncRate()) / fps;
+     refreshesPerFrame = diff;
+     if (diff < 1.0)
+       diff = 1.0 / diff;
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+index e6e9b35..f41f1f2 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+@@ -229,6 +229,9 @@ protected:
+   /// Display latency tweak value from AdvancedSettings for the current refresh rate
+   /// in milliseconds
+   std::atomic<double> m_latencyTweak{0.0};
++  /// The refresh rate m_latencyTweak was looked up with; the platform may change
++  /// it without a resolution change (GetVsyncRate)
++  std::atomic<float> m_latencyRefresh{0.0f};
+   /// Display latency updated in PrepareNextRender in DVD clock units, includes m_latencyTweak
+   double m_displayLatency = 0.0;
+   std::atomic_int m_videoDelay = {};
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 6ccc4ed..e3a4003 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -399,7 +399,7 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+ 
+   const bool isHDRUsed =
+       winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = winSystem->GetVsyncRate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+@@ -439,7 +439,7 @@ double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay)
+ 
+   const bool isHDRUsed =
+       winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = winSystem->GetVsyncRate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+diff --git a/xbmc/windowing/GraphicContext.cpp b/xbmc/windowing/GraphicContext.cpp
+index 0249ce4..d06301d 100644
+--- a/xbmc/windowing/GraphicContext.cpp
++++ b/xbmc/windowing/GraphicContext.cpp
+@@ -983,7 +983,8 @@ float CGraphicContext::GetDisplayLatency() const
+   if (latency < 0.0f)
+   {
+     // fallback
+-    latency = (CServiceBroker::GetWinSystem()->NoOfBuffers() + 1) / GetFPS() * 1000.0f;
++    latency = (CServiceBroker::GetWinSystem()->NoOfBuffers() + 1) /
++              CServiceBroker::GetWinSystem()->GetVsyncRate() * 1000.0f;
+   }
+ 
+   return latency;
+diff --git a/xbmc/windowing/WinSystem.cpp b/xbmc/windowing/WinSystem.cpp
+index d02084b..41350d5 100644
+--- a/xbmc/windowing/WinSystem.cpp
++++ b/xbmc/windowing/WinSystem.cpp
+@@ -314,6 +314,11 @@ CGraphicContext& CWinSystemBase::GetGfxContext() const
+   return *m_gfxContext;
+ }
+ 
++float CWinSystemBase::GetVsyncRate()
++{
++  return m_gfxContext->GetFPS();
++}
++
+ std::shared_ptr<CDPMSSupport> CWinSystemBase::GetDPMSManager()
+ {
+   return m_dpms;
+diff --git a/xbmc/windowing/WinSystem.h b/xbmc/windowing/WinSystem.h
+index 79df224..ea87c6f 100644
+--- a/xbmc/windowing/WinSystem.h
++++ b/xbmc/windowing/WinSystem.h
+@@ -125,6 +125,16 @@ public:
+    */
+   virtual float GetFrameLatencyAdjustment() { return 0.0; }
+ 
++  /*!
++   * \brief Get the rate the display refreshes at, in hertz
++   *
++   * The refresh rate of the current resolution, unless the platform runs the
++   * output at another rate than the mode Kodi set (a multiple of it). Timing
++   * that counts in refreshes asks this rather than \ref CGraphicContext::GetFPS,
++   * and the advancedsettings latency is chosen by it.
++   */
++  virtual float GetVsyncRate();
++
+   virtual bool Minimize() { return false; }
+   virtual bool Restore() { return false; }
+   virtual bool Hide() { return false; }
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index 8dbb244..d31670e 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -1245,6 +1245,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_active = false;
+     m_fs3d_vrr_rate = 0;
+     m_fs3d_vrr_frac = false;
++    m_fs3d_vsync_hz = 0.0;
+     CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
+     return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+   }
+@@ -1296,6 +1297,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_active = false;
+     m_fs3d_vrr_rate = 0;
+     m_fs3d_vrr_frac = false;
++    m_fs3d_vsync_hz = 0.0;
+     // until the sink is read again: the film is not held back waiting for it
+     m_support_fs3d = false;
+     return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+@@ -1331,6 +1333,12 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     fs3d_apply(true, vrr_rate, vrr_frac);
+   m_fs3d_vrr_rate = vrr_rate;
+   m_fs3d_vrr_frac = vrr_frac;
++  // Kodi's resolution keeps the film's rate, but the output refreshes at this
++  // one. On 1080p165 the 1000/1001 is VRR's own flag; on 1080p120 it is the
++  // twin's, vrr_rate being in its units. Without VRR, the base mode's rate.
++  const bool fracVsync = fast ? vrr_frac : frac != 0;
++  m_fs3d_vsync_hz = vrr_rate ? vrr_rate / 100.0 * (fracVsync ? 1000.0 / 1001.0 : 1.0)
++                             : static_cast<double>(base.fRefreshRate);
+   m_fs3d_res = res;
+   m_fs3d_fps = fps;
+   m_fs3d_active = true;
+@@ -1378,6 +1386,7 @@ void CAMLDisplay::aml_fs3d_leave()
+   m_fs3d_active = false;
+   m_fs3d_vrr_rate = 0;
+   m_fs3d_vrr_frac = false;
++  m_fs3d_vsync_hz = 0.0;
+ }
+ 
+ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 5e08459..54b0791 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -218,6 +218,9 @@ public:
+   bool aml_display_support_stereo() const;
+   //! frame-sequential 3D is on: the output is 1080p, whatever Kodi's resolution says
+   bool aml_display_fs3d_active() const { return m_fs3d_active; }
++  //! the rate the output really refreshes at while frame-sequential 3D is on
++  //! (an even multiple of the film rate, not Kodi's resolution's), else 0
++  double aml_display_fs3d_vsync_rate() const { return m_fs3d_vsync_hz; }
+   //! frame-sequential 3D should be on: HFR VRR, supported, and a 3D film playing
+   bool aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const;
+   //! frame-sequential 3D is on for this resolution of Kodi's and this film rate
+@@ -249,6 +252,7 @@ private:
+   std::atomic<bool> m_fs3d_recovery_checked{false};
+   int m_fs3d_vrr_rate = 0;
+   bool m_fs3d_vrr_frac = false;
++  std::atomic<double> m_fs3d_vsync_hz{0.0};
+   //! the base mode HFR VRR runs on, and its rate: 165 where the sink offers it
+   std::string m_fs3d_mode{FS3D_MODE};
+   int m_fs3d_hz = 120;
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 6d4c57d..9fbcefc 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -616,6 +616,12 @@ float CWinSystemAmlogic::GetDisplayLatency()
+   return CAMLLatencyStore::GetInstance().Get();
+ }
+ 
++float CWinSystemAmlogic::GetVsyncRate()
++{
++  const double fs3d = m_amlDisplay ? m_amlDisplay->aml_display_fs3d_vsync_rate() : 0.0;
++  return fs3d > 0.0 ? static_cast<float>(fs3d) : GetGfxContext().GetFPS();
++}
++
+ void CWinSystemAmlogic::RegisterRenderThread()
+ {
+   m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+@@ -645,7 +651,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+     return 0.0f;
+   };
+ 
+-  const double rate = GetGfxContext().GetFPS();
++  const double rate = GetVsyncRate();
+   if (rate <= 0.0)
+     return stand_down();
+ 
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+index ac225b8..2e7d5a8 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+@@ -72,6 +72,10 @@ public:
+   //! the display switches, instead of against a free-running clock.
+   float GetFrameLatencyAdjustment() override;
+ 
++  //! \brief In HFR VRR the output's real rate (an even multiple of the film
++  //! rate, while Kodi's resolution keeps the film's); else the resolution's.
++  float GetVsyncRate() override;
++
+   //! \brief Name the thread that schedules frames. Until this is called the
+   //! cached value is served to everyone, which is the base-class behaviour.
+   void RegisterRenderThread();

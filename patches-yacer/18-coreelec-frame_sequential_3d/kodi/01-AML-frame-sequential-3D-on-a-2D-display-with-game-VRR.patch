@@ -1,0 +1,925 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 23:07:25 -0400
+Subject: [PATCH] AML: HFR VRR, frame-sequential 3D on a 2D display with game VRR
+
+CoreELEC shows 3D only on a sink that declares HDMI 3D: support_3d gates
+the MVC demux, the stereo-mode switch and the video layer's 3D modes. A
+current TV declares none, so 3D files play in 2D (an MVC remux decodes its
+base view only), even though the box can show 3D frame-sequentially for
+active shutter glasses on any display with game VRR.
+
+Add a stereoscopic mode for it, HFR VRR, offered next to the others (Same
+as movie, Over/Under, Side by side) where the platform supports it. In it
+the GUI is drawn once, the same for both eyes, and only the video
+alternates them. The other modes keep their usual meaning.
+
+On Amlogic it is supported with no HDMI 3D, game VRR (vrr_min, as the
+kernel tests it), a 1080p 120 Hz mode and a kernel that reports the video
+layer's eye per vsync. In it:
+- the sink stays in 2D: 1080p 120 Hz (its 119.88 Hz twin for a 1000/1001
+  film rate) with ALLM and game VRR slowed to the largest even multiple of
+  the frame rate (24p at 96 Hz, 23.976 at 95.904, every frame twice to
+  each eye). Entering counts once the mode switch succeeded; a failed one
+  plays the film in 2D. Leaving always runs, also after the TV went away,
+  and a Kodi that died in it is cleaned up at the next start;
+- the video layer alternates the eyes from the source's own layout (side
+  by side, top and bottom, MVC) once the output has switched, and the film
+  is not shown before that;
+- the eyes swap for a right-eye-first source and for Kodi's "Swap
+  left/right eye", also mid-playback: MVC in the decoder (view_mode), the
+  others through the kernel's fa_swap_eyes, which the glasses follow;
+- it is on exactly while a 3D film plays in it: the video codec asks for
+  the output switch whenever that changes, or the film rate does (also
+  mid-playback, and whatever the refresh rate setting), and the window
+  system asks again when the player announces it stopped; the request
+  reads Kodi's resolution when it is handled; the
+  window stands while Kodi asks again for the resolution and film rate it
+  was entered with, and other stereo mode changes do not re-sync a sink
+  without HDMI 3D; quitting Kodi leaves it;
+- a TV re-syncing its HDMI link keeps the capability it had, so a film
+  does not drop out of 3D while it does;
+- the video layer's 3D state is written when it changes, also when the
+  output switches, and closing the decoder takes it back to 2D.
+
+Shared code, kept to what a new stereo mode needs: the mode, its name in the
+JSON-RPC schema and its label; the GUI drawn once in it; subtitles at screen
+depth in it, and an eye of a packed stereo bitmap subtitle scaled against
+one eye of the video, which the renderer does not crop to an eye.
+DVDDemuxFFmpeg and StereoscopicsManager: the checks CoreELEC's AML code put
+there widen from aml_display_support_3d to aml_display_support_stereo.
+
+Without HDMI 3D, stereo video is taken as stereo (both MVC views, the
+3D mode question, the preferred mode) only for a user who has chosen
+HFR VRR, as the preferred or the current mode: on a 2D TV with game VRR
+everyone else plays 3D files as 2D, as before. A kept HFR VRR re-applies
+a new film's rate. A Kodi that died in 3D leaves, on the next start, the
+video layer's frame alternation and eye swap off as well as VRR (checked
+once, on the first refresh, so a hotplug while entering 3D cannot take
+it down). The demuxer decides at open whether to read MVC's second view:
+choosing HFR VRR from the OSD during a film that opened in 2D gives 3D
+from the next film; with HFR VRR as the preferred mode, from the first.
+One eye
+of a packed subtitle is compared with one eye of the video in HFR VRR
+only. JSON-RPC 13.1001.0: the stereoscopic mode enum has hfr_vrr.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index b4340fb..1f05532 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22598,7 +22598,13 @@ msgctxt "#36511"
+ msgid "Checkerboard"
+ msgstr ""
+ 
+-#empty strings from id 36512 to 36519
++#. Stereoscopic 3D mode: one eye per refresh at a high refresh rate with VRR, for shutter glasses on a 2D display
++#: system/settings/settings.xml
++msgctxt "#36512"
++msgid "Active 3D for 120 Hz VRR displays"
++msgstr ""
++
++#empty strings from id 36513 to 36519
+ #end of reserved strings for 3d modes
+ 
+ #. Name of a setting, asking the user for the default playback mode (2D, 3D, ask) of stereoscopic videos
+diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
+index 0671422..15420ed 100644
+--- a/xbmc/application/Application.cpp
++++ b/xbmc/application/Application.cpp
+@@ -915,7 +915,9 @@ void CApplication::Render()
+ 
+   if (guiWillRender)
+   {
+-    if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RenderStereoMode::OFF)
++    const RenderStereoMode stereoMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
++    // HFR VRR alternates the eyes in the video layer; the GUI is drawn once
++    if (stereoMode != RenderStereoMode::OFF && stereoMode != RenderStereoMode::HFR_VRR)
+     {
+       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
+       hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index ded07ef..41d41e0 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -315,9 +315,14 @@ public:
+ #define MODE_3D_TO_2D_B         0x00000a02
+ #define MODE_3D_OUT_TB          0x00010000
+ #define MODE_3D_OUT_LR          0x00020000
++// frame-sequential output: the video layer shows one eye per vsync
++#define MODE_3D_OUT_FA_L_FIRST  0x00001000
++#define MODE_FORCE_3D_FA_LR     0x10000000
++#define MODE_FORCE_3D_FA_TB     0x20000000
+ 
+ #define PTS_FREQ        90000
+ #define UNIT_FREQ       96000
++
+ #define AV_SYNC_THRESH  PTS_FREQ*30
+ 
+ #define TRICKMODE_NONE  0x00
+@@ -2780,6 +2785,14 @@ void CAMLCodec::CloseDecoder()
+ 
+   SetPollDevice(-1);
+ 
++  // the next stream starts in 2D, whatever this one had the video layer do
++  if (m_fs3dMode != FS3D_UNSET)
++  {
++    aml_set_3d_video_mode(MODE_3D_DISABLE, false, 3);
++    CSysfsPath(CAMLDisplay::FS3D_SWAP, 0);
++    m_fs3dMode = FS3D_UNSET;
++  }
++
+   // never leave vcodec ff/rw or paused.
+   if (m_speed != DVD_PLAYSPEED_NORMAL)
+   {
+@@ -3786,6 +3799,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+     m_guiStereoMode = guiStereoMode;
+     update = true;
+   }
++  // the viewer's left/right swap, for frame-sequential 3D
++  const bool stereoInvert = m_processInfo.GetVideoSettings().m_StereoInvert;
++  if (m_stereoInvert != stereoInvert)
++  {
++    m_stereoInvert = stereoInvert;
++    update = true;
++  }
++  // HFR VRR switches the output on after the stereo mode has changed: work the
++  // video layer's mode out again when it does, or the video keeps the mode found
++  // before the switch, 2D, and nothing alternates.
++  const bool fs3dActive = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
++                              ->GetAmlDisplay()
++                              ->aml_display_fs3d_active();
++  if (m_fs3dActive != fs3dActive)
++  {
++    m_fs3dActive = fs3dActive;
++    update = true;
++  }
++  // HFR VRR is entered and left from here, whatever Kodi's refresh rate
++  // setting: ask for the output to switch while it is not as it should be (once,
++  // and again if that did not take), and show the film once it is on.
++  auto* fs3dDisplay =
++      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
++  const bool fs3dWanted = fs3dDisplay->aml_display_fs3d_wanted(m_guiStereoMode);
++  // on for the previous film of a playlist, at its rate, counts as not as it should be
++  if (fs3dWanted == m_fs3dActive && !(fs3dWanted && fs3dDisplay->aml_display_fs3d_stale()))
++    m_fs3dAsked = {};
++  else if (m_fs3dAsked == std::chrono::steady_clock::time_point{} ||
++           std::chrono::steady_clock::now() - m_fs3dAsked > std::chrono::seconds(3))
++  {
++    m_fs3dAsked = std::chrono::steady_clock::now();
++    CWinSystemAmlogic::RequestFs3dCheck();
++  }
++  const bool fs3dPending = fs3dWanted && !m_fs3dActive;
+   RenderStereoView guiStereoView = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
+   if (m_guiStereoView != guiStereoView)
+   {
+@@ -3830,7 +3877,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+   if (!update)
+   {
+     // mainvideo 'should' be showing already if we get here, make sure.
+-    ShowMainVideo(true);
++    ShowMainVideo(!fs3dPending);
+     return;
+   }
+ 
+@@ -3874,7 +3921,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+     dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
+   }
+ 
+-  if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
++  auto* amlDisplay =
++      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
++  if (amlDisplay->aml_display_support_3d())
+   {
+     int mvc_view_mode = 3;
+     switch (am_private->video_format)
+@@ -3904,6 +3953,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+         break;
+     }
+   }
++  // also once the capability went away, to take the video layer back to 2D
++  else if (amlDisplay->aml_display_support_fs3d() ||
++           (m_fs3dMode != FS3D_UNSET && m_fs3dMode != MODE_3D_DISABLE))
++  {
++    // HFR VRR: the video layer shows one eye per vsync, full screen, taking the
++    // eyes from the source's own layout. Any other stereo mode is plain Kodi.
++    const std::string& layout = m_processInfo.GetVideoStereoMode();
++    const bool hfr = m_guiStereoMode == RenderStereoMode::HFR_VRR &&
++                     amlDisplay->aml_display_fs3d_active();
++    const bool mvc = am_private->video_format == VFORMAT_H264MVC;
++    unsigned int mode = MODE_3D_DISABLE;
++    int mvc_view_mode = 3;
++
++    if (mvc)
++    {
++      // the decoder puts the requested view first: that is MVC's eye swap
++      mvc_view_mode = (m_hints.stereo_mode == "block_rl") != m_stereoInvert ? 2 : 3;
++      mode = hfr ? MODE_3D_ENABLE | MODE_3D_FA | MODE_3D_OUT_FA_L_FIRST
++                 : MODE_3D_ENABLE | MODE_3D_FA | MODE_3D_TO_2D_L;
++    }
++    else if (hfr && (layout == "left_right" || layout == "right_left"))
++      mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_LR | MODE_3D_OUT_FA_L_FIRST;
++    else if (hfr && (layout == "top_bottom" || layout == "bottom_top"))
++      mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_TB | MODE_3D_OUT_FA_L_FIRST;
++
++    // The output is 1080p while Kodi's resolution may be 4K.
++    if (amlDisplay->aml_display_fs3d_active() && display.Width() > 0 && display.Height() > 0)
++    {
++      const float xs = static_cast<float>(CAMLDisplay::FS3D_WIDTH) / display.Width();
++      const float ys = static_cast<float>(CAMLDisplay::FS3D_HEIGHT) / display.Height();
++      dst_rect.x1 *= xs;
++      dst_rect.x2 *= xs;
++      dst_rect.y1 *= ys;
++      dst_rect.y2 *= ys;
++    }
++
++    // Side by side and top and bottom alternate the halves the same way; a
++    // right-eye-first source or the viewer's swap only changes which eye each
++    // refresh carries, and the glasses follow that.
++    const bool rightFirst = layout == "right_left" || layout == "bottom_top";
++    const bool swap = !mvc && rightFirst != m_stereoInvert;
++
++    if (mode != m_fs3dMode || swap != m_fs3dSwap || mvc_view_mode != m_fs3dView)
++    {
++      CLog::Log(LOGDEBUG,
++                "CAMLCodec::SetVideoRect: frame-sequential 3D mode {:#x} ({}, gui {}, swap {})",
++                mode, layout, static_cast<int>(m_guiStereoMode), swap);
++      CSysfsPath(CAMLDisplay::FS3D_SWAP, swap ? 1 : 0);
++      aml_set_3d_video_mode(mode, false, mvc_view_mode);
++      m_fs3dMode = mode;
++      m_fs3dSwap = swap;
++      m_fs3dView = mvc_view_mode;
++    }
++  }
+ 
+ #if 1
+   std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
+@@ -3941,7 +4044,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+ 
+   // we only get called once gui has changed to something
+   // that would show video playback, so show it.
+-  ShowMainVideo(true);
++  ShowMainVideo(!fs3dPending);
+ }
+ 
+ void CAMLCodec::SetVideoRate(int videoRate)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 8858208..b2c64fe 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <chrono>
+ #include "AMLGenlock.h"
+ #include "DVDVideoCodec.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+@@ -166,6 +167,15 @@ private:
+   int              m_view_mode = -1;
+   RenderStereoMode m_guiStereoMode = RenderStereoMode::OFF;
+   RenderStereoView m_guiStereoView = RenderStereoView::OFF;
++  bool m_stereoInvert = false;
++  bool m_fs3dActive = false;
++  //! when the output was last asked to enter or leave HFR VRR
++  std::chrono::steady_clock::time_point m_fs3dAsked;
++  // the frame-sequential 3D state last given to the video layer
++  static constexpr unsigned int FS3D_UNSET = ~0u;
++  unsigned int m_fs3dMode = FS3D_UNSET;
++  bool m_fs3dSwap = false;
++  int m_fs3dView = -1;
+   float            m_zoom = -1.0f;
+   int              m_contrast = -1;
+   int              m_brightness = -1;
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 7491df9..3744c53 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2316,7 +2316,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+           st->m_description = av_dict_get(pStream->metadata, "title", NULL, 0)->value;
+ 
+         if (pStream->codecpar->codec_id == AV_CODEC_ID_H264 &&
+-            static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
++            static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_stereo())
+         {
+           if (CDVDCodecUtils::IsH264AnnexB(m_pFormatContext->iformat->name, pStream))
+           {
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+index 0a539d2..aad8bc7 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+@@ -14,6 +14,7 @@
+ #include "OverlayRendererUtil.h"
+ #include "RenderManager.h"
+ #include "ServiceBroker.h"
++#include "cores/DataCacheCore.h"
+ #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
+ #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySSA.h"
+ #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
+@@ -350,7 +351,20 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+     m_y = (0.5f * o.height + o.y) / o.source_height;
+ 
+     const float subRatio{static_cast<float>(o.source_width) / o.source_height};
+-    const float vidRatio{rSource.Width() / rSource.Height()};
++    float vidRatio{rSource.Width() / rSource.Height()};
++    // One eye cut from a packed stereo bitmap, with the video not cropped to an
++    // eye (HFR VRR, the GUI drawn once): compare it with one eye of the video.
++    if (o.m_stereoView != DVDOverlayStereoView::BOTH &&
++        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() ==
++            RenderStereoMode::HFR_VRR &&
++        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView() == RenderStereoView::OFF)
++    {
++      const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
++      if (layout == "left_right" || layout == "right_left")
++        vidRatio /= 2.0f;
++      else if (layout == "top_bottom" || layout == "bottom_top")
++        vidRatio *= 2.0f;
++    }
+ 
+     // We always consider aligning 4/3 subtitles to the video,
+     // for example SD DVB subtitles (4/3) must be stretched on fullhd video
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index 4359d7b..8d355c3 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -682,9 +682,10 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
+   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+ 
+   if (stereo_mode == RenderStereoMode::MONO ||
+-      stereo_mode == RenderStereoMode::OFF)
++      stereo_mode == RenderStereoMode::OFF ||
++      stereo_mode == RenderStereoMode::HFR_VRR)
+   {
+-    // 2D display, so there's no subtitle depth
++    // 2D display or a GUI drawn once, so there's no subtitle depth
+     return 0;
+   }
+ 
+diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
+index 788e541..5ca8dc7 100644
+--- a/xbmc/guilib/StereoscopicsManager.cpp
++++ b/xbmc/guilib/StereoscopicsManager.cpp
+@@ -85,6 +85,7 @@ static const struct StereoModeMap StringToGuiModeMap[] = {
+     {"anaglyph_yellow_blue", RenderStereoMode::ANAGLYPH_YELLOW_BLUE},
+     {"hardware_based", RenderStereoMode::HARDWAREBASED},
+     {"monoscopic", RenderStereoMode::MONO},
++    {"hfr_vrr", RenderStereoMode::HFR_VRR},
+     {}};
+ 
+ CStereoscopicsManager::CStereoscopicsManager()
+@@ -317,6 +318,9 @@ std::string CStereoscopicsManager::GetLabelForStereoMode(const RenderStereoMode
+     case RenderStereoMode::MONO:
+       msgId = 36509;
+       break;
++    case RenderStereoMode::HFR_VRR:
++      msgId = 36512;
++      break;
+     default:
+       msgId = 36502 + static_cast<int>(mode);
+   }
+@@ -592,7 +596,7 @@ void CStereoscopicsManager::OnStreamChange()
+ 
+   // early return if playback mode should be ignored and we're in no stereoscopic mode right now
+   if ((playbackMode == STEREOSCOPIC_PLAYBACK_MODE_IGNORE && mode == RenderStereoMode::OFF) ||
+-      !static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
++      !static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_stereo())
+     return;
+ 
+   if (!CStereoscopicsManager::IsVideoStereoscopic())
+diff --git a/xbmc/interfaces/json-rpc/schema/methods.json b/xbmc/interfaces/json-rpc/schema/methods.json
+index 9bf0f92..ebe0ea7 100644
+--- a/xbmc/interfaces/json-rpc/schema/methods.json
++++ b/xbmc/interfaces/json-rpc/schema/methods.json
+@@ -5572,7 +5572,8 @@
+           "hardware_based",
+           "anaglyph_cyan_red",
+           "anaglyph_green_magenta",
+-          "monoscopic"
++          "monoscopic",
++          "hfr_vrr"
+         ],
+         "required": true
+       }
+diff --git a/xbmc/interfaces/json-rpc/schema/types.json b/xbmc/interfaces/json-rpc/schema/types.json
+index 9d495ab..07c04ea 100644
+--- a/xbmc/interfaces/json-rpc/schema/types.json
++++ b/xbmc/interfaces/json-rpc/schema/types.json
+@@ -4312,7 +4312,8 @@
+           "anaglyph_cyan_red",
+           "anaglyph_green_magenta",
+           "anaglyph_yellow_blue",
+-          "monoscopic"
++          "monoscopic",
++          "hfr_vrr"
+         ]
+       },
+       "label": {
+diff --git a/xbmc/interfaces/json-rpc/schema/version.txt b/xbmc/interfaces/json-rpc/schema/version.txt
+index cf2784f..0cc5c4c 100644
+--- a/xbmc/interfaces/json-rpc/schema/version.txt
++++ b/xbmc/interfaces/json-rpc/schema/version.txt
+@@ -1 +1 @@
+-JSONRPC_VERSION 13.1000.0
++JSONRPC_VERSION 13.1001.0
+diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
+index 38fce27..d2d0f40 100644
+--- a/xbmc/rendering/RenderSystemTypes.h
++++ b/xbmc/rendering/RenderSystemTypes.h
+@@ -27,6 +27,8 @@ enum class RenderStereoMode
+   CHECKERBOARD,
+   HARDWAREBASED,
+   MONO,
++  // One eye per refresh at a high refresh rate, the GUI drawn once
++  HFR_VRR,
+   COUNT,
+ 
+   // Pseudo modes
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index 72f3168..edc2de8 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -5,11 +5,16 @@
+  *  See LICENSES/README.md for more information.
+  */
+ #include <drm_fourcc.h>
++#include <cmath>
++#include <cstdlib>
+ #include <fcntl.h>
+ #include <sys/ioctl.h>
+ #include <amcodec/codec.h>
+ 
+ #include "AMLDisplay.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
++#include "cores/DataCacheCore.h"
+ #include "filesystem/SpecialProtocol.h"
+ #include "platform/linux/SysfsPath.h"
+ #include "linux/fb.h"
+@@ -1083,6 +1088,67 @@ void CAMLDisplay::aml_refresh_display_caps()
+     support_3d = amhdmitx0_support_3d.Get<int>().value_or(0);
+ 
+   m_support_3d = support_3d;
++
++  // Frame-sequential 3D: a 2D sink that takes game VRR (the kernel's own test,
++  // vrr_min) and 1080p 120 Hz, and a kernel that alternates the eyes of both
++  // the video and the GUI on every vsync. A sink re-syncing its HDMI link reads
++  // disconnected with one dummy mode for a second or two: keep what it could do,
++  // or a 3D film drops to 2D and that mode switch makes the sink re-sync again.
++  if (aml_get_display_connected())
++  {
++    bool support_fs3d = false;
++    if (!support_3d && CSysfsPath(FS3D_VRR_RATE).Exists() &&
++        CSysfsPath(FS3D_OSD).Exists() && CSysfsPath("/sys/class/video/fa_sync").Exists())
++    {
++      CSysfsPath vrr_cap{"/sys/class/amhdmitx/amhdmitx0/vrr_cap"};
++      for (const auto& line : StringUtils::Split(vrr_cap.Get<std::string>().value_or(""), "\n"))
++      {
++        std::vector<std::string> kv = StringUtils::Split(line, ":");
++        if (kv.size() == 2 && StringUtils::Trim(kv[0]) == "vrr_min")
++          support_fs3d = std::atoi(StringUtils::Trim(kv[1]).c_str()) > 0;
++      }
++      if (support_fs3d)
++        support_fs3d = m_amlDRMUtils->aml_get_drmDevice_modes().find(FS3D_MODE) != std::string::npos;
++    }
++    if (support_fs3d != m_support_fs3d)
++      CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D {}", __FUNCTION__,
++                support_fs3d ? "available" : "not available");
++    m_support_fs3d = support_fs3d;
++  }
++
++  // A Kodi that died in 3D left the sink in game VRR, and the video layer
++  // alternating the eyes. Only on the first refresh, before this Kodi has
++  // entered 3D itself: a hotplug refresh while entering (game VRR set, not
++  // yet marked active) would take its own 3D down.
++  const bool first_refresh = !m_fs3d_recovery_checked.exchange(true);
++  if (first_refresh && !m_fs3d_active &&
++      StringUtils::StartsWith(
++          CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode").Get<std::string>().value_or(""),
++          "game"))
++  {
++    fs3d_apply(false, 0);
++    aml_set_3d_video_mode(0 /* MODE_3D_DISABLE */, false, 3);
++    CSysfsPath(FS3D_SWAP, 0);
++  }
++}
++
++// Without HDMI 3D the only stereo output is HFR VRR. Taking stereo video as
++// stereo then (both MVC views, the 3D mode dialog, the preferred mode) is for a
++// user who has chosen HFR VRR; on a 2D TV with game VRR everyone else keeps
++// playing 3D files as 2D, as before.
++bool CAMLDisplay::aml_display_support_stereo() const
++{
++  if (m_support_3d)
++    return true;
++  if (!m_support_fs3d)
++    return false;
++  const auto& component = CServiceBroker::GetSettingsComponent();
++  const auto settings = component ? component->GetSettings() : nullptr;
++  if (!settings)
++    return false;
++  const int hfrVrr = static_cast<int>(RenderStereoMode::HFR_VRR);
++  return settings->GetInt(CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE) == hfrVrr ||
++         settings->GetInt(CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE) == hfrVrr;
+ }
+ 
+ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
+@@ -1090,6 +1156,12 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+ {
+   bool result = false;
+ 
++  // Leaving runs even if the sink stopped offering frame-sequential 3D (TV
++  // switched off), so nothing is stranded.
++  if (m_fs3d_active || aml_display_fs3d_wanted(stereo_mode))
++    return set_fs3d_resolution(res, framebuffer_name, stereo_mode, force_mode_switch,
++                               hotplug_mode_switch);
++
+   if (aml_get_cpufamily_id() < AML_T7)
+   {
+     handle_display_stereo_mode(stereo_mode);
+@@ -1111,6 +1183,149 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+   return result;
+ }
+ 
++/*
++ * Frame-sequential 3D (HFR VRR). The sink keeps seeing a 2D 1080p 120 Hz signal,
++ * and game VRR slows it to the largest even multiple of the film rate it carries
++ * (24p at 96 Hz: each eye sees every frame twice). The video layer alternates the
++ * eyes; the GUI is drawn once, the same for both. ALLM keeps the TV out of motion
++ * smoothing, which would blend the eyes. Leaving puts all of it back.
++ */
++void CAMLDisplay::fs3d_apply(bool on, int vrr_rate)
++{
++  if (on)
++  {
++    CSysfsPath(FS3D_ALLM, std::string("1"));
++    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode",
++               std::string(vrr_rate ? "game-vrr" : "none"));
++    CSysfsPath(FS3D_VRR_RATE, vrr_rate);
++    CSysfsPath(FS3D_OSD, 0);
++  }
++  else
++  {
++    CSysfsPath(FS3D_OSD, 0);
++    CSysfsPath(FS3D_VRR_RATE, 0);
++    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
++    CSysfsPath(FS3D_ALLM, m_fs3d_allm.empty() ? std::string("0") : m_fs3d_allm);
++  }
++}
++
++bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
++  const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch)
++{
++  const bool enter = aml_display_fs3d_wanted(stereo_mode);
++
++  // the sink is never told about 3D
++  if (m_stereo_mode != RenderStereoMode::OFF)
++    handle_display_stereo_mode(RenderStereoMode::OFF);
++
++  if (!enter)
++  {
++    fs3d_apply(false, 0);
++    m_fs3d_active = false;
++    m_fs3d_vrr_rate = 0;
++    CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
++    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++  }
++
++  // The film rate: the video's own, or the refresh Kodi picked for it.
++  float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
++  if (fps <= 0)
++    fps = res.fRefreshRate;
++
++  // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
++  // A 1000/1001 film rate takes the 119.88 Hz twin, so VRR lands on it exactly.
++  RESOLUTION_INFO base = res;
++  base.strId = FS3D_MODE;
++  base.iScreenWidth = FS3D_WIDTH;
++  base.iScreenHeight = FS3D_HEIGHT;
++  base.fRefreshRate = 120.0f;
++  if (fps > 0 && std::fabs(fps * 1.001f - std::round(fps * 1.001f)) < 0.01f &&
++      std::fabs(fps - std::round(fps)) > 0.01f)
++    base.fRefreshRate = FractionalRate(120);
++
++  // the 120/119.88 twins share a mode name: switch when the policy differs
++  const int frac = base.fRefreshRate == std::floor(base.fRefreshRate) ? 0 : 1;
++  const bool twin = m_amlDRMUtils->aml_get_drmProperty("FRAC_RATE_POLICY",
++                                                      DRM_MODE_OBJECT_CONNECTOR) != frac;
++
++  if (!m_fs3d_active)
++  {
++    m_fs3d_allm = CSysfsPath(FS3D_ALLM).Get<std::string>().value_or("0");
++    StringUtils::Trim(m_fs3d_allm);
++  }
++  const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
++  if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
++  {
++    CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, FS3D_MODE);
++    if (m_fs3d_active)
++      fs3d_apply(false, 0);
++    m_fs3d_active = false;
++    m_fs3d_vrr_rate = 0;
++    // until the sink is read again: the film is not held back waiting for it
++    m_support_fs3d = false;
++    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++  }
++
++  // The largest even multiple of the film rate the base carries. vrr_rate is in
++  // the base mode's nominal units (the driver scales the base line rate by it),
++  // so on the 119.88 Hz twin 9600 is 95.904 Hz.
++  int multiple = fps > 0 ? static_cast<int>(base.fRefreshRate * 1.0001f / fps) : 0;
++  multiple -= multiple % 2;
++  const int vrr_rate = multiple >= 2 && fps * multiple >= 40.0f
++                           ? static_cast<int>(fps * multiple / base.fRefreshRate * 12000.0f + 0.5f)
++                           : 0;
++  // the same mode and rate again need no rewrite: the sink can take one as a change
++  if (switch_mode || vrr_rate != m_fs3d_vrr_rate)
++    fs3d_apply(true, vrr_rate);
++  m_fs3d_vrr_rate = vrr_rate;
++  m_fs3d_res = res;
++  m_fs3d_fps = fps;
++  m_fs3d_active = true;
++
++  CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D, {:.3f} fps at vrr_rate {}",
++            __FUNCTION__, fps, vrr_rate);
++  return true;
++}
++
++// HFR VRR is for a 3D film that is playing: the GUI on its own (playback
++// stopping, the mode chosen in the menus) and a 2D film stay in their resolution.
++bool CAMLDisplay::aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const
++{
++  if (!m_support_fs3d || stereo_mode != RenderStereoMode::HFR_VRR)
++    return false;
++  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++  if (!appPlayer || !appPlayer->IsPlayingVideo())
++    return false;
++  const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
++  return !layout.empty() && layout != "mono";
++}
++
++bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
++{
++  const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
++  return m_fs3d_active && (fps <= 0 || fps == m_fs3d_fps) &&
++         m_fs3d_res.iWidth == res.iWidth && m_fs3d_res.iHeight == res.iHeight &&
++         m_fs3d_res.iScreenWidth == res.iScreenWidth &&
++         m_fs3d_res.iScreenHeight == res.iScreenHeight &&
++         m_fs3d_res.fRefreshRate == res.fRefreshRate &&
++         (m_fs3d_res.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK);
++}
++
++bool CAMLDisplay::aml_display_fs3d_stale() const
++{
++  const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
++  return m_fs3d_active && fps > 0 && fps != m_fs3d_fps;
++}
++
++void CAMLDisplay::aml_fs3d_leave()
++{
++  if (!m_fs3d_active)
++    return;
++  fs3d_apply(false, 0);
++  m_fs3d_active = false;
++  m_fs3d_vrr_rate = 0;
++}
++
+ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
+ {
+   if (m_stereo_mode == RenderStereoMode::UNDEFINED)
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index ec554af..9328a3c 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -204,7 +204,33 @@ public:
+   bool aml_display_support_dv() const
+     { return m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE; }
+   bool aml_display_support_3d() const { return m_support_3d; }
++  //! frame-sequential 3D: the sink sees 2D 1080p 120 Hz, the eyes alternate per vsync
++  static constexpr const char* FS3D_MODE = "1920x1080p120hz";
++  static constexpr int FS3D_WIDTH = 1920;
++  static constexpr int FS3D_HEIGHT = 1080;
++  static constexpr const char* FS3D_SWAP = "/sys/module/aml_media/parameters/fa_swap_eyes";
++  //! 2D sink with game VRR, on a kernel that alternates the video's eyes per vsync
++  bool aml_display_support_fs3d() const { return m_support_fs3d; }
++  //! stereo video is to be handled as stereo: HDMI 3D, or frame-sequential
++  //! for a user who has chosen HFR VRR (preferred or current mode)
++  bool aml_display_support_stereo() const;
++  //! frame-sequential 3D is on: the output is 1080p, whatever Kodi's resolution says
++  bool aml_display_fs3d_active() const { return m_fs3d_active; }
++  //! frame-sequential 3D should be on: HFR VRR, supported, and a 3D film playing
++  bool aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const;
++  //! frame-sequential 3D is on for this resolution of Kodi's and this film rate
++  bool aml_display_fs3d_matches(const RESOLUTION_INFO& res) const;
++  //! frame-sequential 3D is on for another film rate than the playing one
++  bool aml_display_fs3d_stale() const;
++  //! leave frame-sequential 3D, if it is on (Kodi shutting down)
++  void aml_fs3d_leave();
+ private:
++  bool set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
++    const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
++  void fs3d_apply(bool on, int vrr_rate);
++  static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
++  static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
++  static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
+   std::unique_ptr<CAMLDRMUtils> m_amlDRMUtils;
+   bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
+   bool m_bHotPlug = false;
+@@ -212,4 +238,12 @@ private:
+   CHDRCapabilities m_hdr_caps;
+   bool m_is_widescreen = false;
+   bool m_support_3d = false;
++  std::atomic<bool> m_support_fs3d{false};
++  std::atomic<bool> m_fs3d_active{false};
++  std::string m_fs3d_allm;
++  RESOLUTION_INFO m_fs3d_res;
++  std::atomic<float> m_fs3d_fps{0.0f};
++  //! the check for a 3D left behind by a Kodi that died has been made
++  std::atomic<bool> m_fs3d_recovery_checked{false};
++  int m_fs3d_vrr_rate = 0;
+ };
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 6c03851..6d4c57d 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -15,6 +15,8 @@
+ #include <optional>
+ 
+ #include "ServiceBroker.h"
++#include "messaging/ApplicationMessenger.h"
++#include "interfaces/AnnouncementManager.h"
+ #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
+ #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
+ #include "cores/DataCacheCore.h"
+@@ -86,6 +88,8 @@ CWinSystemAmlogic::CWinSystemAmlogic()
+ 
+ CWinSystemAmlogic::~CWinSystemAmlogic()
+ {
++  if (auto announcements = CServiceBroker::GetAnnouncementManager())
++    announcements->RemoveAnnouncer(this);
+   MonitorStop();
+ }
+ 
+@@ -292,6 +296,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
+ {
+   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+ 
++  // a stopped film leaves HFR VRR, whatever Kodi's refresh rate settings
++  if (auto announcements = CServiceBroker::GetAnnouncementManager())
++    announcements->AddAnnouncer(this, ANNOUNCEMENT::Player);
++
+   RefreshDisplayCapabilities();
+ 
+   if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
+@@ -367,9 +375,44 @@ bool CWinSystemAmlogic::InitWindowSystem()
+ 
+ bool CWinSystemAmlogic::DestroyWindowSystem()
+ {
++  if (auto announcements = CServiceBroker::GetAnnouncementManager())
++    announcements->RemoveAnnouncer(this);
++  // the sink is not left in game VRR
++  if (m_amlDisplay)
++    m_amlDisplay->aml_fs3d_leave();
+   return true;
+ }
+ 
++namespace
++{
++void Fs3dCheckNow(void*)
++{
++  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
++  if (!winSystem)
++    return;
++  auto& gfxContext = winSystem->GetGfxContext();
++  gfxContext.SetVideoResolution(gfxContext.GetVideoResolution(), true);
++}
++
++KODI::MESSAGING::ThreadMessageCallback fs3dCheck{&Fs3dCheckNow, nullptr};
++} // namespace
++
++void CWinSystemAmlogic::RequestFs3dCheck()
++{
++  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1,
++                                             static_cast<void*>(&fs3dCheck));
++}
++
++void CWinSystemAmlogic::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
++                                 const std::string& sender,
++                                 const std::string& message,
++                                 const CVariant& data)
++{
++  if (flag == ANNOUNCEMENT::Player && message == "OnStop" && m_amlDisplay &&
++      m_amlDisplay->aml_display_fs3d_active())
++    RequestFs3dCheck();
++}
++
+ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
+                                     bool fullScreen,
+                                     RESOLUTION_INFO& res)
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+index 44f8355..ac225b8 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+@@ -6,6 +6,7 @@
+  *  See LICENSES/README.md for more information.
+  */
+ 
++#include "interfaces/IAnnouncer.h"
+ #include "AMLDisplay.h"
+ #include "DynamicDll.h"
+ 
+@@ -26,9 +27,18 @@
+ 
+ class IDispResource;
+ 
+-class CWinSystemAmlogic : public CWinSystemBase
++class CWinSystemAmlogic : public CWinSystemBase, public ANNOUNCEMENT::IAnnouncer
+ {
+ public:
++  //! Ask the main thread to set Kodi's resolution again, read when the request
++  //! is handled, so that the window code enters or leaves HFR VRR as it should.
++  static void RequestFs3dCheck();
++
++  void Announce(ANNOUNCEMENT::AnnouncementFlag flag,
++                const std::string& sender,
++                const std::string& message,
++                const CVariant& data) override;
++
+   CWinSystemAmlogic();
+   virtual ~CWinSystemAmlogic();
+ 
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+index 3c4c05a..27a726c 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -124,9 +124,17 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+ 
+   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
+   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
+-  bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);
++  // Without HDMI 3D, a stereo mode changes the output only by entering or
++  // leaving HFR VRR.
++  bool force_mode_switch_by_stereo_mode =
++      m_amlDisplay->aml_display_support_3d()
++          ? m_stereo_mode != stereo_mode
++          : m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) !=
++                m_amlDisplay->aml_display_fs3d_active();
+   bool force_mode_switch_by_fractional_rate = (cur_fractional_rate != fractional_rate);
+   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
++  // HFR VRR kept from one 3D film to the next: the new film's rate
++  const bool force_mode_switch_by_fs3d_rate = m_amlDisplay->aml_display_fs3d_stale();
+ 
+   // get current used resolution
+   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
+@@ -157,16 +165,25 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+     __FUNCTION__,
+     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
+ 
++  // In HFR VRR the output is 1080p 120 Hz whatever Kodi's resolution says, so
++  // the resolution it was entered with counts as the current one.
++  const bool fs3d_same = m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) &&
++                         m_amlDisplay->aml_display_fs3d_matches(res);
++  // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
++  if (fs3d_same)
++    force_mode_switch_by_fractional_rate = false;
++
+   // check if mode switch is needed
+-  if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
+-      current_resolution.iScreenWidth == res.iScreenWidth &&
+-      current_resolution.iScreenHeight == res.iScreenHeight && m_bFullScreen == fullScreen &&
+-      current_resolution.fRefreshRate == res.fRefreshRate &&
+-      (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
+-          (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+-      m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
++  if ((fs3d_same ||
++       (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
++        current_resolution.iScreenWidth == res.iScreenWidth &&
++        current_resolution.iScreenHeight == res.iScreenHeight &&
++        current_resolution.fRefreshRate == res.fRefreshRate &&
++        (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
++            (res.dwFlags & D3DPRESENTFLAG_MODEMASK))) &&
++      m_bFullScreen == fullScreen && m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
+       !force_mode_switch_by_hotplug && !force_mode_switch_by_fractional_rate &&
+-      !force_mode_switch_by_stereo_mode)
++      !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
+   {
+     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+     return true;
+@@ -181,7 +198,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+     m_force_mode_switch = true;
+     m_hotplug_mode_switch = true;
+   }
+-  else if (force_mode_switch_by_stereo_mode)
++  else if (force_mode_switch_by_stereo_mode || force_mode_switch_by_fs3d_rate)
+   {
+     m_force_mode_switch = true;
+   }
+@@ -690,5 +707,8 @@ bool CWinSystemAmlogicGLESContext::SupportsStereo(const RenderStereoMode mode) c
+     return true;
+   }
+ 
++  if (mode == RenderStereoMode::HFR_VRR)
++    return m_amlDisplay->aml_display_support_fs3d();
++
+   return CRenderSystemGLES::SupportsStereo(mode);
+ }
