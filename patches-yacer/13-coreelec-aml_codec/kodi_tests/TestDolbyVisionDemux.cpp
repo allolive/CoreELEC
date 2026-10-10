@@ -13,7 +13,9 @@ namespace
 {
 enum { AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_HEVC, AV_PKT_DATA_DOVI_CONF,
        AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVCOL_TRC_SMPTE2084,
-       AVCOL_TRC_ARIB_STD_B67, AVCOL_SPC_ICTCP, AVDISCARD_ALL, LOGINFO, LOGDEBUG };
+       AVCOL_TRC_ARIB_STD_B67, AVCOL_TRC_BT709, AVCOL_SPC_ICTCP, AVCOL_SPC_IPT_C2,
+       AVCOL_SPC_UNSPECIFIED, AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT709, AVCOL_PRI_BT2020,
+       AVCOL_PRI_BT709, AVCOL_RANGE_JPEG, AVCOL_RANGE_MPEG, AVDISCARD_ALL, LOGINFO, LOGDEBUG };
 enum class StreamType { VIDEO };
 enum class StreamHdrType { HDR_TYPE_NONE, HDR_TYPE_DOLBYVISION, HDR_TYPE_HDR10, HDR_TYPE_HLG };
 
@@ -60,6 +62,13 @@ const AVPacketSideData* av_packet_side_data_get(const AVPacketSideData* data, in
 }
 bool dvEnabled = true;
 bool aml_dolby_vision_enabled() { return dvEnabled; }
+// CoreELEC's VS10 / tone-mapping conversions (kodi 326cbc50 rewrites a stream's
+// colour fields for them in AddStream); all off here.
+bool aml_convert_to_dv_by_vs_engine(StreamHdrType) { return false; }
+bool aml_convert_to_hdr_by_vs_engine(StreamHdrType) { return false; }
+bool aml_convert_to_sdr_by_vs_engine(StreamHdrType) { return false; }
+bool aml_convert_to_hdr(StreamHdrType) { return false; }
+bool aml_convert_to_sdr(StreamHdrType) { return false; }
 struct CLog
 {
   template<typename... Args> static void Log(int, const char*, Args&&...) {}
@@ -74,6 +83,7 @@ struct CDemuxStreamVideo : CDemuxStream
 {
   StreamHdrType hdr_type{StreamHdrType::HDR_TYPE_NONE};
   int colorSpace{};
+  int colorPrimaries{}, colorTransferCharacteristic{}, colorRange{};
   bool isDualStream{}, isELStream{};
   AVDOVIDecoderConfigurationRecord dovi;
 };
