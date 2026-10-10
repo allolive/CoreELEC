@@ -27,59 +27,59 @@ Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 29d14f8..6a2759e 100644
+index 5f70f14..60abb3f 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25995,3 +25995,34 @@ msgstr ""
+@@ -26236,3 +26236,34 @@ msgstr ""
  msgctxt "#40804"
  msgid "{0:.1f} dB"
  msgstr ""
 +
 +#. Setting label for dialogue normalisation defeat
 +#: system/settings/settings.xml
-+msgctxt "#55001"
++msgctxt "#60050"
 +msgid "Dialogue normalisation defeat (0 dB)"
 +msgstr ""
 +
 +#. Setting help for dialogue normalisation defeat
 +#: system/settings/settings.xml
-+msgctxt "#55002"
++msgctxt "#60051"
 +msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
 +msgstr ""
 +
 +#. Dialogue normalisation defeat format: AC-3 and E-AC-3
 +#: system/settings/settings.xml
-+msgctxt "#55003"
++msgctxt "#60052"
 +msgid "AC-3 / E-AC-3"
 +msgstr ""
 +
 +#. Dialogue normalisation defeat format: TrueHD Atmos
 +#: system/settings/settings.xml
-+msgctxt "#55004"
++msgctxt "#60053"
 +msgid "TrueHD Atmos"
 +msgstr ""
 +
 +#. Dialogue normalisation defeat format: DTS family
 +#: system/settings/settings.xml
-+msgctxt "#55011"
++msgctxt "#60054"
 +msgid "DTS / DTS-HD / DTS:X"
 +msgstr ""
 +
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 6b2856b..d1e1888 100755
+index 9da3b71..fb3068e 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4143,6 +4143,25 @@
+@@ -4266,6 +4266,25 @@
            </dependencies>
            <control type="list" format="string" />
          </setting>
-+        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="55001" help="55002">
++        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="60050" help="60051">
 +          <level>2</level>
 +          <constraints>
 +            <options>
-+              <option label="55003">0</option> <!-- AC-3 / E-AC-3 -->
-+              <option label="55004">1</option> <!-- TrueHD Atmos -->
-+              <option label="55011">2</option> <!-- DTS -->
++              <option label="60052">0</option> <!-- AC-3 / E-AC-3 -->
++              <option label="60053">1</option> <!-- TrueHD Atmos -->
++              <option label="60054">2</option> <!-- DTS -->
 +            </options>
 +            <delimiter>,</delimiter>
 +            <minimumitems>0</minimumitems>
@@ -626,7 +626,7 @@ index acfa77d..562e5b6 100644
    bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
    unsigned int SyncAC3(uint8_t *data, unsigned int size);
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
-index 7636e3a..f4ab898 100644
+index 5b68af0..f852726 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 @@ -9,7 +9,11 @@
@@ -669,10 +669,10 @@ index 7636e3a..f4ab898 100644
    {
      case CAEStreamInfo::STREAM_TYPE_AC3:
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 97ff1f5..afbcfd8 100644
+index 90263e4..b6560f4 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -425,6 +425,7 @@ public:
+@@ -432,6 +432,7 @@ public:
    static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
    static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";

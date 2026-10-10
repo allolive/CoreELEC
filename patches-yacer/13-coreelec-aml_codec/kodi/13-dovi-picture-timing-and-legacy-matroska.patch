@@ -22,6 +22,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
 new file mode 100644
+index 0000000..43e16c4
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
 @@ -0,0 +1,37 @@
@@ -63,6 +64,7 @@ new file mode 100644
 +  return firstIsEL ? second : first;
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 704b408..73a4b2c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -15,6 +15,7 @@
@@ -73,7 +75,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
  #include "AMLCodec.h"
  #include "ServiceBroker.h"
  #include "utils/AMLUtils.h"
-@@ -420,8 +421,7 @@
+@@ -429,8 +430,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_processInfo.SetVideoDAR(m_hints.aspect);
  
    m_has_keyframe = false;
@@ -83,7 +85,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
  
    if (m_bitstream)
    {
-@@ -521,6 +521,8 @@
+@@ -530,6 +530,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    bool IsHdr10Plus = false;
    int data_added = false;
    bool dual_layer_converted = false;
@@ -92,7 +94,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
  
    if (pData)
    {
-@@ -566,25 +568,22 @@
+@@ -575,25 +577,22 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          // Both layers carry the same container timestamp, and 2 ms is well
          // under half a frame even at 120 fps without trusting a rate hint
          const double tolerance = DVD_MSEC_TO_TIME(2);
@@ -128,7 +130,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
            // both tracks arrive in decode order, so anything queued ahead of
            // the partner has lost its own
            while (m_packages.begin() != match)
-@@ -628,9 +627,6 @@
+@@ -637,9 +636,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
                }
              }
            }
@@ -138,7 +140,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
          }
  
          if (!dual_layer_converted)
-@@ -649,21 +645,14 @@
+@@ -658,21 +654,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
            while (m_packages.size() > MAX_DUAL_LAYER_PACKAGES)
              DropDualLayerFront();
  
@@ -167,7 +169,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
            }
            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
-@@ -711,11 +700,11 @@
+@@ -720,11 +709,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        else
          m_has_keyframe = true;
      }
@@ -181,7 +183,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
          m_hints.ptsinvalid = true;
  
        m_processInfo.SetDoviIsFEL(doviIsFEL);
-@@ -770,23 +759,23 @@
+@@ -779,23 +768,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      }
    }
  
@@ -212,9 +214,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/x
      m_pendingMeta = m_streamMeta;
    }
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 07f113f..13a2b5b 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -118,8 +118,7 @@
+@@ -118,8 +118,7 @@ private:
    static std::atomic<bool> m_InstanceGuard;
  
    std::list<DLDemuxPacket> m_packages;
@@ -225,6 +228,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbm
    uint32_t m_metadataToken{0};
    bool m_metaLeadLogged{false};
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 5cd43a0..2db7b1e 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -32,6 +32,7 @@
@@ -235,7 +239,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
  #include "utils/FontUtils.h"
  #include "utils/LanguageTag.h"
  #include "utils/StreamUtils.h"
-@@ -88,6 +89,35 @@
+@@ -88,6 +89,35 @@ static const struct StereoModeConversionMap WmvToInternalStereoModeMap[] =
  
  namespace
  {
@@ -271,7 +275,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
  const std::vector<std::string> font_mimetypes = {"application/x-truetype-font",
                                                   "application/vnd.ms-opentype",
                                                   "application/x-font-ttf",
-@@ -2068,19 +2098,45 @@
+@@ -2068,17 +2098,43 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
          st->colorTransferCharacteristic = pStream->codecpar->color_trc;
          st->colorRange = pStream->codecpar->color_range;
          st->hdr_type = DetermineHdrType(pStream);
@@ -290,8 +294,6 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
 +          CLog::Log(LOGINFO, "DVDDemuxFFmpeg::AddStream - legacy Matroska Dolby Vision "
 +                    "EL {} paired with BL {} from Blu-ray SOURCE_ID tags", streamIdx, legacyLayers->base);
 +        }
-         if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
-           st->colorSpace = AVCOL_SPC_ICTCP;
  
          // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
          const AVPacketSideData* sideData = nullptr;
@@ -318,7 +320,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
              CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
              return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
                     (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
-@@ -2100,11 +2156,13 @@
+@@ -2098,11 +2154,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
              {
                // force dovi side data to base layer stream
                auto it = std::find_if(m_streams.begin(), m_streams.end(),
@@ -333,7 +335,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
                    return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
                  });
  
-@@ -2154,9 +2212,9 @@
+@@ -2152,9 +2210,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
            {
              CDemuxStreamVideo *el_video_stream = nullptr;
              auto it = std::find_if(m_streams.begin(), m_streams.end(),
@@ -345,7 +347,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
                    return false;
  
                  return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
-@@ -3144,7 +3202,10 @@
+@@ -3187,7 +3245,10 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
  StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
  {
    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
@@ -358,6 +360,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/
    if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                pStream->codecpar->nb_coded_side_data,
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
+index dea8e35..2a88e43 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -19,6 +19,8 @@
@@ -369,7 +372,7 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
  
  extern "C"
  {
-@@ -638,8 +640,9 @@
+@@ -638,8 +640,9 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
            {
              uint32_t nal_buf_size = iSize;
              AVIOContext *pb;
@@ -381,14 +384,13 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
  
              if (avio_open_dyn_buf(&pb) < 0)
                return false;
-@@ -657,11 +660,11 @@
+@@ -657,11 +660,11 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
                size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
                buf += 4;
                nal_type = (buf[0] >> 1) & 0x3f;
--
--              if (nal_type == AVC_NAL_END_SEQUENCE)
 +              const uint32_t inputSize = size;
-+
+ 
+-              if (nal_type == AVC_NAL_END_SEQUENCE)
 +              if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
                {
 -                buf_eos = buf;
@@ -397,7 +399,7 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
                }
                else if (nal_type == HEVC_NAL_UNSPEC62)
                {
-@@ -693,12 +696,12 @@
+@@ -693,12 +696,12 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
                  CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: nal_type: {}, size: {}",
                    nal_type, size);
  
@@ -414,7 +416,7 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
  
              av_free(start);
  
-@@ -871,8 +874,10 @@
+@@ -871,8 +874,10 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
  
    if (pData_bl && pData_el)
    {
@@ -427,50 +429,47 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
  
      uint32_t bl_frame_nal_buf_size = iSize_bl;
      uint32_t el_frame_nal_buf_size = iSize_el;
-@@ -901,13 +906,10 @@
+@@ -901,13 +906,10 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
        buf += 4;
        nal_type = (buf[0] >> 1) & 0x3f;
  
 -      if (nal_type != AVC_NAL_END_SEQUENCE)
+-        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
 +      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
 +        endNals.emplace_back(buf, size);
-+      else
-         BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
--      else
+       else
 -      {
 -        buf_eos = buf;
 -        size_eos = size;
 -      }
++        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
        CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
          nal_type, size);
  
-@@ -926,8 +928,11 @@
+@@ -926,8 +928,11 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
        size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
        buf += 4;
        nal_type = (buf[0] >> 1) & 0x3f;
--
--      if (nal_type == HEVC_NAL_UNSPEC62)
 +      const uint32_t inputSize = size;
-+
+ 
+-      if (nal_type == HEVC_NAL_UNSPEC62)
 +      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
 +        elEndNals.emplace_back(buf, size);
 +      else if (nal_type == HEVC_NAL_UNSPEC62)
        {
          const uint8_t *nalu_62_data = buf;
  #ifdef HAVE_LIBDOVI
-@@ -956,12 +961,15 @@
+@@ -956,12 +961,15 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
          CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: EL nal_type: {}, size: {}",
            nal_type, size);
  
 -      buf += size;
--    }
--
++      buf += inputSize;
+     }
+ 
 -    // append end of sequence if exist
 -    if (buf_eos)
 -      BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_eos, size_eos, AVC_NAL_END_SEQUENCE);
-+      buf += inputSize;
-+    }
-+
 +    // Complete both layers and the RPU before either decoder sees a terminator.
 +    if (!m_convert_dovi)
 +      for (const auto& [data, size] : elEndNals)
@@ -482,6 +481,7 @@ diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.c
        av_free(start);
 diff --git a/xbmc/utils/DolbyVisionLegacy.h b/xbmc/utils/DolbyVisionLegacy.h
 new file mode 100644
+index 0000000..455d625
 --- /dev/null
 +++ b/xbmc/utils/DolbyVisionLegacy.h
 @@ -0,0 +1,70 @@

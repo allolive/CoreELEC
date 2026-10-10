@@ -43,51 +43,49 @@ telling them apart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 42aa788..fe2e8ac 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25367,7 +25367,27 @@ msgctxt "#39223"
+@@ -25381,6 +25381,24 @@ msgctxt "#60003"
  msgid "{0:d} nits"
  msgstr ""
  
--#empty strings from id 39224 to 39899
 +#. Label of setting "Player -> Subtitles -> Alter placement"
 +#: system/settings/settings.xml
-+msgctxt "#39224"
++msgctxt "#60004"
 +msgid "Alter placement"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Alter placement"
 +#: system/settings/settings.xml
-+msgctxt "#39225"
++msgctxt "#60005"
 +msgid "Where subtitles in the lower and upper part of the picture are shown. \"Black bars\" moves them to the edges of the display, into the bars of a wide film, with the first line in one position for the whole film, whether a subtitle has one line or two. Subtitles in the middle of the picture, or of an unusual size, stay where they are."
 +msgstr ""
 +
-+#empty strings from id 39226 to 39228
-+
 +#. Value of setting "Player -> Subtitles -> Alter placement": to the edges of the display
 +#: system/settings/settings.xml
-+msgctxt "#39229"
++msgctxt "#60006"
 +msgid "Black bars"
 +msgstr ""
 +
-+#empty strings from id 39230 to 39899
+ #empty strings from id 39218 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
- #. STR_LIST_AND_TWO
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index b4c3576..879f97a 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -903,6 +903,17 @@
-             <formatlabel>39223</formatlabel>
+             <formatlabel>60003</formatlabel>
            </control>
          </setting>
-+        <setting id="subtitles.placement" type="integer" label="39224" help="39225">
++        <setting id="subtitles.placement" type="integer" label="60004" help="60005">
 +          <level>1</level>
 +          <default>1</default> <!-- black bars -->
 +          <constraints>
 +            <options>
 +              <option label="351">0</option> <!-- Off -->
-+              <option label="39229">1</option> <!-- Black bars -->
++              <option label="60006">1</option> <!-- Black bars -->
 +            </options>
 +          </constraints>
 +          <control type="list" format="string" />
@@ -96,6 +94,7 @@ diff --git a/system/settings/settings.xml b/system/settings/settings.xml
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+index c68a1b7..d00bd9f 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 @@ -27,6 +27,7 @@
@@ -173,7 +172,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    }
  
    ReleaseUnused();
-@@ -199,22 +215,33 @@ void CRenderer::RenderHDROverlays(int idx)
+@@ -201,22 +217,33 @@ void CRenderer::RenderHDROverlays(int idx)
    const RENDER_ORDER renderOrder = gfxContext.GetRenderOrder();
    gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
  
@@ -220,7 +219,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    }
  
    gfxContext.SetRenderOrder(renderOrder);
-@@ -222,7 +249,7 @@ void CRenderer::RenderHDROverlays(int idx)
+@@ -224,7 +251,7 @@ void CRenderer::RenderHDROverlays(int idx)
    ReleaseUnused();
  }
  
@@ -229,7 +228,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
  {
    SRenderState state;
    state.x = o->m_x;
-@@ -307,10 +334,303 @@ void CRenderer::Render(COverlay* o)
+@@ -309,10 +336,303 @@ void CRenderer::Render(COverlay* o)
    }
  
    state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
@@ -533,7 +532,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
  bool CRenderer::HasVisibleOverlay(int idx) const
  {
    std::unique_lock lock(m_section);
-@@ -349,6 +669,12 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
+@@ -351,6 +671,12 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
      m_rv = view;
      OnViewChange();
    }
@@ -546,7 +545,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    m_rs = source;
    m_rd = dest;
  }
-@@ -356,6 +682,10 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
+@@ -358,6 +684,10 @@ void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
  void CRenderer::OnViewChange()
  {
    m_isSettingsChanged = true;
@@ -557,7 +556,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
  }
  
  void CRenderer::SetStereoMode(const std::string &stereomode)
-@@ -735,11 +1065,16 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
+@@ -712,11 +1042,16 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
      }
    }
  
@@ -574,7 +573,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
  
    m_textureCache[m_textureid] = overlay;
    o.m_textureid = m_textureid;
-@@ -801,6 +1136,7 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
+@@ -778,6 +1113,7 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
      case ObservableMessageSettingsChanged:
      {
        m_isSettingsChanged = true;
@@ -583,6 +582,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
      }
      case ObservableMessagePositionChanged:
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+index e539819..20dd2b4 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 @@ -195,7 +195,35 @@ namespace OVERLAY {
@@ -622,7 +622,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/core
      std::shared_ptr<COverlay> Convert(SElement& e);
      // Build a COverlay (cached or freshly created) from the libass output
      // already produced by PrepareOverlays. Does not call ass_render_frame.
-@@ -226,6 +254,10 @@ namespace OVERLAY {
+@@ -239,6 +267,10 @@ namespace OVERLAY {
      CRect m_rs; // Source size
      CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)
      std::string m_stereomode;
@@ -632,8 +632,9 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/core
 +    SPlacement m_textPlacement;
      // Current subtitle position
      int m_subtitlePosition{0};
-     // Current subtitle position from resolution info,
+     // The calibration line for MANUAL alignment and the frame height otherwise,
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index c6dc7be..038b69a 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -187,6 +187,7 @@ public:
@@ -645,6 +646,7 @@ diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
    static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
    static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
 diff --git a/xbmc/settings/SubtitlesSettings.cpp b/xbmc/settings/SubtitlesSettings.cpp
+index 91cef2f..ff6127a 100644
 --- a/xbmc/settings/SubtitlesSettings.cpp
 +++ b/xbmc/settings/SubtitlesSettings.cpp
 @@ -40,7 +40,8 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting

@@ -86,7 +86,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7404d0d8dd..31bafa0e17 100644
+index 7404d0d..31bafa0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -277,7 +277,9 @@ set(optional_deps Alsa>=1.0.27
@@ -100,69 +100,67 @@ index 7404d0d8dd..31bafa0e17 100644
                    LCMS2>=2.10
                    LircClient
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index cee6c88e1f..36db1c31ed 100644
+index fe2e8ac..64ac5a9 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25387,7 +25387,55 @@ msgctxt "#39229"
+@@ -25399,6 +25399,54 @@ msgctxt "#60006"
  msgid "Black bars"
  msgstr ""
  
--#empty strings from id 39230 to 39899
 +#. Label of setting "Player -> Subtitles -> Repair text subtitles"
 +#: system/settings/settings.xml
-+msgctxt "#39230"
++msgctxt "#60010"
 +msgid "Repair text subtitles"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Repair text subtitles"
 +#: system/settings/settings.xml
-+msgctxt "#39231"
++msgctxt "#60011"
 +msgid "Repair text subtitles as they are read: text in the wrong encoding, music notes that came out as other signs, and whatever the options below turn on. The words, the formatting and the start times are never changed."
 +msgstr ""
 +
 +#. Label of setting "Player -> Subtitles -> Remove advertising"
 +#: system/settings/settings.xml
-+msgctxt "#39232"
++msgctxt "#60012"
 +msgid "Remove advertising"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Remove advertising"
 +#: system/settings/settings.xml
-+msgctxt "#39233"
++msgctxt "#60013"
 +msgid "Remove the lines that advertise a subtitle site or a service, or credit whoever uploaded or synchronised the subtitle."
 +msgstr ""
 +
 +#. Label of setting "Player -> Subtitles -> Correct misread letters"
 +#: system/settings/settings.xml
-+msgctxt "#39234"
++msgctxt "#60014"
 +msgid "Correct misread letters"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Correct misread letters"
 +#: system/settings/settings.xml
-+msgctxt "#39235"
++msgctxt "#60015"
 +msgid "In subtitles made from images, correct the letters the conversion keeps misreading: \"wouId\" becomes \"would\", \"lnspector\" becomes \"Inspector\". Choose the languages to correct; each is installed as a small add-on. Only a mistake the subtitle repeats is corrected, only into a word of its language; names are left alone. With no language chosen, letters are left as they are."
 +msgstr ""
 +
 +#. Label of setting "Player -> Subtitles -> Correct broken timing"
 +#: system/settings/settings.xml
-+msgctxt "#39236"
++msgctxt "#60016"
 +msgid "Correct broken timing"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Correct broken timing"
 +#: system/settings/settings.xml
-+msgctxt "#39237"
++msgctxt "#60017"
 +msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
 +msgstr ""
 +
-+#empty strings from id 39238 to 39899
+ #empty strings from id 39218 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
- #. STR_LIST_AND_TWO
 diff --git a/cmake/modules/FindCld2.cmake b/cmake/modules/FindCld2.cmake
 new file mode 100644
-index 0000000000..8e4e9fd290
+index 0000000..8e4e9fd
 --- /dev/null
 +++ b/cmake/modules/FindCld2.cmake
 @@ -0,0 +1,28 @@
@@ -196,7 +194,7 @@ index 0000000000..8e4e9fd290
 +endif()
 diff --git a/cmake/modules/FindHunspell.cmake b/cmake/modules/FindHunspell.cmake
 new file mode 100644
-index 0000000000..513a776a6b
+index 0000000..513a776
 --- /dev/null
 +++ b/cmake/modules/FindHunspell.cmake
 @@ -0,0 +1,28 @@
@@ -229,19 +227,19 @@ index 0000000000..513a776a6b
 +  endif()
 +endif()
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index f4bd60af50..064c1bb56b 100755
+index 879f97a..b95d660 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -914,6 +914,41 @@
            </constraints>
            <control type="list" format="string" />
          </setting>
-+        <setting id="subtitles.repair" type="boolean" label="39230" help="39231">
++        <setting id="subtitles.repair" type="boolean" label="60010" help="60011">
 +          <level>1</level>
 +          <default>true</default>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="39232" help="39233">
++        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="60012" help="60013">
 +          <level>1</level>
 +          <default>true</default>
 +          <dependencies>
@@ -249,7 +247,7 @@ index f4bd60af50..064c1bb56b 100755
 +          </dependencies>
 +          <control type="toggle" />
 +        </setting>
-+        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="39234" help="39235">
++        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="60014" help="60015">
 +          <level>1</level>
 +          <default></default>
 +          <constraints>
@@ -263,7 +261,7 @@ index f4bd60af50..064c1bb56b 100755
 +            <multiselect>true</multiselect>
 +          </control>
 +        </setting>
-+        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="39236" help="39237">
++        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="60016" help="60017">
 +          <level>1</level>
 +          <default>true</default>
 +          <dependencies>
@@ -275,7 +273,7 @@ index f4bd60af50..064c1bb56b 100755
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
-index f31e59550f..3a73f590cf 100644
+index f31e595..3a73f59 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
 @@ -42,6 +42,22 @@ bool CDVDOverlayCodecText::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options
@@ -365,7 +363,7 @@ index f31e59550f..3a73f590cf 100644
  
  std::shared_ptr<CDVDOverlay> CDVDOverlayCodecText::GetOverlay()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
-index f3a0c44894..a3183da5ec 100644
+index f3a0c44..a3183da 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
 @@ -10,6 +10,7 @@
@@ -402,7 +400,7 @@ index f3a0c44894..a3183da5ec 100644
 +  bool m_prevLengthened{false};
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
-index 444a764962..096f4e66ad 100644
+index 444a764..096f4e6 100644
 --- a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
 @@ -40,6 +40,7 @@ void CDVDStreamInfo::Clear()
@@ -430,7 +428,7 @@ index 444a764962..096f4e66ad 100644
    if (withextradata && right.extraData)
    {
 diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.h b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
-index a4f1ab7514..fee6e46d5d 100644
+index a4f1ab7..fee6e46 100644
 --- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
 +++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
 @@ -53,6 +53,7 @@ public:
@@ -442,7 +440,7 @@ index a4f1ab7514..fee6e46d5d 100644
    int codecOptions;
  
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
-index 16d685a030..8e16dd69ed 100644
+index 16d685a..8e16dd6 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
 @@ -10,6 +10,8 @@ set(SOURCES DVDFactorySubtitle.cpp
@@ -464,7 +462,7 @@ index 16d685a030..8e16dd69ed 100644
              SubtitlesAdapter.h
              SubtitlesStyle.h)
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
-index 3fbe53f17b..e7721fd6af 100644
+index 3fbe53f..e7721fd 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
 @@ -10,6 +10,11 @@
@@ -533,7 +531,7 @@ index 3fbe53f17b..e7721fd6af 100644
    }
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
 new file mode 100644
-index 0000000000..3fdaa94aa1
+index 0000000..3fdaa94
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
 @@ -0,0 +1,2292 @@
@@ -2831,7 +2829,7 @@ index 0000000000..3fdaa94aa1
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
 new file mode 100644
-index 0000000000..1d67aa29ae
+index 0000000..1d67aa2
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
 @@ -0,0 +1,265 @@
@@ -3102,7 +3100,7 @@ index 0000000000..1d67aa29ae
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
 new file mode 100644
-index 0000000000..5d8b52113d
+index 0000000..5d8b521
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
 @@ -0,0 +1,158 @@
@@ -3266,7 +3264,7 @@ index 0000000000..5d8b52113d
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
 new file mode 100644
-index 0000000000..ee8d076796
+index 0000000..ee8d076
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
 @@ -0,0 +1,40 @@
@@ -3311,7 +3309,7 @@ index 0000000000..ee8d076796
 +};
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/settings/Settings.cpp b/xbmc/settings/Settings.cpp
-index f3bc48a369..55a0393915 100644
+index f3bc48a..55a0393 100644
 --- a/xbmc/settings/Settings.cpp
 +++ b/xbmc/settings/Settings.cpp
 @@ -14,6 +14,7 @@
@@ -3358,7 +3356,7 @@ index f3bc48a369..55a0393915 100644
    GetSettingsManager()->UnregisterCallback(&g_passwordManager);
    GetSettingsManager()->UnregisterCallback(&CRssManager::GetInstance());
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 59cfc83772..73022f264d 100644
+index 038b69a..1c4ced5 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -188,6 +188,10 @@ public:
@@ -3372,6 +3370,3 @@ index 59cfc83772..73022f264d 100644
    static constexpr auto SETTING_SUBTITLES_LANGUAGES = "subtitles.languages";
    static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
    static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
--- 
-2.53.0
-

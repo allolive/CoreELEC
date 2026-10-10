@@ -61,7 +61,7 @@ index 8f38ea6..adc9765 100644
  // Keep player infolabels that work with offset and position together
  constexpr uint32_t PLAYER_PATH                       = 81;
 diff --git a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
-index 905438e..044f66e 100644
+index 905438e..dff138c 100644
 --- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
 +++ b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
 @@ -28,6 +28,8 @@
@@ -79,7 +79,7 @@ index 905438e..044f66e 100644
        return true;
 +    case PLAYER_FS3D_DELAY:
 +      value = StringUtils::Format(
-+          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36514),
++          CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60032),
 +          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
 +              CSettings::SETTING_VIDEOSCREEN_FS3DDELAY));
 +      return true;
@@ -127,7 +127,7 @@ index 242f63c..94d414a 100644
      {"playerdebugvideo", ACTION_PLAYER_DEBUG_VIDEO},
      {"codecinfo", ACTION_PLAYER_PROCESS_INFO},
 diff --git a/xbmc/video/PlayerController.cpp b/xbmc/video/PlayerController.cpp
-index e585ae8..5498f64 100644
+index e585ae8..74776aa 100644
 --- a/xbmc/video/PlayerController.cpp
 +++ b/xbmc/video/PlayerController.cpp
 @@ -29,6 +29,7 @@
@@ -158,7 +158,7 @@ index e585ae8..5498f64 100644
 +                CSettings::SETTING_VIDEOSCREEN_FS3DDELAY));
 +        if (!setting)
 +          return false;
-+        ShowSlider(action.GetID(), 36513, static_cast<float>(setting->GetValue()),
++        ShowSlider(action.GetID(), 60031, static_cast<float>(setting->GetValue()),
 +                   static_cast<float>(setting->GetMinimum()),
 +                   static_cast<float>(setting->GetStep()),
 +                   static_cast<float>(setting->GetMaximum()), true);
@@ -188,7 +188,7 @@ index e585ae8..5498f64 100644
 +  {
 +    const int value = static_cast<int>(std::lround(slider->GetFloatValue()));
 +    slider->SetTextValue(StringUtils::Format(
-+        CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36514), value));
++        CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60032), value));
 +    // a display setting rather than the film's: it applies with or without a
 +    // player, and is saved with the others when Kodi exits (as the volume is),
 +    // not on every step of the slider

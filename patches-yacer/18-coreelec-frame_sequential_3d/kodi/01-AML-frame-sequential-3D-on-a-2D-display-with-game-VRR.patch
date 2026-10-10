@@ -66,24 +66,22 @@ only. JSON-RPC 13.1001.0: the stereoscopic mode enum has hfr_vrr.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index b4340fb..1f05532 100644
+index ff79250..beb2758 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -22598,7 +22598,13 @@ msgctxt "#36511"
+@@ -22614,6 +22614,12 @@ msgctxt "#36511"
  msgid "Checkerboard"
  msgstr ""
  
--#empty strings from id 36512 to 36519
 +#. Stereoscopic 3D mode: one eye per refresh at a high refresh rate with VRR, for shutter glasses on a 2D display
 +#: system/settings/settings.xml
-+msgctxt "#36512"
++msgctxt "#60030"
 +msgid "Active 3D for 120 Hz VRR displays"
 +msgstr ""
 +
-+#empty strings from id 36513 to 36519
+ #empty strings from id 36512 to 36519
  #end of reserved strings for 3d modes
  
- #. Name of a setting, asking the user for the default playback mode (2D, 3D, ask) of stereoscopic videos
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
 index 0671422..15420ed 100644
 --- a/xbmc/application/Application.cpp
@@ -100,7 +98,7 @@ index 0671422..15420ed 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index ded07ef..41d41e0 100644
+index d371c41..ad81df4 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -315,9 +315,14 @@ public:
@@ -118,7 +116,7 @@ index ded07ef..41d41e0 100644
  #define AV_SYNC_THRESH  PTS_FREQ*30
  
  #define TRICKMODE_NONE  0x00
-@@ -2780,6 +2785,14 @@ void CAMLCodec::CloseDecoder()
+@@ -2823,6 +2828,14 @@ void CAMLCodec::CloseDecoder()
  
    SetPollDevice(-1);
  
@@ -133,7 +131,7 @@ index ded07ef..41d41e0 100644
    // never leave vcodec ff/rw or paused.
    if (m_speed != DVD_PLAYSPEED_NORMAL)
    {
-@@ -3786,6 +3799,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3836,6 +3849,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      m_guiStereoMode = guiStereoMode;
      update = true;
    }
@@ -174,7 +172,7 @@ index ded07ef..41d41e0 100644
    RenderStereoView guiStereoView = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
    if (m_guiStereoView != guiStereoView)
    {
-@@ -3830,7 +3877,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3880,7 +3927,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
    if (!update)
    {
      // mainvideo 'should' be showing already if we get here, make sure.
@@ -183,7 +181,7 @@ index ded07ef..41d41e0 100644
      return;
    }
  
-@@ -3874,7 +3921,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3924,7 +3971,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
    }
  
@@ -194,7 +192,7 @@ index ded07ef..41d41e0 100644
    {
      int mvc_view_mode = 3;
      switch (am_private->video_format)
-@@ -3904,6 +3953,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3954,6 +4003,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
          break;
      }
    }
@@ -255,7 +253,7 @@ index ded07ef..41d41e0 100644
  
  #if 1
    std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
-@@ -3941,7 +4044,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3991,7 +4094,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
  
    // we only get called once gui has changed to something
    // that would show video playback, so show it.
@@ -265,7 +263,7 @@ index ded07ef..41d41e0 100644
  
  void CAMLCodec::SetVideoRate(int videoRate)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 8858208..b2c64fe 100644
+index 9338b86..55f082c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -276,7 +274,7 @@ index 8858208..b2c64fe 100644
  #include "AMLGenlock.h"
  #include "DVDVideoCodec.h"
  #include "cores/VideoPlayer/DVDStreamInfo.h"
-@@ -166,6 +167,15 @@ private:
+@@ -167,6 +168,15 @@ private:
    int              m_view_mode = -1;
    RenderStereoMode m_guiStereoMode = RenderStereoMode::OFF;
    RenderStereoView m_guiStereoView = RenderStereoView::OFF;
@@ -293,10 +291,10 @@ index 8858208..b2c64fe 100644
    int              m_contrast = -1;
    int              m_brightness = -1;
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 7491df9..3744c53 100644
+index 2db7b1e..aa68d2e 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -2316,7 +2316,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+@@ -2359,7 +2359,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
            st->m_description = av_dict_get(pStream->metadata, "title", NULL, 0)->value;
  
          if (pStream->codecpar->codec_id == AV_CODEC_ID_H264 &&
@@ -357,7 +355,7 @@ index 4359d7b..8d355c3 100644
    }
  
 diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
-index 788e541..5ca8dc7 100644
+index 788e541..1fc98f4 100644
 --- a/xbmc/guilib/StereoscopicsManager.cpp
 +++ b/xbmc/guilib/StereoscopicsManager.cpp
 @@ -85,6 +85,7 @@ static const struct StereoModeMap StringToGuiModeMap[] = {
@@ -373,7 +371,7 @@ index 788e541..5ca8dc7 100644
        msgId = 36509;
        break;
 +    case RenderStereoMode::HFR_VRR:
-+      msgId = 36512;
++      msgId = 60030;
 +      break;
      default:
        msgId = 36502 + static_cast<int>(mode);
@@ -739,7 +737,7 @@ index ec554af..9328a3c 100644
 +  int m_fs3d_vrr_rate = 0;
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 6c03851..6d4c57d 100644
+index d4ae6e6..5ff8f1a 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -15,6 +15,8 @@
@@ -771,7 +769,7 @@ index 6c03851..6d4c57d 100644
    RefreshDisplayCapabilities();
  
    if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
-@@ -367,9 +375,44 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -372,9 +380,44 @@ bool CWinSystemAmlogic::InitWindowSystem()
  
  bool CWinSystemAmlogic::DestroyWindowSystem()
  {

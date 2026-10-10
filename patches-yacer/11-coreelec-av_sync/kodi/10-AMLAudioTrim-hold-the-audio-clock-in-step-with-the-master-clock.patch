@@ -16,45 +16,46 @@ test, so the measurement is unchanged, and a genuine stand-down still latches.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 64ac5a9..ff79250 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -9123,6 +9123,42 @@ msgctxt "#14427"
+@@ -9143,6 +9143,42 @@ msgctxt "#14427"
  msgid "Player-Led"
  msgstr ""
  
 +#. Setting to trim the audio clock so sound and picture stay aligned
 +#: system/settings/settings.xml
-+msgctxt "#14316"
++msgctxt "#60020"
 +msgid "Audio passthrough A/V sync"
 +msgstr ""
 +
-+#. Help text of setting with label #14316 "Audio passthrough A/V sync"
++#. Help text of setting with label #60020 "Audio passthrough A/V sync"
 +#: system/settings/settings.xml
-+msgctxt "#14317"
++msgctxt "#60021"
 +msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. Has no effect on PCM output."
 +msgstr ""
 +
-+#. Option for setting #14316 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio passthrough A/V sync"
 +#: system/settings/settings.xml
-+msgctxt "#14318"
++msgctxt "#60022"
 +msgid "Light"
 +msgstr ""
 +
-+#. Option for setting #14316 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio passthrough A/V sync"
 +#: system/settings/settings.xml
-+msgctxt "#14319"
++msgctxt "#60023"
 +msgid "Medium"
 +msgstr ""
 +
-+#. Option for setting #14316 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio passthrough A/V sync"
 +#: system/settings/settings.xml
-+msgctxt "#14320"
++msgctxt "#60024"
 +msgid "Strong"
 +msgstr ""
 +
 +#. Group label for the CoreELEC passthrough audio settings
 +#: system/settings/settings.xml
-+msgctxt "#14321"
++msgctxt "#60025"
 +msgid "Passthrough Audio"
 +msgstr ""
 +
@@ -62,23 +63,24 @@ diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resour
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index b95d660..351af59 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4156,6 +4156,25 @@
+@@ -4190,6 +4190,25 @@
            <control type="toggle" />
          </setting>
        </group>
-+      <group id="2" label="14321">
-+        <setting id="coreelec.amlogic.audiolead" type="integer" label="14316" help="14317">
++      <group id="2" label="60025">
++        <setting id="coreelec.amlogic.audiolead" type="integer" label="60020" help="60021">
 +          <requirement>HAVE_AMCODEC</requirement>
 +          <level>2</level>
 +          <default>600</default>
 +          <constraints>
 +            <options>
 +              <option label="351">0</option>
-+              <option label="14318">50</option>
-+              <option label="14319">200</option>
-+              <option label="14320">600</option>
++              <option label="60022">50</option>
++              <option label="60023">200</option>
++              <option label="60024">600</option>
 +            </options>
 +          </constraints>
 +          <dependencies>
@@ -92,6 +94,7 @@ diff --git a/system/settings/settings.xml b/system/settings/settings.xml
        <visible>false</visible>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 new file mode 100644
+index 0000000..76a6e30
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -0,0 +1,722 @@
@@ -819,6 +822,7 @@ new file mode 100644
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 new file mode 100644
+index 0000000..a6e7afd
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 @@ -0,0 +1,135 @@
@@ -958,6 +962,7 @@ new file mode 100644
 +  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 6db929f..f7cd846 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -9,6 +9,7 @@
@@ -980,7 +985,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  std::mutex pollSyncMutex;
  
-@@ -2728,6 +2734,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2771,6 +2777,7 @@ void CAMLCodec::CloseDecoder()
    m_dll->codec_close(&am_private->vcodec);
    dumpfile_close(am_private);
    m_opened = false;
@@ -988,7 +993,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
    // After m_opened, so a frame still queued in the renderer cannot tick this
    // back to life: the measured path belongs to this decoder, and whatever plays
-@@ -2798,6 +2805,11 @@ void CAMLCodec::Reset()
+@@ -2848,6 +2855,11 @@ void CAMLCodec::Reset()
    CAMLLatency::GetInstance().Restart();
    m_genlock.Restart();
  
@@ -1000,7 +1005,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
    if (!m_opened)
-@@ -3223,12 +3235,114 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3273,12 +3285,114 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
        clock->GetSpeedAdjust() != 0.0)
    {
      CAMLLatency::GetInstance().NoteClockDisturbed();
@@ -1117,7 +1122,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  }
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
-@@ -3415,6 +3529,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3465,6 +3579,7 @@ void CAMLCodec::SetSpeed(int speed)
    // skipped the pause.
    CAMLLatency::GetInstance().NoteClockDisturbed();
    m_genlock.Restart();
@@ -1126,9 +1131,10 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index c7dbda7..ba6b37d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -144,6 +144,11 @@ private:
+@@ -145,6 +145,11 @@ private:
  
    DllLibAmCodec   *m_dll;
    std::atomic<bool> m_opened;
@@ -1141,6 +1147,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/Vide
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index c2c299f..1c8ffe8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -7,6 +7,8 @@
@@ -1257,6 +1264,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  
      if (absolute - m_since >= TIME_BETWEEN_REPORTS)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+index 262e4eb..d5e7bcd 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -9,6 +9,7 @@
@@ -1302,6 +1310,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
    double m_driftWalkUs{0.0};
    int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+index 3f67ff9..aa21f60 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -13,11 +13,13 @@ if(TARGET ffmpeg::libpostproc)
@@ -1321,6 +1330,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/
                        AMLLatency.h
                        DVDVideoCodecAmlogic.h)
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index 64c5138..7e0445f 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 @@ -438,6 +438,13 @@ void CProcessInfo::ResetAudioCodecInfo()
@@ -1338,6 +1348,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPl
    {
      m_dataCache->SetAudioDecoderName(m_audioDecoderName);
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index 5055f2e..cea0240 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -97,6 +97,13 @@ public:
@@ -1363,6 +1374,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlay
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index ac76d03..0790b0c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -786,6 +786,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
@@ -1374,10 +1386,11 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
        (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
            ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 1c4ced5..c378284 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -477,6 +477,7 @@ public:
-   static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2SDR = "coreelec.amlogic.hdr2sdr";
+@@ -479,6 +479,7 @@ public:
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DV2HDR = "coreelec.amlogic.dv2hdr";
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
 +  static constexpr auto SETTING_COREELEC_AMLOGIC_AUDIOLEAD = "coreelec.amlogic.audiolead";
@@ -1385,9 +1398,10 @@ diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
    static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 2932f9a..9288397 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -418,6 +418,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+@@ -469,6 +469,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
                            videoDelay);
  }
  
@@ -1431,9 +1445,10 @@ diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
  {
  // CRenderManager's verdict, handed over through CRendererAML::TakeClockSync().
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index 4b32b87..b3ec70f 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
-@@ -92,6 +92,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
+@@ -96,6 +96,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
  //! units, without the vblank term that only the frame loop can use. See
  //! CRenderManager::PrepareNextRender().
  double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
@@ -1442,6 +1457,7 @@ diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
  //! \brief The whole number of refreshes the display shows each frame for, from
  //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 7371dc7..d4ae6e6 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -40,6 +40,7 @@
@@ -1452,7 +1468,7 @@ diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogi
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -491,6 +492,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -504,6 +505,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(sink_dv);
  
@@ -1463,6 +1479,6 @@ diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogi
 +  if (setting)
 +    setting->SetVisible(CAMLAudioTrim::Supported());
 +
-   if (IsHDRDisplay())
-   {
-     CServiceBroker::GetSettingsComponent()
+   const bool use_hdr_module = IsHDRDisplay() && !sink_dv;
+   setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
+   if (setting)

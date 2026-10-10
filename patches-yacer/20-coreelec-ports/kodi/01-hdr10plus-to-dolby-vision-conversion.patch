@@ -22,62 +22,62 @@ pictures out of display order does not delay a scene change. Converted
 HDR10+ therefore uses no Dolby Vision temporal smoothing. Video that
 already carries Dolby Vision keeps its original metadata.
 
+On kodi 326cbc50 it is also exclusive with the new "Tone map Dolby
+Vision/HDR to SDR" and "Tone map Dolby Vision to HDR" settings, and the
+conversion does not arm while either is stored on.
+
 Co-authored-by: cpm-code <162544069+cpm-code@users.noreply.github.com>
 Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Co-authored-by: doppingkoala <doppingkoala@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 7337018..29d14f8 100644
+index f5f665e..5f70f14 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -8954,6 +8954,20 @@ msgctxt "#14304"
+@@ -8954,6 +8954,18 @@ msgctxt "#14304"
  msgid "RDS Radio"
  msgstr ""
  
-+#. Option for setting #14314 - generate a CM v4.0 Dolby Vision RPU
++#. Option for setting #60042 - generate a CM v4.0 Dolby Vision RPU
 +#: system/settings/settings.xml
-+msgctxt "#14305"
++msgctxt "#60040"
 +msgid "CM v4.0"
 +msgstr ""
 +
-+#. Option for setting #14314 - generate a CM v2.9 Dolby Vision RPU
++#. Option for setting #60042 - generate a CM v2.9 Dolby Vision RPU
 +#: system/settings/settings.xml
-+msgctxt "#14306"
++msgctxt "#60041"
 +msgid "CM v2.9"
 +msgstr ""
 +
-+#empty strings from id 14307 to 14309
-+
  #: system/settings/settings.xml
  msgctxt "#14310"
- msgid "Tone map SDR to Dolby Vision"
-@@ -8974,7 +8988,19 @@ msgctxt "#14313"
+ msgid "Tone map Dolby Vision/HDR to SDR"
+@@ -8994,6 +9006,18 @@ msgctxt "#14317"
  msgid "Intended for Dolby Vision enabled displays. HDR content will be tone mapped by Dolby Vision VS-Engine."
  msgstr ""
  
--#empty strings from id 14305 to 15010
 +#. Setting to convert HDR10+ dynamic metadata to Dolby Vision profile 8.1
 +#: system/settings/settings.xml
-+msgctxt "#14314"
++msgctxt "#60042"
 +msgid "Convert HDR10+ to Dolby Vision"
 +msgstr ""
 +
-+#. Help text of setting with label #14314
++#. Help text of setting with label #60042
 +#: system/settings/settings.xml
-+msgctxt "#14315"
++msgctxt "#60043"
 +msgid "Play HDR10+ video as Dolby Vision. Needs a TV that supports Dolby Vision. Video that already has its own Dolby Vision is left as it is.[CR][CR]CM v4.0 carries an average brightness that CM v2.9 has no field for, so it should be more accurate; not every TV uses it."
 +msgstr ""
 +
-+#empty strings from id 14322 to 15010
+ #empty strings from id 14318 to 15010
  
  #: system/settings/settings.xml
- msgctxt "#14400"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index edde044..6b2856b 100755
+index b6e8ad8..9da3b71 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4020,6 +4020,11 @@
+@@ -4105,6 +4105,11 @@
          <setting id="coreelec.amlogic.noisereduction" type="boolean" label="14402" help="14403">
            <requirement>HAVE_AMCODEC</requirement>
            <level>3</level>
@@ -89,16 +89,20 @@ index edde044..6b2856b 100755
            <default>false</default>
            <control type="toggle" />
          </setting>
-@@ -4029,8 +4034,16 @@
+@@ -4114,10 +4119,18 @@
            <control type="toggle" />
            <dependencies>
              <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
 -            <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
 -            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
 +            <dependency type="enable">
 +              <or>
 +                <condition setting="coreelec.amlogic.disabledolbyvision" operator="is">true</condition>
 +                <and>
++                  <condition setting="coreelec.amlogic.dv2sdr" operator="is">false</condition>
++                  <condition setting="coreelec.amlogic.dv2hdr" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.sdr2dv" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.hdr2dv" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</condition>
@@ -108,16 +112,20 @@ index edde044..6b2856b 100755
            </dependencies>
          </setting>
          <setting id="coreelec.amlogic.hdr2sdr" type="boolean" label="14406" help="14407">
-@@ -4039,8 +4052,16 @@
+@@ -4126,10 +4139,18 @@
            <control type="toggle" />
            <dependencies>
              <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
+-            <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
 -            <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
 -            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
 +            <dependency type="enable">
 +              <or>
 +                <condition setting="coreelec.amlogic.disabledolbyvision" operator="is">true</condition>
 +                <and>
++                  <condition setting="coreelec.amlogic.dv2sdr" operator="is">false</condition>
++                  <condition setting="coreelec.amlogic.dv2hdr" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.sdr2dv" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.hdr2dv" operator="is">false</condition>
 +                  <condition setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</condition>
@@ -126,17 +134,33 @@ index edde044..6b2856b 100755
 +            </dependency>
            </dependencies>
          </setting>
-         <setting id="coreelec.amlogic.sdr2dv" type="boolean" label="14310" help="14311">
-@@ -4060,13 +4081,27 @@
-           <dependencies>
-             <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
+         <setting id="coreelec.amlogic.dv2sdr" type="boolean" label="14310" help="14311">
+@@ -4142,6 +4163,7 @@
+             <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+           </dependencies>
+         </setting>
+@@ -4155,6 +4177,7 @@
+             <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.sdr2dv" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+           </dependencies>
+         </setting>
+@@ -4179,13 +4202,29 @@
              <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
+             <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
 +            <dependency type="enable" setting="coreelec.amlogic.hdr10plus2dv" operator="is">0</dependency>
              <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
            </dependencies>
          </setting>
 -        <setting id="coreelec.amlogic.disabledolbyvision" type="boolean" label="14422" help="14423">
-+        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="14314" help="14315">
++        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="60042" help="60043">
            <requirement>HAVE_AMCODEC</requirement>
 -          <default>false</default>
 -          <control type="toggle" />
@@ -144,8 +168,8 @@ index edde044..6b2856b 100755
 +          <constraints>
 +            <options>
 +              <option label="351">0</option>
-+              <option label="14305">1</option>
-+              <option label="14306">2</option>
++              <option label="60040">1</option>
++              <option label="60041">2</option>
 +            </options>
 +          </constraints>
 +          <control type="list" format="string" />
@@ -153,12 +177,14 @@ index edde044..6b2856b 100755
 +            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
 +            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
 +            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
 +            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
 +          </dependencies>
          </setting>
          <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
            <requirement>HAVE_AMCODEC</requirement>
-@@ -4074,15 +4109,19 @@
+@@ -4193,15 +4232,19 @@
            <constraints>
              <options>dv_led_modes</options>
            </constraints>
@@ -627,10 +653,10 @@ index 0000000..bfb32b8
 +} // namespace KODI::AML::HDR
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp
 new file mode 100644
-index 0000000..7a1b63e
+index 0000000..8483b16
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.cpp
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,213 @@
 +/*
 + *  Copyright (C) 2026 Team CoreELEC
 + *
@@ -698,8 +724,10 @@ index 0000000..7a1b63e
 +        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
 +            CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE) &&
 +        // The settings dependencies only grey the control out; the stored value
-+        // survives, so the Dolby Vision master switch and the three VS10 modes
-+        // that can claim this stream are re-checked here. sdr2dv is not among
++        // survives, so the Dolby Vision master switch and the VS10 modes that
++        // can claim this stream are re-checked here: SDR2HDR, HDR2SDR, HDR2DV,
++        // and DV2SDR / DV2HDR, which would turn the converted Dolby Vision back
++        // into SDR or HDR10. sdr2dv is not among
 +        // them: aml_convert_to_dv_by_vs_engine only reads it for
 +        // hdrType == HDR_TYPE_NONE, which the isPq gate above excludes. The
 +        // hdr2dv check is redundant today - its only mechanism is the hdrType
@@ -712,7 +740,11 @@ index 0000000..7a1b63e
 +        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
 +            CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR) &&
 +        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-+            CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV))
++            CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV) &&
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_DV2SDR) &&
++        !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++            CSettings::SETTING_COREELEC_AMLOGIC_DV2HDR))
 +    {
 +      m_convert = true;
 +      // CMv2.9 cannot represent an average below 819 (2.43 nits) and dark
@@ -840,6 +872,7 @@ index 0000000..7a1b63e
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
 new file mode 100644
+index 0000000..1fc5327
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusHook.h
 @@ -0,0 +1,70 @@
@@ -915,6 +948,7 @@ new file mode 100644
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
 new file mode 100644
+index 0000000..bcc8600
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.cpp
 @@ -0,0 +1,667 @@
@@ -1587,6 +1621,7 @@ new file mode 100644
 +} // namespace KODI::AML::HDR
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
 new file mode 100644
+index 0000000..2605eb4
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLHdr10PlusToDv.h
 @@ -0,0 +1,130 @@
@@ -1743,17 +1778,18 @@ index aa21f60..2b6cc23 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 72077cd..fd70c7a 100644
+index 8d0a125..956e7dc 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -18,5 +18,6 @@
+@@ -17,6 +17,7 @@
+ #include "DVDStreamInfo.h"
  #include "AMLDolbyVisionTiming.h"
  #include "AMLCodec.h"
 +#include "AMLHdr10PlusHook.h"
  #include "ServiceBroker.h"
  #include "utils/AMLUtils.h"
  #include "utils/HDRCapabilities.h"
-@@ -124,6 +125,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -132,6 +133,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_nalLengthSize = 0;
    m_streamMeta = {};
    m_stripHdr10Plus = false;
@@ -1761,7 +1797,7 @@ index 72077cd..fd70c7a 100644
    m_metadataSequencer.Reset();
  
    CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::Opening: codec {:d} profile:{:d} extra_size:{:d}", m_hints.codec, hints.profile, hints.extradata.GetSize());
-@@ -438,6 +440,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -454,6 +456,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
        if (m_hints.dovi.dv_profile > 0)
          m_streamMeta.flags.push_back("rpu-removed");
      }
@@ -1770,7 +1806,7 @@ index 72077cd..fd70c7a 100644
    }
  
    if (m_hints.contentLightMetadata)
-@@ -689,6 +693,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -791,6 +795,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        pData = m_bitstream->GetConvertBuffer();
        iSize = m_bitstream->GetConvertSize();
@@ -1779,7 +1815,7 @@ index 72077cd..fd70c7a 100644
        doviIsFEL = m_bitstream->GetDoviIsFEL();
        IsHdr10Plus = m_bitstream->GetIsHdrPlus();
        if (IsHdr10Plus && m_stripHdr10Plus &&
-@@ -717,6 +723,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -819,6 +825,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        if (picturePts == DVD_NOPTS_VALUE)
          m_hints.ptsinvalid = true;
  
@@ -1788,7 +1824,7 @@ index 72077cd..fd70c7a 100644
        m_processInfo.SetDoviIsFEL(doviIsFEL);
        m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
  
-@@ -743,7 +751,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -845,7 +853,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      return true;
    }
  
@@ -1798,7 +1834,7 @@ index 72077cd..fd70c7a 100644
    {
      const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                 packet.iSideDataElems,
-@@ -794,6 +803,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -896,6 +905,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    if (data_added && dual_layer_converted)
      DropDualLayerFront();
  
@@ -1808,7 +1844,7 @@ index 72077cd..fd70c7a 100644
    return data_added;
  }
  
-@@ -858,6 +870,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -960,6 +972,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
    if (m_Codec)
      m_Codec->Reset();
  
@@ -1818,7 +1854,7 @@ index 72077cd..fd70c7a 100644
    {
      DLDemuxPacket dual_layer_packet= m_packages.front();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 2632ed5..12092ef 100644
+index 8ef04c2..c9b1069 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -9,6 +9,7 @@
@@ -1829,7 +1865,7 @@ index 2632ed5..12092ef 100644
  #include "AMLSeekPreroll.h"
  #include "DVDVideoCodec.h"
  #include "DVDStreamInfo.h"
-@@ -107,6 +108,9 @@ protected:
+@@ -110,6 +111,9 @@ protected:
    h264_sequence  *m_h264_sequence;
    double          m_h264_sequence_pts;
    bool            m_has_keyframe;
@@ -1840,10 +1876,10 @@ index 2632ed5..12092ef 100644
    CBitstreamParser *m_bitparser;
    CBitstreamConverter *m_bitstream;
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 79a910d..97ff1f5 100644
+index dfa183a..90263e4 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -477,6 +477,7 @@ public:
+@@ -486,6 +486,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISABLE = "coreelec.amlogic.disabledolbyvision";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
@@ -1852,10 +1888,10 @@ index 79a910d..97ff1f5 100644
    static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
    static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index d14daa7..b030c1a 100644
+index 2ff5351..533dab4 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
-@@ -265,10 +265,13 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
+@@ -318,10 +318,13 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
    bool dv_user_enabled(!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
    bool user_convert_to_dv;
  
@@ -1872,11 +1908,11 @@ index d14daa7..b030c1a 100644
    bool convert_to_dv = (!!aml_support_dolby_vision() &&
                          static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 9fb1d61..d16f6fb 100644
+index 229c9cb..be08c80 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -313,8 +313,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
-     settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
+@@ -326,8 +326,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
+     settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV2HDR, false);
      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV, false);
      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV, false);
 +    settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_HDR10PLUS_TO_DV, 0);
@@ -1886,7 +1922,7 @@ index 9fb1d61..d16f6fb 100644
    }
  
    CServiceBroker::GetSettingsComponent()->GetSettings()->
-@@ -484,6 +485,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -540,6 +541,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(device_dv);
  

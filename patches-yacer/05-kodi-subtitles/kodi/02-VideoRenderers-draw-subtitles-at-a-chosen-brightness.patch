@@ -38,66 +38,65 @@ another path and are not covered.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index d46df58..42aa788 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25341,7 +25341,33 @@ msgctxt "#39217"
+@@ -25357,6 +25357,30 @@ msgctxt "#39217"
  msgid "Best"
  msgstr ""
  
--#empty strings from id 39218 to 39899
-+#empty strings from id 39218 to 39219
-+
 +#. Label of setting "Player -> Subtitles -> Max brightness"
 +#: system/settings/settings.xml
-+msgctxt "#39220"
++msgctxt "#60000"
 +msgid "Max brightness"
 +msgstr ""
 +
 +#. Help text of setting "Player -> Subtitles -> Max brightness"
 +#: system/settings/settings.xml
-+msgctxt "#39221"
++msgctxt "#60001"
 +msgid "The most light a subtitle may have on screen, in nits. A subtitle authored brighter is dimmed to it, one authored dimmer keeps its light; text subtitles and SDR image subtitles can at most reach the interface's white. On SDR output the screen is taken to be 120 nits. Disc menus are left alone. \"As authored\" leaves subtitles as they come."
 +msgstr ""
 +
 +#. Value of setting "Player -> Subtitles -> Max brightness": leave subtitles as authored
 +#: system/settings/settings.xml
-+msgctxt "#39222"
++msgctxt "#60002"
 +msgid "As authored"
 +msgstr ""
 +
 +#. Value format of setting "Player -> Subtitles -> Max brightness", in nits
 +#: system/settings/settings.xml
-+msgctxt "#39223"
++msgctxt "#60003"
 +msgid "{0:d} nits"
 +msgstr ""
 +
-+#empty strings from id 39224 to 39899
+ #empty strings from id 39218 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
- #. STR_LIST_AND_TWO
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index e695549..b4c3576 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -891,6 +891,18 @@
            </dependencies>
            <control type="toggle" />
          </setting>
-+        <setting id="subtitles.brightness" type="integer" label="39220" help="39221">
++        <setting id="subtitles.brightness" type="integer" label="60000" help="60001">
 +          <level>1</level>
 +          <default>100</default> <!-- nits -->
 +          <constraints>
-+            <minimum label="39222">0</minimum> <!-- As authored -->
++            <minimum label="60002">0</minimum> <!-- As authored -->
 +            <step>10</step>
 +            <maximum>400</maximum>
 +          </constraints>
 +          <control type="spinner" format="string">
-+            <formatlabel>39223</formatlabel>
++            <formatlabel>60003</formatlabel>
 +          </control>
 +        </setting>
          <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+index 0e1d094..be99086 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
 @@ -61,6 +61,7 @@ public:
@@ -117,6 +116,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h b/xbmc/cores/
    unsigned long m_textureid;
    DVDOverlayStereoView m_stereoView;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
+index 1cf873c..64f46c4 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
 @@ -75,6 +75,9 @@ public:
@@ -130,6 +130,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h b/xbmc/c
  
    // pixels are already HDR, matching video's colorimetry
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 9d9a671..1614aaa 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 @@ -926,6 +926,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
@@ -149,6 +150,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/x
      overlay->palette.clear();
      size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+index 99d6ed6..c68a1b7 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 @@ -29,6 +29,9 @@
@@ -169,7 +171,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
    {
      if (it->overlay_dvd)
-@@ -196,6 +200,7 @@ void CRenderer::RenderHDROverlays(int idx)
+@@ -198,6 +202,7 @@ void CRenderer::RenderHDROverlays(int idx)
    gfxContext.SetRenderOrder(RENDER_ORDER_ALL_BACK_TO_FRONT);
  
    std::vector<SElement>& list = m_buffers[idx];
@@ -177,7 +179,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    for (std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
    {
      if (it->overlay_dvd)
-@@ -645,6 +650,42 @@ void CRenderer::PrepareOverlays(int idx)
+@@ -622,6 +627,42 @@ void CRenderer::PrepareOverlays(int idx)
      MarkDirty();
  }
  
@@ -220,7 +222,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
  std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
  {
    // If no images not execute the renderer
-@@ -664,9 +705,42 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
+@@ -641,9 +682,42 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(SElement& e)
      }
    }
  
@@ -264,6 +266,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/co
    o.m_textureid = m_textureid;
    m_textureid++;
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+index 5e0bf70..e539819 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 @@ -193,6 +193,8 @@ namespace OVERLAY {
@@ -276,6 +279,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/core
      std::shared_ptr<COverlay> Convert(SElement& e);
      // Build a COverlay (cached or freshly created) from the libass output
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+index 02b5615..0a539d2 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -38,6 +38,7 @@
@@ -354,6 +358,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbm
      // the direct back-buffer draw in Render bypasses the composite's
      // limited-range encode, so apply it to the palette here
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index ec0ef27..4359d7b 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -469,6 +469,22 @@ float LinearToSrgbComponent(float c)
@@ -534,6 +539,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbm
  {
    auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+index 2b02eba..24311ee 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 @@ -10,6 +10,7 @@
@@ -593,6 +599,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/
  //! a palette already converted by ConvertPQPaletteToSRGB() above. o.pixels
  //! (the per-pixel palette indices) is always taken from o itself either way.
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index f24f38c..c6dc7be 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -186,6 +186,7 @@ public:

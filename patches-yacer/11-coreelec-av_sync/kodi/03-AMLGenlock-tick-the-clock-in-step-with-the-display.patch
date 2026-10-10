@@ -26,9 +26,10 @@ that presents it, right after the renderer picked it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 3662490..4030337 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2796,6 +2796,7 @@ void CAMLCodec::CloseAmlVideo()
+@@ -2846,6 +2846,7 @@ void CAMLCodec::CloseAmlVideo()
  void CAMLCodec::Reset()
  {
    CAMLLatency::GetInstance().Restart();
@@ -36,7 +37,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
    CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
  
-@@ -3228,6 +3229,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3278,6 +3279,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
    CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
  }
  
@@ -70,7 +71,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
  {
-@@ -3380,6 +3408,11 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3430,6 +3458,11 @@ void CAMLCodec::SetSpeed(int speed)
    if (m_speed == speed)
      return;
  
@@ -83,6 +84,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 542cbdb..c7dbda7 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -93,15 +95,15 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/Vide
  #include "DVDVideoCodec.h"
  #include "cores/VideoPlayer/DVDStreamInfo.h"
  #include "cores/IPlayer.h"
-@@ -89,6 +90,7 @@ public:
-   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+@@ -90,6 +91,7 @@ public:
    bool          IsOpen() const { return m_opened; }
+   bool          IsRealtimeStream() const { return m_processInfo.IsRealtimeStream(); }
    void          LatencyTick(uint64_t omxPts);
 +  void          GenlockTick(uint64_t omxPts);
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
-@@ -175,6 +177,7 @@ private:
+@@ -176,6 +178,7 @@ private:
    static int m_pollDevice;
    static double m_ttd;
    CProcessInfo &m_processInfo;
@@ -111,6 +113,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/Vide
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 new file mode 100644
+index 0000000..ae4c204
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 @@ -0,0 +1,149 @@
@@ -265,6 +268,7 @@ new file mode 100644
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
 new file mode 100644
+index 0000000..aea6eb8
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
 @@ -0,0 +1,77 @@
@@ -346,6 +350,7 @@ new file mode 100644
 +  double m_period{0.0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
+index 8716bfa..3f67ff9 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -14,9 +14,11 @@ endif()
@@ -361,6 +366,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+index 93bea8d..3b5be37 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -40,8 +40,12 @@ CRendererAML::~CRendererAML()
@@ -378,7 +384,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b
  }
  
  CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
-@@ -255,6 +259,7 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+@@ -260,6 +264,7 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
        // Refreshes what the decode thread and the debug overlay read.
        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->SampleFrameLatency();
        amli->m_amlCodec->LatencyTick(pts);
@@ -387,9 +393,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b
        m_prevVPts = pts;
        return codec;
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index eeb7533..7371dc7 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -602,11 +602,6 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -581,11 +581,6 @@ float CWinSystemAmlogic::SampleFrameLatency()
    if (CServiceBroker::GetDataCacheCore().GetSpeed() != 1.0f)
      return stand_down();
  

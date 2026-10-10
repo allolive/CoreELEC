@@ -32,38 +32,36 @@ platform question is whether the render system supports HFR VRR.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 1f05532..cb10f7d 100644
+index beb2758..f5f665e 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -22604,7 +22604,25 @@ msgctxt "#36512"
+@@ -22620,6 +22620,24 @@ msgctxt "#60030"
  msgid "Active 3D for 120 Hz VRR displays"
  msgstr ""
  
--#empty strings from id 36513 to 36519
 +#: system/settings/settings.xml
 +#: xbmc/video/dialogs/GUIDialogVideoSettings.cpp
-+msgctxt "#36513"
++msgctxt "#60031"
 +msgid "3D glasses delay"
 +msgstr ""
 +
 +#: system/settings/settings.xml
 +#: xbmc/video/dialogs/GUIDialogVideoSettings.cpp
-+msgctxt "#36514"
++msgctxt "#60032"
 +msgid "{0:d} µs"
 +msgstr ""
 +
-+#. Description of setting with label #36513 "3D glasses delay"
++#. Description of setting with label #60031 "3D glasses delay"
 +#: system/settings/settings.xml
-+msgctxt "#36515"
++msgctxt "#60033"
 +msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. Half a frame either way covers every timing: if it still improves at one end, turn on Invert stereoscopic 3D mode and carry on from the other end."
 +msgstr ""
 +
-+#empty strings from id 36516 to 36519
+ #empty strings from id 36512 to 36519
  #end of reserved strings for 3d modes
  
- #. Name of a setting, asking the user for the default playback mode (2D, 3D, ask) of stereoscopic videos
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 755ccd3..096af8c 100755
+index 351af59..b6e8ad8 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -3416,6 +3416,21 @@
@@ -71,7 +69,7 @@ index 755ccd3..096af8c 100755
            <control type="list" format="integer"/>
          </setting>
 +        <!-- kept visible: JSON-RPC serves only visible settings, and the glasses' driver reads it there -->
-+        <setting id="videoscreen.fs3ddelay" type="integer" label="36513" help="36515">
++        <setting id="videoscreen.fs3ddelay" type="integer" label="60031" help="60033">
 +          <level>2</level>
 +          <default>0</default>
 +          <constraints>
@@ -81,15 +79,15 @@ index 755ccd3..096af8c 100755
 +          </constraints>
 +          <control type="slider" format="integer">
 +            <popup>true</popup>
-+            <heading>36513</heading>
-+            <formatlabel>36514</formatlabel>
++            <heading>60031</heading>
++            <formatlabel>60032</formatlabel>
 +          </control>
 +        </setting>
        </group>
        <group id="5" label="496">
          <setting id="videoscreen.noofbuffers" type="integer" label="36043" help="36552">
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 4841eac..5fdc160 100644
+index c378284..dfa183a 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -395,6 +395,7 @@ public:
@@ -101,7 +99,7 @@ index 4841eac..5fdc160 100644
    static constexpr auto SETTING_VIDEOSCREEN_3DLUT = "videoscreen.cms3dlut";
    static constexpr auto SETTING_VIDEOSCREEN_DISPLAYPROFILE = "videoscreen.displayprofile";
 diff --git a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
-index 659c82e..61cbef0 100644
+index 659c82e..3870176 100644
 --- a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
 +++ b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
 @@ -13,10 +13,12 @@
@@ -165,10 +163,10 @@ index 659c82e..61cbef0 100644
 +  const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
 +  if (CServiceBroker::GetRenderSystem()->SupportsStereo(RenderStereoMode::HFR_VRR) &&
 +      !layout.empty() && layout != "mono")
-+    AddSlider(groupStereoscopic, SETTING_VIDEO_FS3DDELAY, 36513, SettingLevel::Basic,
++    AddSlider(groupStereoscopic, SETTING_VIDEO_FS3DDELAY, 60031, SettingLevel::Basic,
 +              CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
 +                  CSettings::SETTING_VIDEOSCREEN_FS3DDELAY),
-+              36514, -5300, 100, 5300, 36513, usePopup);
++              60032, -5300, 100, 5300, 60031, usePopup);
  
    // general settings
    AddButton(groupSaveAsDefault, SETTING_VIDEO_MAKE_DEFAULT, 12376, SettingLevel::Basic);
