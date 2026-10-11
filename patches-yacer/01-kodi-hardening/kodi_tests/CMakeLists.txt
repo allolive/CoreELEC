@@ -32,3 +32,8 @@ yacer_add_test(
            ${KODI_SOURCE}/xbmc/cores/VideoPlayer
 )
 
+# Header-only: the player's decision each pass while an old title plays out.
+yacer_add_test(
+  NAME NextStreamDrain
+  SOURCES TestNextStreamDrain.cpp
+)

@@ -691,7 +691,7 @@ index 51eec56102..ac80b1ce40 100644
    bool IsCurrentRequest(uint64_t request) const
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 0360442d7a..ebfca079dd 100644
+index bd1fcc53dc..277eb39747 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -8,6 +8,7 @@
@@ -710,17 +710,17 @@ index 0360442d7a..ebfca079dd 100644
  #include <iterator>
  #include <limits>
  #include <memory>
-@@ -1775,6 +1777,9 @@ void CVideoPlayer::Process()
+@@ -1780,6 +1782,9 @@ void CVideoPlayer::Process()
      if (PollResumeGate())
        continue;
  
 +    if (PollResumePreroll())
 +      continue;
 +
-     // should we open a new input stream?
-     if (!m_pInputStream)
+     // the last stream plays out before the next one opens, with messages still served
+     if (m_nextStream.Pending())
      {
-@@ -2393,6 +2398,11 @@ bool CVideoPlayer::ShouldDeferSync(bool ready, std::chrono::steady_clock::time_p
+@@ -2416,6 +2421,11 @@ bool CVideoPlayer::ShouldDeferSync(bool ready, std::chrono::steady_clock::time_p
  
  void CVideoPlayer::HandlePlaySpeed()
  {
@@ -732,7 +732,7 @@ index 0360442d7a..ebfca079dd 100644
    const bool isInMenu = IsInMenuInternal();
    const bool tolerateStall =
        isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
-@@ -2819,7 +2829,8 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
+@@ -2842,7 +2852,8 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
        return true;
      }
  
@@ -742,7 +742,7 @@ index 0360442d7a..ebfca079dd 100644
      {
        CLog::Log(LOGDEBUG, "{} - too far to decode before finishing seek", __FUNCTION__);
        if(m_CurrentAudio.startpts != DVD_NOPTS_VALUE)
-@@ -3233,13 +3244,16 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
+@@ -3256,13 +3267,16 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
  void CVideoPlayer::OnExit()
  {
    CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
@@ -760,7 +760,7 @@ index 0360442d7a..ebfca079dd 100644
      CLog::Log(LOGINFO, "VideoPlayer: eof, waiting for queues to empty");
  
    CFileItem fileItem(m_item);
-@@ -3267,8 +3281,10 @@ void CVideoPlayer::OnExit()
+@@ -3290,8 +3304,10 @@ void CVideoPlayer::OnExit()
        break;
    }
  
@@ -773,7 +773,7 @@ index 0360442d7a..ebfca079dd 100644
    CloseStream(m_CurrentTeletext,!m_bAbortRequest);
    CloseStream(m_CurrentRadioRDS, !m_bAbortRequest);
    CloseStream(m_CurrentAudioID3, !m_bAbortRequest);
-@@ -3339,6 +3355,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3362,6 +3378,8 @@ void CVideoPlayer::HandleMessages()
      if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
          m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
      {
@@ -782,7 +782,7 @@ index 0360442d7a..ebfca079dd 100644
        m_resumeGate.Cancel();
        CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
  
-@@ -3392,6 +3410,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3415,6 +3433,8 @@ void CVideoPlayer::HandleMessages()
          m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
      {
        CDVDMsgPlayerSeek& msg(*std::static_pointer_cast<CDVDMsgPlayerSeek>(pMsg));
@@ -791,7 +791,7 @@ index 0360442d7a..ebfca079dd 100644
  
        if (!m_State.canseek)
        {
-@@ -3404,7 +3424,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3427,7 +3447,7 @@ void CVideoPlayer::HandleMessages()
            m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
        {
          double now = m_clock.GetAbsoluteClock();
@@ -800,7 +800,7 @@ index 0360442d7a..ebfca079dd 100644
              (now - m_State.lastSeek)/1000 < 2000 &&
              !msg.GetAccurate())
          {
-@@ -3490,6 +3510,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3513,6 +3533,7 @@ void CVideoPlayer::HandleMessages()
               m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
               m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
      {
@@ -808,7 +808,7 @@ index 0360442d7a..ebfca079dd 100644
        m_processInfo->SeekFinished(0);
        SetCaching(CACHESTATE_FLUSH);
  
-@@ -3765,6 +3786,9 @@ void CVideoPlayer::HandleMessages()
+@@ -3788,6 +3809,9 @@ void CVideoPlayer::HandleMessages()
        if (m_resumeGate.IsHolding() && speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo())
          continue;
  
@@ -818,7 +818,7 @@ index 0360442d7a..ebfca079dd 100644
        const bool deferResume =
            notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED &&
            speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo() &&
-@@ -3775,6 +3799,13 @@ void CVideoPlayer::HandleMessages()
+@@ -3798,6 +3822,13 @@ void CVideoPlayer::HandleMessages()
        if (deferResume)
        {
          auto fence = m_resumeGate.Begin(speed, false, CPlaybackResumeGate::Clock::now());
@@ -832,7 +832,7 @@ index 0360442d7a..ebfca079dd 100644
          try
          {
            // This dispatch only queues Python callbacks. Keep servicing player
-@@ -3790,6 +3821,7 @@ void CVideoPlayer::HandleMessages()
+@@ -3813,6 +3844,7 @@ void CVideoPlayer::HandleMessages()
          continue;
        }
  
@@ -840,7 +840,7 @@ index 0360442d7a..ebfca079dd 100644
        m_resumeGate.Cancel();
        if (notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED)
          m_callback.OnPlayBackResumed();
-@@ -3864,6 +3896,11 @@ void CVideoPlayer::HandleMessages()
+@@ -3887,6 +3919,11 @@ void CVideoPlayer::HandleMessages()
        m_VideoPlayerVideo->SetSpeed(speed);
        m_streamPlayerSpeed = speed;
      }
@@ -852,7 +852,7 @@ index 0360442d7a..ebfca079dd 100644
      else if (pMsg->IsType(CDVDMsg::PLAYER_RESUME_BARRIER))
      {
        const auto request = std::static_pointer_cast<CDVDMsgType<uint64_t>>(pMsg)->m_value;
-@@ -3964,6 +4001,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3987,6 +4024,8 @@ void CVideoPlayer::HandleMessages()
      else if (pMsg->IsType(CDVDMsg::PLAYER_ABORT))
      {
        CLog::Log(LOGDEBUG, "CVideoPlayer - CDVDMsg::PLAYER_ABORT");
@@ -861,7 +861,7 @@ index 0360442d7a..ebfca079dd 100644
        m_resumeGate.Cancel();
        m_bAbortRequest = true;
      }
-@@ -3996,6 +4035,15 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
+@@ -4019,6 +4058,15 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
                release.request, release.generation,
                release.outcome == CPlaybackResumeGate::Outcome::TIMED_OUT ? "timeout" : "callback failure");
  
@@ -877,7 +877,7 @@ index 0360442d7a..ebfca079dd 100644
    m_playSpeed = release.speed;
    PublishPlaySpeed(release.speed, release.tempo);
    m_processInfo->SetFrameAdvance(false);
-@@ -4011,6 +4059,331 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
+@@ -4034,6 +4082,331 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
    }
  }
  
@@ -1209,7 +1209,7 @@ index 0360442d7a..ebfca079dd 100644
  void CVideoPlayer::SetCaching(ECacheState state)
  {
    // Any move off CACHESTATE_FULL ends a source-underrun hold, a seek included.
-@@ -5121,7 +5494,33 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+@@ -5144,7 +5517,33 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
  {
    m_syncStartPtsWait.reset();
    CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
@@ -1244,10 +1244,10 @@ index 0360442d7a..ebfca079dd 100644
    double startpts;
    if (accurate)
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 10fee096bf..261a24bc0c 100644
+index ebce178713..b058262cad 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -9,11 +9,13 @@
+@@ -9,12 +9,14 @@
  #pragma once
  
  #include "DVDClock.h"
@@ -1256,12 +1256,13 @@ index 10fee096bf..261a24bc0c 100644
  #include "Edl.h"
  #include "FileItem.h"
  #include "IVideoPlayer.h"
+ #include "NextStreamDrain.h"
  #include "PlaybackResumeGate.h"
 +#include "PlaybackPreroll.h"
  #include "VideoPlayerAudioID3.h"
  #include "VideoPlayerRadioRDS.h"
  #include "VideoPlayerSubtitle.h"
-@@ -492,6 +494,12 @@ protected:
+@@ -493,6 +495,12 @@ protected:
  
    bool PollResumeGate();
    void ReleaseResumeGate(const CPlaybackResumeGate::Release& release);
@@ -1274,7 +1275,7 @@ index 10fee096bf..261a24bc0c 100644
    void HandleMessages();
    void HandlePlaySpeed();
    bool TryEnterSourceUnderrunHold();
-@@ -610,6 +618,13 @@ protected:
+@@ -611,6 +619,13 @@ protected:
    int m_streamPlayerSpeed;
    std::mutex m_speedRequestMutex;
    CPlaybackResumeGate m_resumeGate;
@@ -1289,10 +1290,10 @@ index 10fee096bf..261a24bc0c 100644
    struct SSpeedState
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index c75e572bf6..9947f824e6 100644
+index 6e4aa66ca4..55c8ecfce5 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -176,6 +176,7 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
+@@ -177,6 +177,7 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
      m_audioSink.Flush();
    }
  
@@ -1300,7 +1301,7 @@ index c75e572bf6..9947f824e6 100644
    m_audioSink.Destroy(true);
  
    // uninit queue
-@@ -203,6 +204,48 @@ void CVideoPlayerAudio::OnStartup()
+@@ -204,6 +205,48 @@ void CVideoPlayerAudio::OnStartup()
  {
  }
  
@@ -1349,7 +1350,7 @@ index c75e572bf6..9947f824e6 100644
  void CVideoPlayerAudio::UpdatePlayerInfo()
  {
    std::ostringstream s;
-@@ -254,6 +297,7 @@ void CVideoPlayerAudio::Process()
+@@ -255,6 +298,7 @@ void CVideoPlayerAudio::Process()
  
    while (!m_bStop)
    {
@@ -1357,7 +1358,7 @@ index c75e572bf6..9947f824e6 100644
      std::shared_ptr<CDVDMsg> pMsg;
      auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
          std::chrono::duration<double, std::ratio<1>>(m_audioSink.GetCacheTime()));
-@@ -279,6 +323,18 @@ void CVideoPlayerAudio::Process()
+@@ -280,6 +324,18 @@ void CVideoPlayerAudio::Process()
        timeout = 0ms;
      }
  
@@ -1376,7 +1377,7 @@ index c75e572bf6..9947f824e6 100644
      MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, timeout, priority);
  
      onlyPrioMsgs = false;
-@@ -326,6 +382,64 @@ void CVideoPlayerAudio::Process()
+@@ -327,6 +383,64 @@ void CVideoPlayerAudio::Process()
        else
          m_messageQueue.Put(pMsg, 1); // push back as prio message, to process other prio messages
      }
@@ -1441,7 +1442,7 @@ index c75e572bf6..9947f824e6 100644
      else if (pMsg->IsType(CDVDMsg::GENERAL_RESYNC))
      { //player asked us to set internal clock
        double pts = std::static_pointer_cast<CDVDMsgDouble>(pMsg)->m_value;
-@@ -333,18 +447,22 @@ void CVideoPlayerAudio::Process()
+@@ -334,18 +448,22 @@ void CVideoPlayerAudio::Process()
                  pts / DVD_TIME_BASE, m_messageQueue.GetLevel(), m_audioSink.GetDelay() / DVD_TIME_BASE);
  
        double delay = m_audioSink.GetDelay();
@@ -1466,7 +1467,7 @@ index c75e572bf6..9947f824e6 100644
        if (m_pAudioCodec)
          m_pAudioCodec->Reset();
        m_audioSink.Flush();
-@@ -355,6 +473,7 @@ void CVideoPlayerAudio::Process()
+@@ -356,6 +474,7 @@ void CVideoPlayerAudio::Process()
      }
      else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
      {
@@ -1474,7 +1475,7 @@ index c75e572bf6..9947f824e6 100644
        bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
        m_audioSink.Flush();
        m_stalled = true;
-@@ -398,6 +517,7 @@ void CVideoPlayerAudio::Process()
+@@ -399,6 +518,7 @@ void CVideoPlayerAudio::Process()
      }
      else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
      {
@@ -1482,7 +1483,7 @@ index c75e572bf6..9947f824e6 100644
        auto msg = std::static_pointer_cast<CDVDMsgAudioCodecChange>(pMsg);
        OpenStream(msg->m_hints, std::move(msg->m_codec));
        msg->m_codec = NULL;
-@@ -456,12 +576,21 @@ void CVideoPlayerAudio::Process()
+@@ -457,12 +577,21 @@ void CVideoPlayerAudio::Process()
      else if (pMsg->IsType(CDVDMsg::PLAYER_DISPLAY_RESET))
      {
        m_displayReset = true;
@@ -1504,7 +1505,7 @@ index c75e572bf6..9947f824e6 100644
    if (audioframe.nb_frames <= audioframe.framesOut)
    {
      audioframe.hasDownmix = false;
-@@ -512,6 +641,21 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -513,6 +642,21 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      if (m_streaminfo.codec == AV_CODEC_ID_FLAC && m_streaminfo.channellayout)
        audioframe.format.m_channelLayout = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
  
@@ -1526,7 +1527,7 @@ index c75e572bf6..9947f824e6 100644
      // we have successfully decoded an audio frame, setup renderer to match
      if (!m_audioSink.IsValidFormat(audioframe))
      {
-@@ -559,13 +703,62 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -560,13 +704,62 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
    CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio::OutputPacket: pts:{:.3f} curr_pts:{:.3f} clock:{:.3f} level:{:d}",
      audioframe.pts / DVD_TIME_BASE, m_info.pts / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, GetLevel());
  
@@ -1590,7 +1591,7 @@ index c75e572bf6..9947f824e6 100644
    // signal to our parent that we have initialized
    if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
    {
-@@ -675,6 +868,11 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
+@@ -676,6 +869,11 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
      return false;
    }
  
@@ -1603,10 +1604,10 @@ index c75e572bf6..9947f824e6 100644
  
    return true;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index d424ebcb5f..64c442014c 100644
+index e7757f8b9e..239612d68c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-@@ -85,6 +85,10 @@ protected:
+@@ -86,6 +86,10 @@ protected:
    //! codec changes, in which case we may want to switch passthrough on/off.
    bool SwitchCodecIfNeeded();
    void SetSyncType(bool passthrough);
@@ -1617,7 +1618,7 @@ index d424ebcb5f..64c442014c 100644
  
    CDVDMessageQueue m_messageQueue;
    CDVDMessageQueue& m_messageParent;
-@@ -95,6 +99,9 @@ protected:
+@@ -96,6 +100,9 @@ protected:
    double m_audioClock;
  
    CAudioSinkAE m_audioSink; // audio output device
@@ -1742,10 +1743,10 @@ index b223455ef0..d368c3ef6f 100644
      m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
      return OUTPUT_DROPPED;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
-index 556e22580a..86dc6cb1ac 100644
+index b2b5ed95a7..70fb10dc95 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
-@@ -148,6 +148,8 @@ protected:
+@@ -149,6 +149,8 @@ protected:
    CDroppingStats m_droppingStats;
    CRenderManager& m_renderManager;
    VideoPicture m_picture;

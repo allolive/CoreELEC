@@ -1,0 +1,210 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 19:00:00 -0400
+Subject: [PATCH] VideoPlayer: play a disc's old title out without blocking
+
+At a DVD's title-set change the player closed the old audio and video
+streams with bWaitForBuffers on its own thread, so nothing else ran until
+both queues had played out. Two things followed, both seen on a DVD whose
+intro the player had queued in full:
+
+- Pause did nothing for the rest of the title: the player reported speed 0
+  while 182 pictures and 95 audio packets went on playing in the next 3 s.
+- Each drain gives up after 40 s, and the queues can hold more than that
+  (they are bounded by data size, not time). The audio drain timed out at
+  40 s and was dropped, and the old video played on for another 20 s in
+  silence.
+
+The player now marks the next stream as pending and keeps running its loop
+while the old streams play out: messages are handled, a pause holds, and a
+stop or a new file ends it at once. Only the streams that are in sync play
+out, the ones CloseStream(true) waits for; one still starting is closed at
+once, as before. Once those queues are empty the old streams close as
+before (the sink and decoder drain left is short) and the next stream
+opens.
+
+Progress is judged by the old streams' position: a drain whose position
+does not move for 10 s is given up, as the timeout used to, and its
+streams are closed without waiting; a pause does not count against it. A
+seek or anything else that makes the player buffer again gives the old
+title up the same way, since with the demuxer closed there is nothing left
+to seek in it. A display that is lost meanwhile starts the progress check
+again when it is back.
+
+The input stream's NextStream() is not asked again while the old title
+plays out, and the demuxer stays closed, as it did during the old wait.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/NextStreamDrain.h b/xbmc/cores/VideoPlayer/NextStreamDrain.h
+new file mode 100644
+index 0000000000..f8729f0003
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/NextStreamDrain.h
+@@ -0,0 +1,71 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <chrono>
++
++/** The wait between an input stream asking for its next stream and the old
++ * streams closing: the old ones play out what they queued while the player
++ * keeps serving its messages.
++ *
++ * The player polls it once per loop with what the stream players report. A
++ * drain whose position does not move for STALL is given up, as the message
++ * queue's own drain timeout used to; a pause does not count against it.
++ */
++class CNextStreamDrain
++{
++public:
++  using Clock = std::chrono::steady_clock;
++  static constexpr std::chrono::seconds STALL{10};
++
++  enum class State
++  {
++    PLAYING_OUT, //!< the old streams still hold data: keep waiting
++    DONE, //!< nothing left: close the old streams and open the next
++    STALLED, //!< no progress for STALL: give up, as for DONE
++  };
++
++  void Begin()
++  {
++    m_pending = true;
++    m_moved = true;
++  }
++  void Cancel() { m_pending = false; }
++  bool Pending() const { return m_pending; }
++
++  /** \param hasData either old stream still holds queued data
++   *  \param position a figure that moves while they play out (their pts)
++   *  \param paused progress is not expected
++   */
++  State Poll(bool hasData, double position, bool paused, Clock::time_point now)
++  {
++    if (!m_pending)
++      return State::DONE;
++
++    if (hasData)
++    {
++      if (m_moved || position != m_position || paused)
++      {
++        m_moved = false;
++        m_position = position;
++        m_progress = now;
++        return State::PLAYING_OUT;
++      }
++      if (now - m_progress <= STALL)
++        return State::PLAYING_OUT;
++    }
++
++    m_pending = false;
++    return hasData ? State::STALLED : State::DONE;
++  }
++
++private:
++  bool m_pending = false;
++  bool m_moved = true;
++  double m_position = 0.0;
++  Clock::time_point m_progress;
++};
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index b6cb117663..5b49a4f679 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1570,6 +1570,7 @@ void CVideoPlayer::Prepare()
+   m_processInfo->SetTempo(1.0);
+   m_processInfo->SetFrameAdvance(false);
+   m_State.Clear();
++  m_nextStream.Cancel();
+   m_CurrentVideo.hint.Clear();
+   m_CurrentAudio.hint.Clear();
+   m_CurrentSubtitle.hint.Clear();
+@@ -1755,6 +1756,8 @@ void CVideoPlayer::Process()
+     // check display lost
+     if (m_displayLost)
+     {
++      if (m_nextStream.Pending())
++        m_nextStream.Begin(); // the outage is no stall
+       CThread::Sleep(50ms);
+       continue;
+     }
+@@ -1768,6 +1771,38 @@ void CVideoPlayer::Process()
+     if (m_bAbortRequest)
+       break;
+ 
++    // the last stream plays out before the next one opens, with messages still served
++    if (m_nextStream.Pending())
++    {
++      // only streams in sync play out, as in CloseStream(true); a seek gives the rest up
++      const bool audio = m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC;
++      const bool video = m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
++      auto state = CNextStreamDrain::State::STALLED;
++      if (m_caching == CACHESTATE_DONE)
++        state = m_nextStream.Poll(
++            (audio && m_VideoPlayerAudio->HasData()) || (video && m_VideoPlayerVideo->HasData()),
++            (audio ? m_VideoPlayerAudio->GetCurrentPts() : 0.0) +
++                (video ? m_VideoPlayerVideo->GetCurrentPts() : 0.0),
++            m_playSpeed == DVD_PLAYSPEED_PAUSE, std::chrono::steady_clock::now());
++      if (state == CNextStreamDrain::State::PLAYING_OUT)
++      {
++        CThread::Sleep(100ms);
++        continue;
++      }
++      m_nextStream.Cancel();
++      const bool drained = state == CNextStreamDrain::State::DONE;
++      if (!drained)
++        CLog::Log(LOGWARNING, "VideoPlayer: next stream, old streams given up");
++      CloseStream(m_CurrentAudio, drained);
++      CloseStream(m_CurrentVideo, drained);
++
++      m_syncStartPtsWait.reset();
++      m_CurrentAudio.Clear();
++      m_CurrentVideo.Clear();
++      m_CurrentSubtitle.Clear();
++      continue;
++    }
++
+     // should we open a new input stream?
+     if (!m_pInputStream)
+     {
+@@ -1913,13 +1948,7 @@ void CVideoPlayer::Process()
+ 
+         SetCaching(CACHESTATE_DONE);
+         CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
+-        CloseStream(m_CurrentAudio, true);
+-        CloseStream(m_CurrentVideo, true);
+-
+-        m_syncStartPtsWait.reset();
+-        m_CurrentAudio.Clear();
+-        m_CurrentVideo.Clear();
+-        m_CurrentSubtitle.Clear();
++        m_nextStream.Begin();
+         continue;
+       }
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 535d2cefb2..ec30f4de89 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -13,6 +13,7 @@
+ #include "Edl.h"
+ #include "FileItem.h"
+ #include "IVideoPlayer.h"
++#include "NextStreamDrain.h"
+ #include "VideoPlayerAudioID3.h"
+ #include "VideoPlayerRadioRDS.h"
+ #include "VideoPlayerSubtitle.h"
+@@ -663,6 +664,7 @@ protected:
+   XbmcThreads::EndTime<> m_syncTimer;
+ 
+   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
++  CNextStreamDrain m_nextStream;
+ 
+   CEdl m_Edl;
+   bool m_SkipCommercials;
