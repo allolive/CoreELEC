@@ -22,10 +22,11 @@ BRANCH=${YACER_BRANCH:-yacer}
 STATE=.yacer-local-state
 SRCSAVE=.yacer-local-source
 
-# The directories the branch assembles from. Where our patches go in the build
+# What the branch assembles from: its directories, and the pin naming the
+# CoreELEC commit they are written against. Where our patches go in the build
 # tree, how each file is placed, and what makes a valid set of them are in
 # scripts/yacer-patches.sh, shared with the CI assembler.
-SRCDIRS="patches-yacer overlay tree-patches"
+SRCDIRS="patches-yacer overlay tree-patches coreelec.pin"
 
 # shellcheck source=yacer-patches.sh
 . "$(dirname "${BASH_SOURCE[0]}")/yacer-patches.sh"
@@ -37,7 +38,7 @@ die() { echo "yacer-local: $*" >&2; exit 1; }
 copy_src() {
   local from=$1 to=$2 d rc=0
   for d in $SRCDIRS; do
-    [ -d "$from/$d" ] || continue
+    [ -e "$from/$d" ] || continue
     cp -a "$from/$d" "$to"/ || rc=1
   done
   return $rc
@@ -86,14 +87,33 @@ apply)
     origin="$BRANCH @ ${commit:0:9}"
   fi
 
-  # The tree-patches are written against the mirror, so the files they edit have
-  # to look the way the mirror has them. A clone sitting on its own commits - or
-  # with local edits to those files - is not the tree they were made for, and
-  # applying anyway would either fail here or, worse, apply somewhere it fits.
-  mirror=${YACER_MIRROR:-origin/coreelec-22}
-  if ! git rev-parse --verify --quiet "$mirror" >/dev/null; then
-    die "no $mirror in this clone - fetch it, or set YACER_MIRROR"
+  # The branch names the CoreELEC commit it is built and tested against, and CI
+  # builds exactly that one. A local build of another commit is a different tree
+  # from the one CI builds, so it is refused unless YACER_MIRROR says what this
+  # clone is deliberately tracking instead.
+  pin=$(tr -d '[:space:]' < "$tmp/coreelec.pin" 2>/dev/null || true)
+  [ -n "$pin" ] || die "$BRANCH has no coreelec.pin"
+  if [ -n "${YACER_MIRROR:-}" ]; then
+    mirror=$YACER_MIRROR
+    git rev-parse --verify --quiet "$mirror^{commit}" >/dev/null \
+      || die "no $mirror in this clone - fetch it"
+  else
+    mirror=$pin
+    if ! git rev-parse --verify --quiet "$pin^{commit}" >/dev/null; then
+      die "this clone does not have the pinned CoreELEC commit ${pin:0:10} - fetch it:
+     git fetch origin refs/tags/coreelec-pin/$pin   (or: git fetch origin coreelec-22)"
+    fi
+    if [ "$(git rev-parse HEAD)" != "$pin" ]; then
+      die "this checkout is at $(git rev-parse --short HEAD), and $BRANCH is pinned to ${pin:0:10}.
+     git checkout --detach $pin
+     or set YACER_MIRROR to build against what this clone is at instead"
+    fi
   fi
+
+  # The tree-patches are written against the mirror, so the files they edit have
+  # to look the way the mirror has them. Local edits to those files are not the
+  # tree they were made for, and applying anyway would either fail here or, worse,
+  # apply somewhere it fits.
   for p in "$tmp"/tree-patches/*.patch; do
     [ -e "$p" ] || continue
     while read -r f; do

@@ -55,9 +55,24 @@ Or let the box do it. In **Settings -> CoreELEC -> Updates**:
 - **`yacer`** — this branch. It shares no history with the mirror and holds only
   the files added or replaced.
 
-The build checks out the mirror, lays this branch over the top, and builds the
-result. These files are never replayed onto upstream, so an upstream rewrite
-cannot conflict with them.
+The build checks out the CoreELEC commit named in **`coreelec.pin`**, lays this
+branch over the top, and builds the result. These files are never replayed onto
+upstream, so an upstream rewrite cannot conflict with them.
+
+The pin moves only when the new upstream is known to work with these patches.
+Every day the upstream sync mirrors `CoreELEC/CoreELEC` and, when its tip is
+not the pinned commit, validates it: every package's patch stack applies, the
+native tests pass, and a full build succeeds. That build then commits the new
+pin to this branch and is published. Each candidate is kept as a
+`coreelec-candidate/<sha>` tag while it is validated, and each pinned commit as
+a `coreelec-pin/<sha>` tag, so an upstream force-push cannot take them away. Until
+then every build keeps using the last CoreELEC that worked, instead of failing
+because upstream moved under the patches. A change that needs a newer upstream
+(re-anchoring the patches, say) moves the pin itself, in the same commit.
+
+Locally, `scripts/yacer-local.sh apply` refuses a CoreELEC checkout that is not
+at the pinned commit (`git checkout --detach $(cat coreelec.pin)`), so a local
+build is the tree CI builds.
 
 ## Layout
 

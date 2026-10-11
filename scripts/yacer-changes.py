@@ -170,6 +170,13 @@ def collect():
 def render(groups, blurbs):
     sha = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD")
     ref = sha or "yacer"
+    # The CoreELEC commit the builds use, not the mirror branch that follows
+    # upstream ahead of it.
+    try:
+        with open(os.path.join(ROOT, "coreelec.pin"), encoding="utf-8") as fh:
+            pin = fh.read().strip() or "coreelec-22"
+    except OSError:
+        pin = "coreelec-22"
     total = sum(len(v) for v in groups.values())
     e = html.escape
     out = []
@@ -232,7 +239,7 @@ footer {{ color:var(--muted); font-size:12px; margin-top:40px; }}
 Release notes list what changed from one build to the next; this page lists the patches as they stand now.</p>
 <section><h2>Repository</h2><ul class="links">
 <li><a class="title" href="https://github.com/{REPO}/tree/yacer">Yacer</a><div class="meta">our patches, overlay and build workflows</div></li>
-<li><a class="title" href="https://github.com/{REPO}/tree/coreelec-22">CoreELEC</a><div class="meta">the {COREELEC} tree the builds start from</div></li>
+<li><a class="title" href="https://github.com/{REPO}/tree/{pin}">CoreELEC</a><div class="meta">the {COREELEC} tree the builds start from, at {e(pin[:10])}</div></li>
 </ul></section>
 <section><h2>Releases</h2><ul class="links">
 <li><a class="title" href="https://github.com/{REPO}/releases">All builds</a><div class="meta">each release lists what changed since the build before it</div></li>

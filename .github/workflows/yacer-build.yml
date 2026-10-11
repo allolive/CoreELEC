@@ -27,9 +27,17 @@ on:
         type: string
         default: '0'
       mirror:
-        description: 'Internal: the mirror commit a continued build carries on with'
+        description: 'Build against this CoreELEC commit instead of coreelec.pin (a continued build, or a pin candidate)'
         type: string
         default: ''
+      yacer:
+        description: 'Internal: the yacer commit a continued build carries on with'
+        type: string
+        default: ''
+      promote:
+        description: 'Internal: a pin candidate - on success, move coreelec.pin to the mirror commit and publish'
+        type: boolean
+        default: false
       deadline_min:
         description: 'Override the build deadline in minutes (use a small value to exercise the timeout path)'
         type: string
@@ -39,13 +47,21 @@ permissions:
   contents: write
   actions: write        # gh workflow run (chaining) needs this
 
+# One queue for every build, pin candidates included: the build state cache
+# keeps a single generation, and two builds of different trees running side by
+# side would keep retiring each other's. A group holds one waiting run, so a
+# push queued behind a running build replaces a pin candidate waiting there;
+# the candidate is tried again the next day.
 concurrency:
   group: yacer-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # A build is coreelec-22 with our patches applied to it. A patch that does not
-  # apply fails the build, which is the same answer a local build gives.
+  # A build is the CoreELEC commit coreelec.pin names, with our patches applied
+  # to it. A patch that does not apply fails the build, which is the same answer
+  # a local build gives. The pin moves only once a build against the new
+  # upstream has succeeded (yacer-sync.yml), so upstream moving under our
+  # patches no longer breaks the builds of our own pushes.
   build:
     name: build update tar
     runs-on: ubuntu-24.04
@@ -85,14 +101,50 @@ jobs:
           sudo apt-get clean
           echo "after:"; df -h / | tail -1
 
-      # The build tree is upstream's, taken from the mirror branch, with our own
-      # files laid on top - nothing of ours is replayed onto upstream, so there is
+      # Which two commits this run builds, fixed before anything is checked out:
+      # a continued run carries on with the pair the chain started with, even if
+      # yacer has moved since, and a pin candidate brings its own mirror commit.
+      # Read through the API because checking out the mirror at the workspace
+      # root would clear anything checked out before it.
+      - name: Resolve the commits to build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_MIRROR: ${{ inputs.mirror || '' }}
+          IN_YACER: ${{ inputs.yacer || '' }}
+          PROMOTE: ${{ inputs.promote && 'true' || 'false' }}
+        run: |
+          for v in "$IN_MIRROR" "$IN_YACER"; do
+            case "$v" in
+              ''|????????????????????????????????????????) ;;
+              *) echo "::error::mirror and yacer must be full commit shas"; exit 1 ;;
+            esac
+          done
+          YA=${IN_YACER:-${{ github.sha }}}
+          if [ "$PROMOTE" = "true" ] && [ -z "$IN_MIRROR" ]; then
+            echo "::error::a promoting build needs the candidate as mirror"; exit 1
+          fi
+          if [ -n "$IN_MIRROR" ]; then
+            CE=$IN_MIRROR
+          else
+            CE=$(gh api "repos/${{ github.repository }}/contents/coreelec.pin?ref=$YA" \
+                   -H 'Accept: application/vnd.github.raw' | tr -d '[:space:]')
+          fi
+          case "$CE" in
+            ????????????????????????????????????????) ;;
+            *) echo "::error::coreelec.pin at ${YA:0:10} does not hold a full commit sha"; exit 1 ;;
+          esac
+          echo "BUILD_CE=$CE" >> "$GITHUB_ENV"
+          echo "BUILD_YA=$YA" >> "$GITHUB_ENV"
+          echo "coreelec ${CE:0:10}${IN_MIRROR:+ (given)}, yacer ${YA:0:10}"
+
+      # The build tree is upstream's, at the pinned commit, with our own files
+      # laid on top - nothing of ours is replayed onto upstream, so there is
       # nothing to conflict. Files we add are copied and refused if upstream
       # already has that path; the few upstream files we change are patched, so a
       # change underneath us stops the build instead of being silently reverted.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.mirror || 'coreelec-22' }}
+          ref: ${{ env.BUILD_CE }}
           fetch-depth: 1
           # nothing after the overlay uses git auth, and the build runs thousands
           # of third-party configure scripts in this workspace
@@ -100,7 +152,7 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.BUILD_YA }}
           path: .yacer
           fetch-depth: 1
           persist-credentials: false
@@ -151,7 +203,7 @@ jobs:
             [ -n "${!v:-}" ] || { echo "::error::$v not found in distributions/CoreELEC/version"; exit 1; }
           done
           CE_SHA=$(git rev-parse HEAD)
-          YA_SHA="${{ github.sha }}"
+          YA_SHA="$BUILD_YA"
           CE=${CE_SHA:0:7}
           YA=${YA_SHA:0:7}
           # date only: the release notes carry the commits, and every Actions run
@@ -162,7 +214,7 @@ jobs:
           # full shas, so the release notes can link to both commits
           echo "CE_SHA=$CE_SHA" >> "$GITHUB_ENV"
           echo "YA_SHA=$YA_SHA" >> "$GITHUB_ENV"
-          echo "coreelec-22 $CE + yacer $YA -> $V"
+          echo "coreelec $CE + yacer $YA -> $V"
 
       # Pinned once and reused, so the save key cannot hash a tree the build has
       # since modified and become unrestorable. 'distributions', not 'distro':
@@ -640,6 +692,57 @@ jobs:
       # Behind those steps, a failure in any of them turned success() false and
       # discarded a finished build whose tar existed only on a runner that was
       # about to be destroyed.
+      # A pin candidate that built moves the pin: a commit on top of the yacer
+      # commit this run built, naming the CoreELEC commit it built against, and a
+      # tag that keeps that commit reachable after upstream force-pushes past it.
+      # Only a fast-forward: if yacer has moved since, what was built is not what
+      # yacer now is, so the pin stays and the next watch tries again. Pushed with
+      # this run's token, which starts no other run - the build that would follow
+      # is this one, published below with the new commit's sha.
+      - name: Move the pin
+        if: success() && env.INCOMPLETE != '1' && inputs.promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ "$CE_SHA" = "$BUILD_CE" ] || { echo "::error::built ${CE_SHA:0:10}, expected ${BUILD_CE:0:10}"; exit 1; }
+          subject=$(gh api "repos/$REPO/commits/$CE_SHA" --jq '.commit.message | split("\n")[0]')
+          blob=$(gh api "repos/$REPO/git/blobs" -f content="$CE_SHA"$'\n' -f encoding=utf-8 --jq .sha)
+          base=$(gh api "repos/$REPO/git/commits/$YA_SHA" --jq .tree.sha)
+          tree=$(jq -n --arg base "$base" --arg blob "$blob" \
+                   '{base_tree: $base, tree: [{path: "coreelec.pin", mode: "100644", type: "blob", sha: $blob}]}' \
+                 | gh api "repos/$REPO/git/trees" --input - --jq .sha)
+          msg=$(printf 'ci: move the CoreELEC pin to %s\n\n%s\n\nBuilt and tested against yacer %s:\n%s\n' \
+                  "${CE_SHA:0:10}" "$subject" "${YA_SHA:0:10}" "$RUN_URL")
+          commit=$(jq -n --arg msg "$msg" --arg tree "$tree" --arg parent "$YA_SHA" \
+                     '{message: $msg, tree: $tree, parents: [$parent]}' \
+                   | gh api "repos/$REPO/git/commits" --input - --jq .sha)
+          # the tag first: a pin must never name a commit nothing keeps
+          tag="refs/tags/coreelec-pin/$CE_SHA"
+          if ! gh api "repos/$REPO/git/ref/tags/coreelec-pin/$CE_SHA" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" -f ref="$tag" -f sha="$CE_SHA" >/dev/null \
+              || { echo "::error::could not tag ${CE_SHA:0:10} - the pin stays"; exit 1; }
+          fi
+          if ! gh api -X PATCH "repos/$REPO/git/refs/heads/yacer" -f sha="$commit" -F force=false >/dev/null; then
+            tip=$(gh api "repos/$REPO/git/ref/heads/yacer" --jq .object.sha 2>/dev/null || true)
+            if [ -n "$tip" ] && [ "$tip" != "$YA_SHA" ]; then
+              echo "::error::yacer moved to ${tip:0:10} during this build of ${YA_SHA:0:10} - the pin"
+              echo "         stays, and the next watch validates the new yacer instead"
+            else
+              echo "::error::GitHub refused to move yacer to the pin commit (protection or a ruleset?)"
+            fi
+            exit 1
+          fi
+          echo "YA_SHA=$commit" >> "$GITHUB_ENV"
+          echo "pin moved to ${CE_SHA:0:10} in yacer ${commit:0:10}"
+          # the pin tag keeps it now
+          gh api -X DELETE "repos/$REPO/git/refs/tags/coreelec-candidate/$CE_SHA" >/dev/null 2>&1 || true
+          # the change list names the pinned commit; a push by this token starts
+          # no run of its own
+          gh workflow run yacer-docs.yml --repo "$REPO" --ref yacer \
+            || echo "::warning::could not refresh the change list page"
+
       - name: Publish the release
         if: success() && env.INCOMPLETE != '1'
         env:
@@ -899,7 +1002,8 @@ jobs:
           fi
           echo "deadline reached; continuing in a follow-up run (depth $((DEPTH+1)))"
           gh workflow run yacer-build.yml --repo "${{ github.repository }}" \
-            --ref "$REF" -f depth=$((DEPTH+1)) -f mirror="$(git rev-parse HEAD)"
+            --ref "$REF" -f depth=$((DEPTH+1)) -f mirror="$BUILD_CE" -f yacer="$BUILD_YA" \
+            -f promote=${{ inputs.promote && 'true' || 'false' }}
 
       - uses: actions/upload-artifact@v7
         if: always() && env.INCOMPLETE != '1'

@@ -1,18 +1,34 @@
-# YACER upstream sync
+# YACER upstream watch
 #
 # coreelec-22 is an exact mirror of CoreELEC/CoreELEC. Nothing of ours lives
 # there, so upstream force-pushing or rewriting history costs us nothing - the
 # mirror simply moves to wherever they are now.
 #
-# Our own files live on the yacer branch, which shares no history with the
-# mirror and is never replayed onto it. The build copies them over a checkout
-# of the mirror instead, so an upstream rewrite can never conflict with us.
+# Our builds do not follow the mirror. They build the CoreELEC commit named in
+# coreelec.pin on the yacer branch, and that pin moves only once our patches are
+# known to work on the new upstream: every stack applies, the native tests pass
+# and a full build succeeds. Until then a build of ours keeps using the last
+# CoreELEC that worked, instead of failing because upstream moved under it.
+#
+#   watch     mirror upstream; is its tip a new candidate for the pin?
+#   apply     lay our files over the candidate and apply every package's
+#             patch stack to its pinned source - minutes, not hours
+#   tests     the native tests against the candidate (yacer-tests.yml)
+#   build     a full build of the candidate, from the build cache; when it
+#             succeeds it moves the pin and publishes (yacer-build.yml, promote)
+#
+# A failure anywhere leaves the pin where it is; the next watch tries again.
 name: YACER upstream sync
 
 on:
   schedule:
-    - cron: '17 5 * * *'        # daily; every sync that lands changes starts a build
+    - cron: '17 5 * * *'
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: 'Validate this CoreELEC commit instead of the upstream tip'
+        type: string
+        default: ''
 
 concurrency:
   group: yacer-sync
@@ -23,9 +39,12 @@ permissions:
   actions: write
 
 jobs:
-  sync:
+  watch:
     name: mirror upstream
     runs-on: ubuntu-24.04
+    outputs:
+      candidate: ${{ steps.sync.outputs.candidate }}
+      yacer: ${{ steps.sync.outputs.yacer }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +53,9 @@ jobs:
 
       - name: Sync
         id: sync
+        env:
+          GIVEN: ${{ inputs.candidate || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git remote add upstream https://github.com/CoreELEC/CoreELEC || true
           git fetch --depth=1 upstream coreelec-22
@@ -43,19 +65,106 @@ jobs:
           # --verify --quiet prints nothing when the ref is missing; plain
           # rev-parse echoes the name itself, which is not a sha and not empty
           OLD=$(git rev-parse --verify --quiet origin/coreelec-22^{commit} || true)
-
           if [ "$NEW" = "$OLD" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "mirror already at ${NEW:0:10}"
+          else
+            git push --force origin "$NEW":refs/heads/coreelec-22
+            echo "mirror ${OLD:0:10} -> ${NEW:0:10}"
+          fi
+
+          PIN=$(tr -d '[:space:]' < coreelec.pin)
+          CAND=${GIVEN:-$NEW}
+          case "$CAND" in
+            ????????????????????????????????????????) ;;
+            *) echo "::error::candidate must be a full commit sha"; exit 1 ;;
+          esac
+          echo "yacer=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$CAND" = "$PIN" ]; then
+            echo "pin already at ${PIN:0:10} - nothing to validate"
             exit 0
           fi
 
-          git push --force origin "$NEW":refs/heads/coreelec-22
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "mirror ${OLD:0:10} -> ${NEW:0:10}"
+          # One validation at a time: a pin candidate or a continued build that is
+          # still queued or running would be duplicated, or would race this one to
+          # the pin. Try again tomorrow.
+          busy=$(gh run list --repo "${{ github.repository }}" --workflow yacer-build.yml \
+                   --event workflow_dispatch --limit 20 --json status \
+                   --jq '[.[] | select(.status != "completed")] | length')
+          if [ "$busy" != "0" ]; then
+            echo "a dispatched build is still queued or running - candidate ${CAND:0:10} waits" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
-      - name: Trigger a build
-        if: steps.sync.outputs.changed == 'true'
+          # The candidate must be in this repository for the later checkouts, and
+          # must stay there: the mirror moves on tomorrow, and a build chain can
+          # outlive a day.
+          git cat-file -e "$CAND^{commit}" 2>/dev/null || git fetch --depth=1 origin "$CAND" \
+            || git fetch --depth=1 upstream "$CAND" \
+            || { echo "::error::${CAND:0:10} is neither here nor upstream"; exit 1; }
+          git push origin "$CAND":refs/tags/coreelec-candidate/"$CAND" 2>/dev/null \
+            || git ls-remote --exit-code origin refs/tags/coreelec-candidate/"$CAND" >/dev/null \
+            || { echo "::error::could not keep ${CAND:0:10} under a tag"; exit 1; }
+          echo "candidate=$CAND" >> "$GITHUB_OUTPUT"
+          echo "pin ${PIN:0:10}, candidate ${CAND:0:10}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: apply our patches
+    needs: watch
+    if: needs.watch.outputs.candidate != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.watch.outputs.yacer }}
+          path: CoreELEC-yacer
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.watch.outputs.candidate }}
+          path: CoreELEC
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Every package's stack against the source its package.mk pins, the way
+      # scripts/unpack applies it: zero fuzz for ours. Names every stack that
+      # breaks, where a build stops at the first.
+      - name: Apply every patch stack
+        working-directory: CoreELEC
+        run: python3 ../CoreELEC-yacer/tests/check-patch-stack.py
+
+      # The overlay and the tree-patches, exactly as the build lays them.
+      - name: Assemble our files onto the candidate
+        working-directory: CoreELEC
+        run: bash ../CoreELEC-yacer/scripts/yacer-assemble.sh ../CoreELEC-yacer
+
+  tests:
+    name: native tests
+    needs: watch
+    if: needs.watch.outputs.candidate != ''
+    uses: ./.github/workflows/yacer-tests.yml
+    with:
+      mirror: ${{ needs.watch.outputs.candidate }}
+      yacer: ${{ needs.watch.outputs.yacer }}
+
+  build:
+    name: build the candidate
+    needs: [watch, apply, tests]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Start a promoting build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer
+          CAND: ${{ needs.watch.outputs.candidate }}
+          YA: ${{ needs.watch.outputs.yacer }}
+        run: |
+          gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer \
+            -f mirror="$CAND" -f yacer="$YA" -f promote=true
+          echo "build of ${CAND:0:10} started; the pin moves when it succeeds" | tee -a "$GITHUB_STEP_SUMMARY"
