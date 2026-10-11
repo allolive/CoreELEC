@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 21:01:05 -0400
+Subject: [PATCH] h264_mvc: report a decoder that gets no buffers
+
+On an S905X5, reopening a Blu-ray 3D title left amvdec_h264mvc running
+(stat 0x3f, no error) with frame_width still 0 and the VIFIFO read
+pointer not moving: no buffers were ever allocated and nothing was
+displayed, either because the firmware never asked for them
+(CMD_ALLOC_VIEW_0) or because the allocation never completed. Nothing was
+logged, and the driver had nothing to say about where the firmware was;
+AV_SCRATCH_0 in the report below tells the two apart.
+
+The 10 ms recycle timer now watches for this. While the decoder runs and
+frame_width is 0, if the VIFIFO holds data and its read pointer has not
+moved for a second, it logs once: MPSR, MPC_E, MPC_P, the mailbox
+command and data (AV_SCRATCH_0/1), AV_SCRATCH_J (skip picture) and
+AV_SCRATCH_K (ucode swap area), DECODE_STATUS, the VIFIFO read and write
+pointers and level, and whether the firmware was loaded through TEE. The
+TEE load path does not program AV_SCRATCH_K or AV_SCRATCH_J for MVC; the
+log shows whether they hold what the firmware expects. The watch is
+re-armed each time the decoder is (re)started.
+
+It only reports. A restart from the timer would have to run under
+vh264_mvc_mutex, which a timer cannot take, and the existing error work
+restarts the decoder without it, so it is not used here.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index c1a2f44..53528c2 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -1235,11 +1235,57 @@ static void vh264_mvc_set_clk(struct work_struct *work)
+ 	}
+ }
+ 
++#define START_WD_TIMEOUT (HZ)
++
++static u32 start_wd_rp;
++static unsigned long start_wd_since;
++static bool start_wd_reported;
++
++static void start_wd_reset(void)
++{
++	start_wd_rp = 0;
++	start_wd_since = jiffies;
++	start_wd_reported = false;
++}
++
++/*
++ * frame_width is set once the firmware has asked for its buffers and they
++ * are allocated, after the first SPS. If it sits on queued data without reading it for
++ * a second, report its state once.
++ */
++static void start_wd_check(void)
++{
++	u32 rp, level;
++
++	if (start_wd_reported || frame_width || !(stat & STAT_VDEC_RUN))
++		return;
++
++	rp = READ_VREG(VLD_MEM_VIFIFO_RP);
++	level = READ_VREG(VLD_MEM_VIFIFO_LEVEL);
++	if (rp != start_wd_rp || level == 0) {
++		start_wd_rp = rp;
++		start_wd_since = jiffies;
++		return;
++	}
++	if (time_before(jiffies, start_wd_since + START_WD_TIMEOUT))
++		return;
++
++	start_wd_reported = true;
++	pr_err("vh264mvc: no buffer allocation after %u ms with %u bytes queued: MPSR 0x%x MPC_E 0x%x MPC_P 0x%x scratch_0 0x%x scratch_1 0x%x scratch_J 0x%x scratch_K 0x%x decode_status 0x%x vififo rp 0x%x wp 0x%x level 0x%x tee %d\n",
++		jiffies_to_msecs(jiffies - start_wd_since), level,
++		READ_VREG(MPSR), READ_VREG(MPC_E), READ_VREG(MPC_P),
++		READ_VREG(AV_SCRATCH_0), READ_VREG(AV_SCRATCH_1),
++		READ_VREG(AV_SCRATCH_J), READ_VREG(AV_SCRATCH_K),
++		READ_VREG(DECODE_STATUS), rp,
++		READ_VREG(VLD_MEM_VIFIFO_WP), level, fw_tee_enabled());
++}
++
+ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ {
+ 	int valid_frame = 0;
+ 
+ 	mvc_set_rp();
++	start_wd_check();
+ 
+ 	if (enable_recycle == 0) {
+ 		if (dbg_mode & TIME_TASK_PRINT_ENABLE) {
+@@ -1714,6 +1760,7 @@ static s32 vh264mvc_init(void)
+ 
+ 	stat |= STAT_VF_HOOK;
+ 
++	start_wd_reset();
+ 	recycle_timer.expires = jiffies + PUT_INTERVAL;
+ 	add_timer(&recycle_timer);
+ 

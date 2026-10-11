@@ -29,12 +29,24 @@ G5 among them) list it in a DisplayID extension block only.
   bits named another mode and gave ~163 lines a frame); a frame is never
   shorter than the mode's own (DRM names 164.917 Hz 165).
 
+vinfo states the rate of the line count actually programmed: 1000/1001
+of a rate is rate x 10 / 1001 (95.904 Hz exactly, where reduce_0p1_percent
+gave 9590/100, 42 ppm off, and left rates not a multiple of 6 unreduced),
+for any game rate on a 1000/1001 twin or given as "<rate> 1", and a rate
+whose frame was clamped to the mode's line count states the mode's own
+rate. A game rate needing more lines than ENCP_VIDEO_MAX_LNCNT counts
+(13 bits, 8192 lines) is refused, and the handler never writes more; the
+lowest accepted rate on 1080p165 needs 8043 lines, 8051 as "2397 1". The
+attribute takes hdmimode_mutex before fr_hint_mutex, as
+hdmitx_set_fr_hint() does.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/drivers/drm/meson_hdmi.c b/drivers/drm/meson_hdmi.c
+index 7cf33b5..8887762 100644
 --- a/drivers/drm/meson_hdmi.c
 +++ b/drivers/drm/meson_hdmi.c
-@@ -421,6 +421,14 @@
+@@ -421,6 +421,14 @@ static int meson_hdmitx_decide_color_attr
  		}
  	}
  
@@ -50,9 +62,10 @@ diff --git a/drivers/drm/meson_hdmi.c b/drivers/drm/meson_hdmi.c
  		outputmode, common->hdmi_current_eotf_type, vic,
  		colour_sampling[attr->colorformat], attr->bitdepth);
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx.h b/drivers/media/vout/hdmitx21/hdmi_tx.h
+index dfe4866..3ad870c 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx.h
 +++ b/drivers/media/vout/hdmitx21/hdmi_tx.h
-@@ -138,7 +138,7 @@
+@@ -138,7 +138,7 @@ struct vrr_conf_para {
  	enum vrr_type type;
  	u8 vrr_enabled;
  	u8 fva_factor; /* should be larger than 0 */
@@ -61,7 +74,7 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx.h b/drivers/media/vout/hdmitx21
  	int duration;
  	/* EDID capability, refer to 2.1A P380 */
  	u8 fapa_end_extended:1;
-@@ -457,6 +457,7 @@
+@@ -457,6 +457,7 @@ void hdmitx_set_vrr_para(const struct vrr_conf_para *para);
  void hdmitx_vrr_set_maxlncnt(u32 max_lcnt);
  u32 hdmitx_vrr_get_maxlncnt(void);
  int hdmitx_set_fr_hint(int duration, void *data);
@@ -70,9 +83,10 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx.h b/drivers/media/vout/hdmitx21
  void hdmitx_register_vrr(struct hdmitx_dev *hdev);
  ssize_t _vrr_cap_show(struct device *dev, struct device_attribute *attr,
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
+index adbbc25..7825b4d 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
 +++ b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
-@@ -3848,7 +3848,8 @@
+@@ -3848,7 +3848,8 @@ static DEVICE_ATTR_RW(vrr_mode);
  
  /*
   * vrr_rate: the game-VRR rate x100 on the current mode (9600 = 96 Hz), 0 to
@@ -82,7 +96,7 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdm
   * its vout server is a stub, and the decoders also send it frame durations
   * in other units.
   */
-@@ -3856,11 +3857,12 @@
+@@ -3856,11 +3857,12 @@ static ssize_t vrr_rate_store(struct device *dev,
  			      struct device_attribute *attr,
  			      const char *buf, size_t count)
  {
@@ -99,9 +113,10 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdm
  }
  
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_video.c b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+index 8db4051..854ece8 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx_video.c
 +++ b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
-@@ -51,6 +51,9 @@
+@@ -51,6 +51,9 @@ static void construct_avi_packet(struct hdmitx_dev *hdev)
  	info->quantization_range = HDMI_QUANTIZATION_RANGE_LIMITED;
  	info->nups = HDMI_NUPS_UNKNOWN;
  	info->video_code = para->timing.vic;
@@ -112,9 +127,10 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_video.c b/drivers/media/vout/hd
  	    para->timing.vic == HDMI_94_3840x2160p25_16x9 ||
  	    para->timing.vic == HDMI_93_3840x2160p24_16x9 ||
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+index 3dfa46b..74e8853 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
 +++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
-@@ -912,7 +912,12 @@
+@@ -913,7 +913,12 @@ static enum TARGET_FRAME_RATE vsync_match_to_tfr(const u16 duration)
  }
  
  /* lines carried between frames so game-vrr averages the exact rate */
@@ -128,7 +144,7 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  
  static void vrr_init_game_para(struct tx_vrr_params *para)
  {
-@@ -928,6 +933,7 @@
+@@ -929,6 +934,7 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
  		fva_factor = 1; /* at least be 1 */
  	para->frame_cnt = 0;
  	game_vtotal_rem = 0;
@@ -136,9 +152,90 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  	memset(&para->emp_vrr_pkt, 0, sizeof(para->emp_vrr_pkt));
  
  	memset(vrr_pkt, 0, sizeof(*vrr_pkt));
-@@ -1532,7 +1538,20 @@
+@@ -1533,6 +1539,80 @@ static void updata_vinfo_sync_duration(struct vinfo_s *vinfo,
  /* rate: Unit *100. Example, 1080p23.976Hz, rate = 2397 */
  static DEFINE_MUTEX(fr_hint_mutex);
+ 
++/* ENCP_VIDEO_MAX_LNCNT holds the line count - 1 in 13 bits */
++#define GAME_VRR_MAX_LINES 8192
++
++/* game VRR's lines a frame at rate (x100), as num / den: pixel clock /
++ * (h_total * rate); a mode's 1000/1001 twin scales its clock and rate alike,
++ * frac asks for 1000/1001 of the rate on a mode without one
++ */
++static void game_vrr_lines(const struct hdmi_timing *timing, int rate,
++			   bool frac, u64 *num, u64 *den)
++{
++	*num = (u64)timing->pixel_freq * 100000;
++	*den = (u64)timing->h_total * rate;
++	if (frac) {
++		*num *= 1001;
++		*den *= 1000;
++	}
++}
++
++/* whether the encoder can count the lines a frame takes at rate */
++static bool game_vrr_rate_fits(struct hdmitx_common *tx_comm, int rate,
++			       bool frac)
++{
++	struct hdmi_format_para *fmt_para = &tx_comm->fmt_para;
++	const struct hdmi_timing *timing;
++	u64 num, den;
++
++	timing = hdmitx_mode_vic_to_hdmi_timing(fmt_para->timing.vic);
++	if (!timing || !timing->h_total || rate <= 0)
++		return false;
++	game_vrr_lines(timing, rate, frac && !fmt_para->frac_mode, &num, &den);
++	return div64_u64(num + den - 1, den) <= GAME_VRR_MAX_LINES;
++}
++
++/* the rate of the line count game VRR programs, for vinfo */
++static void game_vrr_vinfo_rate(struct hdmitx_common *tx_comm, int rate,
++				bool frac, u32 *num, u32 *den)
++{
++	struct hdmi_format_para *fmt_para = &tx_comm->fmt_para;
++	const struct hdmi_timing *timing;
++	u64 lnum, lden;
++
++	timing = hdmitx_mode_vic_to_hdmi_timing(fmt_para->timing.vic);
++	if (rate && timing && timing->h_total) {
++		game_vrr_lines(timing, rate, frac && !fmt_para->frac_mode,
++			       &lnum, &lden);
++		/* never shorter than the mode: then it runs at the mode's rate */
++		if (lnum < (u64)timing->v_total * lden) {
++			rate = 0;
++			frac = false;
++		}
++	}
++	if (!rate) {
++		u32 v_freq = fmt_para->timing.v_freq;
++
++		if (v_freq % 1000 == 0) {
++			*num = v_freq / 1000;
++			*den = 1;
++		} else {
++			*num = v_freq;
++			*den = 1000;
++		}
++	} else if (frac || fmt_para->frac_mode) {
++		/* rate / 100 * 1000 / 1001 */
++		*num = rate * 10;
++		*den = 1001;
++	} else if (rate % 100 == 0) {
++		*num = rate / 100;
++		*den = 1;
++	} else {
++		*num = rate;
++		*den = 100;
++	}
++}
++
+ /* give vinfo a new rate, and the video layer, which times frames by it */
+ static void hdmitx_vrr_publish_rate(struct vinfo_s *vinfo, u32 num, u32 den)
+ {
+@@ -1543,7 +1623,24 @@ static void hdmitx_vrr_publish_rate(struct vinfo_s *vinfo, u32 num, u32 den)
+ #endif
+ }
  
 -static int hdmitx_set_fr_hint_locked(int rate, void *data);
 +static int hdmitx_set_fr_hint_locked(int rate, void *data, bool frac);
@@ -148,23 +245,28 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
 + */
 +int hdmitx_set_fr_hint_frac(int rate, bool frac)
 +{
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
 +	int ret;
 +
++	/* a mode set writes fmt_para under hdmimode_mutex */
++	mutex_lock(&hdev->tx_comm.hdmimode_mutex);
 +	mutex_lock(&fr_hint_mutex);
 +	ret = hdmitx_set_fr_hint_locked(rate, NULL, frac);
 +	mutex_unlock(&fr_hint_mutex);
++	mutex_unlock(&hdev->tx_comm.hdmimode_mutex);
 +	return ret;
 +}
  
  /* reached from DRM (encoder enable) and from the vrr_rate attribute */
  int hdmitx_set_fr_hint(int rate, void *data)
-@@ -1540,12 +1559,12 @@
- 	int ret;
- 
+@@ -1554,13 +1651,13 @@ int hdmitx_set_fr_hint(int rate, void *data)
+ 	/* a mode set writes fmt_para under hdmimode_mutex */
+ 	mutex_lock(&hdev->tx_comm.hdmimode_mutex);
  	mutex_lock(&fr_hint_mutex);
 -	ret = hdmitx_set_fr_hint_locked(rate, data);
 +	ret = hdmitx_set_fr_hint_locked(rate, data, false);
  	mutex_unlock(&fr_hint_mutex);
+ 	mutex_unlock(&hdev->tx_comm.hdmimode_mutex);
  	return ret;
  }
  
@@ -173,7 +275,11 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  {
  	struct hdmitx_dev *hdev = get_hdmitx21_device();
  	struct hdmitx_common *tx_comm = &hdev->tx_comm;
-@@ -1557,6 +1576,8 @@
+@@ -1569,9 +1666,12 @@ static int hdmitx_set_fr_hint_locked(int rate, void *data)
+ 	enum TARGET_FRAME_RATE tfr = TFR_QMSVRR_INACTIVE;
+ 	int tmp_rate;
+ 	struct hdmi_format_para *fmt_para = &hdev->tx_comm.fmt_para;
++	u32 num, den;
  
  	vrr_debug_info("%s[%d] rate %d\n", __func__, __LINE__, rate);
  	hdmitx_vrr_disable();
@@ -182,7 +288,7 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  
  	/* check current rate, should less or equal than current rate of BRR */
  	tmp_rate = fmt_para->timing.v_freq / 10;
-@@ -1567,6 +1588,10 @@
+@@ -1582,6 +1682,10 @@ static int hdmitx_set_fr_hint_locked(int rate, void *data)
  		tmp_rate = 6000;
  	if (tmp_rate > 5990 * 2 && tmp_rate < 6010 * 2)
  		tmp_rate = 12000;
@@ -193,7 +299,7 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  	/* if rate is 0, then disable VRR packet */
  	if (rate == 0) {
  		/* When disable VRR, here must clear vrr_para_tmp.
-@@ -1592,7 +1617,7 @@
+@@ -1604,10 +1708,15 @@ static int hdmitx_set_fr_hint_locked(int rate, void *data)
  		HDMITX_INFO("disable VRR/EMP packet\n");
  		return 0;
  	}
@@ -202,17 +308,41 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
  		HDMITX_INFO("vrr rate over range %d [2397~%d]\n", rate, tmp_rate);
  		return 0;
  	}
-@@ -1644,7 +1669,8 @@
++	if (hdev->tx_comm.vrr_mode == T_VRR_GAME &&
++	    !game_vrr_rate_fits(tx_comm, rate, frac)) {
++		HDMITX_INFO("vrr rate %d: more lines than the encoder counts\n", rate);
++		return 0;
++	}
+ 
+ 	if (hdev->tx_comm.vrr_mode == T_VRR_GAME || hdev->tx_comm.vrr_mode == T_VRR_QMS) {
+ 		para.type = hdev->tx_comm.vrr_mode;
+@@ -1652,15 +1761,19 @@ static int hdmitx_set_fr_hint_locked(int rate, void *data)
+ 				break;
+ 			}
+ 		}
++		updata_vinfo_sync_duration(&tx_comm->hdmitx_vinfo, rate,
++			tx_comm->frac_rate_policy,
++			(fmt_para->timing.v_freq + 999) / 1000);
++		hdmitx_vrr_publish_rate(&tx_comm->hdmitx_vinfo,
++			tx_comm->hdmitx_vinfo.sync_duration_num,
++			tx_comm->hdmitx_vinfo.sync_duration_den);
+ 	} else { /* for vrr-game */
  		para.duration = rate;
++		game_vrr_vinfo_rate(tx_comm, rate, frac, &num, &den);
++		hdmitx_vrr_publish_rate(&tx_comm->hdmitx_vinfo, num, den);
++		tx_comm->hdmitx_vinfo.brr_duration =
++			(fmt_para->timing.v_freq + 999) / 1000;
  	}
- 	updata_vinfo_sync_duration(&tx_comm->hdmitx_vinfo, rate,
+-	updata_vinfo_sync_duration(&tx_comm->hdmitx_vinfo, rate,
 -		tx_comm->frac_rate_policy,
-+		para.type == T_VRR_GAME && !fmt_para->frac_mode ?
-+		game_vrr_frac : tx_comm->frac_rate_policy,
- 		(fmt_para->timing.v_freq + 999) / 1000);
+-		(fmt_para->timing.v_freq + 999) / 1000);
+-	hdmitx_vrr_publish_rate(&tx_comm->hdmitx_vinfo,
+-		tx_comm->hdmitx_vinfo.sync_duration_num,
+-		tx_comm->hdmitx_vinfo.sync_duration_den);
  
  	para.vrr_enabled = 1;
-@@ -1719,22 +1745,37 @@
+ 	para.fapa_end_extended = prxcap->fapa_end_extended;
+@@ -1734,22 +1847,37 @@ static void hdmitx_vrr_game_handler(struct hdmitx_dev *hdev)
  	struct vrr_conf_para *conf = &vrr->conf_params;
  	const struct hdmi_timing *timing = NULL;
  	u32 vtotal_tmp = 0;
@@ -232,12 +362,9 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
 +	/* lines a frame at the rate: pixel clock / (h_total * rate), the rate
 +	 * x100; a mode's 1000/1001 twin scales its clock and rate alike
 +	 */
-+	num = (u64)timing->pixel_freq * 100000;
-+	den = (u64)timing->h_total * conf->duration;
-+	if (game_vrr_frac && !hdev->tx_comm.fmt_para.frac_mode) {
-+		num *= 1001;
-+		den *= 1000;
-+	}
++	game_vrr_lines(timing, conf->duration,
++		       game_vrr_frac && !hdev->tx_comm.fmt_para.frac_mode,
++		       &num, &den);
 +	vtotal_tmp = div64_u64_rem(num, den, &rem);
 +	/* a new rate (the 1000/1001 flag alone changes no conf): start afresh */
 +	if (den != game_vtotal_den) {
@@ -254,13 +381,17 @@ diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmi
 +	/* never shorter than the mode: DRM names 164.917 Hz 165 */
 +	if (vtotal_tmp < timing->v_total)
 +		vtotal_tmp = timing->v_total;
++	/* a set refuses such a rate: never wrap the register */
++	if (vtotal_tmp > GAME_VRR_MAX_LINES)
++		vtotal_tmp = GAME_VRR_MAX_LINES;
  	vrr->game_val.vtotal_fixed = vtotal_tmp;
  	vrr_debug_info("game-vrr vtotal = %d\n", vrr->game_val.vtotal_fixed);
  
 diff --git a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
+index a69c90a..762e723 100644
 --- a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
 +++ b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
-@@ -626,8 +626,9 @@
+@@ -626,8 +626,9 @@ static int hdmitx_validate_mode(struct hdmitx_hw_common *tx_hw, u32 vic, u32 max
  	if (!tx_hw || !global_tx_hw->chip_data)
  		return -EINVAL;
  
@@ -273,9 +404,10 @@ diff --git a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c b/drivers/media/vout/hd
  
  	timing = hdmitx_mode_vic_to_hdmi_timing(vic);
 diff --git a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
+index 7ca41d2..9e33e6d 100644
 --- a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
 +++ b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
-@@ -76,15 +76,21 @@
+@@ -76,15 +76,21 @@ int hdmitx_common_validate_vic(struct hdmitx_common *tx_comm, u32 vic)
  		if (timing->v_active >= 2160 && timing->v_freq >= 5000)
  			return -ERANGE;
  
@@ -301,9 +433,10 @@ diff --git a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c b/drivers/med
  
  	return 0;
 diff --git a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
+index 617f613..e694b31 100644
 --- a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
 +++ b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
-@@ -468,6 +468,51 @@
+@@ -468,6 +468,51 @@ static void store_vesa_idx(struct rx_cap *prxcap, enum hdmi_vic vesa_timing)
  	}
  }
  
@@ -355,7 +488,7 @@ diff --git a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c b/drivers/medi
  static void store_cea_idx(struct rx_cap *prxcap, enum hdmi_vic vic)
  {
  	int i;
-@@ -2733,6 +2778,9 @@
+@@ -2733,6 +2778,9 @@ int hdmitx_edid_parse(struct rx_cap *prxcap, u8 *edid_buf)
  		if (edid_buf[i * 0x80] == 0x02 || edid_check & 0x01)
  			hdmitx_edid_cta_block_parse(prxcap, &edid_buf[i * 0x80]);
  	}
@@ -366,9 +499,10 @@ diff --git a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c b/drivers/medi
  	edid_check_pcm_declare(prxcap);
  	/*
 diff --git a/drivers/media/vout/hdmitx_common/hdmitx_mode.c b/drivers/media/vout/hdmitx_common/hdmitx_mode.c
+index 3cb96d5..3de55f0 100644
 --- a/drivers/media/vout/hdmitx_common/hdmitx_mode.c
 +++ b/drivers/media/vout/hdmitx_common/hdmitx_mode.c
-@@ -399,9 +399,12 @@
+@@ -399,9 +399,12 @@ static const struct hdmi_timing vesa_modes[] = {
  		2482, 82, 20, 30, 32, 2400, 1252, 52, 17, 5, 30, 1200, 1, 1, 1, 2, 1},
  	{HDMIV_26_3840x1080p60hz, "3840x1080p60hzV", NULL, 1, 67500, 60000, 297000,
  		4400, 560, 176, 88, 296, 3840, 1125, 45, 4, 5, 36, 1080, 1, 1, 1, 32, 6},
@@ -383,9 +517,10 @@ diff --git a/drivers/media/vout/hdmitx_common/hdmitx_mode.c b/drivers/media/vout
  /*return NULL for invalid hdmi_timing.*/
  const struct hdmi_timing *hdmitx_mode_index_to_hdmi_timing(u32 idx)
 diff --git a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
+index 9d4309a..d335982 100644
 --- a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
 +++ b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
-@@ -209,6 +209,7 @@
+@@ -209,6 +209,7 @@ enum hdmi_vic {
  	HDMIV_24_3440x1440p60hz,
  	HDMIV_25_2400x1200p90hz,
  	HDMIV_26_3840x1080p60hz,

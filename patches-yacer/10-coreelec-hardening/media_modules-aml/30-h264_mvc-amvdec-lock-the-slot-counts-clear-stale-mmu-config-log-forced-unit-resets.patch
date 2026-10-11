@@ -1,0 +1,189 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:07:31 -0400
+Subject: [PATCH] h264_mvc, amvdec: lock the slot counts, clear stale MMU config, log forced unit resets
+
+The ISR (hard interrupt) and the 10 ms recycle timer (softirq, possibly
+on another CPU) both update vfpool_idx[], view0_vfbuf_use[],
+view1_vfbuf_use[] and the ring pointers with no lock: the ISR fills a
+slot and counts its buffers, the timer hands buffers back and retires
+slots. The ISR now takes the existing vframe lock around finding the
+slot and counting its views, and around marking it used and advancing
+fill_ptr; the timer holds it (with interrupts off) around its recycle
+loop. The lock is not held across the receiver notification, the PTS
+lookup or the buffer handles.
+
+view0_vfbuf_use[] and view1_vfbuf_use[] had DECODE_BUFFER_NUM_MAX (16)
+entries, but they are indexed by the buffer id the firmware reports (6
+bits) and each view has up to 16 plus dynamic_buf_num_margin (8 by
+default) buffers, so a picture in buffer 16 or above counted its use in
+memory past the array. They now have 64 entries, every value a 6-bit id
+can take, and are cleared to that size. A bounds check that dropped such
+a frame was not chosen: with the default margin, buffers 16-23 are
+legitimate and in use on every stream, and dropping them would leave
+those buffers never handed back.
+
+The MVC protocol init did not clear the MMU configuration another
+decoder can leave set in the shared VDEC unit (VDEC_ASSIST_MMC_CTRL1 bit
+3, MDEC_PIC_DC_MUX_CTRL bit 31, MDEC_EXTIF_CFG1). It now clears it, under
+the same condition vdec_reset_core() uses.
+
+vh264mvc_init() started the AMRISC without checking that the IMEM DMA of
+the ucode load had finished. It now waits for IMEM_DMA_CTRL to go idle
+first (bounded, logged on timeout), as it already did for DCAC and LMEM.
+
+amvdec_pg_enable(false) gives PIC_DC, the deblocker and MC 10 ms to go
+idle and then resets them, silently. Each forced reset is now logged,
+rate-limited, with the unit's status value. Diagnostic only.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index f23878d..697d132 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -308,8 +308,13 @@ struct mvc_info_s {
+ #define VF_POOL_SIZE        20
+ static struct vframe_s vfpool[VF_POOL_SIZE];
+ static struct mvc_info_s vfpool_idx[VF_POOL_SIZE];
+-static s32 view0_vfbuf_use[DECODE_BUFFER_NUM_MAX];
+-static s32 view1_vfbuf_use[DECODE_BUFFER_NUM_MAX];
++/*
++ * Indexed by the firmware's 6-bit buffer id. Up to 16 + the buffer margin
++ * buffers are allocated, more than DECODE_BUFFER_NUM_MAX.
++ */
++#define VFBUF_USE_NUM 64
++static s32 view0_vfbuf_use[VFBUF_USE_NUM];
++static s32 view1_vfbuf_use[VFBUF_USE_NUM];
+ 
+ static s32 fill_ptr, get_ptr, putting_ptr, put_ptr;
+ static s32 dirty_frame_num;
+@@ -1090,9 +1095,12 @@ static void vh264mvc_isr(void)
+ 			}
+ 		} else {
+ 			unsigned char in_list_flag = 0;
++			unsigned long flags;
+ 
+ 			int slot = 0;
+ 
++			/* the recycle timer updates the same slots and counts */
++			spin_lock_irqsave(&lock, flags);
+ 			in_list_flag = check_in_list(display_POC, &slot);
+ 
+ 			if ((dbg_mode & 0x40) && (drop_status)) {
+@@ -1129,6 +1137,7 @@ static void vh264mvc_isr(void)
+ 				}
+ 				vfpool_idx[fill_ptr].slot = fill_ptr;
+ 				vfpool_idx[fill_ptr].display_pos = display_POC;
++				spin_unlock_irqrestore(&lock, flags);
+ 
+ 			} else {
+ 				if (display_view_id == 0) {
+@@ -1148,6 +1157,7 @@ static void vh264mvc_isr(void)
+ 					vfpool_idx[slot].view1_drop =
+ 						drop_status;
+ 				}
++				spin_unlock_irqrestore(&lock, flags);
+ 				vf = &vfpool[slot];
+ 
+ 				if (display_view_id == 0) {
+@@ -1192,8 +1202,10 @@ static void vh264mvc_isr(void)
+ 				/* vf->pts =  vf->pts_us64; */
+ 				if (dbg_mode & 0x80)
+ 					pr_info("vf->pts:%d\n", vf->pts);
++				spin_lock_irqsave(&lock, flags);
+ 				vfpool_idx[slot].used = 1;
+ 				INCPTR(fill_ptr);
++				spin_unlock_irqrestore(&lock, flags);
+ 				set_frame_info(vf);
+ 
+ 				gvs->frame_dur = frame_dur;
+@@ -1351,6 +1363,7 @@ static void start_wd_check(void)
+ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ {
+ 	int valid_frame = 0;
++	unsigned long flags;
+ 
+ 	mvc_set_rp();
+ 	start_wd_check();
+@@ -1365,6 +1378,8 @@ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ 		/* goto RESTART; */
+ 	}
+ 
++	/* the ISR fills the same slots and counts */
++	spin_lock_irqsave(&lock, flags);
+ 	while ((putting_ptr != put_ptr) && (READ_VREG(BUFFER_RECYCLE) == 0)) {
+ 		int view0_buf_id = vfpool_idx[put_ptr].view0_buf_id;
+ 		int view1_buf_id = vfpool_idx[put_ptr].view1_buf_id;
+@@ -1423,6 +1438,7 @@ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ 			INCPTR(put_ptr);
+ 		}
+ 	}
++	spin_unlock_irqrestore(&lock, flags);
+ 
+ 	schedule_work(&set_clk_work);
+ 
+@@ -1636,6 +1652,14 @@ static void vh264mvc_prot_init(void)
+ 	WRITE_RESET_REG(RESET0_REGISTER, 0x80);	/* RESET MCPU */
+ #endif
+ 
++	/* the MMU config another decoder may have left, as vdec_reset_core() */
++	if ((vdec && (vdec->core_mask & CORE_MASK_HEVC) == 0) ||
++		is_vdec_hevc_combine()) {
++		CLEAR_VREG_MASK(VDEC_ASSIST_MMC_CTRL1, 1 << 3);
++		CLEAR_VREG_MASK(MDEC_PIC_DC_MUX_CTRL, 1 << 31);
++		WRITE_VREG(MDEC_EXTIF_CFG1, 0);
++	}
++
+ 	WRITE_VREG(MAILBOX_COMMAND, 0);
+ 	WRITE_VREG(BUFFER_RECYCLE, 0);
+ 	WRITE_VREG(DROP_CONTROL, 0);
+@@ -1687,7 +1711,7 @@ static int vh264mvc_local_init(void)
+ 	max_dec_frame_buffering[1] = -1;
+ 	fill_ptr = get_ptr = put_ptr = putting_ptr = 0;
+ 	dirty_frame_num = 0;
+-	for (i = 0; i < DECODE_BUFFER_NUM_MAX; i++) {
++	for (i = 0; i < VFBUF_USE_NUM; i++) {
+ 		view0_vfbuf_use[i] = 0;
+ 		view1_vfbuf_use[i] = 0;
+ 	}
+@@ -1846,6 +1870,8 @@ static s32 vh264mvc_init(void)
+ 
+ 	stat |= STAT_TIMER_ARM;
+ 
++	vh264mvc_wait_dma_idle(IMEM_DMA_CTRL, "IMEM_DMA_CTRL");
++
+ 	if (start_state_log)
+ 		vh264mvc_hw_state("start", false);
+ 
+diff --git a/drivers/frame_provider/decoder/utils/amvdec.c b/drivers/frame_provider/decoder/utils/amvdec.c
+index 519e408..f0d97a9 100644
+--- a/drivers/frame_provider/decoder/utils/amvdec.c
++++ b/drivers/frame_provider/decoder/utils/amvdec.c
+@@ -92,6 +92,8 @@ static void amvdec_pg_enable(bool enable)
+ 
+ 		while (READ_VREG(MDEC_PIC_DC_STATUS) != 0) {
+ 			if (time_after(jiffies, timeout)) {
++				pr_err_ratelimited("%s: PIC_DC busy 0x%x, reset\n",
++					__func__, READ_VREG(MDEC_PIC_DC_STATUS));
+ 				WRITE_VREG_BITS(MDEC_PIC_DC_CTRL, 1, 0, 1);
+ 				WRITE_VREG_BITS(MDEC_PIC_DC_CTRL, 0, 0, 1);
+ 				READ_VREG(MDEC_PIC_DC_STATUS);
+@@ -106,6 +108,8 @@ static void amvdec_pg_enable(bool enable)
+ 
+ 		while (READ_VREG(DBLK_STATUS) & 1) {
+ 			if (time_after(jiffies, timeout)) {
++				pr_err_ratelimited("%s: DBLK busy 0x%x, reset\n",
++					__func__, READ_VREG(DBLK_STATUS));
+ 				WRITE_VREG(DBLK_CTRL, 3);
+ 				WRITE_VREG(DBLK_CTRL, 0);
+ 				READ_VREG(DBLK_STATUS);
+@@ -119,6 +123,8 @@ static void amvdec_pg_enable(bool enable)
+ 
+ 		while (READ_VREG(MC_STATUS0) & 1) {
+ 			if (time_after(jiffies, timeout)) {
++				pr_err_ratelimited("%s: MC busy 0x%x, reset\n",
++					__func__, READ_VREG(MC_STATUS0));
+ 				SET_VREG_MASK(MC_CTRL1, 0x9);
+ 				CLEAR_VREG_MASK(MC_CTRL1, 0x9);
+ 				READ_VREG(MC_STATUS0);

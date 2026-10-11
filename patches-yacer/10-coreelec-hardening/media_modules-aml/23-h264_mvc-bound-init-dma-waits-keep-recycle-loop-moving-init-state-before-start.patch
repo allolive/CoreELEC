@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 21:00:36 -0400
+Subject: [PATCH] h264_mvc: bound the init DMA waits, keep the recycle loop moving, init state before start
+
+Four ways the MVC decoder can hang or touch stale state.
+
+vh264mvc_prot_init() waited for DCAC_DMA_CTRL and LMEM_DMA_CTRL to go idle
+with bare spin loops. A decoder that never finishes a DMA left probe (with
+vh264_mvc_mutex held) or the error work spinning for good. Both are
+process context; the receiver-reset event callback also calls it, under a
+spinlock, but nothing in this tree sends that event (and that path already
+sleeps there upstream). The wait now sleeps 10-20 us between reads, gives
+up after 100 ms with an error naming the register, its value and MPSR,
+and goes on.
+
+The 10 ms recycle timer walks put_ptr towards putting_ptr. Each pass hands
+back view 0 if its use count is 1, otherwise view 1 if its use count is 1
+and then retires the slot. A slot where neither applies (a view whose
+buffer another slot also counts, or a slot whose ids are already -1) made
+no progress, and the loop spun forever in softirq context. Such a slot now
+drops its own use of a buffer another slot still holds, or is retired
+with a rate-limited warning, so every pass either writes BUFFER_RECYCLE or
+moves forward. Slots the two existing branches handle are unchanged.
+
+Probe started the decoder (timer armed, ISR registered, AMRISC running)
+in vh264mvc_init() before it set the vdec pointer, initialised
+error_wd_work and set_clk_work, and initialised mvc_rp_lock. The timer and
+the ISR call mvc_set_rp(), which takes mvc_rp_lock and writes the read
+pointer to vdec->vbuf; on the first open that is a NULL vdec, on a reopen
+the vdec_s freed by the previous close. The timer also schedules
+set_clk_work and the ISR error_wd_work. All of these are now set up before
+vh264mvc_init(), vdec is cleared again if it fails, and remove clears it
+once the decoder is stopped.
+
+The vzalloc failure in probe returned with vh264_mvc_mutex held, which
+would deadlock the next open; it now unlocks.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index b62cde7..c1a2f44 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -35,6 +35,8 @@
+ #include <linux/atomic.h>
+ #include <linux/module.h>
+ #include <linux/slab.h>
++#include <linux/delay.h>
++#include <linux/jiffies.h>
+ #include "../../../stream_input/amports/amports_priv.h"
+ #include "../utils/vdec.h"
+ #include "../utils/amvdec.h"
+@@ -1280,6 +1282,31 @@ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ 			vfpool_idx[put_ptr].view1_drop = 0;
+ 			vfpool_idx[put_ptr].used = 0;
+ 			INCPTR(put_ptr);
++		} else if ((view0_buf_id >= 0) &&
++				   (view0_vfbuf_use[view0_buf_id] > 1)) {
++			/* another slot still holds this buffer: drop our use */
++			view0_vfbuf_use[view0_buf_id]--;
++			vfpool_idx[put_ptr].view0_buf_id = -1;
++			vfpool_idx[put_ptr].view0_drop = 0;
++		} else {
++			/*
++			 * Neither view can be returned now. Drop a use another
++			 * slot still holds, or retire a slot with nothing left,
++			 * so the loop moves on instead of spinning here.
++			 */
++			if ((view1_buf_id >= 0) &&
++				(view1_vfbuf_use[view1_buf_id] > 1))
++				view1_vfbuf_use[view1_buf_id]--;
++			else
++				pr_warn_ratelimited("vh264mvc: retiring put slot %d, view0 %d view1 %d\n",
++					put_ptr, view0_buf_id, view1_buf_id);
++			vfpool_idx[put_ptr].display_pos = DISPLAY_INVALID_POS;
++			vfpool_idx[put_ptr].view0_buf_id = -1;
++			vfpool_idx[put_ptr].view0_drop = 0;
++			vfpool_idx[put_ptr].view1_buf_id = -1;
++			vfpool_idx[put_ptr].view1_drop = 0;
++			vfpool_idx[put_ptr].used = 0;
++			INCPTR(put_ptr);
+ 		}
+ 	}
+ 
+@@ -1447,12 +1474,28 @@ static void H264_DECODE_INIT(void)
+ 	WRITE_VREG(DECODE_STATUS, 1);
+ }
+ 
++#define DMA_IDLE_TIMEOUT_MS 100
++
++/* Probe and the error work; the reset event callback has no sender here. */
++static void vh264mvc_wait_dma_idle(u32 reg, const char *name)
++{
++	unsigned long timeout = jiffies + msecs_to_jiffies(DMA_IDLE_TIMEOUT_MS);
++
++	while (READ_VREG(reg) & 0x8000) {
++		if (time_after(jiffies, timeout)) {
++			pr_err("vh264mvc: %s busy after %d ms (0x%x), MPSR 0x%x\n",
++				name, DMA_IDLE_TIMEOUT_MS, READ_VREG(reg),
++				READ_VREG(MPSR));
++			return;
++		}
++		usleep_range(10, 20);
++	}
++}
++
+ static void vh264mvc_prot_init(void)
+ {
+-	while (READ_VREG(DCAC_DMA_CTRL) & 0x8000)
+-		;
+-	while (READ_VREG(LMEM_DMA_CTRL) & 0x8000)
+-		;		/* reg address is 0x350 */
++	vh264mvc_wait_dma_idle(DCAC_DMA_CTRL, "DCAC_DMA_CTRL");
++	vh264mvc_wait_dma_idle(LMEM_DMA_CTRL, "LMEM_DMA_CTRL");
+ 	/* clear mailbox interrupt */
+ 	WRITE_VREG(ASSIST_MBOX1_CLR_REG, 1);
+ 
+@@ -1777,12 +1820,22 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 
+ 	buffer_spec0 = (struct buffer_spec_s *)vzalloc(
+ 		sizeof(struct buffer_spec_s) * MAX_BMMU_BUFFER_NUM * 2);
+-	if (NULL == buffer_spec0)
++	if (NULL == buffer_spec0) {
++		mutex_unlock(&vh264_mvc_mutex);
+ 		return -ENOMEM;
++	}
+ 	buffer_spec1 = &buffer_spec0[MAX_BMMU_BUFFER_NUM];
+ 
++	/* the timer and the ISR use these as soon as vh264mvc_init() starts */
++	INIT_WORK(&error_wd_work, error_do_work);
++	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
++	spin_lock_init(&mvc_rp_lock);
++
++	vdec = pdata;
++
+ 	if (vh264mvc_init() < 0) {
+ 		pr_info("\namvdec_h264mvc init failed.\n");
++		vdec = NULL;
+ 		kfree(gvs);
+ 		gvs = NULL;
+ 		vfree(buffer_spec0);
+@@ -1791,12 +1844,6 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 		return -ENODEV;
+ 	}
+ 
+-	INIT_WORK(&error_wd_work, error_do_work);
+-	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
+-	spin_lock_init(&mvc_rp_lock);
+-
+-	vdec = pdata;
+-
+ 	atomic_set(&vh264mvc_active, 1);
+ 
+ 	mutex_unlock(&vh264_mvc_mutex);
+@@ -1813,6 +1860,7 @@ static int amvdec_h264mvc_remove(struct platform_device *pdev)
+ 	cancel_work_sync(&error_wd_work);
+ 	cancel_work_sync(&set_clk_work);
+ 	vh264mvc_stop();
++	vdec = NULL;
+ 	frame_width = 0;
+ 	frame_height = 0;
+ 	vdec_source_changed(VFORMAT_H264MVC, 0, 0, 0);

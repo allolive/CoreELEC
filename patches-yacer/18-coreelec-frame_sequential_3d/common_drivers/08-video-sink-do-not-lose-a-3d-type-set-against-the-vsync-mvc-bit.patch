@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 22:00:00 -0400
+Subject: [PATCH] video_sink: do not lose a 3D type set against the vsync's MVC bit
+
+pre_process_for_3d() sets or clears MODE_3D_MVC in process_3d_type from
+the vsync interrupt, a read-modify-write, while the 3D type ioctl and the
+threedim_mode attribute store the whole word from process context
+without a lock. A vsync landing between the two halves of the
+read-modify-write wrote the old type back: the 3D mode the player had
+just set (frame-alternative output among them) was silently lost and
+stayed lost until the next set.
+
+Take a spinlock (irqsave) around both writers. The rest of the store
+(property change, deinterlacer notify) runs after it, as before, and only
+when the type changed.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
+index b986625..f6a40a2 100644
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -732,6 +732,8 @@ static bool dv_mute_vpp_flag;
+ static unsigned int video_3d_format;
+ #ifdef CONFIG_AMLOGIC_MEDIA_TVIN
+ static unsigned int mvc_flag;
++/* process_3d_type is set from userspace and its MVC bit from the vsync irq */
++static DEFINE_SPINLOCK(process_3d_lock);
+ #endif
+ unsigned int force_3d_scaler = 3;
+ int last_mode_3d;
+@@ -812,6 +814,9 @@ bool vf_source_from_vdin(struct vframe_s *vf)
+ void pre_process_for_3d(struct vframe_s *vf)
+ {
+ 	int frame_width, frame_height;
++#if defined(TV_3D_FUNCTION_OPEN) && defined(CONFIG_AMLOGIC_MEDIA_TVIN)
++	unsigned long flags;
++#endif
+ 
+ 	if (vf->type & VIDTYPE_COMPRESS) {
+ 		frame_width = vf->compWidth;
+@@ -823,6 +828,7 @@ void pre_process_for_3d(struct vframe_s *vf)
+ 
+ #if defined(TV_3D_FUNCTION_OPEN) && defined(CONFIG_AMLOGIC_MEDIA_TVIN)
+ 	/*can be moved to h264mvc.c */
++	spin_lock_irqsave(&process_3d_lock, flags);
+ 	if ((vf->type & VIDTYPE_MVC) &&
+ 	    (process_3d_type & MODE_3D_ENABLE) && vf->trans_fmt) {
+ 		process_3d_type |= MODE_3D_MVC;
+@@ -831,6 +837,7 @@ void pre_process_for_3d(struct vframe_s *vf)
+ 		process_3d_type &= (~MODE_3D_MVC);
+ 		mvc_flag = 0;
+ 	}
++	spin_unlock_irqrestore(&process_3d_lock, flags);
+ 	if (((process_3d_type & MODE_FORCE_3D_TO_2D_LR) ||
+ 	     (process_3d_type & MODE_FORCE_3D_LR) ||
+ 	     (process_3d_type & MODE_FORCE_3D_FA_LR)) &&
+@@ -6771,11 +6778,18 @@ static long amvideo_ioctl(struct file *file, unsigned int cmd, ulong arg)
+ 				VFRAME_EVENT_PROVIDER_SET_3D_VFRAME_INTERLEAVE;
+ 			unsigned int type = (unsigned int)arg;
+ 			struct vframe_s *dispbuf = NULL;
++			unsigned long flags;
++			bool changed = false;
+ 
++			spin_lock_irqsave(&process_3d_lock, flags);
+ 			if (type != process_3d_type) {
+ 				process_3d_type = type;
+ 				if (mvc_flag)
+ 					process_3d_type |= MODE_3D_MVC;
++				changed = true;
++			}
++			spin_unlock_irqrestore(&process_3d_lock, flags);
++			if (changed) {
+ 				if (!(type & MODE_3D_OUT_FA_MASK))
+ 					fa_mvc_forget();
+ 				vd_layer[0].property_changed = true;
+@@ -8506,15 +8520,22 @@ static ssize_t threedim_mode_store(struct class *cla,
+ 	u32 type;
+ 	int r;
+ 	struct vframe_s *dispbuf = NULL;
++	unsigned long flags;
++	bool changed = false;
+ 
+ 	r = kstrtouint(buf, 0, &type);
+ 	if (r < 0)
+ 		return -EINVAL;
+ 
++	spin_lock_irqsave(&process_3d_lock, flags);
+ 	if (type != process_3d_type) {
+ 		process_3d_type = type;
+ 		if (mvc_flag)
+ 			process_3d_type |= MODE_3D_MVC;
++		changed = true;
++	}
++	spin_unlock_irqrestore(&process_3d_lock, flags);
++	if (changed) {
+ 		if (!(type & MODE_3D_OUT_FA_MASK))
+ 			fa_mvc_forget();
+ 		vd_layer[0].property_changed = true;

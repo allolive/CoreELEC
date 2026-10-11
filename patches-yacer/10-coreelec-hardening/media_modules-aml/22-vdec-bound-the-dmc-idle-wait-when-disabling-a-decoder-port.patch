@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 20:59:36 -0400
+Subject: [PATCH] vdec: bound the DMC idle wait when disabling a decoder port
+
+dec_dmc_port_ctrl(0, ...) clears the decoder's request bit in DMC_REQ_CTRL
+and then spins until the channel status register reports the port idle,
+with no limit. If the decoder is wedged and its memory port never drains,
+the spin never ends. On an S905X5 this is what made a stuck amvdec_h264mvc
+fatal: vdec_release() reaches it through vdec_disable_DMC() with
+amstream_mutex held, so the closing process could not be killed, every
+other amstream user blocked behind the mutex, and reboot never completed.
+
+Give up after 100 ms, log the status register, the mask and DMC_REQ_CTRL,
+and carry on, as vdec_stop_armrisc() already does for the AMRISC DMA
+waits. The function is also reached from vdec_reset_core(),
+hevc_reset_core() and the input context save, where the caller's context
+is not known to allow sleeping, so the wait polls with udelay(1) and a
+loop count rather than sleeping or relying on jiffies advancing.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/utils/vdec.c b/drivers/frame_provider/decoder/utils/vdec.c
+index 29e4410..9704863 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.c
++++ b/drivers/frame_provider/decoder/utils/vdec.c
+@@ -936,8 +936,11 @@ static void hevc_arb_ctrl(bool enable)
+ 	}
+ }
+ 
++#define DMC_IDLE_TIMEOUT_US 100000
++
+ static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
+ {
++	int wait_us;
+ 	unsigned long flags;
+ 	unsigned int sts_reg_addr = DMC_CHAN_STS;
+ 	unsigned int mask = 0;
+@@ -1028,9 +1031,16 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
+ 			sts_reg_addr = DMC_CHAN_STS;
+ 			break;
+ 		}
+-		while (!(codec_dmcbus_read(sts_reg_addr)
+-				& mask))
+-				;
++		for (wait_us = 0; wait_us < DMC_IDLE_TIMEOUT_US; wait_us++) {
++			if (codec_dmcbus_read(sts_reg_addr) & mask)
++				break;
++			udelay(1);
++		}
++		if (wait_us == DMC_IDLE_TIMEOUT_US)
++			pr_err("%s: target %u port not idle after %d us, sts reg 0x%x = 0x%x, mask 0x%x, req ctrl 0x%x\n",
++				__func__, target, DMC_IDLE_TIMEOUT_US,
++				sts_reg_addr, codec_dmcbus_read(sts_reg_addr),
++				mask, codec_dmcbus_read(DMC_REQ_CTRL));
+ 	}
+ }
+ 

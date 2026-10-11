@@ -1,0 +1,467 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:08:17 -0400
+Subject: [PATCH] h264_mvc, vdec: optionally restart a start that stalls with data queued
+
+When an amvdec_h264mvc start stalls (the firmware waiting at its first
+LMEM-to-DDR copy for write responses that never come), the start
+watchdog only reports it, and the decoder sits there until the player
+gives up. On an S905X5 it then tended to happen again on every
+following open until a reboot.
+
+This adds a recovery, off by default (module parameter stall_recover,
+the number of attempts per instance; 0, the default, only reports).
+Every close and open already does more than it: the power-off and
+power-on of VDEC_1 pulse DOS_SW_RESET0 0xfffffffc with the port closed,
+so it is unlikely to help; it is here to be tried from sysfs once the
+start-state lines show where the stuck state lives.
+
+When it is enabled and the watchdog fires (the decoder running,
+frame_width still 0, data queued in the VIFIFO and its read pointer
+still for a second), the watchdog queues a recovery work item, but only
+if the stream can be rewound: the VIFIFO read side has not wrapped, has
+read no more than the first 64 KiB, and the write pointer is ahead of
+it; otherwise it logs why not. The recovery runs in process context
+through vh264mvc_restart(), under its restart_mutex, like the error
+restart: the sources are stopped, alloc_work and set_clk_work are
+cancelled, and, if the decoder is still active, it is drained. Then it
+logs the attempt, checks the stream is still rewindable, and calls
+vdec_vld_port_cycle(), which closes the decoder's DMC port, pulses
+DOS_SW_RESET0 bits 3-14 (VLD, VLD part, VIFIFO, IQIDCT, MC, deblocker,
+PIC_DC, PSC, MCPU, CCPU, DDR interface, async FIFO), held 20 us,
+released, then 10 us and a read-back as dos_local_config() does, and
+opens the port again. VIFIFO fetch is turned off before the cycle, so
+it is not running from reset pointers when the port reopens. The VIFIFO
+is then rewound as vdec_config_vld_reg() sets it up, with its start and
+end, the write pointer read from the stream buffer just before it is
+written (the player goes on writing during the stall and the cycle
+sleeps), and the canonical enable value; the write pointer is written
+from the stream buffer once more as the last step, as
+vdec_sync_input_write() does. The stream buffer's read pointer is moved
+back to the start by hand, adding what it had consumed back to its
+payload: its set_rp takes a backward move for a wrap and would leave the
+payload about one buffer short, so the buffer would read as full for
+good. The VIFIFO read pointer is read after the init pulse, before fetch
+is enabled (which moves it on by the VLD's FIFO at once), and logged, as
+an error if it is not at the start. Then the decoder is stopped and
+re-initialised. If the stream is no longer rewindable, or the port cycle
+is refused or the closed port does not report idle, nothing is reset
+(fetch is turned back on as it was and the DMC state is logged) and the
+decoder is only re-initialised.
+
+vdec_vld_port_cycle() is new in vdec.c, since vdec_enable_DMC() and
+vdec_disable_DMC() are static. It holds vdec_mutex across its checks and
+the cycle and refuses unless the target is VLD, this is the only decoder
+instance (both vdec_nr and inited_vcodec_num are 1), it is the only one
+on the connected list (read under the core lock, which the core thread
+changes it under), and VDEC_1 is powered. dec_dmc_port_ctrl() and dec_pipeline_idle_ctrl() now return
+whether a closed port reported idle; their other callers ignore it.
+vh264_mvc_mutex is taken before vdec_mutex; nothing that holds
+vdec_mutex calls into the MVC driver (probe, remove and stop_hw run
+outside it), so the order has no reverse.
+
+The watchdog only queues the work while the decoder is active, and a
+recovery whose attempts are used up does nothing. Halt (vdec_release()
+and remove) clears the active flag under the mutex, deletes the timer
+and then cancels the work, so a recovery either finishes before the
+port is closed and the state freed, or finds the decoder inactive and
+does nothing. The counter is reset in probe.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 1185c0c..08f9307 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -130,6 +130,7 @@ static unsigned long pts_missed, pts_hit;
+ 
+ static atomic_t vh264mvc_active = ATOMIC_INIT(0);
+ static struct work_struct error_wd_work;
++static struct work_struct recover_work;
+ 
+ static struct dec_sysinfo vh264mvc_amstream_dec_info;
+ static dma_addr_t mc_dma_handle;
+@@ -1273,6 +1274,31 @@ static void vh264mvc_hw_state(const char *tag, bool err)
+ 
+ #define START_WD_TIMEOUT (HZ)
+ 
++/* restarts of a stalled start allowed per instance; 0 only reports */
++static u32 stall_recover;
++static u32 recover_attempts;
++
++/* how far the stalled start may have read before it is not rewound */
++#define RECOVER_MAX_CONSUMED 0x10000
++
++/*
++ * The VIFIFO can be rewound to its start if the stream there is still the
++ * one this start began with: the read side has not wrapped, has read no
++ * more than the first chunk, and the write pointer is ahead of it.
++ */
++static bool vififo_rewindable(u32 *start, u32 *end, u32 *wp)
++{
++	u32 rp = READ_VREG(VLD_MEM_VIFIFO_RP);
++
++	*start = READ_VREG(VLD_MEM_VIFIFO_START_PTR);
++	*end = READ_VREG(VLD_MEM_VIFIFO_END_PTR);
++	*wp = READ_VREG(VLD_MEM_VIFIFO_WP);
++
++	return READ_VREG(VLD_MEM_VIFIFO_WRAP_COUNT) == 0 &&
++		rp >= *start && rp - *start <= RECOVER_MAX_CONSUMED &&
++		*wp >= rp && *wp <= *end + 8;
++}
++
+ static u32 start_wd_rp;
+ static unsigned long start_wd_since;
+ static bool start_wd_reported;
+@@ -1315,6 +1341,16 @@ static void start_wd_check(void)
+ 		READ_VREG(DECODE_STATUS), rp,
+ 		READ_VREG(VLD_MEM_VIFIFO_WP), level, fw_tee_enabled());
+ 	vh264mvc_hw_state("stalled", true);
++
++	if (recover_attempts < stall_recover &&
++		atomic_read(&vh264mvc_active)) {
++		u32 start, end, wp;
++
++		if (vififo_rewindable(&start, &end, &wp))
++			schedule_work(&recover_work);
++		else
++			pr_err("vh264mvc: not recovering: the stream was read past its start or wrapped\n");
++	}
+ }
+ 
+ static void vh264mvc_put_timer_func(struct timer_list *timer)
+@@ -1951,6 +1987,96 @@ static int vh264mvc_stop(void)
+ 	return 0;
+ }
+ 
++/*
++ * DOS_SW_RESET0 bits pulsed with the DMC port closed when a stalled start
++ * is recovered: vld, vld_part, vfifo, iqidct, mc, dblk, pic_dc, psc, mcpu,
++ * ccpu, ddr and afifo (3-14). The VIFIFO is rewound after it.
++ */
++#define RECOVER_RESET_MASK (0xfff << 3)
++
++/* VLD_MEM_VIFIFO_CONTROL as vdec_config_vld_reg() enables it */
++#define VIFIFO_CTRL_ENABLE ((0x11 << 16) | (1 << 10) | (1 << 1) | (1 << 2) | \
++	(7 << 3))
++
++/*
++ * Point the VIFIFO back at its start, keeping the data written so far, as
++ * vdec_config_vld_reg() sets it up, so the restarted firmware reads the
++ * stream (and its SPS/PPS) from the beginning again. The write pointer is
++ * taken from the stream buffer as it is written, the player having gone
++ * on writing during the stall. The stream buffer's read pointer is moved
++ * back by hand: its set_rp takes a backward move for a wrap.
++ */
++static void vififo_rewind(u32 start, u32 end)
++{
++	unsigned long flags;
++	u32 old, rp;
++
++	WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, 0);
++	WRITE_VREG(VLD_MEM_VIFIFO_WRAP_COUNT, 0);
++	WRITE_VREG(POWER_CTL_VLD, 1 << 4);
++	WRITE_VREG(VLD_MEM_VIFIFO_START_PTR, start);
++	WRITE_VREG(VLD_MEM_VIFIFO_END_PTR, end);
++	WRITE_VREG(VLD_MEM_VIFIFO_CURR_PTR, start);
++	WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, 1);
++	WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, 0);
++	/* before fetch is enabled, which moves it on at once */
++	rp = READ_VREG(VLD_MEM_VIFIFO_RP);
++	WRITE_VREG(VLD_MEM_VIFIFO_BUF_CNTL, 2);
++	WRITE_VREG(VLD_MEM_VIFIFO_WP, STBUF_READ(&vdec->vbuf, get_wp));
++	WRITE_VREG(VLD_MEM_VIFIFO_BUF_CNTL, 3);
++	WRITE_VREG(VLD_MEM_VIFIFO_BUF_CNTL, 2);
++	WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, VIFIFO_CTRL_ENABLE);
++
++	spin_lock_irqsave(&mvc_rp_lock, flags);
++	old = vdec->vbuf.buf_rp;
++	if (old >= start) {
++		vdec->vbuf.buf_rp = start;
++		atomic_add(old - start, &vdec->vbuf.payload);
++	}
++	spin_unlock_irqrestore(&mvc_rp_lock, flags);
++
++	/* what the player wrote meanwhile, as vdec_sync_input_write() */
++	WRITE_VREG(VLD_MEM_VIFIFO_WP, STBUF_READ(&vdec->vbuf, get_wp));
++
++	if (old < start || rp != start)
++		pr_err("vh264mvc: VIFIFO rewind: rp 0x%x start 0x%x stream buffer rp was 0x%x\n",
++			rp, start, old);
++	else
++		pr_info("vh264mvc: VIFIFO rewound to 0x%x, wp 0x%x\n",
++			rp, READ_VREG(VLD_MEM_VIFIFO_WP));
++}
++
++/*
++ * With the decoder stopped and drained: close the DMC port, reset the
++ * units with it closed, open it, and rewind the VIFIFO. Nothing is reset
++ * if the stream cannot be rewound or the port does not go idle; the
++ * decoder is then only re-initialised.
++ */
++static void vh264mvc_recover_hw(void)
++{
++	u32 start, end, wp, ctrl;
++	int ret;
++
++	pr_err("vh264mvc: recovering a stalled start, attempt %u of %u\n",
++		recover_attempts, stall_recover);
++	if (!vififo_rewindable(&start, &end, &wp)) {
++		pr_err("vh264mvc: stream read past its start or wrapped, no reset\n");
++		return;
++	}
++	/* no fetch from reset pointers when the port opens again */
++	ctrl = READ_VREG(VLD_MEM_VIFIFO_CONTROL);
++	WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, 0);
++	ret = vdec_vld_port_cycle(vdec, RECOVER_RESET_MASK);
++	if (ret) {
++		/* nothing was reset: the pointers are as they were */
++		WRITE_VREG(VLD_MEM_VIFIFO_CONTROL, ctrl);
++		pr_err("vh264mvc: DMC port not cycled (%d), no reset\n", ret);
++		vh264mvc_hw_state("recovery aborted", true);
++		return;
++	}
++	vififo_rewind(start, end);
++}
++
+ /* restarts after a fatal firmware error allowed per instance */
+ static u32 error_restart_max = 3;
+ static u32 error_restarts;
+@@ -1962,19 +2088,28 @@ static u32 error_restarts;
+  * are cancelled without it held. remove clears vh264mvc_active under the
+  * mutex, and a restart that finds it clear does nothing. restart_mutex
+  * keeps two restarts from interleaving their sections.
++ *
++ * To recover a stalled start, the port is also cycled with the units
++ * reset and the VIFIFO rewound (vh264mvc_recover_hw()) before re-init.
+  */
+-static void vh264mvc_restart(void)
++static void vh264mvc_restart(bool recover)
+ {
+ 	mutex_lock(&restart_mutex);
+ 	mutex_lock(&vh264_mvc_mutex);
+ 	if (!atomic_read(&vh264mvc_active))
+ 		goto out;
+-	if (error_restarts >= error_restart_max) {
+-		pr_err_ratelimited("vh264mvc: not restarting after %u fatal errors\n",
+-			error_restarts);
+-		goto out;
++	if (recover) {
++		if (recover_attempts >= stall_recover)
++			goto out;
++		recover_attempts++;
++	} else {
++		if (error_restarts >= error_restart_max) {
++			pr_err_ratelimited("vh264mvc: not restarting after %u fatal errors\n",
++				error_restarts);
++			goto out;
++		}
++		error_restarts++;
+ 	}
+-	error_restarts++;
+ 	vh264mvc_stop_sources();
+ 	mutex_unlock(&vh264_mvc_mutex);
+ 
+@@ -1985,6 +2120,8 @@ static void vh264mvc_restart(void)
+ 	if (atomic_read(&vh264mvc_active)) {
+ 		vh264mvc_stop_sources();
+ 		vh264mvc_drain();
++		if (recover)
++			vh264mvc_recover_hw();
+ 		vh264mvc_stop();
+ 		/* re-arms the start watchdog; alloc_work sets them again */
+ 		frame_width = 0;
+@@ -1999,7 +2136,12 @@ out:
+ 
+ static void error_do_work(struct work_struct *work)
+ {
+-	vh264mvc_restart();
++	vh264mvc_restart(false);
++}
++
++static void recover_do_work(struct work_struct *work)
++{
++	vh264mvc_restart(true);
+ }
+ 
+ /*
+@@ -2017,6 +2159,7 @@ static void vh264mvc_halt(void)
+ 	mutex_unlock(&vh264_mvc_mutex);
+ 	/* the ISR and the timer are gone: nothing queues these again */
+ 	cancel_work_sync(&error_wd_work);
++	cancel_work_sync(&recover_work);
+ 	cancel_work_sync(&alloc_work);
+ 	cancel_work_sync(&set_clk_work);
+ 
+@@ -2077,8 +2220,10 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 	INIT_WORK(&error_wd_work, error_do_work);
+ 	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
+ 	INIT_WORK(&alloc_work, do_alloc_work);
++	INIT_WORK(&recover_work, recover_do_work);
+ 	spin_lock_init(&mvc_rp_lock);
+ 	error_restarts = 0;
++	recover_attempts = 0;
+ 
+ 	vdec = pdata;
+ 
+@@ -2207,6 +2352,9 @@ MODULE_PARM_DESC(start_state_log, "\n amvdec_h264mvc log DMA/DMC state at each s
+ 
+ module_param(error_restart_max, uint, 0664);
+ MODULE_PARM_DESC(error_restart_max, "\n amvdec_h264mvc restarts after a fatal error per instance\n");
++
++module_param(stall_recover, uint, 0664);
++MODULE_PARM_DESC(stall_recover, "\n amvdec_h264mvc restarts of a stalled start per instance\n");
+ module_init(amvdec_h264mvc_driver_init_module);
+ module_exit(amvdec_h264mvc_driver_remove_module);
+ 
+diff --git a/drivers/frame_provider/decoder/utils/vdec.c b/drivers/frame_provider/decoder/utils/vdec.c
+index a84d97e..266b32e 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.c
++++ b/drivers/frame_provider/decoder/utils/vdec.c
+@@ -1020,9 +1020,11 @@ void vdec_dmc_port_state(u32 target, u32 *mask, u32 *req_ctrl,
+ }
+ EXPORT_SYMBOL(vdec_dmc_port_state);
+ 
+-static void dec_dmc_port_ctrl(bool dmc_on, u32 target,
++/* returns false if a closed port did not report idle */
++static bool dec_dmc_port_ctrl(bool dmc_on, u32 target,
+ 	unsigned long caller, int trace_level)
+ {
++	bool idle = true;
+ 	int wait_us;
+ 	unsigned long flags;
+ 	unsigned int sts_reg_addr;
+@@ -1031,7 +1033,7 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target,
+ 
+ 	if (!mask) {
+ 		pr_info("debug dmc ctrl return\n");
+-		return;
++		return true;
+ 	}
+ 
+ 	if (dmc_on) {
+@@ -1059,7 +1061,8 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target,
+ 				break;
+ 			udelay(1);
+ 		}
+-		if (wait_us == DMC_IDLE_TIMEOUT_US)
++		idle = wait_us < DMC_IDLE_TIMEOUT_US;
++		if (!idle)
+ 			pr_err("%s: target %u port not idle after %d us, sts reg 0x%x = 0x%x, mask 0x%x, req ctrl 0x%x\n",
+ 				__func__, target, DMC_IDLE_TIMEOUT_US,
+ 				sts_reg_addr, codec_dmcbus_read(sts_reg_addr),
+@@ -1070,6 +1073,8 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target,
+ 		pr_info_ratelimited("dmc: target %u port %s by %pS, req ctrl 0x%x -> 0x%x\n",
+ 			target, dmc_on ? "on" : "off", (void *)caller,
+ 			req_before, req_after);
++
++	return idle;
+ }
+ 
+ void arb_ctrl_wait_idle(int enable)
+@@ -1090,7 +1095,8 @@ void arb_ctrl_wait_idle(int enable)
+ }
+ EXPORT_SYMBOL(arb_ctrl_wait_idle);
+ 
+-static noinline void dec_pipeline_idle_ctrl(struct vdec_s *vdec,
++/* returns false if the DMC port was closed and did not report idle */
++static noinline bool dec_pipeline_idle_ctrl(struct vdec_s *vdec,
+ 	int target, bool enable)
+ {
+ 	if (is_vdec_hevc_combine()) {
+@@ -1099,16 +1105,17 @@ static noinline void dec_pipeline_idle_ctrl(struct vdec_s *vdec,
+ 		if (target == VDEC_INPUT_TARGET_VLD) {
+ 			if (is_vdec_bus_ctrl()) {
+ 				vdec_dbus_ctrl(enable);
+-				return;
++				return true;
+ 			}
+ 		} else if (target == VDEC_INPUT_TARGET_HEVC) {
+ 			if (is_hevc_bus_ctrl()) {
+ 				hevc_arb_ctrl(enable);
+-				return;
++				return true;
+ 			}
+ 		}
+-		dec_dmc_port_ctrl(enable, target, _RET_IP_, 2);
++		return dec_dmc_port_ctrl(enable, target, _RET_IP_, 2);
+ 	}
++	return true;
+ }
+ 
+ #ifdef NEW_FB_CODE
+@@ -5629,6 +5636,61 @@ void vdec_reset_core(struct vdec_s *vdec)
+ }
+ EXPORT_SYMBOL(vdec_reset_core);
+ 
++/*
++ * Close the VLD decoder's DMC port, pulse reset_mask in DOS_SW_RESET0 while
++ * it is closed (held 20 us, released, 10 us, read back, as
++ * dos_local_config() does), and open it again. The caller has stopped the
++ * decoder. Under vdec_mutex, and refused unless this is the only decoder
++ * instance (vdec_nr and inited_vcodec_num), the only one connected
++ * (checked under the core lock), and VDEC_1 is powered: nothing else may
++ * be using the port. If the closed port does not report idle, nothing
++ * is reset and -ETIMEDOUT is returned.
++ */
++int vdec_vld_port_cycle(struct vdec_s *vdec, u32 reset_mask)
++{
++	struct vdec_core_s *core = vdec_core;
++	unsigned long flags;
++	bool alone;
++	int ret = 0;
++
++	if (vdec->input.target != VDEC_INPUT_TARGET_VLD)
++		return -EINVAL;
++
++	mutex_lock(&vdec_mutex);
++	/* the core thread changes the list under the core lock */
++	flags = vdec_core_lock(core);
++	alone = list_is_singular(&core->connected_vdec_list) &&
++		list_first_entry(&core->connected_vdec_list,
++			struct vdec_s, list) == vdec;
++	vdec_core_unlock(core, flags);
++	if (!alone || atomic_read(&core->vdec_nr) != 1 ||
++		inited_vcodec_num != 1) {
++		ret = -EBUSY;
++		goto out;
++	}
++	if (!vdec_on(VDEC_1)) {
++		ret = -ENODEV;
++		goto out;
++	}
++
++	if (!dec_pipeline_idle_ctrl(vdec, VDEC_INPUT_TARGET_VLD, 0)) {
++		ret = -ETIMEDOUT;
++	} else if (reset_mask) {
++		WRITE_VREG(DOS_SW_RESET0, reset_mask);
++		usleep_range(20, 40);
++		WRITE_VREG(DOS_SW_RESET0, 0);
++		usleep_range(10, 20);
++		READ_VREG(DOS_SW_RESET0);
++		READ_VREG(DOS_SW_RESET0);
++		READ_VREG(DOS_SW_RESET0);
++	}
++	dec_pipeline_idle_ctrl(vdec, VDEC_INPUT_TARGET_VLD, 1);
++out:
++	mutex_unlock(&vdec_mutex);
++	return ret;
++}
++EXPORT_SYMBOL(vdec_vld_port_cycle);
++
+ void hevc_mmu_dma_check(struct vdec_s *vdec)
+ {
+ 	ulong timeout;
+diff --git a/drivers/frame_provider/decoder/utils/vdec.h b/drivers/frame_provider/decoder/utils/vdec.h
+index fc0c803..f547749 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.h
++++ b/drivers/frame_provider/decoder/utils/vdec.h
+@@ -844,6 +844,8 @@ extern void vdec_reset_core(struct vdec_s *vdec);
+ extern void vdec_dmc_port_state(u32 target, u32 *mask, u32 *req_ctrl,
+ 	u32 *sts_reg, u32 *sts);
+ 
++extern int vdec_vld_port_cycle(struct vdec_s *vdec, u32 reset_mask);
++
+ extern void hevc_reset_core(struct vdec_s *vdec);
+ 
+ extern void hevc_arb_ctrl_front_or_back(bool enable, bool front_flag);

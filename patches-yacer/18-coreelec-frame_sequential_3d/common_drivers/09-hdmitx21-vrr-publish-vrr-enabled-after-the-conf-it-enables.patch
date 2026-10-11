@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 22:00:00 -0400
+Subject: [PATCH] hdmitx21: vrr: publish vrr_enabled after the conf it enables
+
+hdmitx_set_vrr_para() copies the new VRR conf, vrr_enabled included,
+under vrr_para.lock, but the vsync handler reads vrr_enabled and then
+compares and copies the conf without that lock. A handler on another CPU
+could see vrr_enabled set by the struct copy while the rest of the conf
+was still being written, and start VRR from a half-written conf (a mixed
+rate, a wrong base vic), which it then keeps until the next change.
+
+Copy the conf with vrr_enabled clear, and set it in hdmitx_vrr_enable()
+with a store-release that the handler pairs with a load-acquire: a
+handler that sees VRR on sees the whole conf it was enabled with. A
+writer always switches VRR off and waits for a running handler before it
+writes the conf again.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+index f24d47b..436cf80 100644
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
+@@ -790,10 +790,15 @@ void tx_vrr_params_init(void)
+ 
+ void hdmitx_set_vrr_para(const struct vrr_conf_para *para)
+ {
++	struct vrr_conf_para conf = *para;
+ 	unsigned long flags;
+ 
++	/* the vsync handler reads the conf without the lock: it is enabled
++	 * by hdmitx_vrr_enable() once the rest is in place
++	 */
++	conf.vrr_enabled = 0;
+ 	spin_lock_irqsave(&vrr_para.lock, flags);
+-	vrr_para.conf_params = *para;
++	vrr_para.conf_params = conf;
+ 	spin_unlock_irqrestore(&vrr_para.lock, flags);
+ }
+ 
+@@ -1982,7 +1987,7 @@ irqreturn_t hdmitx_vrr_vsync_handler(struct hdmitx_dev *hdev)
+ 	struct tx_vrr_params *vrr = &vrr_para;
+ 	u16 vtotal_tmp = 0;
+ 
+-	if (!vrr->conf_params.vrr_enabled) {
++	if (!smp_load_acquire(&vrr->conf_params.vrr_enabled)) {
+ 		/* VRR left: the empty VTEM went out for a few frames, end it */
+ 		if (atomic_dec_if_positive(&vtem_off_cnt) == 0)
+ 			hdmi_emp_infoframe_set(EMP_TYPE_VRR_GAME, NULL);
+@@ -2047,7 +2052,7 @@ void hdmitx_vrr_disable(void)
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 
+ 	if (hdev->irq_vrr_vsync)
+-		vrr->conf_params.vrr_enabled = 0;
++		WRITE_ONCE(vrr->conf_params.vrr_enabled, 0);
+ }
+ 
+ void hdmitx_vrr_enable(void)
+@@ -2055,6 +2060,7 @@ void hdmitx_vrr_enable(void)
+ 	struct tx_vrr_params *vrr = &vrr_para;
+ 	struct hdmitx_dev *hdev = get_hdmitx21_device();
+ 
++	/* after the conf it enables: the vsync handler reads it after this */
+ 	if (hdev->irq_vrr_vsync)
+-		vrr->conf_params.vrr_enabled = 1;
++		smp_store_release(&vrr->conf_params.vrr_enabled, 1);
+ }

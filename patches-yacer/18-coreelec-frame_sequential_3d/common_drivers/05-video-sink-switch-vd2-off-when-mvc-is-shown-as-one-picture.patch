@@ -16,9 +16,10 @@ no frame of its own. Seen on an S6: one full picture after.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/drivers/media/video_sink/video_hw.c b/drivers/media/video_sink/video_hw.c
+index f53b2f3..d18ced3 100644
 --- a/drivers/media/video_sink/video_hw.c
 +++ b/drivers/media/video_sink/video_hw.c
-@@ -11137,6 +11137,15 @@
+@@ -11149,6 +11149,15 @@ s32 layer_swap_frame(struct vframe_s *vf, struct video_layer_s *layer,
  	if (vd_layer[0].enabled && !vd_layer[1].enabled &&
  		(is_mvc || video_lcevc.vd2_vd1_shared_vf))
  		enable_video_layer2();

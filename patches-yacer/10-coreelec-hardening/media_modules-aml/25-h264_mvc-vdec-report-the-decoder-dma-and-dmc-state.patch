@@ -1,0 +1,351 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 22:49:26 -0400
+Subject: [PATCH] h264_mvc, vdec: report the decoder's DMA and DMC state
+
+When an amvdec_h264mvc start stalls on an S905X5 (TEE-loaded firmware),
+the AMRISC sits at MPC 0x7e3-0x7e6. In a plaintext build of the same
+firmware revision that is the helper that copies a header segment from
+LMEM to DDR, polling WRRSP_LMEM for the write responses of that copy.
+They never come. Its reads had worked (the IMEM load, the SPS). The report from the
+start watchdog did not show the DMA engines, the write-response counters
+or the decoder's DMC port, so it could not tell a port that had been
+closed under the decoder from a counter left over from the previous
+instance.
+
+The watchdog report now has a second line: MPSR, MPC_E, MPC_P, CPSR,
+CPC_P, IMEM_DMA_CTRL/ADR/COUNT and WRRSP_IMEM, LMEM_DMA_CTRL/ADR/COUNT and
+WRRSP_LMEM, DCAC_DMA_CTRL, VLD_MEM_VIFIFO_CONTROL, DOS_SW_RESET0,
+AV_SCRATCH_B/C/E/H/I, DMC_REQ_CTRL with the decoder's bit in it, and the
+channel status register dec_dmc_port_ctrl() polls on this SoC (0xd8 on
+S6). The same line is logged once per start, just before amvdec_start(),
+so a stale counter or a closed port shows before the firmware runs;
+starts are rare, and the module parameter start_state_log turns it off.
+
+dec_dmc_port_ctrl() now logs, rate-limited, each time a decoder's port is
+opened or closed: the target, on or off, the caller, and DMC_REQ_CTRL
+before and after the write. The opens and closes from vdec_init() and
+vdec_release() are logged by default; the idle toggles around each run of
+a multi-instance decoder (vdec_reset_core(), hevc_reset_core(), the input
+context save) happen per frame and are logged only with the vdec module
+parameter dmc_trace=2; dmc_trace=0 turns both off. The port bit and the
+status register are now worked out by two helpers, which
+vdec_dmc_port_state() shares with the MVC report.
+
+It only reports.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 53528c2..35da69d 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -1235,6 +1235,40 @@ static void vh264_mvc_set_clk(struct work_struct *work)
+ 	}
+ }
+ 
++/* log the decoder's DMA and DMC state once per start */
++static u32 start_state_log = 1;
++
++#define HW_STATE_FMT "vh264mvc: %s: MPSR 0x%x MPC_E 0x%x MPC_P 0x%x CPSR 0x%x CPC_P 0x%x imem ctrl 0x%x adr 0x%x count 0x%x rsp 0x%x lmem ctrl 0x%x adr 0x%x count 0x%x rsp 0x%x dcac 0x%x vififo ctrl 0x%x sw_reset0 0x%x scratch_B 0x%x scratch_C 0x%x scratch_E 0x%x scratch_H 0x%x scratch_I 0x%x dmc req 0x%x mask 0x%x sts[0x%x] 0x%x\n"
++#define HW_STATE_ARGS(tag) (tag), \
++	READ_VREG(MPSR), READ_VREG(MPC_E), READ_VREG(MPC_P), \
++	READ_VREG(CPSR), READ_VREG(CPC_P), \
++	READ_VREG(IMEM_DMA_CTRL), READ_VREG(IMEM_DMA_ADR), \
++	READ_VREG(IMEM_DMA_COUNT), READ_VREG(WRRSP_IMEM), \
++	READ_VREG(LMEM_DMA_CTRL), READ_VREG(LMEM_DMA_ADR), \
++	READ_VREG(LMEM_DMA_COUNT), READ_VREG(WRRSP_LMEM), \
++	READ_VREG(DCAC_DMA_CTRL), READ_VREG(VLD_MEM_VIFIFO_CONTROL), \
++	READ_VREG(DOS_SW_RESET0), \
++	READ_VREG(AV_SCRATCH_B), READ_VREG(AV_SCRATCH_C), \
++	READ_VREG(AV_SCRATCH_E), READ_VREG(AV_SCRATCH_H), \
++	READ_VREG(AV_SCRATCH_I), \
++	dmc_req, dmc_mask, dmc_sts_reg, dmc_sts
++
++/*
++ * One line with where the AMRISC is, its IMEM/LMEM DMA and outstanding
++ * write responses, the other DMA engines, and the decoder's DMC port.
++ */
++static void vh264mvc_hw_state(const char *tag, bool err)
++{
++	u32 dmc_mask, dmc_req, dmc_sts_reg, dmc_sts;
++
++	vdec_dmc_port_state(VDEC_INPUT_TARGET_VLD, &dmc_mask, &dmc_req,
++		&dmc_sts_reg, &dmc_sts);
++	if (err)
++		pr_err(HW_STATE_FMT, HW_STATE_ARGS(tag));
++	else
++		pr_info(HW_STATE_FMT, HW_STATE_ARGS(tag));
++}
++
+ #define START_WD_TIMEOUT (HZ)
+ 
+ static u32 start_wd_rp;
+@@ -1278,6 +1312,7 @@ static void start_wd_check(void)
+ 		READ_VREG(AV_SCRATCH_J), READ_VREG(AV_SCRATCH_K),
+ 		READ_VREG(DECODE_STATUS), rp,
+ 		READ_VREG(VLD_MEM_VIFIFO_WP), level, fw_tee_enabled());
++	vh264mvc_hw_state("stalled", true);
+ }
+ 
+ static void vh264mvc_put_timer_func(struct timer_list *timer)
+@@ -1766,6 +1801,9 @@ static s32 vh264mvc_init(void)
+ 
+ 	stat |= STAT_TIMER_ARM;
+ 
++	if (start_state_log)
++		vh264mvc_hw_state("start", false);
++
+ 	amvdec_start();
+ 
+ 	stat |= STAT_VDEC_RUN;
+@@ -2001,6 +2039,9 @@ MODULE_PARM_DESC(drop_rate, "\n amvdec_h264mvc drop rate\n");
+ 
+ module_param(drop_thread_hold, uint, 0664);
+ MODULE_PARM_DESC(drop_thread_hold, "\n amvdec_h264mvc drop thread hold\n");
++
++module_param(start_state_log, uint, 0664);
++MODULE_PARM_DESC(start_state_log, "\n amvdec_h264mvc log DMA/DMC state at each start\n");
+ module_init(amvdec_h264mvc_driver_init_module);
+ module_exit(amvdec_h264mvc_driver_remove_module);
+ 
+diff --git a/drivers/frame_provider/decoder/utils/vdec.c b/drivers/frame_provider/decoder/utils/vdec.c
+index 9704863..4b3df48 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.c
++++ b/drivers/frame_provider/decoder/utils/vdec.c
+@@ -938,13 +938,13 @@ static void hevc_arb_ctrl(bool enable)
+ 
+ #define DMC_IDLE_TIMEOUT_US 100000
+ 
+-static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
++/* 1: log each port open and close, 2: also the per-run idle toggles */
++static int dmc_trace = 1;
++
++static u32 dec_dmc_mask(u32 target)
+ {
+-	int wait_us;
+-	unsigned long flags;
+-	unsigned int sts_reg_addr = DMC_CHAN_STS;
+-	unsigned int mask = 0;
+ 	unsigned int cpu_type = get_cpu_major_id();
++	u32 mask = 0;
+ 
+ 	if (target == VDEC_INPUT_TARGET_VLD) {
+ 		if ((cpu_type == AM_MESON_CPU_MAJOR_ID_S7) ||
+@@ -972,6 +972,63 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
+ 		}
+ 	}
+ 
++	return mask;
++}
++
++static unsigned int dec_dmc_sts_reg(void)
++{
++	switch (get_cpu_major_id()) {
++	case AM_MESON_CPU_MAJOR_ID_S4:
++	case AM_MESON_CPU_MAJOR_ID_S4D:
++	case AM_MESON_CPU_MAJOR_ID_T5W:
++		return S4_DMC_CHAN_STS;
++	case AM_MESON_CPU_MAJOR_ID_T5:
++	case AM_MESON_CPU_MAJOR_ID_T5D:
++	case AM_MESON_CPU_MAJOR_ID_TXHD2:
++		return T5_DMC_CHAN_STS;
++	case AM_MESON_CPU_MAJOR_ID_SC2:
++		return TM2_REVB_DMC_CHAN_STS;
++	case AM_MESON_CPU_MAJOR_ID_TM2:
++		if (is_cpu_meson_revb())
++			return TM2_REVB_DMC_CHAN_STS;
++		return DMC_CHAN_STS;
++	case AM_MESON_CPU_MAJOR_ID_S1A:
++		return 0xb7;
++	case AM_MESON_CPU_MAJOR_ID_S7:
++		return 0xcc;
++	case AM_MESON_CPU_MAJOR_ID_S7D:
++	case AM_MESON_CPU_MAJOR_ID_T6D:
++		return 0xcf;
++	case AM_MESON_CPU_MAJOR_ID_S6:
++		return 0xd8;
++	default:
++		return DMC_CHAN_STS;
++	}
++}
++
++/*
++ * The decoder's DMC port as dec_dmc_port_ctrl() sees it: its bit in
++ * DMC_REQ_CTRL and the channel status register it polls for idle.
++ */
++void vdec_dmc_port_state(u32 target, u32 *mask, u32 *req_ctrl,
++	u32 *sts_reg, u32 *sts)
++{
++	*mask = dec_dmc_mask(target);
++	*req_ctrl = codec_dmcbus_read(DMC_REQ_CTRL);
++	*sts_reg = dec_dmc_sts_reg();
++	*sts = codec_dmcbus_read(*sts_reg);
++}
++EXPORT_SYMBOL(vdec_dmc_port_state);
++
++static void dec_dmc_port_ctrl(bool dmc_on, u32 target,
++	unsigned long caller, int trace_level)
++{
++	int wait_us;
++	unsigned long flags;
++	unsigned int sts_reg_addr;
++	unsigned int mask = dec_dmc_mask(target);
++	u32 req_before, req_after;
++
+ 	if (!mask) {
+ 		pr_info("debug dmc ctrl return\n");
+ 		return;
+@@ -981,56 +1038,22 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
+ 		/* dmc async on request */
+ 		spin_lock_irqsave(&vdec_spin_lock, flags);
+ 
+-		codec_dmcbus_write(DMC_REQ_CTRL,
+-			codec_dmcbus_read(DMC_REQ_CTRL) | mask);
++		req_before = codec_dmcbus_read(DMC_REQ_CTRL);
++		codec_dmcbus_write(DMC_REQ_CTRL, req_before | mask);
++		req_after = codec_dmcbus_read(DMC_REQ_CTRL);
+ 
+ 		spin_unlock_irqrestore(&vdec_spin_lock, flags);
+ 	} else {
+ 		/* dmc async off request */
+ 		spin_lock_irqsave(&vdec_spin_lock, flags);
+ 
+-		codec_dmcbus_write(DMC_REQ_CTRL,
+-			codec_dmcbus_read(DMC_REQ_CTRL) & ~mask);
++		req_before = codec_dmcbus_read(DMC_REQ_CTRL);
++		codec_dmcbus_write(DMC_REQ_CTRL, req_before & ~mask);
++		req_after = codec_dmcbus_read(DMC_REQ_CTRL);
+ 
+ 		spin_unlock_irqrestore(&vdec_spin_lock, flags);
+ 
+-		switch (cpu_type) {
+-		case AM_MESON_CPU_MAJOR_ID_S4:
+-		case AM_MESON_CPU_MAJOR_ID_S4D:
+-		case AM_MESON_CPU_MAJOR_ID_T5W:
+-			sts_reg_addr = S4_DMC_CHAN_STS;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_T5:
+-		case AM_MESON_CPU_MAJOR_ID_T5D:
+-		case AM_MESON_CPU_MAJOR_ID_TXHD2:
+-			sts_reg_addr = T5_DMC_CHAN_STS;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_SC2:
+-			sts_reg_addr = TM2_REVB_DMC_CHAN_STS;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_TM2:
+-			if (is_cpu_meson_revb())
+-				sts_reg_addr = TM2_REVB_DMC_CHAN_STS;
+-			else
+-				sts_reg_addr = DMC_CHAN_STS;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_S1A:
+-			sts_reg_addr = 0xb7;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_S7:
+-			sts_reg_addr = 0xcc;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_S7D:
+-		case AM_MESON_CPU_MAJOR_ID_T6D:
+-			sts_reg_addr = 0xcf;
+-			break;
+-		case AM_MESON_CPU_MAJOR_ID_S6:
+-			sts_reg_addr = 0xd8;
+-			break;
+-		default:
+-			sts_reg_addr = DMC_CHAN_STS;
+-			break;
+-		}
++		sts_reg_addr = dec_dmc_sts_reg();
+ 		for (wait_us = 0; wait_us < DMC_IDLE_TIMEOUT_US; wait_us++) {
+ 			if (codec_dmcbus_read(sts_reg_addr) & mask)
+ 				break;
+@@ -1042,6 +1065,11 @@ static void dec_dmc_port_ctrl(bool dmc_on, u32 target)
+ 				sts_reg_addr, codec_dmcbus_read(sts_reg_addr),
+ 				mask, codec_dmcbus_read(DMC_REQ_CTRL));
+ 	}
++
++	if (dmc_trace >= trace_level)
++		pr_info_ratelimited("dmc: target %u port %s by %pS, req ctrl 0x%x -> 0x%x\n",
++			target, dmc_on ? "on" : "off", (void *)caller,
++			req_before, req_after);
+ }
+ 
+ void arb_ctrl_wait_idle(int enable)
+@@ -1062,7 +1090,7 @@ void arb_ctrl_wait_idle(int enable)
+ }
+ EXPORT_SYMBOL(arb_ctrl_wait_idle);
+ 
+-static void dec_pipeline_idle_ctrl(struct vdec_s *vdec,
++static noinline void dec_pipeline_idle_ctrl(struct vdec_s *vdec,
+ 	int target, bool enable)
+ {
+ 	if (is_vdec_hevc_combine()) {
+@@ -1079,7 +1107,7 @@ static void dec_pipeline_idle_ctrl(struct vdec_s *vdec,
+ 				return;
+ 			}
+ 		}
+-		dec_dmc_port_ctrl(enable, target);
++		dec_dmc_port_ctrl(enable, target, _RET_IP_, 2);
+ 	}
+ }
+ 
+@@ -1112,7 +1140,7 @@ void fb_hw_status_clear(bool is_front)
+ EXPORT_SYMBOL(fb_hw_status_clear);
+ #endif
+ 
+-static void vdec_disable_DMC(struct vdec_s *vdec)
++static noinline void vdec_disable_DMC(struct vdec_s *vdec)
+ {
+ 	/*close first,then wait pedding end,timing suggestion from vlsi*/
+ 	struct vdec_input_s *input = &vdec->input;
+@@ -1143,14 +1171,14 @@ static void vdec_disable_DMC(struct vdec_s *vdec)
+ 				return;
+ 			}
+ 		}
+-		dec_dmc_port_ctrl(0, input->target);
++		dec_dmc_port_ctrl(0, input->target, _RET_IP_, 1);
+ 	}
+ 
+ 	if (debug & VDEC_DBG_DETAIL_INFO)
+ 		pr_debug("%s input->target= 0x%x\n", __func__, input->target);
+ }
+ 
+-static void vdec_enable_DMC(struct vdec_s *vdec)
++static noinline void vdec_enable_DMC(struct vdec_s *vdec)
+ {
+ 	struct vdec_input_s *input = &vdec->input;
+ 
+@@ -1174,7 +1202,7 @@ static void vdec_enable_DMC(struct vdec_s *vdec)
+ 		if (get_cpu_type() == AM_MESON_CPU_MAJOR_ID_G12B)
+ 			vdec_dmc_pipeline_reset();
+ 
+-		dec_dmc_port_ctrl(1, input->target);
++		dec_dmc_port_ctrl(1, input->target, _RET_IP_, 1);
+ 	}
+ 
+ 	pr_debug("%s input->target= 0x%x\n", __func__, input->target);
+@@ -8492,6 +8520,9 @@ module_param(disable_switch_single_to_mult, int, 0664);
+ 
+ module_param(debug_meta, uint, 0664);
+ 
++module_param(dmc_trace, int, 0664);
++MODULE_PARM_DESC(dmc_trace, "\n log decoder DMC port changes: 1 open/close, 2 also per run\n");
++
+ module_param(frameinfo_flag, int, 0664);
+ MODULE_PARM_DESC(frameinfo_flag,
+ 				"\n frameinfo_flag\n");
+diff --git a/drivers/frame_provider/decoder/utils/vdec.h b/drivers/frame_provider/decoder/utils/vdec.h
+index 6cbda7f..fb5270a 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.h
++++ b/drivers/frame_provider/decoder/utils/vdec.h
+@@ -839,6 +839,9 @@ extern bool vdec_need_more_data(struct vdec_s *vdec);
+ 
+ extern void vdec_reset_core(struct vdec_s *vdec);
+ 
++extern void vdec_dmc_port_state(u32 target, u32 *mask, u32 *req_ctrl,
++	u32 *sts_reg, u32 *sts);
++
+ extern void hevc_reset_core(struct vdec_s *vdec);
+ 
+ extern void hevc_arb_ctrl_front_or_back(bool enable, bool front_flag);

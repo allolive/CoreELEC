@@ -22,13 +22,20 @@ it is reported as the right eye; measured with a left-white right-black
 source and the post-processor CRC. The waiter is woken from the vsync
 interrupt only when someone waits; the FIQ build records but does not wake.
 
+The eye is published with the swap applied, from the interrupt, so a
+fa_swap_eyes toggle cannot give the GUI and the emitter different eyes
+for one vsync. amvideo_set_fa_notify() lets the GUI have a function
+called right after each eye is published: the GUI's own vsync handler
+shares the line with this one and may run before it, when it would read
+the previous vsync's eye.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
-index 431e6ec..5cc8f5d 100644
+index 431e6ec..348565c 100644
 --- a/drivers/media/video_sink/video.c
 +++ b/drivers/media/video_sink/video.c
-@@ -5371,6 +5371,86 @@ static void av_probe_stamp(void)
+@@ -5371,6 +5371,113 @@ static void av_probe_stamp(void)
  	raw_write_seqcount_end(&av_probe_seq);
  }
  
@@ -43,33 +50,55 @@ index 431e6ec..5cc8f5d 100644
 +static seqcount_t fa_sync_seq = SEQCNT_ZERO(fa_sync_seq);
 +static u32 fa_sync_vsync;
 +static u64 fa_sync_ns;
-+static int fa_sync_eye;
++static int fa_sync_eye = 2;
 +/* the source carries the right eye first (or the viewer asked to swap) */
 +static bool fa_swap_eyes;
 +module_param(fa_swap_eyes, bool, 0664);
 +MODULE_PARM_DESC(fa_swap_eyes, "frame-alternative 3D: the first half is the right eye");
++
++/* called after each publish, from this interrupt: the GUI's eye switch */
++static void (*fa_sync_notify)(void);
 +
 +/* 0 left view, 1 right view, 2 blank; the A frame shows vd1's second picture */
 +static int fa_eye_view(int toggle)
 +{
 +	if (toggle != OUT_FA_A_FRAME && toggle != OUT_FA_B_FRAME)
 +		return 2;
-+	return (toggle == OUT_FA_A_FRAME) ^ fa_swap_eyes;
++	return (toggle == OUT_FA_A_FRAME) ^ READ_ONCE(fa_swap_eyes);
 +}
 +
 +static void fa_sync_publish(void)
 +{
++#ifndef FIQ_VSYNC
++	void (*notify)(void);
++#endif
++
 +	if (!(process_3d_type & MODE_3D_OUT_FA_MASK))
 +		return;
 +	raw_write_seqcount_begin(&fa_sync_seq);
 +	fa_sync_vsync = av_probe_vsync;
 +	fa_sync_ns = av_probe_isr_ns;
-+	fa_sync_eye = toggle_3d_fa_frame;
++	fa_sync_eye = fa_eye_view(toggle_3d_fa_frame);
 +	raw_write_seqcount_end(&fa_sync_seq);
 +#ifndef FIQ_VSYNC
++	notify = READ_ONCE(fa_sync_notify);
++	if (notify)
++		notify();
 +	if (wq_has_sleeper(&fa_sync_wq))
 +		wake_up_interruptible(&fa_sync_wq);
 +#endif
++}
++
++/*
++ * Have fn called from the vsync interrupt right after each eye is published,
++ * whatever order the handlers sharing the vsync line run in. NULL removes it
++ * and returns once no interrupt can still be calling the old one.
++ */
++void amvideo_set_fa_notify(void (*fn)(void))
++{
++	WRITE_ONCE(fa_sync_notify, fn);
++	if (!fn)
++		synchronize_rcu();
 +}
 +
 +static void fa_sync_read(u32 *vsync, u64 *ns, int *eye)
@@ -80,7 +109,7 @@ index 431e6ec..5cc8f5d 100644
 +		seq = read_seqcount_begin(&fa_sync_seq);
 +		*vsync = fa_sync_vsync;
 +		*ns = fa_sync_ns;
-+		*eye = fa_eye_view(fa_sync_eye);
++		*eye = fa_sync_eye;
 +	} while (read_seqcount_retry(&fa_sync_seq, seq));
 +}
 +
@@ -109,13 +138,18 @@ index 431e6ec..5cc8f5d 100644
 +{
 +	return -1;
 +}
++
++void amvideo_set_fa_notify(void (*fn)(void))
++{
++}
 +#endif
 +EXPORT_SYMBOL(amvideo_get_fa_eye);
++EXPORT_SYMBOL(amvideo_set_fa_notify);
 +
  #ifdef FIQ_VSYNC
  void vsync_fisr_in(void)
  #else
-@@ -5389,6 +5469,7 @@ static irqreturn_t vsync_isr_in(int irq, void *dev_id)
+@@ -5389,6 +5496,7 @@ static irqreturn_t vsync_isr_in(int irq, void *dev_id)
  	if (debug_flag & DEBUG_FLAG_VSYNC_DONONE)
  		return IRQ_HANDLED;
  	post_vsync_process();
@@ -123,7 +157,7 @@ index 431e6ec..5cc8f5d 100644
  	return IRQ_HANDLED;
  }
  
-@@ -10943,6 +11024,41 @@ static ssize_t av_probe_show
+@@ -10943,6 +11051,41 @@ static ssize_t av_probe_show
  		mono, vsync, line, vpp_crc_result);
  }
  
@@ -165,7 +199,7 @@ index 431e6ec..5cc8f5d 100644
  static ssize_t vpp_crc_show
  	(struct class *cla,
  	struct class_attribute *attr,
-@@ -13500,6 +13616,9 @@ static struct class_attribute amvideo_class_attrs[] = {
+@@ -13500,6 +13643,9 @@ static struct class_attribute amvideo_class_attrs[] = {
  	       path_select_show,
  	       path_select_store),
  	__ATTR_RO(av_probe),
@@ -176,16 +210,17 @@ index 431e6ec..5cc8f5d 100644
  	       0664,
  	       vpp_crc_show,
 diff --git a/include/linux/amlogic/media/video_sink/vpp.h b/include/linux/amlogic/media/video_sink/vpp.h
-index 38c2030..07ebdc3 100644
+index 38c2030..152139e 100644
 --- a/include/linux/amlogic/media/video_sink/vpp.h
 +++ b/include/linux/amlogic/media/video_sink/vpp.h
-@@ -10,6 +10,10 @@
+@@ -10,6 +10,11 @@
  #include <linux/amlogic/media/video_sink/vpp_afd.h>
  
  #define TV_3D_FUNCTION_OPEN
 +
 +/* frame-alternative 3D: the eye of the next output frame, see video.c */
 +int amvideo_get_fa_eye(u32 *gen);
++void amvideo_set_fa_notify(void (*fn)(void));
 +
  #define TV_REVERSE
  

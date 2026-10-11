@@ -17,9 +17,10 @@ mem_handle view 1's, at the index init_canvas allocated it.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 697d132..18c7e9f 100644
 --- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
 +++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
-@@ -1032,6 +1032,28 @@
+@@ -1037,6 +1037,28 @@ static void mvc_set_rp(void) {
  	spin_unlock_irqrestore(&mvc_rp_lock, flags);
  }
  
@@ -48,9 +49,9 @@ diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame
  #ifdef HANDLE_h264mvc_IRQ
  static irqreturn_t vh264mvc_isr(int irq, void *dev_id)
  #else
-@@ -1149,26 +1171,7 @@
- 						drop_status;
+@@ -1159,26 +1181,7 @@ static void vh264mvc_isr(void)
  				}
+ 				spin_unlock_irqrestore(&lock, flags);
  				vf = &vfpool[slot];
 -
 -				if (display_view_id == 0) {

@@ -24,13 +24,43 @@ swapped in, since the next decoder reprograms those indices.
 A banking frame (the LB/RB first modes) keeps the eye on screen, as this
 display module does for other video, rather than showing the left one.
 
+The recorded canvases are forgotten when a 3D type without
+frame-alternative output is set, so a later film cannot load the last
+one's. They are kept across a video unreg: pause and seek unreg the
+decoder, and the frame kept on screen then needs them. A kept copy is
+never recorded itself: its canvas indices may already belong to the next
+decoder; with no record (FA turned off and on while paused) its eyes are
+not loaded.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
+index 06915cf..b986625 100644
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -6776,6 +6776,8 @@ static long amvideo_ioctl(struct file *file, unsigned int cmd, ulong arg)
+ 				process_3d_type = type;
+ 				if (mvc_flag)
+ 					process_3d_type |= MODE_3D_MVC;
++				if (!(type & MODE_3D_OUT_FA_MASK))
++					fa_mvc_forget();
+ 				vd_layer[0].property_changed = true;
+ 				dispbuf = get_dispbuf(0);
+ 				if ((process_3d_type & MODE_3D_FA) &&
+@@ -8513,6 +8515,8 @@ static ssize_t threedim_mode_store(struct class *cla,
+ 		process_3d_type = type;
+ 		if (mvc_flag)
+ 			process_3d_type |= MODE_3D_MVC;
++		if (!(type & MODE_3D_OUT_FA_MASK))
++			fa_mvc_forget();
+ 		vd_layer[0].property_changed = true;
+ 
+ 		dispbuf = get_dispbuf(0);
 diff --git a/drivers/media/video_sink/video_hw.c b/drivers/media/video_sink/video_hw.c
-index 482e396..c0c3e77 100644
+index 482e396..f53b2f3 100644
 --- a/drivers/media/video_sink/video_hw.c
 +++ b/drivers/media/video_sink/video_hw.c
-@@ -5593,6 +5593,86 @@ s32 config_3d_vd2_blend(struct video_layer_s *layer,
+@@ -5593,6 +5593,94 @@ s32 config_3d_vd2_blend(struct video_layer_s *layer,
  	return 0;
  }
  
@@ -58,10 +88,12 @@ index 482e396..c0c3e77 100644
 +{
 +	int i;
 +
-+	/* a kept copy swapped in again: its indices may not be its own now */
-+	if (fa_mvc_cs_valid && is_local_vf(vf) &&
-+	    fa_mvc_canvas[0] == vf->canvas0Addr &&
-+	    fa_mvc_canvas[1] == vf->canvas1Addr)
++	/*
++	 * A kept copy is never recorded: its indices may not be its own now.
++	 * Its record is the one made when the decoder's frame was swapped in,
++	 * or none (forgotten when FA ended), and then its eyes are not loaded.
++	 */
++	if (is_local_vf(vf))
 +		return;
 +	for (i = 0; i < 2; i++) {
 +		fa_mvc_cs[i][0] = cs0[i];
@@ -71,6 +103,12 @@ index 482e396..c0c3e77 100644
 +	fa_mvc_canvas[0] = vf->canvas0Addr;
 +	fa_mvc_canvas[1] = vf->canvas1Addr;
 +	fa_mvc_cs_valid = true;
++}
++
++/* frame-alternative output ended: the record belongs to the last 3D film */
++void fa_mvc_forget(void)
++{
++	WRITE_ONCE(fa_mvc_cs_valid, false);
 +}
 +
 +static void fa_mvc_show_eye(struct video_layer_s *layer,
@@ -117,7 +155,7 @@ index 482e396..c0c3e77 100644
  void switch_3d_view_per_vsync(struct video_layer_s *layer)
  {
  	struct vpp_frame_par_s *cur_frame_par;
-@@ -5625,6 +5705,18 @@ void switch_3d_view_per_vsync(struct video_layer_s *layer)
+@@ -5625,6 +5713,18 @@ void switch_3d_view_per_vsync(struct video_layer_s *layer)
  	vd2_mif_reg = &vd_layer[1].vd_mif_reg;
  	vd_afbc_reg = &layer->vd_afbc_reg;
  
@@ -136,7 +174,7 @@ index 482e396..c0c3e77 100644
  	src_start_x_lines = 0;
  	src_end_x_lines =
  		(dispbuf->type & VIDTYPE_COMPRESS) ?
-@@ -9691,6 +9783,7 @@ static void canvas_update_for_3d(struct video_layer_s *layer,
+@@ -9691,6 +9791,7 @@ static void canvas_update_for_3d(struct video_layer_s *layer,
  			canvas_read(cur_canvas_tbl[1], &cs1[0]);
  			canvas_read(cur_canvas_tbl[2], &cs2[0]);
  			if (is_mvc) {
@@ -144,3 +182,15 @@ index 482e396..c0c3e77 100644
  				set_vd_mif_linear_cs(&vd_layer[1],
  					&cs0[1], &cs1[1], &cs2[1],
  					vf,
+diff --git a/drivers/media/video_sink/video_priv.h b/drivers/media/video_sink/video_priv.h
+index c2439c3..7a62281 100644
+--- a/drivers/media/video_sink/video_priv.h
++++ b/drivers/media/video_sink/video_priv.h
+@@ -929,6 +929,7 @@ s32 config_3d_vd2_pps(struct video_layer_s *layer,
+ s32 config_3d_vd2_blend(struct video_layer_s *layer,
+ 			struct blend_setting_s *setting);
+ void switch_3d_view_per_vsync(struct video_layer_s *layer);
++void fa_mvc_forget(void);
+ #endif
+ void config_vd_param(struct video_layer_s *layer,
+ 	struct vframe_s *dispbuf);

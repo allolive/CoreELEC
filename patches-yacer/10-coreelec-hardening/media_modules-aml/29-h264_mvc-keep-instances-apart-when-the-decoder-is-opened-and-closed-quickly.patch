@@ -1,0 +1,284 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 22:59:49 -0400
+Subject: [PATCH] h264_mvc: keep instances apart when the decoder is opened and closed quickly
+
+All of the MVC decoder's state is static in vh264_mvc.c, shared by every
+instance; a player that opens and closes the decoder in quick succession
+(seeks, title changes, resets) runs probe and remove back to back. probe
+and remove are serialised by amstream_mutex (vdec_init() and
+vdec_release() both run under it), and remove now stops the firmware,
+the interrupt and the timer and cancels every work item before it
+returns. Several things still let one instance leak into the next.
+
+The receiver-reset event callback stopped and re-initialised the decoder
+inline, under the vframe spinlock: the local init frees and allocates the
+buffer box and the protocol init waits with sleeps, so it slept in atomic
+context, and it ran without vh264_mvc_mutex alongside the work items. It
+now only queues the error work, which restarts under the mutex while the
+decoder is active (and counts against error_restart_max).
+
+A probe whose init failed freed gvs and buffer_spec0 but left what init
+had set up: the buffer box, the ucode buffer (allocated before
+STAT_MC_LOAD was set when the firmware read failed, so vh264mvc_stop()
+never freed it), the clocks, and the stat bits the next probe inherited.
+It now calls vh264mvc_stop(), which frees the ucode buffer whenever it is
+allocated. Init's own failure paths already gate the clocks, and a second
+amvdec_disable() on gated clocks waits out its 10 ms per unit and forces
+unit resets; a STAT_ENABLED bit, set after amvdec_enable() and cleared
+on every disable, makes the clocks gated exactly once, whether the stop
+follows a failed probe, a failed restart or a normal run. vh264mvc_init() also returned -ret for a failed vdec_info
+allocation, a positive value probe took for success.
+
+probe now refuses while a previous instance is still active, and, before
+it re-initialises the work items and the timer, deletes the timer and
+cancels the work items of the previous instance (outside the mutex,
+which the work items take). After a correct remove these find nothing
+to do; they make it local to probe that no work or timer of an earlier
+instance can run against the new one. The timer is set up in probe with
+the work items; stat and the drain flag are cleared, with a warning if
+anything but STAT_TIMER_INIT, or an undone drain, was left. remove cancels the error work once more after
+the provider is unregistered, for a receiver reset that raced the halt.
+
+uninit_vf_buf() was empty, so vf_buf_init_flag stayed set after stop and
+a vf_put arriving after the provider was gone advanced putting_ptr of
+whatever instance came next. It now clears the flag, and vh264mvc_vf_put()
+ignores such a put.
+
+saved_resolution was never reset. remove reports the source as gone
+(vdec_source_changed() with 0x0), but a next instance at the same size
+and rate found saved_resolution unchanged and never reported itself,
+so the decoder clock stayed where the release had left it. remove now
+clears it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 08f9307..f23878d 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -68,6 +68,7 @@
+ #define STAT_VF_HOOK        0x08
+ #define STAT_TIMER_ARM      0x10
+ #define STAT_VDEC_RUN       0x20
++#define STAT_ENABLED        0x40
+ 
+ #define DROPPING_THREAD_HOLD    4
+ #define DROPPING_FIRST_WAIT     16
+@@ -131,6 +132,8 @@ static unsigned long pts_missed, pts_hit;
+ static atomic_t vh264mvc_active = ATOMIC_INIT(0);
+ static struct work_struct error_wd_work;
+ static struct work_struct recover_work;
++/* the timer and work items above have been initialised once */
++static bool lifecycle_ready;
+ 
+ static struct dec_sysinfo vh264mvc_amstream_dec_info;
+ static dma_addr_t mc_dma_handle;
+@@ -283,9 +286,10 @@ static void init_vf_buf(void)
+ 	vf_buf_init_flag = 1;
+ }
+ 
++/* a put that arrives once the provider is gone is not ours to recycle */
+ static void uninit_vf_buf(void)
+ {
+-
++	vf_buf_init_flag = 0;
+ }
+ 
+ /* #define QUEUE_SUPPORT */
+@@ -666,22 +670,13 @@ static void vh264mvc_vf_put(struct vframe_s *vf, void *op_arg)
+ 
+ static int vh264mvc_event_cb(int type, void *data, void *private_data)
+ {
+-	if (type & VFRAME_EVENT_RECEIVER_RESET) {
+-		unsigned long flags;
+-
+-		amvdec_stop();
+-#ifndef CONFIG_AMLOGIC_POST_PROCESS_MANAGER
+-		vf_light_unreg_provider(&vh264mvc_vf_prov);
+-#endif
+-		spin_lock_irqsave(&lock, flags);
+-		vh264mvc_local_init();
+-		vh264mvc_prot_init();
+-		spin_unlock_irqrestore(&lock, flags);
+-#ifndef CONFIG_AMLOGIC_POST_PROCESS_MANAGER
+-		vf_reg_provider(&vh264mvc_vf_prov);
+-#endif
+-		amvdec_start();
+-	}
++	/*
++	 * The receiver may call this in atomic context, and re-initialising
++	 * sleeps: restart through the error work, under vh264_mvc_mutex.
++	 */
++	if ((type & VFRAME_EVENT_RECEIVER_RESET) &&
++		atomic_read(&vh264mvc_active))
++		schedule_work(&error_wd_work);
+ 	return 0;
+ }
+ 
+@@ -1732,6 +1727,15 @@ static int vh264mvc_local_init(void)
+ 	return ret;
+ }
+ 
++/* gate the clocks once: init's failure paths and stop both get here */
++static void vh264mvc_disable(void)
++{
++	if (stat & STAT_ENABLED) {
++		amvdec_disable();
++		stat &= ~STAT_ENABLED;
++	}
++}
++
+ static s32 vh264mvc_init(void)
+ {
+ 	int ret = -1;
+@@ -1748,7 +1752,7 @@ static s32 vh264mvc_init(void)
+ 	ret = vh264mvc_vdec_info_init();
+ 	if (0 != ret) {
+ 		vfree(buf);
+-		return -ret;
++		return ret;
+ 	}
+ 
+ 	ret = vh264mvc_local_init();
+@@ -1758,11 +1762,12 @@ static s32 vh264mvc_init(void)
+ 	}
+ 
+ 	amvdec_enable();
++	stat |= STAT_ENABLED;
+ 
+ 	if (fw_tee_enabled()) {
+ 		ret = amvdec_loadmc_ex(VFORMAT_H264MVC, NULL, buf);
+ 		if (ret != 0) {
+-			amvdec_disable();
++			vh264mvc_disable();
+ 			vfree(buf);
+ 			pr_err("H264_MVC: the %s fw loading failed, err: %x\n",
+ 				fw_tee_enabled() ? "TEE" : "local", ret);
+@@ -1773,7 +1778,7 @@ static s32 vh264mvc_init(void)
+ 		mc_cpu_addr = decoder_dma_alloc_coherent(&mc_cpu_handle,
+ 			MC_TOTAL_SIZE, &mc_dma_handle, "H264_MVC_MC_CPU_BUF");
+ 		if (!mc_cpu_addr) {
+-			amvdec_disable();
++			vh264mvc_disable();
+ 			vfree(buf);
+ 			pr_err("vh264_mvc init: Can not allocate mc memory.\n");
+ 			return -ENOMEM;
+@@ -1801,7 +1806,7 @@ static s32 vh264mvc_init(void)
+ 		memcpy((u8 *) mc_cpu_addr + 0x3000, buf + 0x4000, 0x3000);
+ 
+ 		if (ret < 0) {
+-			amvdec_disable();
++			vh264mvc_disable();
+ 
+ 			decoder_dma_free_coherent(mc_cpu_handle,
+ 					MC_TOTAL_SIZE,
+@@ -1821,7 +1826,7 @@ static s32 vh264mvc_init(void)
+ 	if (vdec_request_irq(VDEC_IRQ_1, vh264mvc_isr,
+ 			"vh264mvc-irq", (void *)vh264mvc_dec_id)) {
+ 		pr_info("vh264mvc irq register error.\n");
+-		amvdec_disable();
++		vh264mvc_disable();
+ 		return -ENOENT;
+ 	}
+ #endif
+@@ -1967,17 +1972,15 @@ static int vh264mvc_stop(void)
+ 		stat &= ~STAT_VF_HOOK;
+ 	}
+ 
+-	if (stat & STAT_MC_LOAD) {
+-		if (mc_cpu_addr != NULL) {
+-			decoder_dma_free_coherent(mc_cpu_handle,
+-				MC_TOTAL_SIZE, mc_cpu_addr, mc_dma_handle);
+-			mc_cpu_addr = NULL;
+-		}
+-
+-		stat &= ~STAT_MC_LOAD;
++	/* also allocated by an init that failed before STAT_MC_LOAD */
++	if (mc_cpu_addr != NULL) {
++		decoder_dma_free_coherent(mc_cpu_handle,
++			MC_TOTAL_SIZE, mc_cpu_addr, mc_dma_handle);
++		mc_cpu_addr = NULL;
+ 	}
++	stat &= ~STAT_MC_LOAD;
+ 
+-	amvdec_disable();
++	vh264mvc_disable();
+ 
+ 	if (mm_blk_handle) {
+ 		decoder_bmmu_box_free(mm_blk_handle);
+@@ -2179,8 +2182,29 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 	int config_val = 0;
+ 
+ 	pr_info("amvdec_h264mvc probe start.\n");
++
++	/*
++	 * remove has already stopped and synced all of these; make sure
++	 * nothing of a previous instance is left before they are re-set.
++	 * Without vh264_mvc_mutex: the work items take it.
++	 */
++	if (lifecycle_ready && !atomic_read(&vh264mvc_active)) {
++		del_timer_sync(&recycle_timer);
++		cancel_work_sync(&error_wd_work);
++		cancel_work_sync(&recover_work);
++		cancel_work_sync(&alloc_work);
++		cancel_work_sync(&set_clk_work);
++	}
++
+ 	mutex_lock(&vh264_mvc_mutex);
+ 
++	/* one instance at a time: its state is all in this file's statics */
++	if (atomic_read(&vh264mvc_active)) {
++		mutex_unlock(&vh264_mvc_mutex);
++		pr_err("amvdec_h264mvc: previous instance still active\n");
++		return -EBUSY;
++	}
++
+ #if 0
+ 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!mem) {
+@@ -2216,19 +2240,29 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 	}
+ 	buffer_spec1 = &buffer_spec0[MAX_BMMU_BUFFER_NUM];
+ 
++	if ((stat & ~STAT_TIMER_INIT) || needs_drain)
++		pr_warn("amvdec_h264mvc: stale stat 0x%x drain %d at probe\n",
++			stat, needs_drain);
++	stat = 0;
++	needs_drain = false;
++
+ 	/* the timer and the ISR use these as soon as vh264mvc_init() starts */
+ 	INIT_WORK(&error_wd_work, error_do_work);
+ 	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
+ 	INIT_WORK(&alloc_work, do_alloc_work);
+ 	INIT_WORK(&recover_work, recover_do_work);
++	timer_setup(&recycle_timer, vh264mvc_put_timer_func, 0);
+ 	spin_lock_init(&mvc_rp_lock);
+ 	error_restarts = 0;
+ 	recover_attempts = 0;
++	lifecycle_ready = true;
+ 
+ 	vdec = pdata;
+ 
+ 	if (vh264mvc_init() < 0) {
+ 		pr_info("\namvdec_h264mvc init failed.\n");
++		/* undo what the failed init set up (box, ucode buffer, clocks) */
++		vh264mvc_stop();
+ 		vdec = NULL;
+ 		kfree(gvs);
+ 		gvs = NULL;
+@@ -2253,10 +2287,14 @@ static int amvdec_h264mvc_remove(struct platform_device *pdev)
+ 	pr_info("amvdec_h264mvc_remove\n");
+ 	vh264mvc_halt();
+ 	vh264mvc_stop();
++	/* a receiver reset that raced the halt; the provider is gone now */
++	cancel_work_sync(&error_wd_work);
+ 	vdec = NULL;
+ 	frame_width = 0;
+ 	frame_height = 0;
+ 	vdec_source_changed(VFORMAT_H264MVC, 0, 0, 0);
++	/* the clock is back at idle: the next instance must raise it again */
++	saved_resolution = 0;
+ 
+ #ifdef DEBUG_PTS
+ 	pr_info

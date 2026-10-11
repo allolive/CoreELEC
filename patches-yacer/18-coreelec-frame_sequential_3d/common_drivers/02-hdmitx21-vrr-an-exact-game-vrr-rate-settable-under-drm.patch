@@ -20,8 +20,46 @@ multiple of its rate (24p at 96 Hz). Four things stood in the way:
 - Leaving VRR kept the VRR rate in vinfo, so the video layer went on
   timing frames for 96 Hz on a 120 Hz output; give the base rate back.
 
+The video layer times frames by the output's rate (vsync_pts_inc), which
+it reads only on a mode change: the rate a VRR set gives vinfo, and the
+base rate given back, are now passed to it as well
+(amvideo_vout_rate_changed()), as a value, so it cannot read a
+half-written num/den pair. The mode-change notifier is not sent for this:
+its listeners (OSD, Dolby Vision, vlock, frame lock, the VRR driver) would
+act as on a new mode. A set takes hdmimode_mutex, then fr_hint_mutex: it
+reads the mode a mode set writes under hdmimode_mutex.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
+index 348565c..06915cf 100644
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -14117,6 +14117,24 @@ static struct notifier_block vout_notifier = {
+ 	.notifier_call = vout_notify_callback,
+ };
+ 
++/*
++ * The output's rate changed with its mode unchanged (game VRR): time frames
++ * by it, as a mode change does. The rate comes as a value, consistent.
++ */
++void amvideo_vout_rate_changed(u32 num, u32 den)
++{
++	ulong flags;
++
++	if (!num || !den)
++		return;
++	spin_lock_irqsave(&lock, flags);
++	vsync_pts_inc = 90000 * den / num;
++	vsync_pts_inc_scale = den;
++	vsync_pts_inc_scale_base = num;
++	spin_unlock_irqrestore(&lock, flags);
++}
++EXPORT_SYMBOL(amvideo_vout_rate_changed);
++
+ static void vout_hook(void)
+ {
+ 	vout_register_client(&vout_notifier);
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_main.c b/drivers/media/vout/hdmitx21/hdmi_tx_main.c
 index 13e5f48..adbbc25 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx_main.c
@@ -70,10 +108,18 @@ index 13e5f48..adbbc25 100644
  #endif
  	device_remove_file(dev, &dev_attr_ll_mode);
 diff --git a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
-index 7e80d0e..7f4115e 100644
+index 7e80d0e..3dfa46b 100644
 --- a/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
 +++ b/drivers/media/vout/hdmitx21/hdmi_tx_vrr.c
-@@ -911,6 +911,9 @@ static enum TARGET_FRAME_RATE vsync_match_to_tfr(const u16 duration)
+@@ -20,6 +20,7 @@
+ #include <linux/debugfs.h>
+ #include <linux/seq_file.h>
+ #include <linux/amlogic/media/vout/vinfo.h>
++#include <linux/amlogic/media/video_sink/video.h>
+ #include "hdmi_tx_module.h"
+ #include "hdmi_tx.h"
+ #include "hw/enc_clk_config.h"
+@@ -911,6 +912,9 @@ static enum TARGET_FRAME_RATE vsync_match_to_tfr(const u16 duration)
  	return (enum TARGET_FRAME_RATE)i;
  }
  
@@ -83,7 +129,7 @@ index 7e80d0e..7f4115e 100644
  static void vrr_init_game_para(struct tx_vrr_params *para)
  {
  	struct vrr_conf_para *conf = &para->conf_params;
-@@ -924,6 +927,7 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
+@@ -924,6 +928,7 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
  	if (fva_factor == 0)
  		fva_factor = 1; /* at least be 1 */
  	para->frame_cnt = 0;
@@ -91,7 +137,7 @@ index 7e80d0e..7f4115e 100644
  	memset(&para->emp_vrr_pkt, 0, sizeof(para->emp_vrr_pkt));
  
  	memset(vrr_pkt, 0, sizeof(*vrr_pkt));
-@@ -945,6 +949,8 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
+@@ -945,6 +950,8 @@ static void vrr_init_game_para(struct tx_vrr_params *para)
  
  	timing = hdmitx_mode_vic_to_hdmi_timing(brr_vic);
  	brr_vfront = timing ? timing->v_front : 1920;
@@ -100,22 +146,36 @@ index 7e80d0e..7f4115e 100644
  	hdmi_emp_frame_set_member(vrr_pkt, CONF_VRR_EN, 1);
  	hdmi_emp_frame_set_member(vrr_pkt, CONF_FACTOR_M1, fva_factor - 1);
  	hdmi_emp_frame_set_member(vrr_pkt, CONF_BASE_VFRONT, brr_vfront);
-@@ -1524,7 +1530,22 @@ static void updata_vinfo_sync_duration(struct vinfo_s *vinfo,
+@@ -1524,7 +1531,36 @@ static void updata_vinfo_sync_duration(struct vinfo_s *vinfo,
  }
  
  /* rate: Unit *100. Example, 1080p23.976Hz, rate = 2397 */
 +static DEFINE_MUTEX(fr_hint_mutex);
++
++/* give vinfo a new rate, and the video layer, which times frames by it */
++static void hdmitx_vrr_publish_rate(struct vinfo_s *vinfo, u32 num, u32 den)
++{
++	vinfo->sync_duration_num = num;
++	vinfo->sync_duration_den = den;
++#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
++	amvideo_vout_rate_changed(num, den);
++#endif
++}
 +
 +static int hdmitx_set_fr_hint_locked(int rate, void *data);
 +
 +/* reached from DRM (encoder enable) and from the vrr_rate attribute */
  int hdmitx_set_fr_hint(int rate, void *data)
 +{
++	struct hdmitx_dev *hdev = get_hdmitx21_device();
 +	int ret;
 +
++	/* a mode set writes fmt_para under hdmimode_mutex */
++	mutex_lock(&hdev->tx_comm.hdmimode_mutex);
 +	mutex_lock(&fr_hint_mutex);
 +	ret = hdmitx_set_fr_hint_locked(rate, data);
 +	mutex_unlock(&fr_hint_mutex);
++	mutex_unlock(&hdev->tx_comm.hdmimode_mutex);
 +	return ret;
 +}
 +
@@ -123,7 +183,7 @@ index 7e80d0e..7f4115e 100644
  {
  	struct hdmitx_dev *hdev = get_hdmitx21_device();
  	struct hdmitx_common *tx_comm = &hdev->tx_comm;
-@@ -1551,6 +1572,19 @@ int hdmitx_set_fr_hint(int rate, void *data)
+@@ -1551,6 +1587,16 @@ int hdmitx_set_fr_hint(int rate, void *data)
  		/* When disable VRR, here must clear vrr_para_tmp.
  		 * So when enter VRR next time, vrr packet will be updated again
  		 */
@@ -132,18 +192,25 @@ index 7e80d0e..7f4115e 100644
 +			struct vinfo_s *vinfo = &tx_comm->hdmitx_vinfo;
 +			u32 v_freq = fmt_para->timing.v_freq;
 +
-+			if (v_freq % 1000 == 0) {
-+				vinfo->sync_duration_num = v_freq / 1000;
-+				vinfo->sync_duration_den = 1;
-+			} else {
-+				vinfo->sync_duration_num = v_freq;
-+				vinfo->sync_duration_den = 1000;
-+			}
++			if (v_freq % 1000 == 0)
++				hdmitx_vrr_publish_rate(vinfo, v_freq / 1000, 1);
++			else
++				hdmitx_vrr_publish_rate(vinfo, v_freq, 1000);
 +		}
  		tx_comm->hdmitx_vinfo.brr_duration = 0;
  		memset(&vrr_para.vrr_para_tmp, 0, sizeof(vrr_para.vrr_para_tmp));
  		if (hdev->tx_comm.vrr_mode == T_VRR_QMS || hdev->tx_comm.vrr_mode == T_VRR_GAME)
-@@ -1685,15 +1719,22 @@ static void hdmitx_vrr_game_handler(struct hdmitx_dev *hdev)
+@@ -1612,6 +1658,9 @@ int hdmitx_set_fr_hint(int rate, void *data)
+ 	updata_vinfo_sync_duration(&tx_comm->hdmitx_vinfo, rate,
+ 		tx_comm->frac_rate_policy,
+ 		(fmt_para->timing.v_freq + 999) / 1000);
++	hdmitx_vrr_publish_rate(&tx_comm->hdmitx_vinfo,
++		tx_comm->hdmitx_vinfo.sync_duration_num,
++		tx_comm->hdmitx_vinfo.sync_duration_den);
+ 
+ 	para.vrr_enabled = 1;
+ 	para.fapa_end_extended = prxcap->fapa_end_extended;
+@@ -1685,15 +1734,22 @@ static void hdmitx_vrr_game_handler(struct hdmitx_dev *hdev)
  	struct vrr_conf_para *conf = &vrr->conf_params;
  	const struct hdmi_timing *timing = NULL;
  	u32 vtotal_tmp = 0;
@@ -167,3 +234,15 @@ index 7e80d0e..7f4115e 100644
  	vrr->game_val.vtotal_fixed = vtotal_tmp;
  	vrr_debug_info("game-vrr vtotal = %d\n", vrr->game_val.vtotal_fixed);
  
+diff --git a/include/linux/amlogic/media/video_sink/video.h b/include/linux/amlogic/media/video_sink/video.h
+index 803874b..aac349f 100644
+--- a/include/linux/amlogic/media/video_sink/video.h
++++ b/include/linux/amlogic/media/video_sink/video.h
+@@ -366,6 +366,7 @@ struct mediasync_ptr {
+ 
+ #ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
+ int amvideo_notifier_call_chain(unsigned long val, void *v);
++void amvideo_vout_rate_changed(u32 num, u32 den);
+ #else
+ static inline int amvideo_notifier_call_chain(unsigned long val, void *v)
+ {

@@ -1,0 +1,262 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:04:42 -0400
+Subject: [PATCH] h264_mvc, vdec: stop the MVC decoder before its DMC port is closed
+
+vdec_release() closes the decoder's DMC port (vdec_disable_DMC()) before
+it unregisters the platform device, and only the unregister runs
+amvdec_h264mvc_remove() and so vh264mvc_stop(). Before closing the port,
+vdec_stop_armrisc() clears MPSR/CPSR and waits for the IMEM and LMEM DMA
+busy bits, but not for the write responses those DMAs are still owed
+(WRRSP_LMEM/WRRSP_IMEM), and not for DCAC, MC, the deblocker or PIC_DC.
+The MVC interrupt, the recycle timer and the work items were also all
+still live while the port was closed. A write in flight when the port
+closes may never get its response, and the next instance's firmware
+would then wait for it at its first LMEM-to-DDR copy and never decode.
+That fits what an S905X5 showed: the instance that stalled there was
+opened right after one that was closed 40 ms after it started.
+
+struct vdec_s gets an optional stop_hw callback, which vdec_release()
+calls before it closes the port, before the inactive-core reset and
+before its wait for pending interrupt threads. Only MVC sets it, once
+probe has succeeded; for every other decoder vdec_release() is
+unchanged. A generic reorder (closing the port after the unregister) was
+not done: the other decoders' remove paths gate their clocks or power,
+and vdec_stop_armrisc() would then read registers of a gated block.
+
+Stopping MVC is now done in two steps. vh264mvc_stop_sources() halts the
+cores (MPSR and CPSR to 0, nothing reset), frees the interrupt, deletes
+the timer, and marks the decoder as needing a drain. vh264mvc_drain()
+then, before any reset, waits for the IMEM and LMEM DMA busy bits, for
+WRRSP_LMEM and WRRSP_IMEM to reach 0, and for DCAC_DMA_CTRL, with one
+100 ms deadline; then for MC_STATUS0, MCW_DBLK_WRRSP_CNT, DBLK_STATUS and
+MDEC_PIC_DC_STATUS, 10 ms each, as amvdec_pg_enable() gives them. Only
+after that does amvdec_stop() pulse the MCPU/CCPU resets. (amvdec_stop()
+on its own waits for the write responses only after the cores have been
+told to stop and for 1/80 s, and the waits that follow its resets would
+prove nothing.) The waits sleep. Memory traffic still owed (DMA busy, or
+write responses outstanding, the deblocker's included) is logged as an
+error with its value, then the full state line, and the stop goes on.
+MC, the deblocker and PIC_DC are normally still busy when a decoder is
+closed mid-picture (they wait on the halted CPU), which is what a seek
+does; they are only debug output (pr_debug). This tree defines no busy bit for
+PIC_DC, so, as in amvdec_pg_enable(), its whole status is waited on.
+VLD only reads the stream and has no idle bit to wait for.
+vh264mvc_stop() drains after
+stopping the sources, so every stop (remove, a failed probe, a restart)
+drains before it resets.
+
+MVC's stop_hw, vh264mvc_halt(), clears vh264mvc_active and stops the
+sources under vh264_mvc_mutex, cancels the three work items, and drains
+under the mutex. The drain runs whenever the flag is set, not only when
+halt itself stopped the firmware: a restart that has stopped the sources
+and dropped the mutex to cancel its work items has not drained yet. A
+restart drains before it re-inits, too. remove calls halt first, which
+then finds nothing left to do; driver unbind without vdec_release() still
+goes through it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 9765fe3..1185c0c 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -1815,6 +1815,9 @@ static s32 vh264mvc_init(void)
+ 	return 0;
+ }
+ 
++/* the cores were halted and their memory traffic not yet waited for */
++static bool needs_drain;
++
+ /*
+  * Stop the firmware, the interrupt and the recycle timer: once this
+  * returns nothing queues alloc_work, set_clk_work or error_wd_work again.
+@@ -1822,8 +1825,11 @@ static s32 vh264mvc_init(void)
+ static void vh264mvc_stop_sources(void)
+ {
+ 	if (stat & STAT_VDEC_RUN) {
+-		amvdec_stop();
++		/* halt the cores; vh264mvc_drain() waits and resets them */
++		WRITE_VREG(MPSR, 0);
++		WRITE_VREG(CPSR, 0);
+ 		stat &= ~STAT_VDEC_RUN;
++		needs_drain = true;
+ 	}
+ 
+ 	if (stat & STAT_ISR_REG) {
+@@ -1840,9 +1846,81 @@ static void vh264mvc_stop_sources(void)
+ 	}
+ }
+ 
++#define DRAIN_TIMEOUT_MS 100
++#define UNIT_TIMEOUT_MS 10
++
++/*
++ * With the cores halted (MPSR/CPSR 0) and before anything is reset, wait
++ * for what writes to DDR to finish. The AMRISC's IMEM/LMEM DMA, their
++ * write responses and DCAC DMA share one 100 ms deadline; one still busy
++ * is owed memory traffic and is logged as an error, with the state line.
++ * MC, the deblocker's write responses, the deblocker and PIC_DC get 10 ms
++ * each, as amvdec_pg_enable() gives them: closed mid-picture they wait on
++ * the halted CPU, which is normal on a seek, so only the deblocker's
++ * owed write responses are an error; the others are only debug output.
++ * Only then amvdec_stop() resets the MCPU and CCPU. This tree defines no
++ * busy bit for PIC_DC, so its whole status is waited on, as
++ * amvdec_pg_enable() does. VLD only reads the stream and has no idle bit.
++ */
++static void vh264mvc_drain(void)
++{
++	static const struct {
++		u32 reg;
++		u32 mask;
++		const char *name;
++		bool owed;	/* shared deadline */
++		bool err;	/* still busy is an error */
++	} units[] = {
++		{ IMEM_DMA_CTRL, 0x8000, "IMEM_DMA_CTRL", true, true },
++		{ LMEM_DMA_CTRL, 0x8000, "LMEM_DMA_CTRL", true, true },
++		{ WRRSP_LMEM, 0xfff, "WRRSP_LMEM", true, true },
++		{ WRRSP_IMEM, 0xfff, "WRRSP_IMEM", true, true },
++		{ DCAC_DMA_CTRL, 0x8000, "DCAC_DMA_CTRL", true, true },
++		{ MC_STATUS0, 0x1, "MC_STATUS0", false, false },
++		{ MCW_DBLK_WRRSP_CNT, 0xfff << 16, "MCW_DBLK_WRRSP_CNT",
++			false, true },
++		{ DBLK_STATUS, 0x1, "DBLK_STATUS", false, false },
++		{ MDEC_PIC_DC_STATUS, 0xffffffff, "MDEC_PIC_DC_STATUS",
++			false, false },
++	};
++	unsigned long deadline, limit;
++	bool owed_busy = false;
++	int i;
++
++	if (!needs_drain)
++		return;
++
++	deadline = jiffies + msecs_to_jiffies(DRAIN_TIMEOUT_MS);
++	for (i = 0; i < ARRAY_SIZE(units); i++) {
++		limit = units[i].owed ? deadline :
++			jiffies + msecs_to_jiffies(UNIT_TIMEOUT_MS);
++		while (READ_VREG(units[i].reg) & units[i].mask) {
++			if (!time_after(jiffies, limit)) {
++				usleep_range(10, 20);
++				continue;
++			}
++			if (units[i].err) {
++				pr_err("vh264mvc: %s busy 0x%x after stop\n",
++					units[i].name, READ_VREG(units[i].reg));
++				owed_busy = true;
++			} else {
++				pr_debug("vh264mvc: %s busy 0x%x after stop\n",
++					units[i].name, READ_VREG(units[i].reg));
++			}
++			break;
++		}
++	}
++	if (owed_busy)
++		vh264mvc_hw_state("busy after stop", true);
++
++	amvdec_stop();
++	needs_drain = false;
++}
++
+ static int vh264mvc_stop(void)
+ {
+ 	vh264mvc_stop_sources();
++	vh264mvc_drain();
+ 
+ 	if (stat & STAT_VF_HOOK) {
+ 		ulong flags;
+@@ -1906,6 +1984,7 @@ static void vh264mvc_restart(void)
+ 	mutex_lock(&vh264_mvc_mutex);
+ 	if (atomic_read(&vh264mvc_active)) {
+ 		vh264mvc_stop_sources();
++		vh264mvc_drain();
+ 		vh264mvc_stop();
+ 		/* re-arms the start watchdog; alloc_work sets them again */
+ 		frame_width = 0;
+@@ -1923,6 +2002,34 @@ static void error_do_work(struct work_struct *work)
+ 	vh264mvc_restart();
+ }
+ 
++/*
++ * Stop the decoder for good and let its memory traffic drain. Called by
++ * vdec_release() before it closes the decoder's DMC port, and again by
++ * remove, where it finds nothing left to do. A restart that has stopped
++ * the sources and not yet drained leaves needs_drain set; the drain here
++ * covers it.
++ */
++static void vh264mvc_halt(void)
++{
++	mutex_lock(&vh264_mvc_mutex);
++	atomic_set(&vh264mvc_active, 0);
++	vh264mvc_stop_sources();
++	mutex_unlock(&vh264_mvc_mutex);
++	/* the ISR and the timer are gone: nothing queues these again */
++	cancel_work_sync(&error_wd_work);
++	cancel_work_sync(&alloc_work);
++	cancel_work_sync(&set_clk_work);
++
++	mutex_lock(&vh264_mvc_mutex);
++	vh264mvc_drain();
++	mutex_unlock(&vh264_mvc_mutex);
++}
++
++static void vh264mvc_stop_hw(struct vdec_s *vdec)
++{
++	vh264mvc_halt();
++}
++
+ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ {
+ 	struct vdec_s *pdata = *(struct vdec_s **)pdev->dev.platform_data;
+@@ -1987,6 +2094,7 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	atomic_set(&vh264mvc_active, 1);
++	pdata->stop_hw = vh264mvc_stop_hw;
+ 
+ 	mutex_unlock(&vh264_mvc_mutex);
+ 
+@@ -1998,14 +2106,7 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ static int amvdec_h264mvc_remove(struct platform_device *pdev)
+ {
+ 	pr_info("amvdec_h264mvc_remove\n");
+-	mutex_lock(&vh264_mvc_mutex);
+-	atomic_set(&vh264mvc_active, 0);
+-	vh264mvc_stop_sources();
+-	mutex_unlock(&vh264_mvc_mutex);
+-	/* the ISR and the timer are gone: nothing queues these again */
+-	cancel_work_sync(&error_wd_work);
+-	cancel_work_sync(&alloc_work);
+-	cancel_work_sync(&set_clk_work);
++	vh264mvc_halt();
+ 	vh264mvc_stop();
+ 	vdec = NULL;
+ 	frame_width = 0;
+diff --git a/drivers/frame_provider/decoder/utils/vdec.c b/drivers/frame_provider/decoder/utils/vdec.c
+index 4b3df48..a84d97e 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.c
++++ b/drivers/frame_provider/decoder/utils/vdec.c
+@@ -4195,6 +4195,9 @@ void vdec_release(struct vdec_s *vdec)
+ 		}
+ 	}
+ 
++	if (vdec->stop_hw)
++		vdec->stop_hw(vdec);
++
+ 	while (vdec->irq_cnt > vdec->irq_thread_cnt) {
+ 		if ((wcount & 0x1f) == 0)
+ 			pr_debug("%s vdec[%lx]: %lld > %lld, loop %u times\n",__func__, (unsigned long)vdec,
+diff --git a/drivers/frame_provider/decoder/utils/vdec.h b/drivers/frame_provider/decoder/utils/vdec.h
+index fb5270a..fc0c803 100644
+--- a/drivers/frame_provider/decoder/utils/vdec.h
++++ b/drivers/frame_provider/decoder/utils/vdec.h
+@@ -521,6 +521,8 @@ struct vdec_s {
+ 			struct userdata_param_t *puserdata_para);
+ 	void (*reset_userdata_fifo)(struct vdec_s *vdec, int bInit);
+ 	void (*wakeup_userdata_poll)(struct vdec_s *vdec);
++	/* stop the decoder's memory traffic before its DMC port is closed */
++	void (*stop_hw)(struct vdec_s *vdec);
+ 	/* private */
+ 	void *private;       /* decoder per instance specific data */
+ #ifdef VDEC_DEBUG_SUPPORT

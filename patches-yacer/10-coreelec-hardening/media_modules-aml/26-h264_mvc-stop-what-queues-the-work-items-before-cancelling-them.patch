@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:03:59 -0400
+Subject: [PATCH] h264_mvc: stop what queues the work items before cancelling them
+
+amvdec_h264mvc_remove() cancelled alloc_work, error_wd_work and
+set_clk_work first and only then stopped the decoder. The recycle timer,
+still armed, queues set_clk_work every 10 ms, and the ISR, still
+registered, queues alloc_work and error_wd_work; either could queue its
+work again after it was cancelled, and the work then ran against the
+buffers and the box vh264mvc_stop() frees.
+
+The error work restarted the decoder (vh264mvc_stop(), vh264mvc_init())
+without vh264_mvc_mutex, so it could run alongside probe, alongside
+alloc_work's buffer setup, and alongside remove, which cleared
+vh264mvc_active only at the very end. It also did not cancel alloc_work:
+a request still queued from the old firmware ran against the new one.
+
+vh264mvc_local_init() ran INIT_WORK() on alloc_work on every start,
+including a restart with alloc_work possibly still queued.
+
+A firmware that kept raising CMD_FATAL_ERROR was restarted for ever.
+
+The part of vh264mvc_stop() that stops the firmware, frees the interrupt
+and deletes the timer is now vh264mvc_stop_sources(). remove takes the
+mutex, clears vh264mvc_active and calls it, then cancels the three work
+items, then stops the rest. The error work goes through a new
+vh264mvc_restart(), which holds a restart_mutex throughout so that two
+restarts never interleave (alloc_work and remove do not take it): under
+vh264_mvc_mutex, and only while the decoder is active, it stops the
+sources; then, without that mutex (alloc_work takes it), it cancels
+alloc_work and set_clk_work; then, under the mutex again and still only
+if active, it stops the sources again (it is idempotent), stops the
+decoder, clears frame_width and frame_height so the start watchdog is
+armed again and alloc_work does not keep the old size, re-inits, and
+logs a failed re-init. At most error_restart_max restarts (module
+parameter, default 3) are made per instance; after that a fatal error is
+only logged. alloc_work is initialised once in probe with the
+other work items. vh264mvc_vdec_info_init() keeps the vdec_info it
+already has instead of allocating another on each restart, which leaked
+one per restart and was the struct dec_status() reads.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+index 35da69d..9765fe3 100644
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -94,6 +94,8 @@ static struct work_struct alloc_work;
+ static struct work_struct set_clk_work;
+ 
+ static DEFINE_MUTEX(vh264_mvc_mutex);
++/* one restart at a time; alloc_work and the halt do not take it */
++static DEFINE_MUTEX(restart_mutex);
+ 
+ static const struct vframe_operations_s vh264mvc_vf_provider = {
+ 	.peek = vh264mvc_vf_peek,
+@@ -1427,6 +1429,9 @@ int vh264mvc_dec_status(struct vdec_s *vdec, struct vdec_info *vstatus)
+ 
+ static int vh264mvc_vdec_info_init(void)
+ {
++	/* a restart keeps the one probe allocated; dec_status() reads it */
++	if (gvs)
++		return 0;
+ 	gvs = kzalloc(sizeof(struct vdec_info), GFP_KERNEL);
+ 	if (NULL == gvs) {
+ 		pr_info("the struct of vdec status malloc failed.\n");
+@@ -1646,7 +1651,6 @@ static int vh264mvc_local_init(void)
+ 	pts_outside = ((unsigned long) vh264mvc_amstream_dec_info.param) & 0x01;
+ 	sync_outside = ((unsigned long) vh264mvc_amstream_dec_info.param & 0x02)
+ 			>> 1;
+-	INIT_WORK(&alloc_work, do_alloc_work);
+ 
+ 	max_dec_frame_buffering[0] = -1;
+ 	max_dec_frame_buffering[1] = -1;
+@@ -1811,7 +1815,11 @@ static s32 vh264mvc_init(void)
+ 	return 0;
+ }
+ 
+-static int vh264mvc_stop(void)
++/*
++ * Stop the firmware, the interrupt and the recycle timer: once this
++ * returns nothing queues alloc_work, set_clk_work or error_wd_work again.
++ */
++static void vh264mvc_stop_sources(void)
+ {
+ 	if (stat & STAT_VDEC_RUN) {
+ 		amvdec_stop();
+@@ -1830,6 +1838,11 @@ static int vh264mvc_stop(void)
+ 		del_timer_sync(&recycle_timer);
+ 		stat &= ~STAT_TIMER_ARM;
+ 	}
++}
++
++static int vh264mvc_stop(void)
++{
++	vh264mvc_stop_sources();
+ 
+ 	if (stat & STAT_VF_HOOK) {
+ 		ulong flags;
+@@ -1860,12 +1873,54 @@ static int vh264mvc_stop(void)
+ 	return 0;
+ }
+ 
+-static void error_do_work(struct work_struct *work)
++/* restarts after a fatal firmware error allowed per instance */
++static u32 error_restart_max = 3;
++static u32 error_restarts;
++
++/*
++ * Restart the decoder from process context. The work items the ISR and
++ * the timer queue are cancelled once those are stopped and before the
++ * state they use is torn down; alloc_work takes vh264_mvc_mutex, so they
++ * are cancelled without it held. remove clears vh264mvc_active under the
++ * mutex, and a restart that finds it clear does nothing. restart_mutex
++ * keeps two restarts from interleaving their sections.
++ */
++static void vh264mvc_restart(void)
+ {
++	mutex_lock(&restart_mutex);
++	mutex_lock(&vh264_mvc_mutex);
++	if (!atomic_read(&vh264mvc_active))
++		goto out;
++	if (error_restarts >= error_restart_max) {
++		pr_err_ratelimited("vh264mvc: not restarting after %u fatal errors\n",
++			error_restarts);
++		goto out;
++	}
++	error_restarts++;
++	vh264mvc_stop_sources();
++	mutex_unlock(&vh264_mvc_mutex);
++
++	cancel_work_sync(&alloc_work);
++	cancel_work_sync(&set_clk_work);
++
++	mutex_lock(&vh264_mvc_mutex);
+ 	if (atomic_read(&vh264mvc_active)) {
++		vh264mvc_stop_sources();
+ 		vh264mvc_stop();
+-		vh264mvc_init();
++		/* re-arms the start watchdog; alloc_work sets them again */
++		frame_width = 0;
++		frame_height = 0;
++		if (vh264mvc_init() < 0)
++			pr_err("vh264mvc: restart failed\n");
+ 	}
++out:
++	mutex_unlock(&vh264_mvc_mutex);
++	mutex_unlock(&restart_mutex);
++}
++
++static void error_do_work(struct work_struct *work)
++{
++	vh264mvc_restart();
+ }
+ 
+ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+@@ -1914,7 +1969,9 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ 	/* the timer and the ISR use these as soon as vh264mvc_init() starts */
+ 	INIT_WORK(&error_wd_work, error_do_work);
+ 	INIT_WORK(&set_clk_work, vh264_mvc_set_clk);
++	INIT_WORK(&alloc_work, do_alloc_work);
+ 	spin_lock_init(&mvc_rp_lock);
++	error_restarts = 0;
+ 
+ 	vdec = pdata;
+ 
+@@ -1941,15 +1998,19 @@ static int amvdec_h264mvc_probe(struct platform_device *pdev)
+ static int amvdec_h264mvc_remove(struct platform_device *pdev)
+ {
+ 	pr_info("amvdec_h264mvc_remove\n");
+-	cancel_work_sync(&alloc_work);
++	mutex_lock(&vh264_mvc_mutex);
++	atomic_set(&vh264mvc_active, 0);
++	vh264mvc_stop_sources();
++	mutex_unlock(&vh264_mvc_mutex);
++	/* the ISR and the timer are gone: nothing queues these again */
+ 	cancel_work_sync(&error_wd_work);
++	cancel_work_sync(&alloc_work);
+ 	cancel_work_sync(&set_clk_work);
+ 	vh264mvc_stop();
+ 	vdec = NULL;
+ 	frame_width = 0;
+ 	frame_height = 0;
+ 	vdec_source_changed(VFORMAT_H264MVC, 0, 0, 0);
+-	atomic_set(&vh264mvc_active, 0);
+ 
+ #ifdef DEBUG_PTS
+ 	pr_info
+@@ -2042,6 +2103,9 @@ MODULE_PARM_DESC(drop_thread_hold, "\n amvdec_h264mvc drop thread hold\n");
+ 
+ module_param(start_state_log, uint, 0664);
+ MODULE_PARM_DESC(start_state_log, "\n amvdec_h264mvc log DMA/DMC state at each start\n");
++
++module_param(error_restart_max, uint, 0664);
++MODULE_PARM_DESC(error_restart_max, "\n amvdec_h264mvc restarts after a fatal error per instance\n");
+ module_init(amvdec_h264mvc_driver_init_module);
+ module_exit(amvdec_h264mvc_driver_remove_module);
+ 
