@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 00:10:00 -0400
+Subject: [PATCH] GLES: interpolate font texture coordinates at high precision
+
+Text in the GUI at 3840x2160 showed a thin sliver of the neighbouring glyph
+at some letters' edges - a one-pixel line at the left of a C, between an E
+and a C - and only for some glyphs.
+
+Glyphs sit one texel apart in the font texture, which is linearly filtered,
+and RenderCharacter() reaches half a texel past each glyph; in exact
+arithmetic the sample at the edge is the centre of the empty gap. But the
+GLES font shader is mediump, so the texture coordinate is interpolated at
+half precision where the GPU has it (Mali): a coordinate in [0.5, 1) of a
+2048-texel texture is only good to half a texel, of a 4096-texel one to a
+whole texel - enough to reach the glyph packed next to it. At 4K the font
+textures are that wide.
+
+Interpolate the texture coordinate at highp wherever the fragment shader
+supports it; the colour stays lowp and the rest mediump.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ system/shaders/GLES/2.0/gles_shader_fonts.frag | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/system/shaders/GLES/2.0/gles_shader_fonts.frag
++++ b/system/shaders/GLES/2.0/gles_shader_fonts.frag
+@@ -22,7 +22,11 @@
+ 
+ precision mediump float;
+ uniform sampler2D m_samp0;
++#ifdef GL_FRAGMENT_PRECISION_HIGH
++varying highp vec4 m_cord0;
++#else
+ varying vec4 m_cord0;
++#endif
+ varying lowp vec4 m_colour;
+ uniform float m_sdrPeak;
+ 

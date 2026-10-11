@@ -1,0 +1,123 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] reboot: switch the USB supplies off for a moment on a restart
+
+On a Ugoos AM9 Pro a warm restart left its USB 2.5G network adapter
+(RTL8156, behind the board's VL817 hub) silent about one boot in four:
+the hub and the USB boot drive next to it came up, but on the adapter's
+port the kernel saw no connect at all, on either the USB 3 or the USB 2
+side. A power cut always brought it back, and no cold boot failed.
+
+The board's USB supplies are fixed regulators, always on, so a restart
+never drops them and a device that has wedged stays powered through it.
+The optional property usb-power-cycle-gpios lists the supplies' enable
+pins; the restart handler drives them off for usb-power-cycle-off-ms
+(default 1000), then on again, before it hands the restart to the
+firmware. Filesystems are unmounted by then, so the boot drive losing
+power for a second is a power cut at a safe moment. Only an orderly
+restart does it: a panic, an emergency restart (sysrq) or reset_test
+reaches the same handler with filesystems still mounted, and is left
+as it was. The pins stay owned
+by their regulators (requested non-exclusively), and nothing changes
+for a board that does not set the property.
+
+The AM9 (and so the AM9 Pro) sets it for HUB_5V and USB5V, for 2000 ms; USBC5V, the
+type-C port's, is left alone.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/pm/reboot.c
++++ b/drivers/pm/reboot.c
+@@ -25,6 +25,7 @@
+ #include <linux/panic_notifier.h>
+ #include <linux/syscore_ops.h>
+ #include <linux/cpu.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/suspend.h>
+ 
+ #if IS_ENABLED(CONFIG_AMLOGIC_DEBUG)
+@@ -33,6 +34,8 @@
+ 
+ static void __iomem *reboot_reason_vaddr;
+ static u32 psci_function_id_restart;
++static struct gpio_descs *usb_power_gpios;
++static u32 usb_power_off_ms;
+ static u32 psci_function_id_poweroff;
+ static char *kernel_panic;
+ static int hib_enable;
+@@ -213,9 +216,31 @@
+ 				  (u64)reboot_reason);
+ }
+ 
++/*
++ * A warm restart leaves the USB supplies on, so a device that has wedged
++ * stays wedged into the next boot. Switch them off for a moment first, as a
++ * power cut would, but only on an orderly restart, where filesystems are
++ * unmounted by now: not after a panic, an emergency restart or reset_test,
++ * where the boot drive may still be writing.
++ */
++static void usb_power_cycle(void)
++{
++	unsigned int i;
++
++	if (!usb_power_gpios || system_state != SYSTEM_RESTART || kernel_panic)
++		return;
++	for (i = 0; i < usb_power_gpios->ndescs; i++)
++		gpiod_set_value(usb_power_gpios->desc[i], 0);
++	mdelay(usb_power_off_ms);
++	for (i = 0; i < usb_power_gpios->ndescs; i++)
++		gpiod_set_value(usb_power_gpios->desc[i], 1);
++	mdelay(50);
++}
++
+ static int do_aml_restart(struct notifier_block *nb, unsigned long reboot_mode,
+ 			  void *cmd)
+ {
++	usb_power_cycle();
+ 	meson_common_restart(reboot_mode, cmd);
+ 
+ 	return NOTIFY_DONE;
+@@ -389,6 +414,25 @@
+ 
+ 	if (!of_property_read_u32(pdev->dev.of_node, "sys_reset", &id)) {
+ 		psci_function_id_restart = id;
++		/* shared with the regulators that own these pins */
++		usb_power_gpios = devm_gpiod_get_array_optional(&pdev->dev,
++				"usb-power-cycle",
++				GPIOD_ASIS | GPIOD_FLAGS_BIT_NONEXCLUSIVE);
++		if (IS_ERR(usb_power_gpios)) {
++			ret = PTR_ERR(usb_power_gpios);
++			usb_power_gpios = NULL;
++			if (ret == -EPROBE_DEFER)
++				return ret;
++			pr_err("%s, usb-power-cycle-gpios: %d\n", __func__, ret);
++		}
++		if (usb_power_gpios) {
++			usb_power_off_ms = 1000;
++			of_property_read_u32(pdev->dev.of_node,
++					     "usb-power-cycle-off-ms",
++					     &usb_power_off_ms);
++			pr_info("restart switches %u USB supplies off for %u ms\n",
++				usb_power_gpios->ndescs, usb_power_off_ms);
++		}
+ 		register_restart_handler(&aml_restart_nb);
+ 		ret = device_create_file(&pdev->dev, &dev_attr_reset_test);
+ 		if (ret != 0)
+--- a/arch/arm64/boot/dts/amlogic/s6_s905x5_ugoos_am9.dts
++++ b/arch/arm64/boot/dts/amlogic/s6_s905x5_ugoos_am9.dts
+@@ -68,6 +68,16 @@
+ 			  3300000 0>;
+ 	};
+ 
++	/* A restart switches the USB supplies off for a moment, as a power cut
++	 * would: a USB network adapter powered through a warm restart can come
++	 * back silent.
++	 */
++	aml_reboot {
++		usb-power-cycle-gpios = <&gpio GPIOH_8 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>,
++					<&gpio GPIOF_2 GPIO_ACTIVE_HIGH>;
++		usb-power-cycle-off-ms = <2000>;
++	};
++
+ 	// usb
+ 	usb5v_reg: fixed@usb5v {
+ 		vin-supply = <&vddao_5v_reg>;
