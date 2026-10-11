@@ -40,7 +40,7 @@ video thread dropping every picture.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/application/ApplicationPlayerCallback.cpp b/xbmc/application/ApplicationPlayerCallback.cpp
-index b1d5032..5c5093c 100644
+index b1d5032002..5c5093c876 100644
 --- a/xbmc/application/ApplicationPlayerCallback.cpp
 +++ b/xbmc/application/ApplicationPlayerCallback.cpp
 @@ -428,6 +428,9 @@ void CApplicationPlayerCallback::OnPlayBackResumed(
@@ -54,7 +54,7 @@ index b1d5032..5c5093c 100644
  #endif
  
 diff --git a/xbmc/cores/VideoPlayer/AudioPreroll.h b/xbmc/cores/VideoPlayer/AudioPreroll.h
-index 5ba7d54..d09a800 100644
+index 5ba7d54b8b..d09a8005b6 100644
 --- a/xbmc/cores/VideoPlayer/AudioPreroll.h
 +++ b/xbmc/cores/VideoPlayer/AudioPreroll.h
 @@ -17,6 +17,7 @@ struct AudioPrerollCommand
@@ -176,7 +176,7 @@ index 5ba7d54..d09a800 100644
    bool m_failed{false};
    bool m_held{false};
 diff --git a/xbmc/cores/VideoPlayer/PlaybackPreroll.h b/xbmc/cores/VideoPlayer/PlaybackPreroll.h
-index 19e6298..a3eeca2 100644
+index 19e6298cb8..a3eeca2cd9 100644
 --- a/xbmc/cores/VideoPlayer/PlaybackPreroll.h
 +++ b/xbmc/cores/VideoPlayer/PlaybackPreroll.h
 @@ -67,6 +67,7 @@ public:
@@ -270,7 +270,7 @@ index 19e6298..a3eeca2 100644
    std::optional<double> m_firstAudioPts;
    std::optional<double> m_lastAudioHost;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 9860943..579dffc 100644
+index ebfca079dd..ba6417a09e 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -3786,7 +3786,16 @@ void CVideoPlayer::HandleMessages()
@@ -621,7 +621,7 @@ index 9860943..579dffc 100644
      {
        m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 261a24b..088d48a 100644
+index 261a24bc0c..088d48a63b 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -496,7 +496,11 @@ protected:
@@ -646,7 +646,7 @@ index 261a24b..088d48a 100644
    int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
    struct SSpeedState
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 9947f82..1755c6b 100644
+index 9947f824e6..1755c6b0bb 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -388,7 +388,7 @@ void CVideoPlayerAudio::Process()
@@ -674,7 +674,7 @@ index 9947f82..1755c6b 100644
    // or accepting another demux packet that could overwrite its backing bytes.
    if (m_preroll.Active() &&
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
-index d368c3e..002c7e1 100644
+index d368c3ef6f..002c7e14c4 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
 @@ -349,7 +349,13 @@ void CVideoPlayerVideo::Process()
@@ -754,7 +754,7 @@ index d368c3e..002c7e1 100644
      return OUTPUT_DROPPED;
    if (preroll == CVideoPrerollGate::Picture::HOLD)
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
-index 86dc6cb..1252123 100644
+index 86dc6cb1ac..1252123b2b 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
 @@ -150,6 +150,9 @@ protected:
@@ -768,7 +768,7 @@ index 86dc6cb..1252123 100644
    EOutputState m_outputSate{OUTPUT_NORMAL};
  };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index e18737e..ac5c1b9 100644
+index e18737e60e..ac5c1b915a 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 @@ -129,22 +129,37 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
@@ -839,7 +839,7 @@ index e18737e..ac5c1b9 100644
    if (m_queued.empty())
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-index 253d06d..4a36a12 100644
+index 253d06d638..4a36a12acf 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 @@ -99,10 +99,11 @@ public:
@@ -864,7 +864,7 @@ index 253d06d..4a36a12 100644
    bool m_bTriggerUpdateResolution = false;
    bool m_bRenderGUI = true;
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/VideoPrerollGate.h b/xbmc/cores/VideoPlayer/VideoRenderers/VideoPrerollGate.h
-index dbc8a9c..c6875e2 100644
+index dbc8a9c8c4..c6875e2155 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/VideoPrerollGate.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/VideoPrerollGate.h
 @@ -64,7 +64,7 @@ public:

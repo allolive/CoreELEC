@@ -62,7 +62,7 @@ leaves the base mode in the same session.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index bc646f2..d73d414 100644
+index bc646f2d6a..d73d414a2b 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -8,6 +8,7 @@
@@ -233,7 +233,7 @@ index bc646f2..d73d414 100644
  
    const int vrr_rate = rates.vrrRate;
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index dc9fee6..b80c7b2 100644
+index dc9fee6cac..b80c7b28f0 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -10,6 +10,8 @@
@@ -277,7 +277,7 @@ index dc9fee6..b80c7b2 100644
 +  std::atomic<bool> m_fs3d_state_pending{false};
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 20839ca..3c12258 100644
+index 08a680ccb6..8eb133e33c 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -539,6 +539,61 @@ void CWinSystemAmlogic::RefreshResolutions()

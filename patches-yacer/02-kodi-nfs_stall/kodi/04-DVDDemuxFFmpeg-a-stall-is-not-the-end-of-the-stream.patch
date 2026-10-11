@@ -13,7 +13,7 @@ does not spoil the rest of the file.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 5a3e21b..928dbb8 100644
+index 1d03fa7322..5cd43a0aab 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -14,6 +14,7 @@
@@ -24,7 +24,7 @@ index 5a3e21b..928dbb8 100644
  #include "ServiceBroker.h"
  #include "URL.h"
  #include "Util.h"
-@@ -42,6 +43,7 @@
+@@ -41,6 +42,7 @@
  #include "windowing/amlogic/WinSystemAmlogic.h"
  
  #include <algorithm>
@@ -32,7 +32,7 @@ index 5a3e21b..928dbb8 100644
  #include <map>
  #include <memory>
  #include <mutex>
-@@ -178,8 +180,14 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
+@@ -177,8 +179,14 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
    int len = pInputStream->Read(buf, size);
    if (len == 0)
      return AVERROR_EOF;
@@ -49,7 +49,7 @@ index 5a3e21b..928dbb8 100644
  }
  /*
  static int dvd_file_write(URLContext* h, uint8_t* buf, int size)
-@@ -228,9 +236,18 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
+@@ -227,9 +235,18 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
  
  bool CDVDDemuxFFmpeg::Aborted()
  {
@@ -69,7 +69,7 @@ index 5a3e21b..928dbb8 100644
    std::shared_ptr<CDVDInputStreamFFmpeg> input = std::dynamic_pointer_cast<CDVDInputStreamFFmpeg>(m_pInput);
    if (input && input->Aborted())
      return true;
-@@ -254,6 +271,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool
+@@ -272,6 +289,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool
      return false;
  
    m_pInput = pInput;
@@ -77,7 +77,7 @@ index 5a3e21b..928dbb8 100644
    strFile = m_pInput->GetFileName();
  
    if (!m_pInput->GetContent().empty())
-@@ -745,6 +763,7 @@ void CDVDDemuxFFmpeg::Dispose()
+@@ -780,6 +798,7 @@ void CDVDDemuxFFmpeg::Dispose()
  
    DisposeStreams();
  
@@ -85,7 +85,7 @@ index 5a3e21b..928dbb8 100644
    m_pInput = NULL;
  }
  
-@@ -1088,7 +1107,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+@@ -1123,7 +1142,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
      {
        // assume we are not eof
        if (m_pFormatContext->pb)
@@ -100,10 +100,10 @@ index 5a3e21b..928dbb8 100644
        // check for saved packet after a program change
        if (m_pkt.result < 0)
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
-index 631ca5f..2c26a0a 100644
+index 0b97317c7e..376568f282 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
-@@ -117,6 +117,7 @@ public:
+@@ -119,6 +119,7 @@ public:
  
    AVFormatContext* m_pFormatContext;
    std::shared_ptr<CDVDInputStream> m_pInput;
@@ -111,7 +111,7 @@ index 631ca5f..2c26a0a 100644
  
  protected:
    friend class CDemuxStreamAudioFFmpeg;
-@@ -165,6 +166,7 @@ protected:
+@@ -170,6 +171,7 @@ protected:
    int m_seekStream;
  
    XbmcThreads::EndTime<> m_timeout;

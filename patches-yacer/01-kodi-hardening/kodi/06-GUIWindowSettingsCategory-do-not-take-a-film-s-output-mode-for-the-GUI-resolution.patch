@@ -30,7 +30,7 @@ shared settings code, and is left alone here.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/settings/windows/GUIWindowSettingsCategory.cpp b/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
-index 657ad77..f9ff071 100644
+index 657ad77489..f9ff071eda 100644
 --- a/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
 +++ b/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
 @@ -11,6 +11,8 @@

@@ -20,9 +20,10 @@ once per accepted snapshot. Requested burst duration is not hardware output.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+index f45ef2d5a0..62c10f24ef 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -154,6 +154,7 @@
+@@ -168,6 +168,7 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
        str.m_syncErrorRawValid = stream->m_syncErrorRaw.LastErrorValid();
        str.m_syncErrorScale = stream->m_errorScale;
        str.m_syncErrorSaturated = stream->m_errorSaturated;
@@ -30,7 +31,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
        if (stream->m_processingBuffers)
        {
          str.m_resampleRatio = stream->m_processingBuffers->GetRR();
-@@ -231,6 +232,7 @@
+@@ -245,6 +246,7 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
        info.errorRawValid = str.m_syncErrorRawValid;
        info.errorScale = str.m_syncErrorScale;
        info.errorSaturated = str.m_syncErrorSaturated;
@@ -38,7 +39,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
        info.errortime = str.m_errorTime;
        info.state = str.m_syncState;
        info.rr = str.m_resampleRatio;
-@@ -727,12 +729,16 @@
+@@ -765,12 +767,16 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
              m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
            }
            stream->m_paused = true;
@@ -55,7 +56,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
            streaming = true;
            m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
            m_extTimeout = 0ms;
-@@ -1006,6 +1012,8 @@
+@@ -1044,6 +1050,8 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
            stream = *(CActiveAEStream**)msg->data;
            stream->m_paused = false;
            stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
@@ -64,7 +65,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
            m_state = AE_TOP_CONFIGURED_PLAY;
            m_extTimeout = 0ms;
            return;
-@@ -1276,6 +1284,7 @@
+@@ -1314,6 +1322,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
                                  : stream->GetErrorInterval();
        stream->m_syncError.Flush(interval);
        stream->m_syncErrorRaw.Flush(interval);
@@ -72,7 +73,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
        m_stats.UpdateStream(stream);
      }
  
-@@ -1645,6 +1654,7 @@
+@@ -1683,6 +1692,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
    stream->m_syncError.Flush();
    stream->m_syncErrorRaw.Flush();
@@ -80,7 +81,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
    stream->ResetFreeBuffers();
  
    // Reset Logic State Variables to revive Servo
-@@ -1671,6 +1681,9 @@
+@@ -1709,6 +1719,9 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
  
  void CActiveAE::FlushEngine()
  {
@@ -90,7 +91,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
    if (m_sinkBuffers)
      m_sinkBuffers->Flush();
    if (m_vizBuffers)
-@@ -2158,7 +2171,8 @@
+@@ -2196,7 +2209,8 @@ bool CActiveAE::RunStages()
          double delay = status.GetDelay() * 1000;
          double playingPts = pts - delay;
          double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
@@ -100,7 +101,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
  
          // Kept before the scaling and clamped on its own, so a report reading it
          // gets what the pipeline is doing rather than what the sync loop was
-@@ -2194,6 +2208,10 @@
+@@ -2232,6 +2246,10 @@ bool CActiveAE::RunStages()
          }
          (*it)->m_syncError.Add(error);
          (*it)->m_syncErrorRaw.Add(errorRaw);
@@ -111,7 +112,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
        }
      }
  
-@@ -2566,6 +2584,39 @@
+@@ -2604,6 +2622,39 @@ bool CActiveAE::HasWork()
    return false;
  }
  
@@ -151,7 +152,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
  CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
  {
    CSampleBuffer *ret = NULL;
-@@ -2578,6 +2629,7 @@
+@@ -2616,6 +2667,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
      stream->m_syncError.Flush(100ms);
      stream->m_syncErrorRaw.Flush(100ms);
@@ -159,7 +160,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
      stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
      stream->m_resampleIntegral = 0;
      CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
-@@ -2601,7 +2653,14 @@
+@@ -2639,7 +2691,14 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                                            : stream->GetErrorInterval();
    bool newerror = stream->m_syncError.Get(error, timeout);
    if (newerror)
@@ -174,7 +175,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
  
    if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
    {
-@@ -2626,6 +2685,7 @@
+@@ -2664,6 +2723,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
      {
        buf->pkt->nb_samples = 0;
        buf->pkt->pause_burst_ms = stream->m_processingBuffers->m_inputFormat.m_streamInfo.GetDuration();
@@ -182,7 +183,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
      }
      else
      {
-@@ -2670,6 +2730,7 @@
+@@ -2708,6 +2768,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
            stream->m_syncError.Correction(-credit);
            stream->m_syncErrorRaw.Correction(-ret->pkt->pause_burst_ms);
            error -= credit;
@@ -190,7 +191,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
          }
          else
          {
-@@ -2713,6 +2774,7 @@
+@@ -2751,6 +2812,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
            stream->m_syncError.Correction(dropped * stream->m_errorScale);
            stream->m_syncErrorRaw.Correction(dropped);
            error += dropped * stream->m_errorScale;
@@ -198,7 +199,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
            buf->pkt->nb_samples = 0;
          }
        }
-@@ -2741,6 +2803,7 @@
+@@ -2779,6 +2841,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
          stream->m_syncError.Flush(100ms);
          stream->m_syncErrorRaw.Flush(100ms);
@@ -206,7 +207,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
          CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
                    error, stream->m_lastSyncError);
          stream->m_lastSyncError = error;
-@@ -2750,6 +2813,7 @@
+@@ -2788,6 +2851,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
          stream->m_syncError.Flush(1000ms);
          stream->m_syncErrorRaw.Flush(1000ms);
@@ -214,7 +215,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
          stream->m_resampleIntegral = 0;
          stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
          CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
-@@ -2779,6 +2843,7 @@
+@@ -2817,6 +2881,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
    const std::chrono::milliseconds errorInterval = stream->GetErrorInterval();
    stream->m_syncError.SetErrorInterval(errorInterval);
    stream->m_syncErrorRaw.SetErrorInterval(errorInterval);
@@ -223,9 +224,10 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
    return ret;
  }
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
+index f3c9ba0437..17f3d7ee93 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
-@@ -227,6 +227,7 @@
+@@ -227,6 +227,7 @@ protected:
      bool m_syncErrorRawValid{false};
      double m_syncErrorScale{1.0};
      bool m_syncErrorSaturated{false};
@@ -233,7 +235,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/Aud
      unsigned int m_errorTime;
      CAESyncInfo::AESyncState m_syncState;
    };
-@@ -382,6 +383,9 @@
+@@ -383,6 +384,9 @@ protected:
    AEAudioFormat m_inputFormat;
    AudioSettings m_settings;
    CEngineStats m_stats;
@@ -244,9 +246,10 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/Aud
    std::string m_currDevice;
    std::string m_openedDevice;
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+index c92a870057..6ed348f0de 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-@@ -272,6 +272,7 @@
+@@ -272,6 +272,7 @@ protected:
    //! pipeline really has. Fed and flushed in step with \ref m_syncError so the
    //! two always describe the same window.
    CSyncError m_syncErrorRaw;
@@ -255,6 +258,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cor
    bool m_errorSaturated{false};
    double m_lastSyncError;
 diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
+index 5e6827547b..26a7e3ad67 100644
 --- a/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 +++ b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 @@ -9,6 +9,8 @@
@@ -266,7 +270,7 @@ diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngi
  #include <stdint.h>
  
  extern "C" {
-@@ -65,6 +67,8 @@
+@@ -65,6 +67,8 @@ public:
    //! reading is a lower bound, not a measurement, and nothing should be
    //! corrected by it.
    bool errorSaturated{false};
@@ -277,6 +281,7 @@ diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngi
  /**
 diff --git a/xbmc/cores/AudioEngine/Utils/AESyncObservation.h b/xbmc/cores/AudioEngine/Utils/AESyncObservation.h
 new file mode 100644
+index 0000000000..854bf3c5cc
 --- /dev/null
 +++ b/xbmc/cores/AudioEngine/Utils/AESyncObservation.h
 @@ -0,0 +1,170 @@
@@ -451,9 +456,10 @@ new file mode 100644
 +  AESyncActions m_actions;
 +};
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+index 825d4398f6..1237f29b4a 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-@@ -102,6 +102,8 @@
+@@ -104,6 +104,8 @@ void CAudioSinkAE::Destroy(bool finish)
    m_syncErrorAcquire = false;
    m_syncWasInSync = false;
    m_syncErrorTime = 0;
@@ -462,7 +468,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
  }
  
  unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
-@@ -114,6 +116,7 @@
+@@ -116,6 +118,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
      return 0;
  
    CAESyncInfo info = m_pAudioStream->GetSyncInfo();
@@ -470,7 +476,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
    const bool inSync = info.state == CAESyncInfo::SYNC_INSYNC;
  
    // The engine has just finished resynchronising, so the next measurement it
-@@ -135,6 +138,7 @@
+@@ -137,6 +140,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
  
        m_syncErrorScale = info.errorScale;
        m_syncErrorSaturated = info.errorSaturated;
@@ -478,7 +484,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
  
        m_resampleRatio = info.rr;
      }
-@@ -148,6 +152,7 @@
+@@ -150,6 +154,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
      m_syncErrorScale = 1.0;
      m_syncErrorSaturated = false;
      m_syncErrorAcquire = false;
@@ -486,7 +492,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
    }
  
    // Use wall-clock deadline independent of playback speed (fixes dimensional error
-@@ -266,6 +271,8 @@
+@@ -270,6 +275,8 @@ void CAudioSinkAE::Flush()
    m_syncErrorAcquire = false;
    m_syncWasInSync = false;
    m_syncErrorTime = 0;
@@ -496,9 +502,10 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
  
  void CAudioSinkAE::AbortAddPackets()
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
+index 8ab15de6af..6716a80807 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-@@ -46,6 +46,8 @@
+@@ -47,6 +47,8 @@ public:
    double GetMaxDelay(); // returns total time of audio in AE for the stream
    double GetDelay(); // returns the time it takes to play a packet if we add one at this time
    double GetSyncError();
@@ -507,7 +514,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/Audio
  
    //! \brief Whether there is a measurement at all. GetSyncError() reads zero
    //! both when the audio is exactly on the clock and when the engine has not
-@@ -105,6 +107,8 @@
+@@ -112,6 +114,8 @@ protected:
    double m_timeOfPts;
    double m_syncError;
    double m_syncErrorRaw{0.0};
@@ -517,9 +524,10 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/Audio
    double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
    bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index 0790b0cd95..e581756d95 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -684,6 +684,28 @@
+@@ -848,6 +848,28 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      // that regime too, for its own reasons.
      const double errorRaw = m_audioSink.HasSyncError() ? m_audioSink.GetSyncErrorRaw() : 0.0;
  
@@ -548,7 +556,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      // Only the changes count: the engine republishes about once a second, so
      // consecutive packets mostly carry the same figure and comparing those would
      // call anything stationary.
-@@ -737,6 +759,17 @@
+@@ -901,6 +923,17 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
                                  ? m_audioSink.GetSyncErrorRaw()
                                  : syncerror;
        double correction = m_pClock->ErrorAdjust(actual, "CVideoPlayerAudio::OutputPacket");
@@ -567,9 +575,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
        {
          // Spent once the clock has moved, whichever path moved it. The residue
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+index 68bb841999..692d627df4 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-@@ -107,6 +107,8 @@
+@@ -114,6 +114,8 @@ protected:
  
    int m_synctype;
    double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
@@ -578,7 +587,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/
    double m_rawPrev{0.0};      //!< the last unscaled reading, to see it stop moving
    bool m_haveRawPrev{false};
    bool m_rawSettled{false};      //!< three readings running agreed
-@@ -131,4 +133,3 @@
+@@ -138,4 +140,3 @@ protected:
    unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
    int m_disconAdjustCounter = 0;
  };

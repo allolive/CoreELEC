@@ -11,10 +11,10 @@ as well.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index d941256..4dac15a 100644
+index 835b5f8a08..f45ef2d5a0 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -2732,7 +2732,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2770,7 +2770,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
        CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
      }
  
@@ -25,7 +25,7 @@ index d941256..4dac15a 100644
      {
        if (stream->m_lastSyncError > threshold * 2)
        {
-@@ -2751,7 +2753,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2789,7 +2791,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          stream->m_resampleIntegral = 0;
          stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
          CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",

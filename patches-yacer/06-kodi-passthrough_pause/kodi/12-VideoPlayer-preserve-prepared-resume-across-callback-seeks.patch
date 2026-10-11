@@ -14,9 +14,11 @@ seeks and control cancellation keep their existing recovery path.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index ebfc2e5474..c68068a2f5 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -5624,12 +5624,22 @@
+@@ -5680,12 +5680,22 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
  {
    m_syncStartPtsWait.reset();
    CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");

@@ -21,9 +21,10 @@ partial/queued output and across sample-rate and timing discontinuities.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp b/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+index 2c6df43077..d5bd7c1a14 100644
 --- a/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
-@@ -147,6 +147,14 @@
+@@ -147,6 +147,14 @@ CPackerMAT::CPackerMAT()
    m_buffer.reserve(MAT_BUFFER_SIZE);
  }
  
@@ -39,9 +40,10 @@ diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.cpp b/xbmc/cores/AudioEngine
  // The size of the padded frame can be determined from the frame time/sequence code in the frame header,
  // since it varies to accommodate spikes in bitrate.
 diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.h b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
+index a2161d8561..c4aafc8585 100644
 --- a/xbmc/cores/AudioEngine/Utils/PackerMAT.h
 +++ b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
-@@ -31,6 +31,7 @@
+@@ -31,6 +31,7 @@ public:
  
    bool PackTrueHD(const uint8_t* data, int size);
    std::vector<uint8_t> GetOutputFrame();
@@ -50,9 +52,10 @@ diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.h b/xbmc/cores/AudioEngine/U
  private:
    struct MATState
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+index 7636e3a80c..5b68af0679 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
-@@ -302,6 +302,8 @@
+@@ -278,6 +278,8 @@ void CDVDAudioCodecPassthrough::Reset()
    m_currentPts = DVD_NOPTS_VALUE;
    m_nextPts = DVD_NOPTS_VALUE;
    m_parser.Reset();

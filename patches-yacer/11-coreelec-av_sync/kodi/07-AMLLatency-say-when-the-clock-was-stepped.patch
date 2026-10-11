@@ -11,7 +11,7 @@ Count the steps.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 4c24519..7a06464 100644
+index 3ed2309b4e..c2c299f54f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -126,14 +126,17 @@ void CAMLLatency::Rearm()
@@ -53,7 +53,7 @@ index 4c24519..7a06464 100644
  
    // Deliberately not carrying the video component: something is wrong with the
    // picture and that should reach the log whatever the debug settings say.
-@@ -521,6 +531,29 @@ void CAMLLatency::Update(
+@@ -525,6 +535,29 @@ void CAMLLatency::Update(
      double absolute;
      const double clockNow = clock.GetClock(absolute);
  
@@ -83,7 +83,7 @@ index 4c24519..7a06464 100644
      // Inside the blanking interval the kernel extrapolates to the frame about
      // to start, so the age comes back negative and the sequence names the next
      // vblank rather than the last. pts_video still names the last one, so put
-@@ -752,16 +785,21 @@ void CAMLLatency::Update(
+@@ -756,16 +789,21 @@ void CAMLLatency::Update(
        // are not meant to agree exactly: the genlock announces its corrections,
        // which stands this check down across the refreshes the fold counts.
        const unsigned int judged = m_shown + m_held + m_lostOn;
@@ -109,7 +109,7 @@ index 4c24519..7a06464 100644
  
        m_reports = 0;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index 2401f6d..cd63080 100644
+index c950e2d0c8..262e4eb1e8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -111,6 +111,10 @@ public:

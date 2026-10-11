@@ -41,7 +41,7 @@ GetVsyncRate.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index ff7b180..9ae5c9f 100644
+index ff7b1804d7..9ae5c9f7f1 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -120,7 +120,7 @@ void DrainVsyncKick()
@@ -65,7 +65,7 @@ index ff7b180..9ae5c9f 100644
  
  int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 8e1254e..d20efff 100644
+index 8e1254eb19..d20efff497 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -400,7 +400,9 @@ void CAMLLatency::Poll()
@@ -79,21 +79,8 @@ index 8e1254e..d20efff 100644
    if (rate <= 0.0)
      return;
  
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 04dac76..7a98d4c 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -805,7 +805,7 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
- 
-   const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
-                          m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
--  float refresh = aml_resolution_rate();
-+  float refresh = winSystem->GetVsyncRate();
-   if (gfx.GetVideoResolution() == RES_WINDOW)
-     refresh = 0;
- 
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index 38e10c4..17f5ff9 100644
+index 38e10c4fc2..17f5ff9d63 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 @@ -137,7 +137,7 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
@@ -152,7 +139,7 @@ index 38e10c4..17f5ff9 100644
      if (diff < 1.0)
        diff = 1.0 / diff;
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-index 062aad0..aa3116a 100644
+index 062aad09c5..aa3116a8ee 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 @@ -231,6 +231,9 @@ protected:
@@ -166,7 +153,7 @@ index 062aad0..aa3116a 100644
    double m_displayLatency = 0.0;
    std::atomic_int m_videoDelay = {};
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index d02b1a7..08cf1c6 100644
+index d02b1a7509..08cf1c6dcc 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -474,7 +474,7 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
@@ -188,7 +175,7 @@ index d02b1a7..08cf1c6 100644
      refresh = 0;
  
 diff --git a/xbmc/windowing/GraphicContext.cpp b/xbmc/windowing/GraphicContext.cpp
-index 0249ce4..d06301d 100644
+index 0249ce4403..d06301d713 100644
 --- a/xbmc/windowing/GraphicContext.cpp
 +++ b/xbmc/windowing/GraphicContext.cpp
 @@ -983,7 +983,8 @@ float CGraphicContext::GetDisplayLatency() const
@@ -202,7 +189,7 @@ index 0249ce4..d06301d 100644
  
    return latency;
 diff --git a/xbmc/windowing/WinSystem.cpp b/xbmc/windowing/WinSystem.cpp
-index d02084b..41350d5 100644
+index d02084b5a3..41350d524b 100644
 --- a/xbmc/windowing/WinSystem.cpp
 +++ b/xbmc/windowing/WinSystem.cpp
 @@ -314,6 +314,11 @@ CGraphicContext& CWinSystemBase::GetGfxContext() const
@@ -218,7 +205,7 @@ index d02084b..41350d5 100644
  {
    return m_dpms;
 diff --git a/xbmc/windowing/WinSystem.h b/xbmc/windowing/WinSystem.h
-index 79df224..ea87c6f 100644
+index 79df224b0e..ea87c6f23f 100644
 --- a/xbmc/windowing/WinSystem.h
 +++ b/xbmc/windowing/WinSystem.h
 @@ -125,6 +125,16 @@ public:
@@ -239,7 +226,7 @@ index 79df224..ea87c6f 100644
    virtual bool Restore() { return false; }
    virtual bool Hide() { return false; }
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 5e16e9b..bc646f2 100644
+index 5e16e9b987..bc646f2d6a 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -1280,6 +1280,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
@@ -280,7 +267,7 @@ index 5e16e9b..bc646f2 100644
  
  void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index b4f540c..dc9fee6 100644
+index b4f540c657..dc9fee6cac 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -218,6 +218,9 @@ public:
@@ -302,7 +289,7 @@ index b4f540c..dc9fee6 100644
    std::string m_fs3d_mode{FS3D_MODE};
    int m_fs3d_hz = 120;
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 6f29aa4..20839ca 100644
+index 5f996282f0..08a680ccb6 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -660,6 +660,13 @@ float CWinSystemAmlogic::GetDisplayLatency()
@@ -319,7 +306,7 @@ index 6f29aa4..20839ca 100644
  void CWinSystemAmlogic::RegisterRenderThread()
  {
    m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
-@@ -689,7 +696,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -688,7 +695,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
      return 0.0f;
    };
  
@@ -329,7 +316,7 @@ index 6f29aa4..20839ca 100644
      return stand_down();
  
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index e2bc913..4ab3d75 100644
+index e2bc91361a..4ab3d756f9 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -77,6 +77,10 @@ public:

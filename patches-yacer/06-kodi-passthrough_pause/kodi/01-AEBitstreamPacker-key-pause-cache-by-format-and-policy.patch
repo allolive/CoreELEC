@@ -16,33 +16,11 @@ be corrected in an Amlogic consumer.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
---- a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
-+++ b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
-@@ -11,7 +11,9 @@
- #include "AEChannelInfo.h"
- #include "AEPackIEC61937.h"
- 
-+#include <array>
- #include <list>
-+#include <optional>
- #include <stdint.h>
- #include <vector>
- 
-@@ -45,6 +47,7 @@
- 
-   unsigned int  m_dataSize = 0;
-   uint8_t       m_packedBuffer[MAX_IEC61937_PACKET];
--  unsigned int m_pauseDuration = 0;
-+  // The sink may byte-swap this buffer in place. A cache hit must preserve it;
-+  // every input that changes the generated pause bytes belongs in the key.
-+  std::optional<std::array<unsigned int, 6>> m_pauseKey;
- };
--
 diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
+index eb9bd40930..27cbba4c9e 100644
 --- a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp
-@@ -34,7 +34,7 @@
+@@ -34,7 +34,7 @@ CAEBitstreamPacker::~CAEBitstreamPacker()
  
  void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
  {
@@ -51,7 +29,7 @@ diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/Aud
    switch (info.m_type)
    {
      case CAEStreamInfo::STREAM_TYPE_TRUEHD:
-@@ -75,8 +75,12 @@
+@@ -75,8 +75,12 @@ void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
  
  bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts)
  {
@@ -66,7 +44,7 @@ diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/Aud
      return false;
  
    switch (info.m_type)
-@@ -84,7 +88,6 @@
+@@ -84,7 +88,6 @@ bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, boo
      case CAEStreamInfo::STREAM_TYPE_TRUEHD:
      case CAEStreamInfo::STREAM_TYPE_EAC3:
        m_dataSize = CAEPackIEC61937::PackPause(m_packedBuffer, millis, GetOutputChannelMap(info).Count() * 2, GetOutputRate(info), 4, info.m_sampleRate);
@@ -74,7 +52,7 @@ diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/Aud
        break;
  
      case CAEStreamInfo::STREAM_TYPE_AC3:
-@@ -95,13 +98,16 @@
+@@ -95,13 +98,16 @@ bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, boo
      case CAEStreamInfo::STREAM_TYPE_DTS_1024:
      case CAEStreamInfo::STREAM_TYPE_DTS_2048:
        m_dataSize = CAEPackIEC61937::PackPause(m_packedBuffer, millis, GetOutputChannelMap(info).Count() * 2, GetOutputRate(info), 3, info.m_sampleRate);
@@ -83,18 +61,16 @@ diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/Aud
  
      default:
        CLog::Log(LOGERROR, "CAEBitstreamPacker::Pack - no pack function");
--  }
--
 +      m_dataSize = 0;
 +      m_pauseKey.reset();
 +      return true;
-+  }
-+
+   }
+ 
 +  m_pauseKey = key;
    if (!iecBursts)
    {
      memset(m_packedBuffer, 0, m_dataSize);
-@@ -123,7 +129,7 @@
+@@ -123,7 +129,7 @@ uint8_t* CAEBitstreamPacker::GetBuffer()
  void CAEBitstreamPacker::Reset()
  {
    m_dataSize = 0;
@@ -103,3 +79,27 @@ diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.cpp b/xbmc/cores/Aud
    m_packedBuffer[0] = 0;
  }
  
+diff --git a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
+index e3f6233956..d637cc2151 100644
+--- a/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
++++ b/xbmc/cores/AudioEngine/Utils/AEBitstreamPacker.h
+@@ -11,7 +11,9 @@
+ #include "AEChannelInfo.h"
+ #include "AEPackIEC61937.h"
+ 
++#include <array>
+ #include <list>
++#include <optional>
+ #include <stdint.h>
+ #include <vector>
+ 
+@@ -45,6 +47,7 @@ private:
+ 
+   unsigned int  m_dataSize = 0;
+   uint8_t       m_packedBuffer[MAX_IEC61937_PACKET];
+-  unsigned int m_pauseDuration = 0;
++  // The sink may byte-swap this buffer in place. A cache hit must preserve it;
++  // every input that changes the generated pause bytes belongs in the key.
++  std::optional<std::array<unsigned int, 6>> m_pauseKey;
+ };
+-

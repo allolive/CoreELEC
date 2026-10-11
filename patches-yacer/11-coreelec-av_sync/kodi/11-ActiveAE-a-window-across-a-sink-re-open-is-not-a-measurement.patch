@@ -11,10 +11,10 @@ different pipelines reported as one figure. Drop the window instead.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 94990dd..73cd5ec 100644
+index 21d8e047cd..e3f3c2c822 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -1237,6 +1237,32 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
+@@ -1275,6 +1275,32 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
        m_currDevice.compare(dev.name) != 0 || m_settings.driver.compare(dev.driver) != 0)
    {
      FlushEngine();
@@ -47,7 +47,7 @@ index 94990dd..73cd5ec 100644
      if (!InitSink())
        return;
      m_settings.driver = dev.driver;
-@@ -1245,6 +1271,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
+@@ -1283,6 +1309,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
          requestedDefaultDevice || !IsSameDevice(m_openedDriver, m_openedDevice, dev);
      initSink = true;
      m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);

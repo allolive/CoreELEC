@@ -19,6 +19,7 @@ native harness compiles these production headers, not a separate sync model.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+index 6ed348f0de..2b87a7eab9 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -13,6 +13,7 @@
@@ -29,11 +30,10 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cor
  #include "threads/Event.h"
  
  #include <atomic>
-@@ -21,98 +22,6 @@
- namespace ActiveAE
+@@ -22,98 +23,6 @@ namespace ActiveAE
  {
  class CActiveAE;
--
+ 
 -class CSyncError
 -{
 -public:
@@ -125,10 +125,11 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cor
 -  int m_count;
 -  XbmcThreads::EndTime<> m_timer;
 -};
- 
+-
  class CActiveAEStreamBuffers
  {
-@@ -266,12 +175,12 @@
+ public:
+@@ -266,12 +175,12 @@ protected:
    enum AVAudioServiceType m_audioServiceType;
    bool m_forceResampler;
    IAEClockCallback *m_pClock;
@@ -145,6 +146,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cor
    bool m_errorSaturated{false};
 diff --git a/xbmc/cores/AudioEngine/Utils/AESyncError.h b/xbmc/cores/AudioEngine/Utils/AESyncError.h
 new file mode 100644
+index 0000000000..81ca30825f
 --- /dev/null
 +++ b/xbmc/cores/AudioEngine/Utils/AESyncError.h
 @@ -0,0 +1,102 @@
@@ -252,6 +254,7 @@ new file mode 100644
 +} // namespace ActiveAE
 diff --git a/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
 new file mode 100644
+index 0000000000..84cba7fbe0
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
 @@ -0,0 +1,54 @@
@@ -310,6 +313,7 @@ new file mode 100644
 +  unsigned int m_readings{0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index e581756d95..540f477ece 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,62 +31,6 @@
@@ -375,7 +379,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
  
  class CDVDMsgAudioCodecChange : public CDVDMsg
  {
-@@ -656,21 +600,12 @@
+@@ -820,21 +764,12 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      {
        m_acquireSince = 0.0;
  
@@ -400,7 +404,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      {
        m_audioSink.TakeSyncAcquisition();
        m_acquireSince = 0.0;
-@@ -687,7 +622,7 @@
+@@ -851,7 +786,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      const auto& observation = m_audioSink.GetSyncObservation();
      const auto& acceptedObservation = m_audioSink.GetAcceptedSyncObservation();
      const bool windowChanged = !observation.SameWindow(m_lastSyncObservation);
@@ -409,7 +413,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      if (m_audioSink.IsPassthrough() && windowChanged)
      {
        CLog::Log(
-@@ -701,29 +636,12 @@
+@@ -865,29 +800,12 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
            windowChanged && observation.Valid(), legacyFresh, observation.Valid(),
            observation.saturated, m_audioSink.HasSyncError(), m_audioSink.IsSyncErrorSaturated(),
            observation.raw, errorRaw / 1000.0, syncerror / 1000.0, acceptedObservation.epoch,
@@ -442,7 +446,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      // Only where the argument for it holds. The residue this exists to remove is
      // one the engine cannot remove itself: in passthrough its finest move is a
      // whole IEC frame, twenty milliseconds, so it stops inside its own band and
-@@ -732,11 +650,9 @@
+@@ -896,11 +814,9 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      // to go after, and correcting outside the threshold there would be a clock
      // step for something the engine was going to take out anyway.
      const bool acquire = m_audioSink.IsPassthrough() && m_audioSink.PeekSyncAcquisition() &&
@@ -458,6 +462,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
      {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+index 692d627df4..8d114d3b80 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 @@ -9,6 +9,7 @@
@@ -468,15 +473,15 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/
  #include "DVDClock.h"
  #include "DVDMessageQueue.h"
  #include "DVDStreamInfo.h"
-@@ -21,7 +22,6 @@
- #include <list>
+@@ -22,7 +23,6 @@
  #include <mutex>
  #include <utility>
--
  
+-
  class CVideoPlayer;
  class CDVDAudioCodec;
-@@ -109,11 +109,7 @@
+ class CDVDAudioCodec;
+@@ -116,11 +116,7 @@ protected:
    double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
    AESyncObservation m_lastSyncObservation;
    AESyncObservation m_lastCorrectionObservation;

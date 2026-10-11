@@ -24,10 +24,10 @@ lands the object stays allocated despite this destroy.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 8514c52..79ab004 100644
+index 8588c01b76..fb0f90deb2 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
-@@ -833,6 +833,10 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type,
+@@ -831,6 +831,10 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type,
    }
  
    aml_set_drmProperty(name, obj_type, mode_blobid);

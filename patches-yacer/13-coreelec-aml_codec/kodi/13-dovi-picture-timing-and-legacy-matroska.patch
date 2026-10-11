@@ -22,7 +22,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
 new file mode 100644
-index 0000000..43e16c4
+index 0000000000..43e16c4457
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
 @@ -0,0 +1,37 @@
@@ -64,18 +64,18 @@ index 0000000..43e16c4
 +  return firstIsEL ? second : first;
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 704b408..73a4b2c 100644
+index 77a6e34594..941b70c37d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -15,6 +15,7 @@
+@@ -14,6 +14,7 @@
+ #include "DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
- #include "DVDClock.h"
  #include "DVDStreamInfo.h"
 +#include "AMLDolbyVisionTiming.h"
  #include "AMLCodec.h"
  #include "ServiceBroker.h"
  #include "utils/AMLUtils.h"
-@@ -429,8 +430,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -427,8 +428,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_processInfo.SetVideoDAR(m_hints.aspect);
  
    m_has_keyframe = false;
@@ -85,7 +85,7 @@ index 704b408..73a4b2c 100644
  
    if (m_bitstream)
    {
-@@ -530,6 +530,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -527,6 +527,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    bool IsHdr10Plus = false;
    int data_added = false;
    bool dual_layer_converted = false;
@@ -94,7 +94,7 @@ index 704b408..73a4b2c 100644
  
    if (pData)
    {
-@@ -575,25 +577,22 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -572,25 +574,22 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          // Both layers carry the same container timestamp, and 2 ms is well
          // under half a frame even at 120 fps without trusting a rate hint
          const double tolerance = DVD_MSEC_TO_TIME(2);
@@ -130,7 +130,7 @@ index 704b408..73a4b2c 100644
            // both tracks arrive in decode order, so anything queued ahead of
            // the partner has lost its own
            while (m_packages.begin() != match)
-@@ -637,9 +636,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -634,9 +633,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
                }
              }
            }
@@ -140,7 +140,7 @@ index 704b408..73a4b2c 100644
          }
  
          if (!dual_layer_converted)
-@@ -658,21 +654,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -655,21 +651,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
            while (m_packages.size() > MAX_DUAL_LAYER_PACKAGES)
              DropDualLayerFront();
  
@@ -169,7 +169,7 @@ index 704b408..73a4b2c 100644
            }
            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
-@@ -720,11 +709,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -717,11 +706,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        else
          m_has_keyframe = true;
      }
@@ -183,7 +183,7 @@ index 704b408..73a4b2c 100644
          m_hints.ptsinvalid = true;
  
        m_processInfo.SetDoviIsFEL(doviIsFEL);
-@@ -779,23 +768,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -776,23 +765,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      }
    }
  
@@ -199,25 +199,24 @@ index 704b408..73a4b2c 100644
 +                                  ? std::optional<double>{picturePts}
                                    : std::nullopt);
  
-     m_pendingMeta.Inherit(m_lastMeta);
-     m_lastMeta = m_pendingMeta;
+     m_pendingMeta.Inherit(*m_lastMeta);
+     // consecutive frames with equal values share one copy
+     if (!(m_pendingMeta == *m_lastMeta))
+       m_lastMeta = std::make_shared<const AMLFrameMetadata>(m_pendingMeta);
 -    if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
 +    if (m_hints.ptsinvalid || picturePts == DVD_NOPTS_VALUE)
-       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_pendingMeta);
+       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_lastMeta);
      else
-     {
--      m_metadataSequencer.Commit(packet.pts, m_pendingMeta);
--      m_lastCommitPts = packet.pts;
-+      m_metadataSequencer.Commit(picturePts, m_pendingMeta);
-+      m_lastCommitPts = picturePts;
-     }
+-      m_metadataSequencer.Commit(packet.pts, m_lastMeta);
++      m_metadataSequencer.Commit(picturePts, m_lastMeta);
      m_pendingMeta = m_streamMeta;
    }
+ 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 07f113f..13a2b5b 100644
+index da2bef34e6..dd486491cf 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -118,8 +118,7 @@ private:
+@@ -120,8 +120,7 @@ private:
    static std::atomic<bool> m_InstanceGuard;
  
    std::list<DLDemuxPacket> m_packages;
@@ -226,9 +225,9 @@ index 07f113f..13a2b5b 100644
 +  bool m_dualLayerUnmatchedWarned{false};
  
    uint32_t m_metadataToken{0};
-   bool m_metaLeadLogged{false};
+   bool m_stripHdr10Plus{false};
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 5cd43a0..2db7b1e 100644
+index 5cd43a0aab..2db7b1e2d8 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -32,6 +32,7 @@
@@ -360,7 +359,7 @@ index 5cd43a0..2db7b1e 100644
    if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                pStream->codecpar->nb_coded_side_data,
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index dea8e35..2a88e43 100644
+index dea8e3527f..2a88e432a9 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -19,6 +19,8 @@
@@ -481,7 +480,7 @@ index dea8e35..2a88e43 100644
        av_free(start);
 diff --git a/xbmc/utils/DolbyVisionLegacy.h b/xbmc/utils/DolbyVisionLegacy.h
 new file mode 100644
-index 0000000..455d625
+index 0000000000..455d6250c5
 --- /dev/null
 +++ b/xbmc/utils/DolbyVisionLegacy.h
 @@ -0,0 +1,70 @@

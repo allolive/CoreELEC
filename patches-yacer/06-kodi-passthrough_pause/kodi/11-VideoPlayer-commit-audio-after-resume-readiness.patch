@@ -16,6 +16,8 @@ so a stalled or failed commit still has bounded recovery.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/xbmc/cores/VideoPlayer/AudioPreroll.h b/xbmc/cores/VideoPlayer/AudioPreroll.h
+index d09a8005b6..7fa06b10ad 100644
 --- a/xbmc/cores/VideoPlayer/AudioPreroll.h
 +++ b/xbmc/cores/VideoPlayer/AudioPreroll.h
 @@ -13,7 +13,7 @@
@@ -27,7 +29,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    Action action{Action::Cancel};
    uint64_t generation{0};
    double targetPts{DVD_NOPTS_VALUE};
-@@ -24,7 +24,7 @@
+@@ -24,7 +24,7 @@ struct AudioPrerollCommand
  // never evidence that an HDMI receiver decoded or presented a payload.
  struct AudioPrerollStatus
  {
@@ -36,7 +38,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    enum class Failure
    {
      None, Timestamp, Duration, Format, Continuity, PartialWrite, NoLead,
-@@ -95,6 +95,7 @@
+@@ -95,6 +95,7 @@ public:
      m_failed = false;
      m_failure = {};
      m_held = false;
@@ -44,7 +46,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      m_seenRunningUnsynced = false;
      return true;
    }
-@@ -110,7 +111,7 @@
+@@ -110,7 +111,7 @@ public:
  
    bool Active() const { return m_active; }
    bool Failed() const { return m_failed; }
@@ -53,7 +55,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    bool Buffered() const { return ValidPts(m_firstPts); }
    uint64_t Generation() const { return m_generation; }
    bool Matches(uint64_t generation) const { return m_active && generation == m_generation; }
-@@ -137,19 +138,32 @@
+@@ -137,19 +138,32 @@ public:
        return false;
      m_active = false;
      m_held = false;
@@ -88,7 +90,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        return false;
      m_targetPts = targetPts;
      m_held = false; // Re-evaluate the preserved packet against the rounded target.
-@@ -161,7 +175,7 @@
+@@ -161,7 +175,7 @@ public:
    {
      if (!m_active)
        return false;
@@ -97,7 +99,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        return true;
      if (!timestamped || !ValidPts(pts))
      {
-@@ -193,7 +207,7 @@
+@@ -193,7 +207,7 @@ public:
    bool Accepted(double pts, double duration, unsigned int written, unsigned int packetBytes,
                  unsigned int previousBytes)
    {
@@ -106,7 +108,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        return false;
      // RAW progress is meaningful only for a complete packet. A timeout after
      // partial acceptance requires cancellation; never extrapolate its duration.
-@@ -228,12 +242,13 @@
+@@ -228,12 +242,13 @@ public:
    {
      AudioPrerollStatus status = m_failure;
      status.phase = m_failed ? AudioPrerollStatus::Phase::Failed
@@ -121,70 +123,18 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      if (!sink.valid || !sink.running)
        m_seenRunningUnsynced = false;
      if (sink.valid && std::isfinite(sink.delayUs) && sink.delayUs >= 0)
-@@ -273,5 +288,6 @@
+@@ -273,5 +288,6 @@ private:
    bool m_active{false};
    bool m_failed{false};
    bool m_held{false};
 +  bool m_releasePending{false};
    bool m_seenRunningUnsynced{false};
  };
---- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -413,7 +413,7 @@
-         if (m_preroll.SetTarget(command.generation, command.targetPts))
-           onlyPrioMsgs = true; // Submit/recheck the owned frame before another codec AddData.
-       }
--      else if (command.action == AudioPrerollCommand::Action::End)
-+      else if (command.action == AudioPrerollCommand::Action::PrepareRelease)
-       {
-         if (m_preroll.Matches(command.generation))
-         {
-@@ -424,11 +424,10 @@
-             m_preroll.Fail(AudioPrerollStatus::Failure::NotInSync);
-             PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
-           }
--          else if (m_preroll.End(command.generation))
-+          else if (m_preroll.PrepareRelease(command.generation))
-           {
--            ResetPrerollCorrections();
--            status.phase = AudioPrerollStatus::Phase::Released;
--            status.mainHeld = false;
-+            status.phase = AudioPrerollStatus::Phase::ReadyToRelease;
-+            status.mainHeld = true;
-             m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
-                 CDVDMsg::PLAYER_AUDIO_PREROLL, status));
-             onlyPrioMsgs = true;
-@@ -443,6 +442,27 @@
-           status.hostUs = m_pClock->GetAbsoluteClock();
-           m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
-               CDVDMsg::PLAYER_AUDIO_PREROLL, status));
-+        }
-+      }
-+      else if (command.action == AudioPrerollCommand::Action::End)
-+      {
-+        // Only the player can commit after accepting ReadyToRelease. Until
-+        // this command, Held() prevents output and corrections stay suppressed.
-+        if (m_preroll.End(command.generation))
-+        {
-+          ResetPrerollCorrections();
-+          AudioPrerollStatus status;
-+          status.phase = AudioPrerollStatus::Phase::Released;
-+          status.generation = command.generation;
-+          status.hostUs = m_pClock->GetAbsoluteClock();
-+          m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
-+              CDVDMsg::PLAYER_AUDIO_PREROLL, status));
-+          onlyPrioMsgs = true;
-+        }
-+        else if (m_preroll.Matches(command.generation))
-+        {
-+          m_preroll.Fail(AudioPrerollStatus::Failure::Aborted);
-+          PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
-         }
-       }
-       else if (m_preroll.Cancel(command.generation))
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index ba6417a09e..ebfc2e5474 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -4101,9 +4101,26 @@
+@@ -4102,9 +4102,26 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
  
  void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
  {
@@ -212,7 +162,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    {
      // A newer user command can be behind this acknowledgement in the FIFO.
      // Retire the old target before it becomes visible; recovery leaves the
-@@ -4121,9 +4138,9 @@
+@@ -4122,9 +4139,9 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
      const double now = m_clock.GetAbsoluteClock();
      const double age = now - status.hostUs;
      const double playing = status.estimatedPlayingPts + age;
@@ -225,7 +175,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      // Clock and audio were anchored to each other at the audio start, and the
      // clock has run at normal speed since while the engine established sync.
      // Neither can have moved away from the other by more than that elapsed
-@@ -4156,8 +4173,8 @@
+@@ -4157,8 +4174,8 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
        return;
      }
      // Spend the small acquisition residual while the picture is still held.
@@ -236,7 +186,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      // The clock moves before the release deliberately: once released, the
      // render thread may schedule the picture, and it must do so against the
      // clock the audio is actually on.
-@@ -4169,6 +4186,13 @@
+@@ -4170,6 +4187,13 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
        m_resumePrerollFailed = true;
        return;
      }
@@ -250,7 +200,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      m_resumePreroll.Cancel();
      m_resumePrerollReleaseTime = now;
      m_playSpeed = DVD_PLAYSPEED_NORMAL;
-@@ -4336,6 +4360,7 @@
+@@ -4361,6 +4385,7 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
    m_resumePrerollTarget.reset();
    m_resumePrerollReleaseTime = 0.0;
    m_resumePrerollFailed = false;
@@ -258,7 +208,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    if (generation != 0)
    {
      m_renderManager.CancelVideoPreroll(generation);
-@@ -4409,19 +4434,27 @@
+@@ -4434,13 +4459,14 @@ bool CVideoPlayer::PollResumePreroll()
      {
        const auto video = m_renderManager.GetVideoPreroll();
        if (video.generation != m_resumePictureGeneration || video.failed ||
@@ -276,20 +226,21 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        {
          CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - submitted generation={} target={:.6f}",
                    m_resumePictureGeneration, video.firstPts / DVD_TIME_BASE);
-         m_resumePictureGeneration = 0;
+@@ -4448,6 +4474,13 @@ bool CVideoPlayer::PollResumePreroll()
          m_resumePrerollTarget.reset();
          m_resumePrerollReleaseTime = 0.0;
-+      }
+       }
 +      if (m_resumeAudioCommitPending)
 +      {
 +        // Keep servicing acknowledgements and controls. A source read can
 +        // block longer than the commit deadline, just as during readiness.
 +        CThread::Sleep(1ms);
 +        return true;
-       }
++      }
      }
      return false;
-@@ -4492,7 +4525,7 @@
+   }
+@@ -4517,7 +4550,7 @@ bool CVideoPlayer::PollResumePreroll()
      m_VideoPlayerAudio->SendMessage(
          std::make_shared<CDVDMsgType<AudioPrerollCommand>>(
              CDVDMsg::AUDIO_PREROLL,
@@ -298,9 +249,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
                                  decision.generation, decision.targetPts}),
          1);
      return true;
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 088d48a63b..7a6b82d852 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -628,6 +628,7 @@
+@@ -630,6 +630,7 @@ protected:
    bool m_seekingResumePreroll = false;
    bool m_resumePrerollPaused = false;
    bool m_resumePrerollFailed = false;
@@ -308,3 +261,59 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
    struct SSpeedState
    {
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index 1755c6b0bb..d02c7c8684 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -399,7 +399,7 @@ void CVideoPlayerAudio::Process()
+         if (m_preroll.SetTarget(command.generation, command.targetPts))
+           onlyPrioMsgs = true; // Submit/recheck the owned frame before another codec AddData.
+       }
+-      else if (command.action == AudioPrerollCommand::Action::End)
++      else if (command.action == AudioPrerollCommand::Action::PrepareRelease)
+       {
+         if (m_preroll.Matches(command.generation))
+         {
+@@ -410,11 +410,10 @@ void CVideoPlayerAudio::Process()
+             m_preroll.Fail(AudioPrerollStatus::Failure::NotInSync);
+             PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
+           }
+-          else if (m_preroll.End(command.generation))
++          else if (m_preroll.PrepareRelease(command.generation))
+           {
+-            ResetPrerollCorrections();
+-            status.phase = AudioPrerollStatus::Phase::Released;
+-            status.mainHeld = false;
++            status.phase = AudioPrerollStatus::Phase::ReadyToRelease;
++            status.mainHeld = true;
+             m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
+                 CDVDMsg::PLAYER_AUDIO_PREROLL, status));
+             onlyPrioMsgs = true;
+@@ -431,6 +430,27 @@ void CVideoPlayerAudio::Process()
+               CDVDMsg::PLAYER_AUDIO_PREROLL, status));
+         }
+       }
++      else if (command.action == AudioPrerollCommand::Action::End)
++      {
++        // Only the player can commit after accepting ReadyToRelease. Until
++        // this command, Held() prevents output and corrections stay suppressed.
++        if (m_preroll.End(command.generation))
++        {
++          ResetPrerollCorrections();
++          AudioPrerollStatus status;
++          status.phase = AudioPrerollStatus::Phase::Released;
++          status.generation = command.generation;
++          status.hostUs = m_pClock->GetAbsoluteClock();
++          m_messageParent.Put(std::make_shared<CDVDMsgType<AudioPrerollStatus>>(
++              CDVDMsg::PLAYER_AUDIO_PREROLL, status));
++          onlyPrioMsgs = true;
++        }
++        else if (m_preroll.Matches(command.generation))
++        {
++          m_preroll.Fail(AudioPrerollStatus::Failure::Aborted);
++          PublishPreroll(AudioPrerollStatus::Phase::Failed, true);
++        }
++      }
+       else if (m_preroll.Cancel(command.generation))
+       {
+         // Cancellation is followed by the coordinator's seek/flush. Keep the

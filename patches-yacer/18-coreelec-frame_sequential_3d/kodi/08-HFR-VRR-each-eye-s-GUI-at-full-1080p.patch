@@ -66,7 +66,7 @@ is never reported stacked without a stacked surface.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
-index 15420ed..fda7449 100644
+index ab088ac9e2..8de45cd0a7 100644
 --- a/xbmc/application/Application.cpp
 +++ b/xbmc/application/Application.cpp
 @@ -916,8 +916,12 @@ void CApplication::Render()
@@ -85,7 +85,7 @@ index 15420ed..fda7449 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 9ae5c9f..d763af5 100644
+index 9ae5c9f7f1..d763af554b 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2865,6 +2865,7 @@ void CAMLCodec::CloseDecoder()
@@ -126,7 +126,7 @@ index 9ae5c9f..d763af5 100644
  
  #if 1
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 47535fd..29cf3ef 100644
+index 47535fd33d..29cf3ef580 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -357,11 +357,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
@@ -145,7 +145,7 @@ index 47535fd..29cf3ef 100644
        const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
        if (layout == "left_right" || layout == "right_left")
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index 8d355c3..be618c5 100644
+index 8d355c3e85..be618c56b5 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -683,9 +683,9 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
@@ -171,7 +171,7 @@ index 8d355c3..be618c5 100644
      depth += subtitleDepth;
    }
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index 17f5ff9..d713c76 100644
+index 17f5ff9d63..d713c76c00 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 @@ -920,7 +920,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
@@ -199,7 +199,7 @@ index 17f5ff9..d713c76 100644
  
    if (gui || m_renderDebug)
 diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
-index d2d0f40..e239640 100644
+index d2d0f40bc1..e239640909 100644
 --- a/xbmc/rendering/RenderSystemTypes.h
 +++ b/xbmc/rendering/RenderSystemTypes.h
 @@ -27,7 +27,7 @@ enum class RenderStereoMode
@@ -212,7 +212,7 @@ index d2d0f40..e239640 100644
    COUNT,
  
 diff --git a/xbmc/windowing/GraphicContext.cpp b/xbmc/windowing/GraphicContext.cpp
-index d06301d..f103485 100644
+index d06301d713..f10348573d 100644
 --- a/xbmc/windowing/GraphicContext.cpp
 +++ b/xbmc/windowing/GraphicContext.cpp
 @@ -27,6 +27,7 @@
@@ -279,7 +279,7 @@ index d06301d..f103485 100644
  }
  
 diff --git a/xbmc/windowing/WinSystem.h b/xbmc/windowing/WinSystem.h
-index ea87c6f..76dc12d 100644
+index ea87c6f23f..76dc12d76f 100644
 --- a/xbmc/windowing/WinSystem.h
 +++ b/xbmc/windowing/WinSystem.h
 @@ -135,6 +135,20 @@ public:
@@ -304,7 +304,7 @@ index ea87c6f..76dc12d 100644
    virtual bool Restore() { return false; }
    virtual bool Hide() { return false; }
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index d73d414..43cf0d7 100644
+index d73d414a2b..43cf0d7352 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -5,6 +5,7 @@
@@ -444,7 +444,7 @@ index d73d414..43cf0d7 100644
  
  void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index b80c7b2..6581cfe 100644
+index b80c7b28f0..6581cfe9ba 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -229,6 +229,17 @@ public:
@@ -475,7 +475,7 @@ index b80c7b2..6581cfe 100644
    //! the record of a 3D left behind is kept until its desktop has been set
    std::atomic<bool> m_fs3d_state_pending{false};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 3c12258..fff4f3c 100644
+index 8eb133e33c..13f8743380 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -758,6 +758,13 @@ float CWinSystemAmlogic::GetVsyncRate()
@@ -493,7 +493,7 @@ index 3c12258..fff4f3c 100644
  {
    m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 4ab3d75..f0a0fc9 100644
+index 4ab3d756f9..f0a0fc9d7e 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -81,6 +81,13 @@ public:
@@ -523,7 +523,7 @@ index 4ab3d75..f0a0fc9 100644
    //! the stereo mode MessagePump last saw
    RenderStereoMode m_fs3dStereoMode{RenderStereoMode::OFF};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-index 27a726c..603e7df 100644
+index 27a726cae9..603e7df245 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 @@ -186,6 +186,14 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
@@ -627,7 +627,7 @@ index 27a726c..603e7df 100644
  
  EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
-index d9ef60c..3272dbb 100644
+index d9ef60c102..3272dbb97a 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
 @@ -74,6 +74,9 @@ private:

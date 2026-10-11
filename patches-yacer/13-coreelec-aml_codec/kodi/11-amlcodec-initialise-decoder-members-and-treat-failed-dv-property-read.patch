@@ -29,10 +29,10 @@ hardware.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e5677ea..4f8103d 100644
+index 8b16a4aee2..0de2cd0069 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2629,7 +2629,8 @@ void CAMLCodec::CloseDecoder()
+@@ -2817,7 +2817,8 @@ void CAMLCodec::CloseDecoder()
    auto* AmlDisplay =
        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
    int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
@@ -42,7 +42,7 @@ index e5677ea..4f8103d 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
  
    SetPollDevice(-1);
-@@ -2676,7 +2677,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2868,7 +2869,7 @@ void CAMLCodec::CloseDecoder()
    {
      // the transition needs a few display frames before the core powers down
      std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
@@ -52,10 +52,10 @@ index e5677ea..4f8103d 100644
        usleep(10000); // wait 10ms
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index ef56ec3..a0a0a44 100644
+index 613b793136..1ed6d3aec1 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -150,9 +150,9 @@ private:
+@@ -189,9 +189,9 @@ private:
    static double m_ttd;
    CProcessInfo &m_processInfo;
    CAMLGenlock      m_genlock;

@@ -19,7 +19,7 @@ Not measured on hardware.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
-index 464c95d..0793c17 100644
+index ae4c204b88..fa210998c9 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 @@ -50,8 +50,11 @@ void CAMLGenlock::Update(CDVDClock& clock,
@@ -37,10 +37,10 @@ index 464c95d..0793c17 100644
                           CLOCK_STEPPED)
      Restart();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 2d8074a..f25bc55 100644
+index 1c8ffe857c..9e7c8ad104 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -552,8 +552,11 @@ void CAMLLatency::Update(
+@@ -556,8 +556,11 @@ void CAMLLatency::Update(
    {
      // pts_video names the frame that appears at the next vblank, so the one on
      // screen is a refresh older and its timestamp fell due a period sooner.
@@ -54,7 +54,7 @@ index 2d8074a..f25bc55 100644
  
      // Both ends advance by about a frame between presented frames, so what is
      // left over is somebody moving the clock. Measured against the frame
-@@ -592,7 +595,14 @@ void CAMLLatency::Update(
+@@ -596,7 +599,14 @@ void CAMLLatency::Update(
      }
      age += carried;
  

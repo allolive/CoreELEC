@@ -12,7 +12,7 @@ Pass the stall on instead. Only a clean zero or a real error end the file now.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/FileCache.cpp b/xbmc/filesystem/FileCache.cpp
-index f9f8b52..105e8b3 100644
+index b0ad2b5e58..d8f2cc0b39 100644
 --- a/xbmc/filesystem/FileCache.cpp
 +++ b/xbmc/filesystem/FileCache.cpp
 @@ -25,6 +25,7 @@
@@ -36,7 +36,7 @@ index f9f8b52..105e8b3 100644
        {
          CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                    __FUNCTION__, m_sourcePath, iRead);
-@@ -554,6 +557,11 @@ retry:
+@@ -552,6 +555,11 @@ retry:
    iRc = m_pCache->ReadFromCache((char *)lpBuf, uiBufSize);
    if (iRc > 0)
    {
@@ -48,7 +48,7 @@ index f9f8b52..105e8b3 100644
      m_readPos += iRc;
      return (int)iRc;
    }
-@@ -566,15 +574,29 @@ retry:
+@@ -564,15 +572,29 @@ retry:
        return -1;
      }
  
@@ -80,7 +80,7 @@ index f9f8b52..105e8b3 100644
    }
  
    if (iRc == CACHE_RC_TIMEOUT)
-@@ -611,6 +633,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
+@@ -609,6 +631,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
      return -1;
    }
  
@@ -89,7 +89,7 @@ index f9f8b52..105e8b3 100644
    int64_t iCurPos = m_readPos;
    int64_t iTarget = iFilePosition;
    if (iWhence == SEEK_END)
-@@ -727,6 +751,7 @@ int CFileCache::IoControl(IOControl request, void* param)
+@@ -725,6 +749,7 @@ int CFileCache::IoControl(IOControl request, void* param)
      status->maxrate = m_writeRate;
      status->currate = m_writeRateActual;
      status->lowrate = m_writeRateLowSpeed;
@@ -98,10 +98,10 @@ index f9f8b52..105e8b3 100644
      return 0;
    }
 diff --git a/xbmc/filesystem/FileCache.h b/xbmc/filesystem/FileCache.h
-index c5cb97a..0a9de08 100644
+index 3d4be10535..796ed4b5b4 100644
 --- a/xbmc/filesystem/FileCache.h
 +++ b/xbmc/filesystem/FileCache.h
-@@ -109,6 +109,7 @@ public:
+@@ -115,6 +115,7 @@ public:
      int64_t m_forwardCacheSize = 0;
      int64_t m_maxForward = 0;
      bool m_bFilling = false;

@@ -13,10 +13,10 @@ stays for the title. Correct once more after each resynchronisation.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index 8fe1387..aec6c42 100644
+index 58a5175da1..825d4398f6 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-@@ -99,6 +99,8 @@ void CAudioSinkAE::Destroy(bool finish)
+@@ -101,6 +101,8 @@ void CAudioSinkAE::Destroy(bool finish)
    m_syncErrorRawValid = false;
    m_syncErrorScale = 1.0;
    m_syncErrorSaturated = false;
@@ -25,7 +25,7 @@ index 8fe1387..aec6c42 100644
    m_syncErrorTime = 0;
  }
  
-@@ -112,7 +114,16 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
+@@ -114,7 +116,16 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
      return 0;
  
    CAESyncInfo info = m_pAudioStream->GetSyncInfo();
@@ -43,7 +43,7 @@ index 8fe1387..aec6c42 100644
    {
      unsigned int newTime = info.errortime;
      if (newTime != m_syncErrorTime)
-@@ -136,6 +147,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
+@@ -138,6 +149,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
      m_syncErrorRawValid = false;
      m_syncErrorScale = 1.0;
      m_syncErrorSaturated = false;
@@ -51,7 +51,7 @@ index 8fe1387..aec6c42 100644
    }
  
    // Use wall-clock deadline independent of playback speed (fixes dimensional error
-@@ -251,6 +263,8 @@ void CAudioSinkAE::Flush()
+@@ -255,6 +267,8 @@ void CAudioSinkAE::Flush()
    m_syncErrorRawValid = false;
    m_syncErrorScale = 1.0;
    m_syncErrorSaturated = false;
@@ -61,10 +61,10 @@ index 8fe1387..aec6c42 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-index 0d1c2c8..df831c4 100644
+index 5d0ef69149..8ab15de6af 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
-@@ -56,6 +56,27 @@ public:
+@@ -57,6 +57,27 @@ public:
    //! the pipeline is really doing, for reporting rather than correcting.
    double GetSyncErrorRaw() const { return m_syncErrorRaw; }
  
@@ -92,7 +92,7 @@ index 0d1c2c8..df831c4 100644
    //! \brief Whether the reading hit the engine's own ceiling. A saturated value
    //! is a lower bound on the error, not a measurement of it, so nothing should
    //! be corrected by it - a seek can make the true figure seconds wide.
-@@ -87,6 +108,8 @@ protected:
+@@ -94,6 +115,8 @@ protected:
    bool m_syncErrorRawValid{false};
    double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
    bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
@@ -102,7 +102,7 @@ index 0d1c2c8..df831c4 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 367162b..e759572 100644
+index 305547eba9..ac76d03f91 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,6 +31,63 @@
@@ -169,7 +169,7 @@ index 367162b..e759572 100644
  class CDVDMsgAudioCodecChange : public CDVDMsg
  {
  public:
-@@ -581,7 +638,84 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -745,7 +802,84 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      if (m_audioSink.HasSyncError() && m_audioSink.IsSyncErrorSaturated())
        syncerror = 0.0;
  
@@ -255,7 +255,7 @@ index 367162b..e759572 100644
      {
        // Decided on the error the engine reports, but corrected by the one it
        // measured. For TrueHD passthrough those are not the same number: the
-@@ -604,6 +738,16 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -768,6 +902,16 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
        double correction = m_pClock->ErrorAdjust(actual, "CVideoPlayerAudio::OutputPacket");
        if (correction != 0)
        {
@@ -273,10 +273,10 @@ index 367162b..e759572 100644
          m_disconAdjustCounter++;
          CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio:: sync error correctiom:{:.3f}", correction / DVD_TIME_BASE);
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index d424ebc..e5b2b2d 100644
+index 64c442014c..68bb841999 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-@@ -106,6 +106,12 @@ protected:
+@@ -113,6 +113,12 @@ protected:
    XbmcThreads::EndTime<> m_syncTimer;
  
    int m_synctype;

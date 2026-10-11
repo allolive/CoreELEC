@@ -15,7 +15,7 @@ conversion past either end.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index 3f9ff69..ff1902e 100644
+index afe25d4eab..dea8e3527f 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -541,7 +541,8 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,

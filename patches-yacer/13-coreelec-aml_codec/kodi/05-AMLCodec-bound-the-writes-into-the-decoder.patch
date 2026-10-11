@@ -19,10 +19,10 @@ write did; propagate the failure so the caller sees it.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index f97165a..242a9ad 100644
+index d18539a1e2..e041b711e2 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -273,7 +273,7 @@ static const uint64_t UINT64_0 = 0x8000000000000000ULL;
+@@ -333,7 +333,7 @@ static const uint64_t UINT64_0 = 0x8000000000000000ULL;
  #define CODEC_TAG_RV30  (0x30335652)
  #define CODEC_TAG_RV40  (0x30345652)
  
@@ -31,7 +31,7 @@ index f97165a..242a9ad 100644
  
  #define P_PRE           (0x02000000)
  #define F_PRE           (0x03000000)
-@@ -661,23 +661,24 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
+@@ -736,23 +736,24 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
                  return PLAYER_SUCCESS;
              }
          }
@@ -62,7 +62,7 @@ index f97165a..242a9ad 100644
                  len += write_bytes;
                  if (len == pkt->hdr->size) {
                      break;
-@@ -711,7 +712,7 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
+@@ -786,7 +787,7 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
                  return PLAYER_WR_FAILED;
              }
          }
@@ -71,7 +71,7 @@ index f97165a..242a9ad 100644
              CLog::Log(LOGDEBUG, "[{}]write header failed!", __FUNCTION__);
              return PLAYER_WR_FAILED;
          }
-@@ -727,9 +728,9 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
+@@ -802,9 +803,9 @@ int write_av_packet(am_private_t *para, am_packet_t *pkt)
  
      while (size > 0 && pkt->isvalid) {
          write_bytes = para->m_dll->codec_write(pkt->codec, buf, size);
@@ -83,7 +83,7 @@ index f97165a..242a9ad 100644
                  CLog::Log(LOGDEBUG, "write codec data failed!");
                  return PLAYER_WR_FAILED;
              } else {
-@@ -842,7 +843,9 @@ static int mjpeg_data_prefeeding(am_packet_t *pkt)
+@@ -917,7 +918,9 @@ static int mjpeg_data_prefeeding(am_packet_t *pkt)
  
  static int mjpeg_write_header(am_private_t *para, am_packet_t *pkt)
  {
@@ -94,7 +94,7 @@ index f97165a..242a9ad 100644
      if (1) {
          pkt->codec = &para->vcodec;
      } else {
-@@ -850,8 +853,7 @@ static int mjpeg_write_header(am_private_t *para, am_packet_t *pkt)
+@@ -925,8 +928,7 @@ static int mjpeg_write_header(am_private_t *para, am_packet_t *pkt)
          return PLAYER_EMPTY_P;
      }
      pkt->newflag = 1;
@@ -104,7 +104,7 @@ index f97165a..242a9ad 100644
  }
  
  static int divx3_data_prefeeding(am_packet_t *pkt, unsigned w, unsigned h)
-@@ -879,7 +881,9 @@ static int divx3_data_prefeeding(am_packet_t *pkt, unsigned w, unsigned h)
+@@ -954,7 +956,9 @@ static int divx3_data_prefeeding(am_packet_t *pkt, unsigned w, unsigned h)
  static int divx3_write_header(am_private_t *para, am_packet_t *pkt)
  {
      CLog::Log(LOGDEBUG, "divx3_write_header");
@@ -115,7 +115,7 @@ index f97165a..242a9ad 100644
      if (1) {
          pkt->codec = &para->vcodec;
      } else {
-@@ -887,8 +891,7 @@ static int divx3_write_header(am_private_t *para, am_packet_t *pkt)
+@@ -962,8 +966,7 @@ static int divx3_write_header(am_private_t *para, am_packet_t *pkt)
          return PLAYER_EMPTY_P;
      }
      pkt->newflag = 1;
@@ -125,7 +125,7 @@ index f97165a..242a9ad 100644
  }
  
  static int h264_add_header(unsigned char *buf, int size, am_packet_t *pkt)
-@@ -942,20 +945,11 @@ static int hevc_add_header(unsigned char *buf, int size,  am_packet_t *pkt)
+@@ -1017,20 +1020,11 @@ static int hevc_add_header(unsigned char *buf, int size,  am_packet_t *pkt)
  
  static int hevc_write_header(am_private_t *para, am_packet_t *pkt)
  {
@@ -150,7 +150,7 @@ index f97165a..242a9ad 100644
  
      if (ret == PLAYER_SUCCESS) {
        pkt->codec = &para->vcodec;
-@@ -1676,11 +1670,9 @@ static int wvc1_write_header(am_private_t *para, am_packet_t *pkt)
+@@ -1829,11 +1823,9 @@ static int wvc1_write_header(am_private_t *para, am_packet_t *pkt)
      size_t wvc1_extra = para->extradata.GetSize();
      if (wvc1_extra < 1) {
          CLog::Log(LOGDEBUG, "[wvc1_write_header] empty extradata!");

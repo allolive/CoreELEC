@@ -13,7 +13,7 @@ test covers a missing node and an empty one.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/platform/linux/SysfsPath.h b/xbmc/platform/linux/SysfsPath.h
-index 037329b..4cfb027 100644
+index 037329b713..4cfb027ee3 100644
 --- a/xbmc/platform/linux/SysfsPath.h
 +++ b/xbmc/platform/linux/SysfsPath.h
 @@ -35,7 +35,10 @@ public:
@@ -29,7 +29,7 @@ index 037329b..4cfb027 100644
        file >> value;
  
 diff --git a/xbmc/platform/linux/test/TestSysfsPath.cpp b/xbmc/platform/linux/test/TestSysfsPath.cpp
-index dd5df2f..2f0f209 100644
+index dd5df2f293..2f0f20963c 100644
 --- a/xbmc/platform/linux/test/TestSysfsPath.cpp
 +++ b/xbmc/platform/linux/test/TestSysfsPath.cpp
 @@ -105,3 +105,20 @@ TEST_F(TestSysfsPath, SysfsPathTestPathDoesNotExist)

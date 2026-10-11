@@ -30,10 +30,10 @@ smoke-tested against real VP9 superframe content on hardware.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 40f84aa..e727766 100644
+index dce7f6a581..d36c2bc4cf 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -1380,14 +1380,22 @@ int vp9_update_frame_header(am_packet_t *pkt)
+@@ -1530,14 +1530,22 @@ int vp9_update_frame_header(am_packet_t *pkt)
  
      for (cur_frame = 0; cur_frame < frame_number; cur_frame++)
      {
@@ -58,7 +58,7 @@ index 40f84aa..e727766 100644
        offset[cur_frame+1] = offset[cur_frame] + size[cur_frame];
  
        if (cur_frame == 0)
-@@ -1420,6 +1428,12 @@ int vp9_update_frame_header(am_packet_t *pkt)
+@@ -1570,6 +1578,12 @@ int vp9_update_frame_header(am_packet_t *pkt)
      */
      int need_more = total_datasize + frame_number * 16 - dsize;
  

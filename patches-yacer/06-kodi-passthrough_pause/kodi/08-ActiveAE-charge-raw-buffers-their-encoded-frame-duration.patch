@@ -18,9 +18,11 @@ and falling back to the byte arithmetic there would reinstate the overcount.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp
+index c4bc3ec31b..eba4d672b8 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.cpp
-@@ -372,18 +372,20 @@
+@@ -372,18 +372,20 @@ float CActiveAEBufferPoolResample::GetDelay()
  {
    float delay = 0;
    std::deque<CSampleBuffer*>::iterator itBuf;
@@ -44,7 +46,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    }
  
    if (m_resampler)
-@@ -665,18 +667,19 @@
+@@ -665,18 +667,19 @@ void CActiveAEBufferPoolAtempo::Flush()
  float CActiveAEBufferPoolAtempo::GetDelay()
  {
    float delay = 0;
@@ -67,9 +69,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    }
  
    if (m_pTempoFilter->IsActive())
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h
+index 586eb43062..1a309273b5 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h
-@@ -57,6 +57,31 @@
+@@ -57,6 +57,31 @@ public:
    double centerMixLevel;
  };
  
@@ -101,9 +105,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  class CActiveAEBufferPool
  {
  public:
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp
+index 74c3989236..f9e92e9719 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.cpp
-@@ -677,10 +677,11 @@
+@@ -677,10 +677,11 @@ void CActiveAEStreamBuffers::ConfigureResampler(bool normalizelevels,
  float CActiveAEStreamBuffers::GetDelay()
  {
    float delay = 0;
@@ -116,7 +122,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    }
  
    delay += m_resampleBuffers->GetDelay();
-@@ -688,7 +689,7 @@
+@@ -688,7 +689,7 @@ float CActiveAEStreamBuffers::GetDelay()
  
    for (auto &buf : m_outputSamples)
    {

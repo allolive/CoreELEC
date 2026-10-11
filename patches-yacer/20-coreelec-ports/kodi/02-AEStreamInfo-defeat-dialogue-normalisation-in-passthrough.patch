@@ -27,10 +27,10 @@ Co-authored-by: pannal <1359593+pannal@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 5f70f14..60abb3f 100644
+index 688aa4d11f..86cfa04dc3 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -26236,3 +26236,34 @@ msgstr ""
+@@ -26293,3 +26293,34 @@ msgstr ""
  msgctxt "#40804"
  msgid "{0:.1f} dB"
  msgstr ""
@@ -66,10 +66,10 @@ index 5f70f14..60abb3f 100644
 +msgstr ""
 +
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 9da3b71..fb3068e 100755
+index 752f788c00..e8c149f3ee 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4266,6 +4266,25 @@
+@@ -4281,6 +4281,25 @@
            </dependencies>
            <control type="list" format="string" />
          </setting>
@@ -96,7 +96,7 @@ index 9da3b71..fb3068e 100755
      </category>
      <category id="cache" label="439" help="36399">
 diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
-index d30cf8e..5cdd22c 100644
+index d30cf8e0f0..5cdd22ca97 100644
 --- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
 +++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
 @@ -218,6 +218,18 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
@@ -593,7 +593,7 @@ index d30cf8e..5cdd22c 100644
        m_info.m_sampleRate = (rate & 0x8 ? 44100 : 48000) << (rate & 0x7);
        m_substreams = (data[20] & 0xF0) >> 4;
 diff --git a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
-index acfa77d..562e5b6 100644
+index acfa77d987..562e5b61c9 100644
 --- a/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
 +++ b/xbmc/cores/AudioEngine/Utils/AEStreamInfo.h
 @@ -58,6 +58,9 @@ public:
@@ -626,7 +626,7 @@ index acfa77d..562e5b6 100644
    bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
    unsigned int SyncAC3(uint8_t *data, unsigned int size);
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
-index 5b68af0..f852726 100644
+index 5b68af0679..f8527266ea 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
 @@ -9,7 +9,11 @@
@@ -669,7 +669,7 @@ index 5b68af0..f852726 100644
    {
      case CAEStreamInfo::STREAM_TYPE_AC3:
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 90263e4..b6560f4 100644
+index 90263e42c0..b6560f48b2 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -432,6 +432,7 @@ public:

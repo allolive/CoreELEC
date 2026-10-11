@@ -40,7 +40,7 @@ takes the new one.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 5ad96c1..5e16e9b 100644
+index 5ad96c144b..5e16e9b987 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -1098,19 +1098,56 @@ void CAMLDisplay::aml_refresh_display_caps()
@@ -296,7 +296,7 @@ index 5ad96c1..5e16e9b 100644
      {
        if (aml_mode_to_resolution(i->c_str(), &res))
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 234557a..b4f540c 100644
+index 234557a21c..b4f540c657 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -204,8 +204,10 @@ public:

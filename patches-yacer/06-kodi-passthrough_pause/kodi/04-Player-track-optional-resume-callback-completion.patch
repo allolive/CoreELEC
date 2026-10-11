@@ -29,18 +29,20 @@ or public Python callbacks are changed.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/application/ApplicationPlayerCallback.cpp b/xbmc/application/ApplicationPlayerCallback.cpp
+index d4ff73f208..b1d5032002 100644
 --- a/xbmc/application/ApplicationPlayerCallback.cpp
 +++ b/xbmc/application/ApplicationPlayerCallback.cpp
-@@ -421,8 +421,14 @@
+@@ -420,9 +420,15 @@ void CApplicationPlayerCallback::OnPlayBackPaused()
+ }
  
  void CApplicationPlayerCallback::OnPlayBackResumed()
- {
++{
 +  OnPlayBackResumed({});
 +}
 +
 +void CApplicationPlayerCallback::OnPlayBackResumed(
 +    const std::shared_ptr<CPlaybackCallbackFence>& fence)
-+{
+ {
  #ifdef HAS_PYTHON
 -  CServiceBroker::GetXBPython().OnPlayBackResumed();
 +  CServiceBroker::GetXBPython().OnPlayBackResumed(fence);
@@ -48,9 +50,10 @@ diff --git a/xbmc/application/ApplicationPlayerCallback.cpp b/xbmc/application/A
  
    CGUIMessage msg(GUI_MSG_PLAYBACK_RESUMED, 0, 0);
 diff --git a/xbmc/application/ApplicationPlayerCallback.h b/xbmc/application/ApplicationPlayerCallback.h
+index d319b9292a..3b200e12e3 100644
 --- a/xbmc/application/ApplicationPlayerCallback.h
 +++ b/xbmc/application/ApplicationPlayerCallback.h
-@@ -26,6 +26,7 @@
+@@ -26,6 +26,7 @@ public:
    void OnPlayerCloseFile(const CFileItem& file, const CBookmark& bookmark) override;
    void OnPlayBackPaused() override;
    void OnPlayBackResumed() override;
@@ -59,6 +62,7 @@ diff --git a/xbmc/application/ApplicationPlayerCallback.h b/xbmc/application/App
    void OnPlayBackError() override;
    void OnQueueNextItem() override;
 diff --git a/xbmc/cores/IPlayerCallback.h b/xbmc/cores/IPlayerCallback.h
+index 3c1d99b481..165659fdec 100644
 --- a/xbmc/cores/IPlayerCallback.h
 +++ b/xbmc/cores/IPlayerCallback.h
 @@ -9,6 +9,7 @@
@@ -69,7 +73,7 @@ diff --git a/xbmc/cores/IPlayerCallback.h b/xbmc/cores/IPlayerCallback.h
  
  #include <stdint.h>
  
-@@ -24,6 +25,14 @@
+@@ -24,6 +25,14 @@ public:
    virtual void OnPlayerCloseFile(const CFileItem& file, const CBookmark& bookmark) {}
    virtual void OnPlayBackPaused() {}
    virtual void OnPlayBackResumed() {}
@@ -85,6 +89,7 @@ diff --git a/xbmc/cores/IPlayerCallback.h b/xbmc/cores/IPlayerCallback.h
    virtual void OnPlayBackError() = 0;
    virtual void OnQueueNextItem() = 0;
 diff --git a/xbmc/interfaces/legacy/CallbackFunction.h b/xbmc/interfaces/legacy/CallbackFunction.h
+index 90360d57f9..82acc0c987 100644
 --- a/xbmc/interfaces/legacy/CallbackFunction.h
 +++ b/xbmc/interfaces/legacy/CallbackFunction.h
 @@ -9,6 +9,7 @@
@@ -95,12 +100,10 @@ diff --git a/xbmc/interfaces/legacy/CallbackFunction.h b/xbmc/interfaces/legacy/
  
  namespace XBMCAddon
  {
-@@ -63,6 +64,32 @@
-     ~CallbackFunction() override { XBMC_TRACE; deallocating(); }
- 
+@@ -65,6 +66,32 @@ namespace XBMCAddon
      void executeCallback() override { XBMC_TRACE; ((*obj).*(meth))(); }
-+  };
-+
+   };
+ 
 +  // Only a tracked resume callback uses this decorator. Queue removal, handler
 +  // teardown and deallocating recipients destroy the ticket as DISCARDED.
 +  // Invocation records return/exception without changing handler behavior.
@@ -125,29 +128,32 @@ diff --git a/xbmc/interfaces/legacy/CallbackFunction.h b/xbmc/interfaces/legacy/
 +
 +  private:
 +    std::shared_ptr<CPlaybackCallbackFence::Ticket> m_ticket;
-   };
- 
++  };
++
    /**
-@@ -168,4 +195,3 @@
+    * This is the template to carry a callback to a member function
+    *  that returns 'void' (has no return) and takes one parameter.
+@@ -168,4 +195,3 @@ namespace XBMCAddon
    };
  }
  
 -
 diff --git a/xbmc/interfaces/legacy/Player.cpp b/xbmc/interfaces/legacy/Player.cpp
+index 91105ff93b..7a66248da6 100644
 --- a/xbmc/interfaces/legacy/Player.cpp
 +++ b/xbmc/interfaces/legacy/Player.cpp
-@@ -247,8 +247,17 @@
+@@ -246,9 +246,18 @@ namespace XBMCAddon
+     }
  
      void Player::OnPlayBackResumed()
-     {
--      XBMC_TRACE;
--      invokeCallback(new CallbackFunction<Player>(this,&Player::onPlayBackResumed));
++    {
 +      OnPlayBackResumed({});
 +    }
 +
 +    void Player::OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence)
-+    {
-+      XBMC_TRACE;
+     {
+       XBMC_TRACE;
+-      invokeCallback(new CallbackFunction<Player>(this,&Player::onPlayBackResumed));
 +      if (fence)
 +        invokeCallback(new CallbackFunctionWithCompletion<Player>(
 +            this, &Player::onPlayBackResumed, fence->Register()));
@@ -156,15 +162,16 @@ diff --git a/xbmc/interfaces/legacy/Player.cpp b/xbmc/interfaces/legacy/Player.c
      }
  
      void Player::OnQueueNextItem()
-@@ -607,4 +616,3 @@
+@@ -607,4 +616,3 @@ namespace XBMCAddon
      }
    }
  }
 -
 diff --git a/xbmc/interfaces/legacy/Player.h b/xbmc/interfaces/legacy/Player.h
+index eae17cfd7d..2af9c4bde5 100644
 --- a/xbmc/interfaces/legacy/Player.h
 +++ b/xbmc/interfaces/legacy/Player.h
-@@ -828,6 +828,7 @@
+@@ -828,6 +828,7 @@ namespace XBMCAddon
        void OnPlayBackError() override;
        void OnPlayBackPaused() override;
        void OnPlayBackResumed() override;
@@ -172,42 +179,40 @@ diff --git a/xbmc/interfaces/legacy/Player.h b/xbmc/interfaces/legacy/Player.h
        void OnQueueNextItem() override;
        void OnPlayBackSpeedChanged(int iSpeed) override;
        void OnPlayBackSeek(int64_t iTime, int64_t seekOffset) override;
-@@ -838,4 +839,3 @@
+@@ -838,4 +839,3 @@ namespace XBMCAddon
      };
    }
  }
 -
 diff --git a/xbmc/interfaces/python/XBPython.cpp b/xbmc/interfaces/python/XBPython.cpp
+index 5acd7d1af0..df652f4bbb 100644
 --- a/xbmc/interfaces/python/XBPython.cpp
 +++ b/xbmc/interfaces/python/XBPython.cpp
-@@ -223,12 +223,17 @@
+@@ -221,13 +221,18 @@ void XBPython::OnPlayBackPaused()
+ 
  // message all registered callbacks that we resumed playing
  void XBPython::OnPlayBackResumed()
- {
--  XBMC_TRACE;
--  LOCK_AND_COPY(std::vector<void*>, tmp, m_vecPlayerCallbackList);
--  for (auto& it : tmp)
--  {
--    if (CHECK_FOR_ENTRY(m_vecPlayerCallbackList, it))
--      ((IPlayerCallback*)it)->OnPlayBackResumed();
++{
 +  OnPlayBackResumed({});
 +}
 +
 +void XBPython::OnPlayBackResumed(const std::shared_ptr<CPlaybackCallbackFence>& fence)
-+{
-+  XBMC_TRACE;
-+  LOCK_AND_COPY(std::vector<void*>, tmp, m_vecPlayerCallbackList);
-+  for (auto& it : tmp)
-+  {
-+    if (CHECK_FOR_ENTRY(m_vecPlayerCallbackList, it))
+ {
+   XBMC_TRACE;
+   LOCK_AND_COPY(std::vector<void*>, tmp, m_vecPlayerCallbackList);
+   for (auto& it : tmp)
+   {
+     if (CHECK_FOR_ENTRY(m_vecPlayerCallbackList, it))
+-      ((IPlayerCallback*)it)->OnPlayBackResumed();
 +      ((IPlayerCallback*)it)->OnPlayBackResumed(fence);
    }
  }
  
 diff --git a/xbmc/interfaces/python/XBPython.h b/xbmc/interfaces/python/XBPython.h
+index 094264627c..7d4eb8b680 100644
 --- a/xbmc/interfaces/python/XBPython.h
 +++ b/xbmc/interfaces/python/XBPython.h
-@@ -64,6 +64,7 @@
+@@ -64,6 +64,7 @@ public:
    void OnAVChange() override;
    void OnPlayBackPaused() override;
    void OnPlayBackResumed() override;
@@ -217,6 +222,7 @@ diff --git a/xbmc/interfaces/python/XBPython.h b/xbmc/interfaces/python/XBPython
    void OnPlayBackSpeedChanged(int iSpeed) override;
 diff --git a/xbmc/utils/PlaybackCallbackFence.h b/xbmc/utils/PlaybackCallbackFence.h
 new file mode 100644
+index 0000000000..0247155e5c
 --- /dev/null
 +++ b/xbmc/utils/PlaybackCallbackFence.h
 @@ -0,0 +1,172 @@

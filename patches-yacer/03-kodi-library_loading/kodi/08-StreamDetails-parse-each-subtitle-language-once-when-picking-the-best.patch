@@ -21,7 +21,7 @@ as they were are Kodi's, and change with the move upstream.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index 8b2f63d..f8d0d29 100644
+index 8b2f63d353..f8d0d29fc4 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
 @@ -19,9 +19,28 @@

@@ -22,10 +22,10 @@ g12b and S7D (no FMT_H266 in either chip table).
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e727766..3d338c1 100644
+index d36c2bc4cf..244b183542 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -958,54 +958,100 @@ static int hevc_write_header(am_private_t *para, am_packet_t *pkt)
+@@ -1033,54 +1033,100 @@ static int hevc_write_header(am_private_t *para, am_packet_t *pkt)
  
  int vvc_add_frame_dec_info(am_private_t *para)
  {
@@ -168,7 +168,7 @@ index e727766..3d338c1 100644
          if (!grown)
          {
            CLog::Log(LOGDEBUG, "[vvc_add_frame_dec_info] NOMEM!");
-@@ -1016,28 +1062,35 @@ int vvc_add_frame_dec_info(am_private_t *para)
+@@ -1091,28 +1137,35 @@ int vvc_add_frame_dec_info(am_private_t *para)
          }
          para->hdr_buf.data = grown;
          memcpy(para->hdr_buf.data + data_pos, nalu_header, 4);

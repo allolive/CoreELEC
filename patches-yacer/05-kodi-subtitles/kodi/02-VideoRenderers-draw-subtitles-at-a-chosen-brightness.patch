@@ -38,10 +38,10 @@ another path and are not covered.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index d46df58..42aa788 100644
+index 979ecc2e63..e2c40af187 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25357,6 +25357,30 @@ msgctxt "#39217"
+@@ -25414,6 +25414,30 @@ msgctxt "#39217"
  msgid "Best"
  msgstr ""
  
@@ -73,7 +73,7 @@ index d46df58..42aa788 100644
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index e695549..b4c3576 100755
+index 5b32dc71be..b727df8ee0 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -891,6 +891,18 @@
@@ -96,7 +96,7 @@ index e695549..b4c3576 100755
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
-index 0e1d094..be99086 100644
+index 0e1d094dde..be990862ec 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
 @@ -61,6 +61,7 @@ public:
@@ -116,7 +116,7 @@ index 0e1d094..be99086 100644
    unsigned long m_textureid;
    DVDOverlayStereoView m_stereoView;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
-index 1cf873c..64f46c4 100644
+index 1cf873c966..64f46c4f5c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h
 @@ -75,6 +75,9 @@ public:
@@ -130,7 +130,7 @@ index 1cf873c..64f46c4 100644
  
    // pixels are already HDR, matching video's colorimetry
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-index 9d9a671..1614aaa 100644
+index 9d9a67143c..1614aaada1 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 @@ -926,6 +926,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
@@ -150,7 +150,7 @@ index 9d9a671..1614aaa 100644
      overlay->palette.clear();
      size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
-index 99d6ed6..c68a1b7 100644
+index 99d6ed6082..c68a1b7033 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 @@ -29,6 +29,9 @@
@@ -266,7 +266,7 @@ index 99d6ed6..c68a1b7 100644
    o.m_textureid = m_textureid;
    m_textureid++;
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
-index 5e0bf70..e539819 100644
+index 5e0bf70904..e539819652 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 @@ -193,6 +193,8 @@ namespace OVERLAY {
@@ -279,7 +279,7 @@ index 5e0bf70..e539819 100644
      std::shared_ptr<COverlay> Convert(SElement& e);
      // Build a COverlay (cached or freshly created) from the libass output
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 02b5615..0a539d2 100644
+index 26a77236ec..913ef27033 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -38,6 +38,7 @@
@@ -290,7 +290,7 @@ index 02b5615..0a539d2 100644
  using namespace OVERLAY;
  
  static void LoadTexture(GLenum target,
-@@ -226,13 +227,20 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+@@ -230,13 +231,20 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
    {
      m_pma = false;
      const int passes = PixelArtPasses(o.source_width, o.source_height, o.width, o.height);
@@ -312,7 +312,7 @@ index 02b5615..0a539d2 100644
  
        int width = o.width;
        int height = o.height;
-@@ -247,18 +255,37 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+@@ -251,18 +259,37 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
    }
    else
    {
@@ -358,7 +358,7 @@ index 02b5615..0a539d2 100644
      // the direct back-buffer draw in Render bypasses the composite's
      // limited-range encode, so apply it to the palette here
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index ec0ef27..4359d7b 100644
+index ec0ef27d50..4359d7b46c 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -469,6 +469,22 @@ float LinearToSrgbComponent(float c)
@@ -539,7 +539,7 @@ index ec0ef27..4359d7b 100644
  {
    auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
-index 2b02eba..24311ee 100644
+index 2b02ebac02..24311ee866 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 @@ -10,6 +10,7 @@
@@ -599,7 +599,7 @@ index 2b02eba..24311ee 100644
  //! a palette already converted by ConvertPQPaletteToSRGB() above. o.pixels
  //! (the per-pixel palette indices) is always taken from o itself either way.
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index f24f38c..c6dc7be 100644
+index f24f38cb16..c6dc7bef7e 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -186,6 +186,7 @@ public:

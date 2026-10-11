@@ -22,10 +22,10 @@ instead of being memcpy'd through. Not tried on hardware.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 5a3ce4c..a5f3e74 100644
+index a3d51174d7..77a6e34594 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -34,6 +34,11 @@ extern "C"
+@@ -32,6 +32,11 @@ extern "C"
  
  #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
  
@@ -37,7 +37,7 @@ index 5a3ce4c..a5f3e74 100644
  CAMLVideoBufferPool::~CAMLVideoBufferPool()
  {
    CLog::Log(LOGDEBUG, "CAMLVideoBufferPool::~CAMLVideoBufferPool: Deleting {:d} buffers", static_cast<unsigned int>(m_videoBuffers.size()) );
-@@ -414,6 +419,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -422,6 +427,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_processInfo.SetVideoDAR(m_hints.aspect);
  
    m_has_keyframe = false;
@@ -46,7 +46,7 @@ index 5a3ce4c..a5f3e74 100644
  
    if (m_bitstream)
    {
-@@ -555,8 +562,38 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -562,8 +569,38 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
            packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
  
@@ -86,7 +86,7 @@ index 5a3ce4c..a5f3e74 100644
            // convert bl and el package to single package
            DLDemuxPacket dual_layer_packet = m_packages.front();
            uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-@@ -590,14 +627,43 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -597,14 +634,43 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
                }
              }
            }
@@ -131,7 +131,7 @@ index 5a3ce4c..a5f3e74 100644
            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
              packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
  
-@@ -617,6 +683,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -624,6 +690,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        {
          CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
          m_pendingMeta = m_streamMeta;
@@ -140,7 +140,7 @@ index 5a3ce4c..a5f3e74 100644
          return true;
        }
        pData = m_bitstream->GetConvertBuffer();
-@@ -667,7 +735,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -674,7 +742,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    }
  
    if (!m_Codec)
@@ -154,7 +154,7 @@ index 5a3ce4c..a5f3e74 100644
  
    if (packet.pSideData && packet.iSideDataElems > 0)
    {
-@@ -718,12 +792,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -724,16 +798,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
    // pop package only from list if hardware decoder did accept the data
    if (data_added && dual_layer_converted)
@@ -168,9 +168,6 @@ index 5a3ce4c..a5f3e74 100644
  
    return data_added;
  }
-@@ -754,6 +823,12 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
-                           static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
- }
  
 +void CDVDVideoCodecAmlogic::DropDualLayerFront()
 +{
@@ -178,11 +175,11 @@ index 5a3ce4c..a5f3e74 100644
 +  m_packages.pop_front();
 +}
 +
- // publishes every committed value whose frame the renderer has scheduled
- // for display. A miss keeps the last published values
- void CDVDVideoCodecAmlogic::DrainMetadataToClock()
+ void CDVDVideoCodecAmlogic::Reset(void)
+ {
+   if (m_Codec)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index ff55003..2632ed5 100644
+index e4f7b49b0c..da2bef34e6 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -27,7 +27,8 @@ class CBitstreamConverter;
@@ -195,15 +192,15 @@ index ff55003..2632ed5 100644
  
  class CAMLVideoBuffer : public CVideoBuffer
  {
-@@ -86,6 +87,7 @@ public:
+@@ -92,6 +93,7 @@ public:
+ 
  protected:
    void            Close(void);
-   void            DrainMetadataToClock();
 +  void            DropDualLayerFront();
-   double          RenderDisplayLatency();
    void            FrameRateTracking(uint8_t *pData, int iSize, double dts, double pts);
    //void            RemoveInfo(CDVDAmlogicInfo* info);
-@@ -113,6 +115,8 @@ private:
+ 
+@@ -118,6 +120,8 @@ private:
    static std::atomic<bool> m_InstanceGuard;
  
    std::list<DLDemuxPacket> m_packages;
@@ -211,4 +208,4 @@ index ff55003..2632ed5 100644
 +  bool m_dualLayerByArrival{false};
  
    uint32_t m_metadataToken{0};
-   bool m_metaLeadLogged{false};
+   bool m_stripHdr10Plus{false};

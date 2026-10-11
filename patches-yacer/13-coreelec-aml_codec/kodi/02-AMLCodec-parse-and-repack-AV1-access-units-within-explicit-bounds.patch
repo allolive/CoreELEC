@@ -24,7 +24,7 @@ the destination leaves the original in place.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index ec1baf9971..bbd6809471 100644
+index c9015fa4ee..f7fa84d885 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -50,6 +50,7 @@
@@ -35,7 +35,7 @@ index ec1baf9971..bbd6809471 100644
  #include <thread>
  #include "aom_integer.h"
  #include "obu_util.h"
-@@ -1224,7 +1225,8 @@ typedef struct DataBuffer {
+@@ -1238,7 +1239,8 @@ typedef struct DataBuffer {
      size_t size;
  } DataBuffer;
  
@@ -45,7 +45,7 @@ index ec1baf9971..bbd6809471 100644
  {
      uint8_t header[20] = {
          0x00, 0x00, 0x01, 0x54,
-@@ -1233,20 +1235,21 @@ static size_t av1_write_obu_with_header(uint8_t *dst, const uint8_t *obu, size_t
+@@ -1247,20 +1249,21 @@ static size_t av1_write_obu_with_header(uint8_t *dst, const uint8_t *obu, size_t
          0x41, 0x4D, 0x4C, 0x56,
          0xD0, 0x82, 0x80, 0x00
      };
@@ -76,7 +76,7 @@ index ec1baf9971..bbd6809471 100644
      header[0] = (total >> 24) & 0xff;
      header[1] = (total >> 16) & 0xff;
      header[2] = (total >> 8) & 0xff;
-@@ -1315,10 +1318,19 @@ int av1_parser_frame(
+@@ -1329,10 +1332,19 @@ int av1_parser_frame(
      uint8_t *data,
      const uint8_t *data_end,
      uint8_t *dst_data,
@@ -98,7 +98,7 @@ index ec1baf9971..bbd6809471 100644
      int frame_decoding_finished = 0;
      ObuHeader obu_header;
      memset(&obu_header, 0, sizeof(obu_header));
-@@ -1337,12 +1349,16 @@ int av1_parser_frame(
+@@ -1351,12 +1363,16 @@ int av1_parser_frame(
          OBU_METADATA_TYPE meta_type;
          uint64_t type;
  
@@ -117,7 +117,7 @@ index ec1baf9971..bbd6809471 100644
  
          int status =
              aom_read_obu_header_and_size(data, bytes_available, is_annexb,
-@@ -1352,19 +1368,22 @@ int av1_parser_frame(
+@@ -1366,19 +1382,22 @@ int av1_parser_frame(
              return -1;
          }
  
@@ -146,7 +146,7 @@ index ec1baf9971..bbd6809471 100644
  
          switch (obu_header.type) {
          case OBU_TEMPORAL_DELIMITER:
-@@ -1415,7 +1434,11 @@ int av1_parser_frame(
+@@ -1429,7 +1448,11 @@ int av1_parser_frame(
                  seen_frame_header = 0;
              break;
          case OBU_METADATA:
@@ -159,7 +159,7 @@ index ec1baf9971..bbd6809471 100644
              if (type < 6)
                  meta_type = static_cast<OBU_METADATA_TYPE>(type);
              else
-@@ -1425,7 +1448,10 @@ int av1_parser_frame(
+@@ -1439,7 +1462,10 @@ int av1_parser_frame(
                        type < 6 ? meta_type_name[type] : "RESERVED", bytes_read,
                        payload_size - bytes_read);
  
@@ -170,7 +170,7 @@ index ec1baf9971..bbd6809471 100644
                  if ((p[0] == 0xb5) /* country code */
                      && ((p[1] == 0x00) && (p[2] == 0x3b)) /* terminal_provider_code */
                      && ((p[3] == 0x00) && (p[4] == 0x00) && (p[5] == 0x08) && (p[6] == 0x00))) { /* terminal_provider_oriented_code */
-@@ -1434,20 +1460,27 @@ int av1_parser_frame(
+@@ -1448,20 +1474,27 @@ int av1_parser_frame(
                      if (dovi_zero_level5) {
                        std::vector<uint8_t> obu;
                        if (av1_dovi_zero_level5_obu(obu_src, data, bytes_read, payload_size, obu)) {
@@ -205,7 +205,7 @@ index ec1baf9971..bbd6809471 100644
                            rpu_size = 0x100;
                            rpu_size |= (p[11] & 0x0f) << 4;
                            rpu_size |= (p[12] >> 4) & 0x0f;
-@@ -1455,6 +1488,8 @@ int av1_parser_frame(
+@@ -1469,6 +1502,8 @@ int av1_parser_frame(
                                CLog::Log(LOGDEBUG, "\tmeta rpu in obu exceed 512 bytes");
                                break;
                            }
@@ -214,7 +214,7 @@ index ec1baf9971..bbd6809471 100644
                            for (i = 0; i < rpu_size; i++) {
                                meta_buf[5 + i] = (p[12 + i] & 0x07) << 5;
                                meta_buf[5 + i] |= (p[13 + i] >> 3) & 0x1f;
-@@ -1464,6 +1499,8 @@ int av1_parser_frame(
+@@ -1478,6 +1513,8 @@ int av1_parser_frame(
                        else {
                            rpu_size = (p[10] & 0x1f) << 3;
                            rpu_size |= (p[11] >> 5) & 0x07;
@@ -223,7 +223,7 @@ index ec1baf9971..bbd6809471 100644
                            for (i = 0; i < rpu_size; i++) {
                                meta_buf[5 + i] = (p[11 + i] & 0x0f) << 4;
                                meta_buf[5 + i] |= (p[12 + i] >> 4) & 0x0f;
-@@ -1475,11 +1512,15 @@ int av1_parser_frame(
+@@ -1489,11 +1526,15 @@ int av1_parser_frame(
                  }
              }
              else if (meta_type == OBU_METADATA_TYPE_HDR_CLL) {
@@ -239,7 +239,7 @@ index ec1baf9971..bbd6809471 100644
                  CLog::Log(LOGDEBUG, "\t\thdr10 primaries[r,g,b] =");
                  for (i = 0; i < 3; i++) {
                      CLog::Log(LOGDEBUG, "\t\t {:x}, {:x}",
-@@ -1491,6 +1532,7 @@ int av1_parser_frame(
+@@ -1505,6 +1546,7 @@ int av1_parser_frame(
                  CLog::Log(LOGDEBUG, "\t\tminl = {:x}", (p[20] << 24) | (p[21] << 16) | (p[22] << 8) | p[23]);
              }
              break;
@@ -247,7 +247,7 @@ index ec1baf9971..bbd6809471 100644
          case OBU_TILE_LIST:
              break;
          case OBU_PADDING:
-@@ -1511,26 +1553,45 @@ int av1_add_frame_dec_info(am_private_t *para)
+@@ -1525,26 +1567,45 @@ int av1_add_frame_dec_info(am_private_t *para)
    int ret;
    am_packet_t *pkt = &para->am_pkt;
  
@@ -301,7 +301,7 @@ index ec1baf9971..bbd6809471 100644
      memcpy(pkt->data, dst_data, dst_frame_size);
    }
    free(dst_data);
-@@ -2150,9 +2211,8 @@ int set_header_info(am_private_t *para)
+@@ -2164,9 +2225,8 @@ int set_header_info(am_private_t *para)
      else if (para->video_format == VFORMAT_VP9) {
        vp9_update_frame_header(pkt);
      }
@@ -313,7 +313,7 @@ index ec1baf9971..bbd6809471 100644
      else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_MPEG12)
        mpeg12_add_frame_dec_info(para);
  
-@@ -3001,7 +3061,14 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+@@ -3051,7 +3111,14 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
    // some formats need header/data tweaks.
    // the actual write occurs once in write_av_packet
    // and is controlled by am_pkt.newflag.

@@ -43,10 +43,10 @@ telling them apart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 42aa788..fe2e8ac 100644
+index e2c40af187..f083ce47e1 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25381,6 +25381,24 @@ msgctxt "#60003"
+@@ -25438,6 +25438,24 @@ msgctxt "#60003"
  msgid "{0:d} nits"
  msgstr ""
  
@@ -72,7 +72,7 @@ index 42aa788..fe2e8ac 100644
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index b4c3576..879f97a 100755
+index b727df8ee0..87a2f24ad3 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -903,6 +903,17 @@
@@ -94,7 +94,7 @@ index b4c3576..879f97a 100755
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
-index c68a1b7..d00bd9f 100644
+index c68a1b7033..d00bd9f6fb 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 @@ -27,6 +27,7 @@
@@ -582,7 +582,7 @@ index c68a1b7..d00bd9f 100644
      }
      case ObservableMessagePositionChanged:
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
-index e539819..20dd2b4 100644
+index e539819652..20dd2b4a8b 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 @@ -195,7 +195,35 @@ namespace OVERLAY {
@@ -634,7 +634,7 @@ index e539819..20dd2b4 100644
      int m_subtitlePosition{0};
      // The calibration line for MANUAL alignment and the frame height otherwise,
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index c6dc7be..038b69a 100644
+index c6dc7bef7e..038b69a90b 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -187,6 +187,7 @@ public:
@@ -646,7 +646,7 @@ index c6dc7be..038b69a 100644
    static constexpr auto SETTING_SUBTITLES_STORAGEMODE = "subtitles.storagemode";
    static constexpr auto SETTING_SUBTITLES_CUSTOMPATH = "subtitles.custompath";
 diff --git a/xbmc/settings/SubtitlesSettings.cpp b/xbmc/settings/SubtitlesSettings.cpp
-index 91cef2f..ff6127a 100644
+index 91cef2f089..ff6127aef8 100644
 --- a/xbmc/settings/SubtitlesSettings.cpp
 +++ b/xbmc/settings/SubtitlesSettings.cpp
 @@ -40,7 +40,8 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting

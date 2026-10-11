@@ -18,7 +18,7 @@ or moves the details: it hands each entry over as a map node.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 4e20b18..28c7541 100644
+index f87f58d43e..12cb7640e5 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -4840,6 +4840,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
@@ -79,7 +79,7 @@ index 4e20b18..28c7541 100644
                                              std::map<std::string, CVideoInfoTag>& metadata)
  {
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index 9365192..df4bfb5 100644
+index 9365192a49..df4bfb52ae 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -544,6 +544,20 @@ public:
@@ -104,7 +104,7 @@ index 9365192..df4bfb5 100644
     Obtaining the metadata of many files one by one is expensive if the database connection has
     high latency, as every single value requires its own round trip.
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index ef8002e..54911d3 100644
+index ef8002efea..54911d3246 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
@@ -200,7 +200,7 @@ index ef8002e..54911d3 100644
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index fd6b537..cb89b86 100644
+index fd6b5379bf..cb89b86b46 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -11,10 +11,12 @@

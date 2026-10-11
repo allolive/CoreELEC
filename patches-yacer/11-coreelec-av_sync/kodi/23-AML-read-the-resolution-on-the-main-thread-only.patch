@@ -8,10 +8,9 @@ included, out of CDisplaySettings, and a hotplug rebuilds that list on the
 main thread without a lock (ClearCustomResolutions, then AddResolutionInfo,
 which can reallocate it). The AML code called them on every packet and every
 vsync from the decode, present and reference-clock threads: the display
-latency for the metadata clock and the genlock (aml_render_display_latency,
-aml_render_chosen_offset, CDVDVideoCodecAmlogic::RenderDisplayLatency), the
-latency poll, the vsync liveness bound, the frame-latency sample and the AML
-video sync's rate.
+latency for the genlock (aml_render_display_latency, aml_render_chosen_offset),
+the latency poll, the vsync liveness bound, the frame-latency sample and the
+AML video sync's rate.
 
 The main thread now reads the two values those threads need, the refresh rate
 and the screen height, once per pass of the render loop (MessagePump) and
@@ -29,7 +28,7 @@ every packet or vsync.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 042b3e7..8f46303 100644
+index 042b3e70dc..8f46303c7f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -101,7 +101,7 @@ void DrainVsyncKick()
@@ -52,7 +51,7 @@ index 042b3e7..8f46303 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index 9e7c8ad..8e1254e 100644
+index 9e7c8ad104..8e1254eb19 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -400,7 +400,7 @@ void CAMLLatency::Poll()
@@ -64,28 +63,8 @@ index 9e7c8ad..8e1254e 100644
    if (rate <= 0.0)
      return;
  
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 736e795..2022b91 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -727,13 +727,13 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
- 
-   const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
-                          m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
--  float refresh = gfx.GetFPS();
-+  float refresh = aml_resolution_rate();
-   if (gfx.GetVideoResolution() == RES_WINDOW)
-     refresh = 0;
- 
-   const double latencyTweak = static_cast<double>(
-       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
--          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
-+          refresh, isHDRUsed, aml_resolution_screen_height()));
-   // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
-   // and the renderer's own sum cannot differ by the truncation.
-   const double videoDelay = static_cast<double>(
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 9288397..d02b1a7 100644
+index 9288397e4f..d02b1a7509 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -443,6 +443,30 @@ std::optional<uint32_t> aml_displayed_pts_ticks()
@@ -152,7 +131,7 @@ index 9288397..d02b1a7 100644
    // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
    // and the renderer's own sum cannot differ by the truncation.
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index b3ec70f..7552017 100644
+index b3ec70f8a7..755201720e 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
 @@ -98,6 +98,15 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
@@ -172,7 +151,7 @@ index b3ec70f..7552017 100644
  //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
  //! when the video runs faster than the display, which drops frames rather than
 diff --git a/xbmc/windowing/amlogic/VideoSyncAML.cpp b/xbmc/windowing/amlogic/VideoSyncAML.cpp
-index ecba729..62a53b9 100644
+index ecba7291cc..62a53b93ec 100644
 --- a/xbmc/windowing/amlogic/VideoSyncAML.cpp
 +++ b/xbmc/windowing/amlogic/VideoSyncAML.cpp
 @@ -10,6 +10,7 @@
@@ -193,7 +172,7 @@ index ecba729..62a53b9 100644
    return m_fps;
  }
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index d4ae6e6..6219097 100644
+index c7d5e7d10f..19504566c9 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -197,6 +197,8 @@ bool CWinSystemAmlogic::MessagePump()
@@ -214,7 +193,7 @@ index d4ae6e6..6219097 100644
    return ret;
  }
  
-@@ -581,7 +585,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -580,7 +584,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
      return 0.0f;
    };
  

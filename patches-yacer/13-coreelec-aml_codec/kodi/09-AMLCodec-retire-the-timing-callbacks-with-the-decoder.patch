@@ -12,10 +12,10 @@ device is released so the presenter's step never waits on it.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 47eec82cca..0b7932833f 100644
+index 8f89d86b43..8b16a4aee2 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2654,7 +2654,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2697,7 +2697,13 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
  
    CSysfsPath("/sys/class/video/freerun_mode", 1);
  
@@ -30,7 +30,7 @@ index 47eec82cca..0b7932833f 100644
  
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
-@@ -2790,13 +2796,16 @@ void CAMLCodec::CloseDecoder()
+@@ -2833,13 +2839,16 @@ void CAMLCodec::CloseDecoder()
      m_dll->codec_close(&am_private->vcodec);
    }
    dumpfile_close(am_private);
@@ -52,7 +52,7 @@ index 47eec82cca..0b7932833f 100644
  
    am_packet_release(&am_private->am_pkt);
    am_private->extradata = {};
-@@ -3310,9 +3319,13 @@ bool CAMLCodec::WaitPresentStep(uint64_t& seen, int fenceFd)
+@@ -3360,9 +3369,13 @@ bool CAMLCodec::WaitPresentStep(uint64_t& seen, int fenceFd)
  
  void CAMLCodec::LatencyTick(uint64_t omxPts)
  {
@@ -68,7 +68,7 @@ index 47eec82cca..0b7932833f 100644
      return;
  
    // Trick play and a slewed clock have no steady relationship to measure
-@@ -3435,8 +3448,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3485,8 +3498,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
  {
@@ -84,10 +84,10 @@ index 47eec82cca..0b7932833f 100644
  
    // Trick play and live streams have the player driving the clock, so there is
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 6993f098fd..ad377b0d4a 100644
+index 16afe2cb70..613b793136 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -179,6 +179,8 @@ private:
+@@ -180,6 +180,8 @@ private:
  
    PosixFilePtr     m_amlVideoFile;
    std::mutex       m_amlVideoFileMutex;

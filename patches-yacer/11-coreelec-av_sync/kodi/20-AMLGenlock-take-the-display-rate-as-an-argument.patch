@@ -14,23 +14,23 @@ compared rates from the graphics context anyway.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
-@@ -39,11 +39,13 @@
-   //! \brief Aligns the clock if an alignment is owed. Called once per frame on
-   //! the frame loop, as the frame is handed to the display. Reads what it
-   //! needs itself, so the frames that owe nothing pay only for the clock.
-+  //! \param displayFps the refresh rate the display is running at
-   //! \param clock the player's master clock, not retained
-   //! \param processInfo the player's process info, not retained
-   //! \param hdrType the stream's HDR type, for the latency the renderer applies
-   //! \param framePts the frame's timestamp, in master clock units
--  void Update(CDVDClock& clock,
-+  void Update(double displayFps,
-+              CDVDClock& clock,
-               CProcessInfo& processInfo,
-               StreamHdrType hdrType,
-               double framePts);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 4338cb56d6..042b3e70dc 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3435,7 +3435,9 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
+     return;
+   }
+ 
+-  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
++  m_genlock.Update(
++      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()), *clock,
++      m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+ }
+ 
+ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+index fa210998c9..c8bd118ce9 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 @@ -9,14 +9,11 @@
@@ -48,7 +48,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
  #include <cmath>
  
-@@ -33,13 +30,17 @@
+@@ -33,13 +30,17 @@ constexpr double CLOCK_STEPPED = DVD_MSEC_TO_TIME(10.0);
  
  } // unnamed namespace
  
@@ -69,16 +69,22 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    const double period = rate > 0.0 ? DVD_TIME_BASE / rate : 0.0;
    if (period != m_period)
    {
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -3150,7 +3150,9 @@
-     return;
-   }
- 
--  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
-+  m_genlock.Update(
-+      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()), *clock,
-+      m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
- }
- 
- int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+index aea6eb838e..31b9b7f3f4 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+@@ -40,11 +40,13 @@ public:
+   //! \brief Aligns the clock if an alignment is owed. Called once per frame on
+   //! the frame loop, as the frame is handed to the display. Reads what it
+   //! needs itself, so the frames that owe nothing pay only for the clock.
++  //! \param displayFps the refresh rate the display is running at
+   //! \param clock the player's master clock, not retained
+   //! \param processInfo the player's process info, not retained
+   //! \param hdrType the stream's HDR type, for the latency the renderer applies
+   //! \param framePts the frame's timestamp, in master clock units
+-  void Update(CDVDClock& clock,
++  void Update(double displayFps,
++              CDVDClock& clock,
+               CProcessInfo& processInfo,
+               StreamHdrType hdrType,
+               double framePts);

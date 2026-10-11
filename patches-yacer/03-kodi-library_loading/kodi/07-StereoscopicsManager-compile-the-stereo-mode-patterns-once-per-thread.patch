@@ -13,7 +13,7 @@ compile is inside the function.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
-index 400b9b8..788e541 100644
+index 400b9b8eaa..788e541256 100644
 --- a/xbmc/guilib/StereoscopicsManager.cpp
 +++ b/xbmc/guilib/StereoscopicsManager.cpp
 @@ -42,6 +42,7 @@

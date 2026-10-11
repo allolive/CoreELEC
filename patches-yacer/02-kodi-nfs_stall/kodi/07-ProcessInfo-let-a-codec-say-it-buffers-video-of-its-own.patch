@@ -11,7 +11,7 @@ information, so whoever knows can say so and the player can ask.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-index d7d8c43..1587512 100644
+index e94f9bdea5..48ac1d3a47 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 @@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
@@ -50,7 +50,7 @@ index d7d8c43..1587512 100644
    m_videoDecoderName = name;
  
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-index 0c5f4f2..f1a3663 100644
+index f36d46bd40..db833adb22 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -36,6 +36,8 @@ public:
@@ -62,7 +62,7 @@ index 0c5f4f2..f1a3663 100644
    void SetVideoDeintMethod(const std::string &method);
    std::string GetVideoDeintMethod();
    void SetVideoPixelFormat(const std::string &pixFormat);
-@@ -149,6 +151,7 @@ protected:
+@@ -151,6 +153,7 @@ protected:
  
    // player video info
    bool m_videoIsHWDecoder;

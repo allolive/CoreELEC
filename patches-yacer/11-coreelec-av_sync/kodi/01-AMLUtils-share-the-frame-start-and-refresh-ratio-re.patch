@@ -27,6 +27,7 @@ line to make it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
+index 2dac8b457f..7ed61f848d 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
 @@ -79,6 +79,12 @@ public:
@@ -43,6 +44,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h b/xbmc/cores/V
    //! Overridden by renderers whose VideoBypassesFramebuffer() is true.
    //! Default: capture unavailable.
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+index 0e3ef8bd26..5344890ecb 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -31,11 +31,18 @@ CRendererAML::CRendererAML()
@@ -65,9 +67,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b
  {
    if (buffer && dynamic_cast<CAMLVideoBuffer*>(buffer))
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+index a0dab21cf3..04c76d2e57 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -45,6 +45,7 @@ public:
+@@ -46,6 +46,7 @@ public:
    virtual bool WaitVsync() override;
    virtual void PresentFrame(int index) override;
    virtual void WakeVsyncPresent() override;
@@ -76,9 +79,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/x
    // Feature support
    virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index ac5c1b915a..7412a44d8d 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -1522,6 +1522,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1539,6 +1539,7 @@ void CRenderManager::CheckEnableClockSync()
  {
    // refresh rate can be a multiple of video fps
    double diff = 1.0;
@@ -86,7 +90,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/core
  
    if (m_fps != 0)
    {
-@@ -1534,6 +1535,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1551,6 +1552,7 @@ void CRenderManager::CheckEnableClockSync()
      }
  
      diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
@@ -94,7 +98,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/core
      if (diff < 1.0)
        diff = 1.0 / diff;
  
-@@ -1541,7 +1543,10 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1558,7 +1560,10 @@ void CRenderManager::CheckEnableClockSync()
      diff = std::abs(std::round(diff) - diff);
    }
  
@@ -107,6 +111,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/core
      m_clockSync.m_enabled = true;
    }
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 7ed97dec61..2932f9ab5c 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -10,9 +10,20 @@
@@ -142,7 +147,7 @@ diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
  
  int aml_get_cpufamily_id()
  {
-@@ -297,3 +310,130 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
+@@ -348,3 +361,130 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
      CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
    }
  }
@@ -274,6 +279,7 @@ diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
 +  return g_amlRefreshesPerFrame.load(std::memory_order_relaxed);
 +}
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index 859e42e94a..4b32b87166 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
 @@ -8,6 +8,9 @@
@@ -286,7 +292,7 @@ diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
  enum AML_SUPPORT_H264_4K2K
  {
    AML_SUPPORT_H264_4K2K_UNINIT = -1,
-@@ -63,3 +66,46 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+@@ -67,3 +70,46 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
  bool aml_video_started();
  int aml_amdv_wait(StreamHdrType hdrType);
  void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
@@ -334,6 +340,7 @@ diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
 +//! number, or 0 when the rates do not match that way.
 +double aml_refreshes_per_frame();
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 1145c5b3de..ed9347b09e 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -85,6 +85,7 @@ public:

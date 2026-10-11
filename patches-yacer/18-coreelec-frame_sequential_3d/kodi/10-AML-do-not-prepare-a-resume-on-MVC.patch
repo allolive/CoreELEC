@@ -29,10 +29,10 @@ costly to flush is decided in the AML codec alone.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index f30cc58..4d505e9 100644
+index 99644028f8..becdaf2ab8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -431,6 +431,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -429,6 +429,11 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_processInfo.SetVideoDecoderName(m_pFormatName, true);
    // libamcodec keeps its own stream buffer.
    m_processInfo.SetVideoCodecBuffersData(true);
@@ -45,7 +45,7 @@ index f30cc58..4d505e9 100644
    m_processInfo.SetVideoDeintMethod("hardware");
    m_processInfo.SetVideoDAR(m_hints.aspect);
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-index 7e0445f..a5cb5d4 100644
+index 7e0445f2fe..a5cb5d4d19 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 @@ -75,11 +75,26 @@ bool CProcessInfo::GetVideoCodecBuffersData() const
@@ -84,7 +84,7 @@ index 7e0445f..a5cb5d4 100644
    m_videoDecoderName = name;
  
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-index cea0240..4b90bb7 100644
+index cea0240de9..4b90bb77b2 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -39,6 +39,8 @@ public:
@@ -105,7 +105,7 @@ index cea0240..4b90bb7 100644
    std::string m_videoDeintMethod;
    std::string m_videoPixelFormat;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index b0b52e4..391a07e 100644
+index 97999a26a0..4223eec3f5 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -4245,7 +4245,10 @@ bool CVideoPlayer::CanPrepareResumePreroll() const

@@ -25,10 +25,10 @@ lock only if it is free and leave a busy round to the next one.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 965295e..89c3e1b 100644
+index ff6416a4af..6927589ed1 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
-@@ -439,8 +439,11 @@ void CNfsConnection::CheckIfIdle()
+@@ -489,8 +489,11 @@ void CNfsConnection::CheckIfIdle()
     worst case scenario is that m_OpenConnections could read 0 and then changed to 1 if this happens it will enter the if which will lead to another check, which is locked.  */
    if (m_OpenConnections == 0 && m_pNfsContext != NULL)
    { /* I've set the the maximum IDLE time to be 1 min and 30 sec. */
@@ -43,10 +43,10 @@ index 965295e..89c3e1b 100644
        const auto now = std::chrono::steady_clock::now();
  
 diff --git a/xbmc/platform/posix/filesystem/SMBFile.cpp b/xbmc/platform/posix/filesystem/SMBFile.cpp
-index 195c9da..a676aba 100644
+index cc5c449bb2..fe741887d4 100644
 --- a/xbmc/platform/posix/filesystem/SMBFile.cpp
 +++ b/xbmc/platform/posix/filesystem/SMBFile.cpp
-@@ -709,8 +709,11 @@ void CSMB::CheckIfIdle()
+@@ -721,8 +721,11 @@ void CSMB::CheckIfIdle()
     worst case scenario is that m_OpenConnections could read 0 and then changed to 1 if this happens it will enter the if which will lead to another check, which is locked.  */
    if (m_OpenConnections == 0)
    { /* I've set the the maximum IDLE time to be 1 min and 30 sec. */

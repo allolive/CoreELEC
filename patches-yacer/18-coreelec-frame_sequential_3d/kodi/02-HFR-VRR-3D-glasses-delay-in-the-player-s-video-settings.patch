@@ -32,10 +32,10 @@ platform question is whether the render system supports HFR VRR.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index beb2758..f5f665e 100644
+index 63de17fed3..487943facc 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -22620,6 +22620,24 @@ msgctxt "#60030"
+@@ -22677,6 +22677,24 @@ msgctxt "#60030"
  msgid "Active 3D for 120 Hz VRR displays"
  msgstr ""
  
@@ -61,10 +61,10 @@ index beb2758..f5f665e 100644
  #end of reserved strings for 3d modes
  
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 351af59..b6e8ad8 100755
+index 981d19a09d..c89ee406cc 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -3416,6 +3416,21 @@
+@@ -3431,6 +3431,21 @@
            </updates>
            <control type="list" format="integer"/>
          </setting>
@@ -87,7 +87,7 @@ index 351af59..b6e8ad8 100755
        <group id="5" label="496">
          <setting id="videoscreen.noofbuffers" type="integer" label="36043" help="36552">
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index c378284..dfa183a 100644
+index c378284f0f..dfa183a64c 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -395,6 +395,7 @@ public:
@@ -99,7 +99,7 @@ index c378284..dfa183a 100644
    static constexpr auto SETTING_VIDEOSCREEN_3DLUT = "videoscreen.cms3dlut";
    static constexpr auto SETTING_VIDEOSCREEN_DISPLAYPROFILE = "videoscreen.displayprofile";
 diff --git a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
-index 659c82e..3870176 100644
+index 659c82ecbb..3870176ddc 100644
 --- a/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
 +++ b/xbmc/video/dialogs/GUIDialogVideoSettings.cpp
 @@ -13,10 +13,12 @@
@@ -171,7 +171,7 @@ index 659c82e..3870176 100644
    // general settings
    AddButton(groupSaveAsDefault, SETTING_VIDEO_MAKE_DEFAULT, 12376, SettingLevel::Basic);
 diff --git a/xbmc/video/dialogs/GUIDialogVideoSettings.h b/xbmc/video/dialogs/GUIDialogVideoSettings.h
-index 2689815..214d6d3 100644
+index 2689815e1a..214d6d3af6 100644
 --- a/xbmc/video/dialogs/GUIDialogVideoSettings.h
 +++ b/xbmc/video/dialogs/GUIDialogVideoSettings.h
 @@ -39,6 +39,8 @@ protected:

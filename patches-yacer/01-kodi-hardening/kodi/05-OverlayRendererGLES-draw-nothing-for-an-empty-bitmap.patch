@@ -12,7 +12,7 @@ without a texture (texture 0 would sample opaque black).
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 5950d41..62ee162 100644
+index 5950d41327..62ee1621f8 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -161,6 +161,10 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour

@@ -12,7 +12,7 @@ outcome is unchanged.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 4329650..2b16710 100644
+index 4bfe5379d1..beac294343 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -370,8 +370,8 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)

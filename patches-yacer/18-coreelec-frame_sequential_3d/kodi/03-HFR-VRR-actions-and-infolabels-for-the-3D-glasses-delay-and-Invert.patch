@@ -36,7 +36,7 @@ ACTION_ERROR, and between the window and control info labels.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
-index 0800996..723512a 100644
+index 953df32018..2d56909105 100644
 --- a/xbmc/GUIInfoManager.cpp
 +++ b/xbmc/GUIInfoManager.cpp
 @@ -862,7 +862,7 @@ constexpr std::array<InfoMap, 7> integer_bools = {{
@@ -58,10 +58,10 @@ index 0800996..723512a 100644
      {"chaptercount",          PLAYER_CHAPTERCOUNT},
      {"chaptername",           PLAYER_CHAPTERNAME},
 diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-index 8f38ea6..ce4b632 100644
+index 34f3031377..9533cf90d9 100644
 --- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
 +++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-@@ -843,6 +843,14 @@ constexpr uint32_t CONTROL_IS_VISIBLE                = 29998;
+@@ -844,6 +844,14 @@ constexpr uint32_t CONTROL_IS_VISIBLE                = 29998;
  constexpr uint32_t CONTROL_GROUP_HAS_FOCUS           = 29999;
  constexpr uint32_t CONTROL_HAS_FOCUS                 = 30000;
  
@@ -77,7 +77,7 @@ index 8f38ea6..ce4b632 100644
  constexpr uint32_t LISTITEM_THUMB                    = LISTITEM_START;
  constexpr uint32_t LISTITEM_LABEL                    = LISTITEM_START + 1;
 diff --git a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
-index 905438e..dff138c 100644
+index 905438e594..dff138cc67 100644
 --- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
 +++ b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
 @@ -28,6 +28,8 @@
@@ -113,7 +113,7 @@ index 905438e..dff138c 100644
        value = m_appPlayer->GetPlaySpeed() == 1.0f;
        return true;
 diff --git a/xbmc/input/actions/ActionIDs.h b/xbmc/input/actions/ActionIDs.h
-index 16f1fdb..839e4fc 100644
+index 16f1fdb760..839e4fc684 100644
 --- a/xbmc/input/actions/ActionIDs.h
 +++ b/xbmc/input/actions/ActionIDs.h
 @@ -521,8 +521,21 @@ constexpr const int ACTION_ANALOG_MOVE_Y_DOWN = 604;
@@ -139,7 +139,7 @@ index 16f1fdb..839e4fc 100644
 +static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_STEREO_INVERT < ACTION_ERROR,
 +              "the actions this build adds must stay clear of Kodi's own");
 diff --git a/xbmc/input/actions/ActionTranslator.cpp b/xbmc/input/actions/ActionTranslator.cpp
-index 242f63c..94d414a 100644
+index 242f63cae0..94d414a4fa 100644
 --- a/xbmc/input/actions/ActionTranslator.cpp
 +++ b/xbmc/input/actions/ActionTranslator.cpp
 @@ -60,6 +60,8 @@ constexpr auto ActionMappings = make_map<ActionName, ActionID>({
@@ -152,7 +152,7 @@ index 242f63c..94d414a 100644
      {"playerdebugvideo", ACTION_PLAYER_DEBUG_VIDEO},
      {"codecinfo", ACTION_PLAYER_PROCESS_INFO},
 diff --git a/xbmc/video/PlayerController.cpp b/xbmc/video/PlayerController.cpp
-index e585ae8..74776aa 100644
+index e585ae8cf2..74776aa219 100644
 --- a/xbmc/video/PlayerController.cpp
 +++ b/xbmc/video/PlayerController.cpp
 @@ -29,6 +29,7 @@

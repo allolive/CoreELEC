@@ -16,10 +16,10 @@ This is shared code: the video database has no Amlogic counterpart.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index d32a9a1..774ba55 100644
+index 12cb7640e5..57a049873e 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -5354,6 +5354,41 @@ void CVideoDatabase::GetUniqueIDs(int media_id, const std::string &media_type, C
+@@ -5482,6 +5482,41 @@ void CVideoDatabase::GetUniqueIDs(int media_id, const std::string &media_type, C
    }
  }
  
@@ -61,7 +61,7 @@ index d32a9a1..774ba55 100644
  bool CVideoDatabase::GetVideoSettings(const CFileItem &item, CVideoSettings &settings)
  {
    return GetVideoSettings(GetFileId(item), settings);
-@@ -5381,36 +5416,8 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
+@@ -5509,36 +5544,8 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
  
      if (m_pDS->num_rows() > 0)
      { // get the video settings info

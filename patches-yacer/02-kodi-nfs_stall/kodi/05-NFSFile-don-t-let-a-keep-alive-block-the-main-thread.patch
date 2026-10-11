@@ -13,10 +13,10 @@ trip, and skip the keep-alive when it would run on the main thread.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 9684e3d..965295e 100644
+index 2cef1a1a42..ff6416a4af 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
-@@ -427,7 +427,8 @@ void CNfsConnection::Deinit()
+@@ -477,7 +477,8 @@ void CNfsConnection::Deinit()
      m_pNfsContext = NULL;
    }
    clearMembers();
@@ -26,7 +26,7 @@ index 9684e3d..965295e 100644
    m_KeepAliveTimeouts.clear();
  }
  
-@@ -503,6 +504,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -554,6 +555,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
  {
    uint64_t offset = 0;
    char buffer[32];
@@ -42,7 +42,7 @@ index 9684e3d..965295e 100644
    // this also refreshes the last accessed time for the context
    // true forces a cachehit regardless the context is timedout
    // on this call we are sure its not timedout even if the last accessed
-@@ -512,11 +522,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
+@@ -563,11 +573,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
    if (!pContext)// this should normally never happen - paranoia
      pContext = m_pNfsContext;
  

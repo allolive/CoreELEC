@@ -9,6 +9,7 @@ costs one round trip per batch instead of one per item.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index c6cd8ebb6a..f87f58d43e 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -74,6 +74,7 @@
@@ -112,6 +113,7 @@ diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
                                      ArtFallbackOptions fallback,
                                      KODI::ART::Artwork& art)
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
+index 82eb07a36d..9365192a49 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -893,6 +893,20 @@ public:
@@ -136,6 +138,7 @@ diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
  
    /*!
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
+index 68d0969328..ef8002efea 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -38,11 +38,20 @@
@@ -288,6 +291,7 @@ diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
                                                               const int id)
  {
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
+index 145876291d..fd6b5379bf 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -13,6 +13,8 @@

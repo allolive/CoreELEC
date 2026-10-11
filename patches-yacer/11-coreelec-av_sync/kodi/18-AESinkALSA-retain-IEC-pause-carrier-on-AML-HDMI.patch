@@ -19,26 +19,11 @@ changes; no addon or runtime plugin installation is needed.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
---- a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
-+++ b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
-@@ -52,6 +52,7 @@
-   double GetCacheTotal() override;
-   unsigned int AddPackets(uint8_t **data, unsigned int frames, unsigned int offset) override;
-   void Drain() override;
-+  bool WantsIECPauseBursts() const override;
- 
- private:
-   CAEChannelInfo GetChannelLayoutRaw(const AEAudioFormat& format);
-@@ -112,4 +113,3 @@
- 
-   static void sndLibErrorHandler(const char *file, int line, const char *function, int err, const char *fmt, ...);
- };
--
 diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
+index f96744098d..daa19a5a39 100644
 --- a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
 +++ b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp
-@@ -743,6 +743,19 @@
+@@ -743,6 +743,19 @@ void CAESinkALSA::aml_configure_simple_control(std::string &device, const enum I
    }
  }
  
@@ -58,3 +43,20 @@ diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.cpp b/xbmc/cores/AudioEngin
  bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
  {
    m_initDevice = device;
+diff --git a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
+index 0e0c214da3..336f1327bd 100644
+--- a/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
++++ b/xbmc/cores/AudioEngine/Sinks/AESinkALSA.h
+@@ -52,6 +52,7 @@ public:
+   double GetCacheTotal() override;
+   unsigned int AddPackets(uint8_t **data, unsigned int frames, unsigned int offset) override;
+   void Drain() override;
++  bool WantsIECPauseBursts() const override;
+ 
+ private:
+   CAEChannelInfo GetChannelLayoutRaw(const AEAudioFormat& format);
+@@ -112,4 +113,3 @@ private:
+ 
+   static void sndLibErrorHandler(const char *file, int line, const char *function, int err, const char *fmt, ...);
+ };
+-

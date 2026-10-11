@@ -29,7 +29,7 @@ the shelved patches picked out as the part worth keeping.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/windows/GUIMediaWindow.cpp b/xbmc/windows/GUIMediaWindow.cpp
-index 05f03d3..05ad053 100644
+index 05f03d3b1c..05ad053cab 100644
 --- a/xbmc/windows/GUIMediaWindow.cpp
 +++ b/xbmc/windows/GUIMediaWindow.cpp
 @@ -1690,8 +1690,9 @@ void CGUIMediaWindow::OnRenameItem(int iItem)

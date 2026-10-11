@@ -16,7 +16,7 @@ test, so the measurement is unchanged, and a genuine stand-down still latches.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 64ac5a9..ff79250 100644
+index 3a5495f2c4..3f8796098e 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -9143,6 +9143,42 @@ msgctxt "#14427"
@@ -63,10 +63,10 @@ index 64ac5a9..ff79250 100644
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index b95d660..351af59 100755
+index adb94b272d..981d19a09d 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4190,6 +4190,25 @@
+@@ -4205,6 +4205,25 @@
            <control type="toggle" />
          </setting>
        </group>
@@ -94,7 +94,7 @@ index b95d660..351af59 100755
        <visible>false</visible>
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 new file mode 100644
-index 0000000..76a6e30
+index 0000000000..76a6e30952
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
 @@ -0,0 +1,722 @@
@@ -822,7 +822,7 @@ index 0000000..76a6e30
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 new file mode 100644
-index 0000000..a6e7afd
+index 0000000000..a6e7afd72d
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
 @@ -0,0 +1,135 @@
@@ -962,7 +962,7 @@ index 0000000..a6e7afd
 +  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 6db929f..f7cd846 100644
+index 6db929f6fe..f7cd8469cd 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -9,6 +9,7 @@
@@ -1131,7 +1131,7 @@ index 6db929f..f7cd846 100644
    CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index c7dbda7..ba6b37d 100644
+index c7dbda7995..ba6b37d59d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -145,6 +145,11 @@ private:
@@ -1147,7 +1147,7 @@ index c7dbda7..ba6b37d 100644
    am_private_t    *am_private;
    CDVDStreamInfo   m_hints;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-index c2c299f..1c8ffe8 100644
+index c2c299f54f..1c8ffe857c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -7,6 +7,8 @@
@@ -1264,7 +1264,7 @@ index c2c299f..1c8ffe8 100644
  
      if (absolute - m_since >= TIME_BETWEEN_REPORTS)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-index 262e4eb..d5e7bcd 100644
+index 262e4eb1e8..d5e7bcd076 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -9,6 +9,7 @@
@@ -1310,7 +1310,7 @@ index 262e4eb..d5e7bcd 100644
    double m_driftWalkUs{0.0};
    int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 3f67ff9..aa21f60 100644
+index 3f67ff9b66..aa21f60c80 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -13,11 +13,13 @@ if(TARGET ffmpeg::libpostproc)
@@ -1330,7 +1330,7 @@ index 3f67ff9..aa21f60 100644
                        AMLLatency.h
                        DVDVideoCodecAmlogic.h)
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
-index 64c5138..7e0445f 100644
+index 64c5138710..7e0445f2fe 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 @@ -438,6 +438,13 @@ void CProcessInfo::ResetAudioCodecInfo()
@@ -1348,7 +1348,7 @@ index 64c5138..7e0445f 100644
    {
      m_dataCache->SetAudioDecoderName(m_audioDecoderName);
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
-index 5055f2e..cea0240 100644
+index 5055f2e740..cea0240de9 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -97,6 +97,13 @@ public:
@@ -1374,7 +1374,7 @@ index 5055f2e..cea0240 100644
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index ac76d03..0790b0c 100644
+index ac76d03f91..0790b0cd95 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -786,6 +786,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
@@ -1386,7 +1386,7 @@ index ac76d03..0790b0c 100644
        (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
            ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 1c4ced5..c378284 100644
+index 1c4ced5416..c378284f0f 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -479,6 +479,7 @@ public:
@@ -1398,7 +1398,7 @@ index 1c4ced5..c378284 100644
    static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
    static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 2932f9a..9288397 100644
+index 2932f9ab5c..9288397e4f 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -469,6 +469,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
@@ -1445,7 +1445,7 @@ index 2932f9a..9288397 100644
  {
  // CRenderManager's verdict, handed over through CRendererAML::TakeClockSync().
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index 4b32b87..b3ec70f 100644
+index 4b32b87166..b3ec70f8a7 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
 @@ -96,6 +96,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
@@ -1457,7 +1457,7 @@ index 4b32b87..b3ec70f 100644
  //! \brief The whole number of refreshes the display shows each frame for, from
  //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 7371dc7..d4ae6e6 100644
+index ae9a810804..c7d5e7d10f 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -40,6 +40,7 @@

@@ -44,7 +44,7 @@ reconnect's log line counts the handles a file has let go of this way.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 3242b96..2cef1a1 100644
+index 3242b9693d..2cef1a1a42 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
 @@ -12,6 +12,10 @@
@@ -441,7 +441,7 @@ index 3242b96..2cef1a1 100644
    }
  }
 diff --git a/xbmc/filesystem/NFSFile.h b/xbmc/filesystem/NFSFile.h
-index 237aae2..c471874 100644
+index 237aae2cdf..c471874fbb 100644
 --- a/xbmc/filesystem/NFSFile.h
 +++ b/xbmc/filesystem/NFSFile.h
 @@ -15,6 +15,7 @@

@@ -27,9 +27,11 @@ hardware presentation hold, decoder readiness or a 500 ms audio lead-in.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/xbmc/cores/VideoPlayer/DVDMessage.h b/xbmc/cores/VideoPlayer/DVDMessage.h
+index d619e15bf0..6d9c53f794 100644
 --- a/xbmc/cores/VideoPlayer/DVDMessage.h
 +++ b/xbmc/cores/VideoPlayer/DVDMessage.h
-@@ -46,6 +46,7 @@
+@@ -46,6 +46,7 @@ public:
      PLAYER_SEEK,                    //
      PLAYER_SEEK_CHAPTER,            //
      PLAYER_SETSPEED,                // set the playback speed
@@ -37,7 +39,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      PLAYER_REQUEST_STATE,
      PLAYER_OPENFILE,
      PLAYER_STARTED,                 // sent whenever a sub player has finished it's first frame after open
-@@ -240,10 +241,18 @@
+@@ -240,10 +241,18 @@ class CDVDMsgPlayerSeekChapter : public CDVDMsg
  class CDVDMsgPlayerSetSpeed : public CDVDMsg
  {
  public:
@@ -56,7 +58,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    };
  
    explicit CDVDMsgPlayerSetSpeed(SpeedParams params)
-@@ -254,6 +263,7 @@
+@@ -254,6 +263,7 @@ public:
  
    int GetSpeed() const { return m_params.m_speed; }
    bool IsTempo() const { return m_params.m_isTempo; }
@@ -64,7 +66,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
  private:
  
---- a/xbmc/cores/VideoPlayer/PlaybackResumeGate.h
+diff --git a/xbmc/cores/VideoPlayer/PlaybackResumeGate.h b/xbmc/cores/VideoPlayer/PlaybackResumeGate.h
+new file mode 100644
+index 0000000000..51eec56102
+--- /dev/null
 +++ b/xbmc/cores/VideoPlayer/PlaybackResumeGate.h
 @@ -0,0 +1,142 @@
 +/*
@@ -209,9 +214,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +  Clock::time_point m_deadline{};
 +  std::shared_ptr<CPlaybackCallbackFence> m_fence;
 +};
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 7553be8bc9..0360442d7a 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -1534,9 +1534,13 @@
+@@ -1565,9 +1565,13 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
  void CVideoPlayer::Prepare()
  {
    CFFmpegLog::SetLogLevel(1);
@@ -228,7 +235,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_processInfo->SetFrameAdvance(false);
    m_State.Clear();
    m_CurrentVideo.hint.Clear();
-@@ -1733,6 +1737,9 @@
+@@ -1768,6 +1772,9 @@ void CVideoPlayer::Process()
      if (m_bAbortRequest)
        break;
  
@@ -238,7 +245,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      // should we open a new input stream?
      if (!m_pInputStream)
      {
-@@ -3189,6 +3196,7 @@
+@@ -3226,6 +3233,7 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
  void CVideoPlayer::OnExit()
  {
    CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
@@ -246,7 +253,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    // set event to inform openfile something went wrong in case openfile is still waiting for this event
    SetCaching(CACHESTATE_DONE);
-@@ -3294,6 +3302,7 @@
+@@ -3331,6 +3339,7 @@ void CVideoPlayer::HandleMessages()
      if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
          m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
      {
@@ -254,7 +261,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        CDVDMsgOpenFile& msg(*std::static_pointer_cast<CDVDMsgOpenFile>(pMsg));
  
        IPlayerCallback *cb = &m_callback;
-@@ -3712,6 +3721,43 @@
+@@ -3749,6 +3758,43 @@ void CVideoPlayer::HandleMessages()
      {
        const auto msg = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg);
        const int speed = msg->GetSpeed();
@@ -298,7 +305,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
        // correct our current clock, as it would start going wrong otherwise
        if (m_State.timestamp > 0)
-@@ -3768,10 +3814,7 @@
+@@ -3805,10 +3851,7 @@ void CVideoPlayer::HandleMessages()
          m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
        }
  
@@ -310,7 +317,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
        m_processInfo->SetFrameAdvance(false);
  
-@@ -3784,6 +3827,33 @@
+@@ -3821,6 +3864,33 @@ void CVideoPlayer::HandleMessages()
        m_VideoPlayerVideo->SetSpeed(speed);
        m_streamPlayerSpeed = speed;
      }
@@ -344,7 +351,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      else if (pMsg->IsType(CDVDMsg::PLAYER_FRAME_ADVANCE))
      {
        if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
-@@ -3857,6 +3927,7 @@
+@@ -3894,6 +3964,7 @@ void CVideoPlayer::HandleMessages()
      else if (pMsg->IsType(CDVDMsg::PLAYER_ABORT))
      {
        CLog::Log(LOGDEBUG, "CVideoPlayer - CDVDMsg::PLAYER_ABORT");
@@ -352,7 +359,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        m_bAbortRequest = true;
      }
      else if (pMsg->IsType(CDVDMsg::PLAYER_SET_UPDATE_STREAM_DETAILS))
-@@ -3864,6 +3935,45 @@
+@@ -3901,6 +3972,45 @@ void CVideoPlayer::HandleMessages()
    }
  }
  
@@ -398,7 +405,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  void CVideoPlayer::SetCaching(ECacheState state)
  {
    // Any move off CACHESTATE_FULL ends a source-underrun hold, a seek included.
-@@ -3927,7 +4037,8 @@
+@@ -3964,7 +4074,8 @@ void CVideoPlayer::SetPlaySpeed(int speed)
  {
    if (IsPlaying())
    {
@@ -408,7 +415,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
    }
    else
-@@ -3937,6 +4048,25 @@
+@@ -3974,6 +4085,25 @@ void CVideoPlayer::SetPlaySpeed(int speed)
    }
  }
  
@@ -434,7 +441,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  bool CVideoPlayer::CanPause() const
  {
    std::unique_lock lock(m_StateSection);
-@@ -3945,15 +4075,7 @@
+@@ -3982,15 +4112,7 @@ bool CVideoPlayer::CanPause() const
  
  void CVideoPlayer::Pause()
  {
@@ -451,19 +458,19 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  }
  
  bool CVideoPlayer::HasVideo() const
-@@ -4393,6 +4515,11 @@
+@@ -4429,6 +4551,11 @@ int64_t CVideoPlayer::GetTime() const
+ }
  
  void CVideoPlayer::SetSpeed(float speed)
- {
++{
 +  SetSpeedInternal(speed, false);
 +}
 +
 +void CVideoPlayer::SetSpeedInternal(float speed, bool togglePause)
-+{
+ {
    // can't rewind in menu as seeking isn't possible
    // forward is fine
-   if (speed < 0 && IsInMenu())
-@@ -4409,35 +4536,57 @@
+@@ -4446,35 +4573,57 @@ void CVideoPlayer::SetSpeed(float speed)
        return;
    }
  
@@ -532,7 +539,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSpeed>(params));
  
      m_processInfo->SetNewTempo(tempo);
-@@ -4446,6 +4595,7 @@
+@@ -4483,6 +4632,7 @@ void CVideoPlayer::SetTempo(float tempo)
  
  void CVideoPlayer::FrameAdvance(int frames)
  {
@@ -540,7 +547,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    float currentSpeed = m_processInfo->GetNewSpeed();
    if (currentSpeed != DVD_PLAYSPEED_PAUSE)
      return;
-@@ -4920,6 +5070,7 @@
+@@ -4971,6 +5121,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
  {
    m_syncStartPtsWait.reset();
    CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
@@ -548,6 +555,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    double startpts;
    if (accurate)
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 6f75588587..10fee096bf 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -13,6 +13,7 @@
@@ -566,7 +575,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include <optional>
  #include <unordered_map>
  #include <utility>
-@@ -468,6 +470,8 @@
+@@ -469,6 +471,8 @@ protected:
     * one of the DVD_PLAYSPEED defines
     */
    void SetPlaySpeed(int iSpeed);
@@ -575,7 +584,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    enum ECacheState
    {
-@@ -485,6 +489,8 @@
+@@ -486,6 +490,8 @@ protected:
  
    void FlushBuffers(double pts, bool accurate, bool sync);
  
@@ -584,7 +593,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    void HandleMessages();
    void HandlePlaySpeed();
    bool TryEnterSourceUnderrunHold();
-@@ -600,6 +606,8 @@
+@@ -602,6 +608,8 @@ protected:
  
    int m_playSpeed;
    int m_streamPlayerSpeed;

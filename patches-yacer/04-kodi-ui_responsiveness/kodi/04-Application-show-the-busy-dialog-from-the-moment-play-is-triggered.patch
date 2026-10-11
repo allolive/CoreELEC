@@ -41,7 +41,7 @@ place covers both.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
-index 8f4e7c2..c67a70c 100644
+index d8d55b8430..2cdd77a9e9 100644
 --- a/xbmc/application/Application.cpp
 +++ b/xbmc/application/Application.cpp
 @@ -76,6 +76,7 @@
@@ -52,7 +52,7 @@ index 8f4e7c2..c67a70c 100644
  #include "guilib/GUIWindowManager.h"
  #include "guilib/StereoscopicsManager.h"
  #include "guilib/TextureManager.h"
-@@ -2074,8 +2075,48 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
+@@ -2077,8 +2078,48 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
    return PlayFile(item, player, false);
  }
  

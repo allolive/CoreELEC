@@ -17,7 +17,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 244b183..3662490 100644
+index 244b183542..3662490220 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -8,6 +8,8 @@
@@ -96,7 +96,7 @@ index 244b183..3662490 100644
  
    // update internal vars regardless
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index df2086e..542cbdb 100644
+index df2086ec83..542cbdba46 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -89,6 +89,7 @@ public:
@@ -118,7 +118,7 @@ index df2086e..542cbdb 100644
    uint32_t         m_bufferIndex;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 new file mode 100644
-index 0000000..0a9e535
+index 0000000000..0a9e535393
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -0,0 +1,715 @@
@@ -839,7 +839,7 @@ index 0000000..0a9e535
 +}
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 new file mode 100644
-index 0000000..8784594
+index 0000000000..8784594ac9
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -0,0 +1,217 @@
@@ -1061,7 +1061,7 @@ index 0000000..8784594
 +};
 +
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 6e8283c..8716bfa 100644
+index 6e8283c395..8716bfa275 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
 @@ -14,8 +14,10 @@ endif()
@@ -1075,25 +1075,8 @@ index 6e8283c..8716bfa 100644
                        DVDVideoCodecAmlogic.h)
  endif()
  
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index c5f6b96..2c2c8cb 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -733,8 +733,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
-   const double latencyTweak = static_cast<double>(
-       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
-           refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
--  const double videoDelay =
--      static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
-+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
-+  // and the renderer's own sum cannot differ by the truncation.
-+  const double videoDelay = static_cast<double>(
-+      static_cast<int>(m_processInfo.GetVideoSettings().m_AudioDelay * 1000.0f));
- 
-   return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
-                           videoDelay -
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index cce0cea..93bea8d 100644
+index 5344890ecb..09e91197d7 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -10,6 +10,7 @@
@@ -1104,8 +1087,8 @@ index cce0cea..93bea8d 100644
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -256,6 +257,9 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
-       amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, dropFrame);
+@@ -261,6 +262,9 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+       }
        if (setVideoRect)
          amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
 +      // Refreshes what the decode thread and the debug overlay read.
@@ -1114,13 +1097,16 @@ index cce0cea..93bea8d 100644
        std::shared_ptr<CAMLCodec> codec = std::move(amli->m_amlCodec); //Mark frame as processed
        m_prevVPts = pts;
        return codec;
-@@ -280,10 +284,26 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -285,6 +289,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
      return;
    }
  
 +  ObserveRefresh();
    QueueFrame(index, true);
+   PublishReleasedFrame();
    CAMLCodec::PollFrame();
+@@ -298,6 +303,21 @@ void CRendererAML::PublishReleasedFrame()
+   CAMLFrameMetadataStore::GetInstance().Publish(m_releasedToken, std::move(m_releasedMeta));
  }
  
 +void CRendererAML::ObserveRefresh()
@@ -1141,11 +1127,13 @@ index cce0cea..93bea8d 100644
  bool CRendererAML::StartVsyncPresent()
  {
    m_lastWakeVsync = false;
-@@ -310,15 +330,19 @@ bool CRendererAML::WaitVsync()
+@@ -324,17 +344,21 @@ bool CRendererAML::WaitVsync()
        case CAMLCodec::VsyncWake::VSYNC:
        case CAMLCodec::VsyncWake::TIMEOUT:
          m_lastWakeVsync = wake == CAMLCodec::VsyncWake::VSYNC;
 +        ObserveRefresh();
+         // amvideo shows a released frame from the vsync after the release
+         PublishReleasedFrame();
          return true;
        case CAMLCodec::VsyncWake::STEP:
          // a requested step leaves the GUI pacing as it is
@@ -1162,19 +1150,19 @@ index cce0cea..93bea8d 100644
          break;
        case CAMLCodec::VsyncWake::INTERRUPTED:
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 8e47a79..db205b9 100644
+index 04c76d2e57..a3d9164cd0 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -54,6 +54,7 @@ public:
- private:
+@@ -56,6 +56,7 @@ private:
    void Reset();
    std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect, bool* drop = nullptr);
+   void PublishReleasedFrame();
 +  void ObserveRefresh();
  
    static const int m_numRenderBuffers = NUM_BUFFERS;
  
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index f16c74d..eeb7533 100644
+index f16c74d261..69f34c9b21 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -11,10 +11,14 @@
@@ -1200,7 +1188,7 @@ index f16c74d..eeb7533 100644
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -534,6 +539,119 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -534,6 +539,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
@@ -1219,9 +1207,8 @@ index f16c74d..eeb7533 100644
 +  // Read where it is used. PrepareNextRender() runs earlier in the pass than the
 +  // renderer, so a value sampled there is a pass old: out by however long the
 +  // pass takes, and wrapping a whole refresh when that approaches one, which
-+  // costs a frame. Only the decode thread, which arrives through
-+  // CDVDVideoCodecAmlogic::RenderDisplayLatency() and has no relationship to the
-+  // vblank, is served the cached one rather than taking a DRM read of its own.
++  // costs a frame. Any other thread, which has no relationship to the vblank,
++  // is served the cached one rather than taking a DRM read of its own.
 +  if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
 +    return SampleFrameLatency();
 +
@@ -1321,7 +1308,7 @@ index f16c74d..eeb7533 100644
  {
    std::unique_lock<CCriticalSection> lock(m_resourceSection);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 528888f..44f8355 100644
+index 528888fdd5..44f8355712 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -18,7 +18,10 @@

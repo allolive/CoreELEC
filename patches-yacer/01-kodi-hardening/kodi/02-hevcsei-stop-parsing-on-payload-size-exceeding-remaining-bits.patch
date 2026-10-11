@@ -21,7 +21,7 @@ Needs a malformed stream to trigger. Not exercised on hardware.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/BitstreamReader.h b/xbmc/utils/BitstreamReader.h
-index 1a32329..cd0ab10 100644
+index 1a3232992d..cd0ab10390 100644
 --- a/xbmc/utils/BitstreamReader.h
 +++ b/xbmc/utils/BitstreamReader.h
 @@ -18,7 +18,10 @@ public:
@@ -37,7 +37,7 @@ index 1a32329..cd0ab10 100644
  private:
    const uint8_t *buffer, *start;
 diff --git a/xbmc/utils/HevcSei.cpp b/xbmc/utils/HevcSei.cpp
-index fc74e43..0413c05 100644
+index fc74e43045..0413c05b04 100644
 --- a/xbmc/utils/HevcSei.cpp
 +++ b/xbmc/utils/HevcSei.cpp
 @@ -73,8 +73,8 @@ int CHevcSei::ParseSeiMessage(CBitstreamReader& br, std::vector<CHevcSei>& messa
@@ -52,7 +52,7 @@ index fc74e43..0413c05 100644
  
    br.SkipBits(sei.m_payloadSize * 8);
 diff --git a/xbmc/utils/HevcSei.h b/xbmc/utils/HevcSei.h
-index b76d9e6..47a835b 100644
+index b76d9e6f53..47a835b3b4 100644
 --- a/xbmc/utils/HevcSei.h
 +++ b/xbmc/utils/HevcSei.h
 @@ -30,7 +30,7 @@ public:

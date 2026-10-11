@@ -24,6 +24,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  .../VideoRenderers/OverlayRendererUtil.h      |  7 ++++
  2 files changed, 39 insertions(+), 5 deletions(-)
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index f820ebbb94..7d9110542c 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -19,12 +19,36 @@
@@ -84,9 +85,10 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbm
      return a << PIXEL_ASHIFT
           | r << PIXEL_RSHIFT
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+index b5911e5fb2..af620b6770 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
-@@ -36,6 +36,13 @@ struct SQuads
+@@ -38,6 +38,13 @@ struct SQuads
    std::vector<SQuad> quad;
  };
  

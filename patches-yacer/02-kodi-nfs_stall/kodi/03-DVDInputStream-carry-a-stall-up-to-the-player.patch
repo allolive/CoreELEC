@@ -12,7 +12,7 @@ Only playback waits: a scan or a subtitle fetch still fails fast.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
-index 368ae4a..c006ac6 100644
+index 368ae4aa2b..c006ac68e9 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.cpp
 @@ -179,8 +179,11 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
@@ -30,7 +30,7 @@ index 368ae4a..c006ac6 100644
  
  std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVideoPlayer* pPlayer, const CFileItem &fileitem, const std::vector<std::string>& filenames)
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
-index a129064..3bef48a 100644
+index a129064892..3bef48af36 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.cpp
 @@ -14,6 +14,8 @@
@@ -66,7 +66,7 @@ index a129064..3bef48a 100644
    /* we currently don't support non completing reads */
    if (ret == 0)
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
-index fc6d3ab..237ce79 100644
+index fc6d3abf3b..237ce79857 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h
 @@ -10,6 +10,9 @@
@@ -97,10 +97,10 @@ index fc6d3ab..237ce79 100644
 +  std::atomic<uint32_t> m_stallCount{0};
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
-index b44ec5a..3df9953 100644
+index 9dcbffdf4e..a1fc9a858b 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.cpp
-@@ -28,6 +28,7 @@ CInputStreamMultiSource::~CInputStreamMultiSource()
+@@ -29,6 +29,7 @@ CInputStreamMultiSource::~CInputStreamMultiSource()
  
  void CInputStreamMultiSource::Abort()
  {
@@ -108,7 +108,7 @@ index b44ec5a..3df9953 100644
    for (const auto& iter : m_InputStreams)
      iter->Abort();
  }
-@@ -119,6 +120,8 @@ bool CInputStreamMultiSource::Open()
+@@ -120,6 +121,8 @@ bool CInputStreamMultiSource::Open()
        CLog::Log(LOGERROR, "CDVDPlayer::OpenInputStream - error opening file [{}]", m_filenames[i]);
        continue;
      }
@@ -118,7 +118,7 @@ index b44ec5a..3df9953 100644
    }
    return !m_InputStreams.empty();
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
-index 5242f6d..3496b37 100644
+index 48fe95cd53..a98c620eb5 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/InputStreamMultiSource.h
 @@ -11,6 +11,7 @@
@@ -129,7 +129,7 @@ index 5242f6d..3496b37 100644
  #include <string>
  #include <vector>
  
-@@ -39,4 +40,5 @@ public:
+@@ -40,4 +41,5 @@ public:
  protected:
    IVideoPlayer* m_pPlayer;
    std::vector<std::string> m_filenames;

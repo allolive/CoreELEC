@@ -29,10 +29,10 @@ start at.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 912ce5b..8d0a125 100644
+index 941b70c37d..28bb923812 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -126,6 +126,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -124,6 +124,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
    m_hints = hints;
    m_hints.pClock = hints.pClock;
  
@@ -42,7 +42,7 @@ index 912ce5b..8d0a125 100644
    m_nalLengthSize = 0;
    m_streamMeta = {};
    m_stripHdr10Plus = false;
-@@ -216,7 +219,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -214,7 +217,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
        }
  
        if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
@@ -53,7 +53,7 @@ index 912ce5b..8d0a125 100644
        else
          m_pFormatName = "am-h264";
  
-@@ -512,6 +518,92 @@ void CDVDVideoCodecAmlogic::Close(void)
+@@ -511,6 +517,92 @@ void CDVDVideoCodecAmlogic::Close(void)
    m_opened = false;
  }
  
@@ -146,7 +146,7 @@ index 912ce5b..8d0a125 100644
  bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  {
    // Enhancement-layer packets are sent with drop false, so taking the flag as it
-@@ -671,6 +763,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -668,6 +760,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        else
        {
@@ -164,7 +164,7 @@ index 912ce5b..8d0a125 100644
          if (!m_bitstream->Convert(pData, iSize))
          {
            m_pendingMeta = m_streamMeta;
-@@ -867,6 +970,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -813,6 +916,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
  
    m_mpeg2_sequence_pts = 0;
    m_has_keyframe = false;
@@ -177,10 +177,10 @@ index 912ce5b..8d0a125 100644
    m_metadataSequencer.Reset();
    m_pendingMeta = m_streamMeta;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 13a2b5b..8ef04c2 100644
+index dd486491cf..0ff3954c01 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -125,6 +125,23 @@ private:
+@@ -126,6 +126,23 @@ private:
    bool m_stripHdr10Plus{false};
    bool m_dualLayer{false};
    int m_nalLengthSize{0};
@@ -201,6 +201,6 @@ index 13a2b5b..8ef04c2 100644
 +  static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
 +  bool MvcParamsScan(const uint8_t* data, uint32_t size);
 +  bool MvcParamsReady(const uint8_t* data, uint32_t size);
-   double m_lastCommitPts{0.0};
    //! Which decoded pictures still answer the player's drop request.
    CAMLSeekPreroll m_seekPreroll;
+   AMLFrameMetadata m_streamMeta;

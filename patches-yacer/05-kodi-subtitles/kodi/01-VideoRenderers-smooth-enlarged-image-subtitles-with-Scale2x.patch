@@ -49,6 +49,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 ---
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+index 62ee1621f8..26a77236ec 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -23,10 +23,15 @@
@@ -122,7 +123,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbm
  COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource)
  {
    m_isHDROverlay = o.m_isHDROverlay;
-@@ -172,8 +225,25 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+@@ -176,8 +229,25 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
    if (o.palette.empty())
    {
      m_pma = false;
@@ -150,7 +151,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbm
    }
    else
    {
-@@ -227,7 +297,21 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+@@ -231,7 +301,21 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
      auto rgba = std::make_unique_for_overwrite<uint32_t[]>(static_cast<size_t>(width) * height);
      ConvertIndices(o.pixels.data() + y0 * o.linesize + x0, o.linesize, width, height, lut,
                     rgba.get());
@@ -174,6 +175,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbm
  
    glBindTexture(GL_TEXTURE_2D, 0);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index 7029a99bd1..ec0ef27d50 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -25,6 +25,81 @@
@@ -259,6 +261,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbm
  {
    if(mergealpha)
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+index 609addc11b..2b02ebac02 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
 @@ -85,6 +85,15 @@ void FindVisibleBox(const uint8_t* src,

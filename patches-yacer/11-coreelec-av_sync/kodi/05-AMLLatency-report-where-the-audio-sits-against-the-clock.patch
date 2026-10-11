@@ -10,6 +10,7 @@ its averaged error is under 30ms. Measure and report the audio too.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+index 4a09a8e388..5b07c4fbb5 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 @@ -44,6 +44,9 @@ constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
@@ -159,6 +160,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/A
    return ret;
  }
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
+index aa39c45708..e63b9b7990 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h
 @@ -223,6 +223,8 @@ protected:
@@ -171,6 +173,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.h b/xbmc/cores/Aud
      CAESyncInfo::AESyncState m_syncState;
    };
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
+index 82a922085f..6b59cefe96 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -39,6 +39,7 @@ public:
@@ -240,6 +243,7 @@ diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cor
    CAESyncInfo::AESyncState m_syncState;
  };
 diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
+index c0f20f68bc..741c09b362 100644
 --- a/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 +++ b/xbmc/cores/AudioEngine/Interfaces/AEStream.h
 @@ -44,6 +44,17 @@ public:
@@ -261,6 +265,7 @@ diff --git a/xbmc/cores/AudioEngine/Interfaces/AEStream.h b/xbmc/cores/AudioEngi
  
  /**
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+index 982525db75..d6d51905e4 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 @@ -92,6 +92,13 @@ void CAudioSinkAE::Destroy(bool finish)
@@ -315,6 +320,7 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/Aud
  
  double CAudioSinkAE::GetResampleRatio()
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/AudioSinkAE.h
+index 4ed2446d66..82ced52da7 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
 @@ -47,6 +47,16 @@ public:
@@ -344,9 +350,10 @@ diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.h b/xbmc/cores/VideoPlayer/Audio
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 4030337378..73dab1575e 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2909,7 +2909,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+@@ -3276,7 +3276,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
      return;
    }
  
@@ -357,6 +364,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/Vi
  
  void CAMLCodec::GenlockTick(uint64_t omxPts)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 0a9e535393..1942583eeb 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 @@ -100,6 +100,9 @@ void CAMLLatency::Rearm()
@@ -378,7 +386,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
  {
    if (!m_pollValid || m_period <= 0.0)
      return;
-@@ -524,6 +527,24 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
+@@ -528,6 +531,24 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
      m_alignSum += alignment;
      ++m_reports;
  
@@ -403,7 +411,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
      if (absolute - m_since >= TIME_BETWEEN_REPORTS)
      {
        const double mean = m_alignSum / m_reports;
-@@ -535,6 +556,33 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
+@@ -539,6 +560,33 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
                      ? static_cast<double>(m_polls) / static_cast<double>(m_cadenceRefreshes)
                      : 0.0);
  
@@ -437,7 +445,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
        // The span comes first because the faults mean nothing without it: a
        // report that checked no refreshes has to read as exactly that, and not
        // as a clean run.
-@@ -685,6 +733,9 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
+@@ -689,6 +737,9 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
  
        m_reports = 0;
        m_alignSum = 0.0;
@@ -448,6 +456,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/
        m_cadenceRefreshes = 0;
      }
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+index 8784594ac9..aad2d1d5c2 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 @@ -81,7 +81,9 @@ public:
@@ -484,6 +493,7 @@ diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/Vi
  };
  
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
+index 48ac1d3a47..64c5138710 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp
 @@ -436,6 +436,7 @@ void CProcessInfo::ResetAudioCodecInfo()
@@ -495,6 +505,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.cpp b/xbmc/cores/VideoPl
    if (m_dataCache)
    {
 diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+index db833adb22..5055f2e740 100644
 --- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 +++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
 @@ -9,6 +9,7 @@
@@ -529,6 +540,7 @@ diff --git a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h b/xbmc/cores/VideoPlay
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index d02c7c8684..54610e4000 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -163,6 +163,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
@@ -553,7 +565,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
          }
        }
        if (timeout == 0ms)
-@@ -470,6 +478,10 @@ void CVideoPlayerAudio::Process()
+@@ -490,6 +498,10 @@ void CVideoPlayerAudio::Process()
        m_audioClock = 0;
        audioframe.nb_frames = 0;
        m_syncState = IDVDStreamPlayer::SYNC_STARTING;
@@ -564,7 +576,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
      }
      else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
      {
-@@ -479,6 +491,10 @@ void CVideoPlayerAudio::Process()
+@@ -499,6 +511,10 @@ void CVideoPlayerAudio::Process()
        m_stalled = true;
        m_audioClock = 0;
        audioframe.nb_frames = 0;
@@ -575,7 +587,7 @@ diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlaye
  
        if (sync)
        {
-@@ -685,6 +701,16 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+@@ -705,6 +721,16 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
      audioframe.hasDownmix = true;
    }
  

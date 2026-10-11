@@ -11,10 +11,10 @@ hundred milliseconds or more. Resynchronise them.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 21dde92..d941256 100644
+index 3115f414ea..835b5f8a08 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -928,6 +928,22 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
+@@ -966,6 +966,22 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
              ValidateOutputDevices(false);
            }
            Configure();

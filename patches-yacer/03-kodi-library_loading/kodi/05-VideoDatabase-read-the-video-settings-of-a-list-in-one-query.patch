@@ -9,10 +9,10 @@ ids in a single query, and use it from VideoThumbLoader in batches of 100.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
-index 774ba55..0f15a9c 100644
+index 57a049873e..33c51b4149 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
-@@ -5429,6 +5429,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
+@@ -5557,6 +5557,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
    return false;
  }
  
@@ -66,10 +66,10 @@ index 774ba55..0f15a9c 100644
  {
    int idFile = AddFile(item);
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
-index 1658417..c0ebd11 100644
+index df4bfb52ae..630821d7c1 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
-@@ -459,6 +459,19 @@ public:
+@@ -478,6 +478,19 @@ public:
     */
    bool GetVideoSettings(const std::string &filePath, CVideoSettings &settings);
  
@@ -90,7 +90,7 @@ index 1658417..c0ebd11 100644
     \param fileItem to set the settings for
     \sa GetVideoSettings
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
-index 93b8aca..4329650 100644
+index 54911d3246..4bfe5379d1 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -50,6 +50,16 @@ using namespace XFILE;
@@ -137,7 +137,7 @@ index 93b8aca..4329650 100644
    if (pItem->IsShareOrDrive() || pItem->IsParentFolder() || pItem->GetPath() == "add")
      return false;
  
-@@ -686,7 +701,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
+@@ -685,7 +700,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
      // check for custom stereomode setting in video settings
      CVideoSettings itemVideoSettings;
      m_videoDatabase->Open();
@@ -146,7 +146,7 @@ index 93b8aca..4329650 100644
          itemVideoSettings.m_StereoMode != static_cast<int>(RenderStereoMode::OFF))
      {
        stereoMode = CStereoscopicsManager::ConvertGuiStereoModeToString(
-@@ -796,6 +811,60 @@ void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> item
+@@ -795,6 +810,60 @@ void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> item
                                              m_streamDetailsCache, [this] { return m_bStop; });
  }
  
@@ -208,7 +208,7 @@ index 93b8aca..4329650 100644
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
-index cb89b86..bd24502 100644
+index cb89b86b46..bd2450293d 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -10,10 +10,12 @@
