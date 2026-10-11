@@ -39,6 +39,14 @@ itself. That needs no mocking framework and no production change.
 source - kodi, common_drivers, media_modules-aml, gpu-aml, bluez and
 CoreELEC-settings - and reports which apply.
 
+`scripts/yacer-reanchor.py` carries the stacks to a newer upstream when they
+stop applying: per package, a git repository with one commit per patch, rebased
+onto the new source with git's 3-way merge. Most patches land on their own; the
+rest stop as ordinary merge conflicts to resolve in that repository. `export`
+then writes the patches back - unchanged ones as they were, changed ones with
+their own header and a regenerated diff - and proves that the files, applied at
+zero fuzz to a fresh tree, give exactly the rebased one.
+
 ## Proving a change on a real library
 
 `subtitle-repair/` holds the Python reference the subtitle repairs of group 07

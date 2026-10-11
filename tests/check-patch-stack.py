@@ -37,9 +37,9 @@ def packages():
     return sorted(found)
 
 
-def package_dir(name):
+def package_dir(name, tree=CORELEC):
     """The project override wins over the generic package, as the build does."""
-    for root in (CORELEC / f"projects/{PROJECT}/packages", CORELEC / "packages"):
+    for root in (tree / f"projects/{PROJECT}/packages", tree / "packages"):
         for candidate in root.rglob(f"{name}/package.mk"):
             return candidate.parent
     return None
@@ -50,8 +50,8 @@ def declared(mk, key):
     return match[1] if match else ""
 
 
-def archive_for(name, directory, pin, download):
-    cache = CORELEC / "sources" / name
+def archive_for(name, directory, pin, download, tree=CORELEC):
+    cache = tree / "sources" / name
     hits = [path for path in sorted(cache.glob(f"*{pin}*"))
             if path.suffix not in (".sha256", ".url")] if cache.is_dir() else []
     if hits:
@@ -75,11 +75,11 @@ def archive_for(name, directory, pin, download):
     return target
 
 
-def ordered(name, directory, pin):
+def ordered(name, directory, pin, tree=CORELEC):
     """scripts/unpack's directory order, for one package."""
     package = directory / "patches"
-    project = CORELEC / f"projects/{PROJECT}/patches/{name}"
-    device = CORELEC / f"projects/{PROJECT}/devices"
+    project = tree / f"projects/{PROJECT}/patches/{name}"
+    device = tree / f"projects/{PROJECT}/devices"
     upstream = [package, package / PATCH_ARCH, package / pin, package / pin / PATCH_ARCH,
                 project, project / PATCH_ARCH, project / pin]
     upstream += sorted(device.glob(f"*/patches/{name}"))

@@ -38,6 +38,14 @@ on:
         description: 'Internal: a pin candidate - on success, move coreelec.pin to the mirror commit and publish'
         type: boolean
         default: false
+      check:
+        description: 'Internal: a pull request check - build, report a yacer/build status on the yacer commit, publish nothing'
+        type: boolean
+        default: false
+      pr:
+        description: 'Internal: the pull request a check build is for'
+        type: string
+        default: ''
       deadline_min:
         description: 'Override the build deadline in minutes (use a small value to exercise the timeout path)'
         type: string
@@ -46,15 +54,20 @@ on:
 permissions:
   contents: write
   actions: write        # gh workflow run (chaining) needs this
+  statuses: write       # a pull request check reports on the commit it built
+  pull-requests: write  # ...and says where to download it
 
-# One queue for every build, pin candidates included: the build state cache
-# keeps a single generation, and two builds of different trees running side by
-# side would keep retiring each other's. A group holds one waiting run, so a
-# push queued behind a running build replaces a pin candidate waiting there;
-# the candidate is tried again the next day.
+# One queue for every build that keeps state, pin candidates included: the
+# build state cache keeps a single generation, and two builds of different
+# trees running side by side would keep retiring each other's. A group holds
+# one waiting run, so a push queued behind a running build replaces a pin
+# candidate waiting there; the candidate is tried again the next day.
+# A pull request check queues per pull request instead: it only reads the
+# cache, so it neither waits for nor displaces the builds that are released,
+# and a newer push to the pull request cancels the build of the older one.
 concurrency:
-  group: yacer-build-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ inputs.check && format('yacer-check-{0}', inputs.pr || inputs.yacer) || format('yacer-build-{0}', github.ref) }}
+  cancel-in-progress: ${{ inputs.check == true }}
 
 jobs:
   # A build is the CoreELEC commit coreelec.pin names, with our patches applied
@@ -112,6 +125,7 @@ jobs:
           IN_MIRROR: ${{ inputs.mirror || '' }}
           IN_YACER: ${{ inputs.yacer || '' }}
           PROMOTE: ${{ inputs.promote && 'true' || 'false' }}
+          CHECK: ${{ inputs.check && 'true' || 'false' }}
         run: |
           for v in "$IN_MIRROR" "$IN_YACER"; do
             case "$v" in
@@ -120,6 +134,9 @@ jobs:
             esac
           done
           YA=${IN_YACER:-${{ github.sha }}}
+          if [ "$PROMOTE" = "true" ] && [ "$CHECK" = "true" ]; then
+            echo "::error::a build is either a pin candidate or a pull request check"; exit 1
+          fi
           if [ "$PROMOTE" = "true" ] && [ -z "$IN_MIRROR" ]; then
             echo "::error::a promoting build needs the candidate as mirror"; exit 1
           fi
@@ -135,7 +152,24 @@ jobs:
           esac
           echo "BUILD_CE=$CE" >> "$GITHUB_ENV"
           echo "BUILD_YA=$YA" >> "$GITHUB_ENV"
+          # A pin moved by hand (a re-anchor, say) gets the tag that keeps it, as
+          # one moved by a pin candidate does.
+          if [ -z "$IN_MIRROR" ] && [ "$CHECK" != true ] \
+             && ! gh api "repos/${{ github.repository }}/git/ref/tags/coreelec-pin/$CE" >/dev/null 2>&1; then
+            gh api "repos/${{ github.repository }}/git/refs" -f ref="refs/tags/coreelec-pin/$CE" -f sha="$CE" >/dev/null \
+              && echo "tagged coreelec-pin/${CE:0:10}" \
+              || echo "::warning::could not tag coreelec-pin/${CE:0:10}"
+          fi
           echo "coreelec ${CE:0:10}${IN_MIRROR:+ (given)}, yacer ${YA:0:10}"
+
+      - name: Report the check as started
+        if: inputs.check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/$BUILD_YA" -f state=pending -f context=yacer/build \
+            -f description="building against CoreELEC ${BUILD_CE:0:10}" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >/dev/null
 
       # The build tree is upstream's, at the pinned commit, with our own files
       # laid on top - nothing of ours is replayed onto upstream, so there is
@@ -195,6 +229,8 @@ jobs:
           MIRROR: ${{ inputs.mirror || '' }}
 
       - name: Compose the version
+        env:
+          PR: ${{ inputs.pr || '' }}
         run: |
           # eval of an empty grep succeeds and leaves the names unset, which would
           # bake a malformed version into both the file name and the image.
@@ -210,6 +246,8 @@ jobs:
           # records its own timestamp and sha, so a build stays traceable without
           # two hashes in every file name
           V="${OS_MAJOR}.${OS_MINOR}-${OS_CODENAME}_$(date +%Y%m%d%H%M%S)"
+          # a pull request's build says so wherever the box shows its version
+          case "$PR" in ''|*[!0-9]*) ;; *) V="${OS_MAJOR}.${OS_MINOR}-${OS_CODENAME}_pr${PR}_$(date +%Y%m%d%H%M%S)" ;; esac
           echo "CUSTOM_VERSION=$V" >> "$GITHUB_ENV"
           # full shas, so the release notes can link to both commits
           echo "CE_SHA=$CE_SHA" >> "$GITHUB_ENV"
@@ -744,7 +782,7 @@ jobs:
             || echo "::warning::could not refresh the change list page"
 
       - name: Publish the release
-        if: success() && env.INCOMPLETE != '1'
+        if: success() && env.INCOMPLETE != '1' && !inputs.check
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref_name }}
@@ -874,7 +912,11 @@ jobs:
         if: always()
         run: |
           STAMPS=$(find build.CoreELEC-*/.stamps -name 'build_*' 2>/dev/null | wc -l)
-          if [ "$STAMPS" -lt 50 ]; then
+          if [ "${{ inputs.check && 'true' || 'false' }}" = true ]; then
+            # a pull request's tree is not the one the next release builds
+            echo "a pull request check - the cache stays as it was"
+            echo "WORTH_SAVING=0" >> "$GITHUB_ENV"
+          elif [ "$STAMPS" -lt 50 ]; then
             echo "only $STAMPS stamped package(s), down from ${STAMPS_BEFORE} - keeping"
             echo "the existing cache rather than replacing it with less"
             echo "WORTH_SAVING=0" >> "$GITHUB_ENV"
@@ -1003,9 +1045,31 @@ jobs:
           echo "deadline reached; continuing in a follow-up run (depth $((DEPTH+1)))"
           gh workflow run yacer-build.yml --repo "${{ github.repository }}" \
             --ref "$REF" -f depth=$((DEPTH+1)) -f mirror="$BUILD_CE" -f yacer="$BUILD_YA" \
-            -f promote=${{ inputs.promote && 'true' || 'false' }}
+            -f promote=${{ inputs.promote && 'true' || 'false' }} -f check=${{ inputs.check && 'true' || 'false' }}
+
+      # A check never continues - it keeps no state to continue from - so a
+      # build that does not finish in one run reports so.
+      - name: Report the check result
+        if: always() && inputs.check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          SHA: ${{ env.BUILD_YA || inputs.yacer }}
+        run: |
+          if [ "${INCOMPLETE:-0}" = 1 ]; then state=failure; d="did not finish within one run"
+          else case "$RESULT" in
+                 success)   state=success; d="builds against CoreELEC ${BUILD_CE:0:10}" ;;
+                 cancelled) state=error;   d="the build was cancelled" ;;
+                 *)         state=failure; d="the build failed" ;;
+               esac
+          fi
+          [ -n "$SHA" ] || exit 0
+          gh api "repos/${{ github.repository }}/statuses/$SHA" -f state=$state -f context=yacer/build \
+            -f description="$d" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >/dev/null
 
       - uses: actions/upload-artifact@v7
+        id: tar
         if: always() && env.INCOMPLETE != '1'
         with:
           name: yacer-update-tar-${{ github.run_attempt }}
@@ -1014,6 +1078,29 @@ jobs:
             target/*.tar.sha256
           retention-days: 14
           compression-level: 0
+
+      # One comment per pull request, rewritten for each build of it: the
+      # newest build of the pull request, and where to get it.
+      - name: Say where the pull request's build is
+        if: success() && inputs.check && inputs.pr != '' && env.INCOMPLETE != '1' && steps.tar.outputs.artifact-url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          URL: ${{ steps.tar.outputs.artifact-url }}
+        run: |
+          TAR=$(basename "$(ls -t target/*.tar | head -1)")
+          body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+            "**Test build of ${BUILD_YA:0:10}** (CoreELEC ${BUILD_CE:0:10}): \`$TAR\`" \
+            "[Download]($URL) - a zip holding the update .tar; unzip it, copy the .tar to the box's \`.update\` share and reboot. Kept for 14 days." \
+            "This build is not offered by the update feed; the box shows \`pr${PR}\` in its version while it runs it." \
+            "<!-- yacer-build -->")
+          id=$(gh api --paginate "repos/${{ github.repository }}/issues/$PR/comments?per_page=100" \
+                 --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- yacer-build -->"))) | .id' | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh api "repos/${{ github.repository }}/issues/$PR/comments" -f body="$body" >/dev/null
+          fi
 
       - name: Refresh the source mirror
         # Last, so nothing here can delay the image, the cache or the artifacts.

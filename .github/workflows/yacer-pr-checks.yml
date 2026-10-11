@@ -1,0 +1,111 @@
+# YACER pull request checks
+#
+# Proves a pull request against yacer before it is merged, against the CoreELEC
+# commit the pull request itself pins (coreelec.pin), so a pull request that
+# moves the pin is checked on the upstream it moves to:
+#
+#   checks   every package's patch stack applies at zero fuzz, our files
+#            assemble over the tree, no merge leftovers in the patches, the
+#            change list page still renders - minutes
+#   build    a full build of the pull request from the build cache, reported
+#            as the yacer/build status on its head commit (yacer-build.yml,
+#            check mode: nothing is published and the pin does not move)
+#
+# The native tests run on every pull request already (yacer-tests.yml).
+# A pull request from another repository gets the checks but not the build:
+# it would run their code with this repository's build cache and write access.
+# Nor does one from a reanchor/ branch, until someone has read it and added
+# the `build` label: its changes were not written by hand.
+name: YACER pull request checks
+
+on:
+  pull_request:
+    branches: [ yacer ]
+    types: [ opened, synchronize, reopened, labeled ]
+
+permissions:
+  contents: read
+  actions: write        # starts the check build
+
+concurrency:
+  group: yacer-pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: patches apply cleanly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: CoreELEC-yacer
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the CoreELEC pin
+        id: pin
+        run: |
+          ce=$(tr -d '[:space:]' < CoreELEC-yacer/coreelec.pin)
+          case "$ce" in
+            ????????????????????????????????????????) ;;
+            *) echo "::error file=coreelec.pin::not a full commit sha"; exit 1 ;;
+          esac
+          echo "sha=$ce" >> "$GITHUB_OUTPUT"
+          echo "pinned CoreELEC ${ce:0:10}"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pin.outputs.sha }}
+          path: CoreELEC
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply every patch stack
+        working-directory: CoreELEC
+        run: python3 ../CoreELEC-yacer/tests/check-patch-stack.py
+
+      - name: Assemble our files onto the tree
+        working-directory: CoreELEC
+        run: bash ../CoreELEC-yacer/scripts/yacer-assemble.sh ../CoreELEC-yacer
+
+      # What a hand-resolved merge leaves behind when it goes wrong, read hunk
+      # by hunk so a patch's own headers are not mistaken for it.
+      - name: No merge leftovers in the patches
+        working-directory: CoreELEC-yacer
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mapfile -t files < <(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'patches-yacer/*.patch')
+          [ "${#files[@]}" -eq 0 ] || python3 tests/check-patch-leftovers.py "${files[@]}"
+
+      # The change list page is built from the patches' headers and the
+      # groups' READMEs; a header it cannot read fails here, not on Pages.
+      - name: The change list renders
+        working-directory: CoreELEC-yacer
+        run: python3 scripts/yacer-changes.py "${RUNNER_TEMP}/site"
+
+  build:
+    name: start the check build
+    needs: checks
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'labeled' || github.event.label.name == 'build') &&
+      (!startsWith(github.event.pull_request.head.ref, 'reanchor/') ||
+       contains(github.event.pull_request.labels.*.name, 'build'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Start a check build of the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer \
+            -f yacer="$HEAD_SHA" -f check=true -f pr="${{ github.event.pull_request.number }}"
+          echo "build of ${HEAD_SHA:0:10} queued; it reports as yacer/build on the pull request" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
