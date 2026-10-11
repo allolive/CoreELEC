@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:00:00 -0400
+Subject: [PATCH] AML: read the resolution on the main thread only
+
+CGraphicContext::GetFPS() and GetResInfo() copy a RESOLUTION_INFO, strings
+included, out of CDisplaySettings, and a hotplug rebuilds that list on the
+main thread without a lock (ClearCustomResolutions, then AddResolutionInfo,
+which can reallocate it). The AML code called them on every packet and every
+vsync from the decode, present and reference-clock threads: the display
+latency for the metadata clock and the genlock (aml_render_display_latency,
+aml_render_chosen_offset, CDVDVideoCodecAmlogic::RenderDisplayLatency), the
+latency poll, the vsync liveness bound, the frame-latency sample and the AML
+video sync's rate.
+
+The main thread now reads the two values those threads need, the refresh rate
+and the screen height, once per pass of the render loop (MessagePump) and
+after every window creation, before the display reset restarts the clock, and
+keeps them in atomics (aml_resolution_rate, aml_resolution_screen_height).
+Every other thread takes those, so no AML code copies a resolution off the
+main thread any more. Upstream code still does: the video thread's
+GetFPS() when the stream's rate is unknown (CVideoPlayerVideo::OutputPicture),
+CVideoPlayer::GetVideoResolution, and PreInit/UnInit when they fall back to
+the player thread. Those are left to upstream: the first needs the
+resolution's own rate (in HFR VRR GetVsyncRate is the output's multiple of
+it, which would configure the renderer at 96 Hz), and none of them runs
+every packet or vsync.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 042b3e7..8f46303 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -101,7 +101,7 @@ void DrainVsyncKick()
+ // the kernel reports no missing vsync; this is the VideoSyncAML bound for the same flag
+ std::chrono::milliseconds VsyncLivenessBound()
+ {
+-  const float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++  const float fps = aml_resolution_rate();
+   return std::chrono::milliseconds(static_cast<int>(3000.0f / (fps > 1.0f ? fps : 60.0f)));
+ }
+ 
+@@ -3435,8 +3435,7 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
+     return;
+   }
+ 
+-  m_genlock.Update(
+-      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()), *clock,
++  m_genlock.Update(static_cast<double>(aml_resolution_rate()), *clock,
+       m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+index 9e7c8ad..8e1254e 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -400,7 +400,7 @@ void CAMLLatency::Poll()
+     StandDown();
+   }
+ 
+-  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
++  const double rate = static_cast<double>(aml_resolution_rate());
+   if (rate <= 0.0)
+     return;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 736e795..2022b91 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -727,13 +727,13 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
+ 
+   const bool isHDRUsed = winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON &&
+                          m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = aml_resolution_rate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+   const double latencyTweak = static_cast<double>(
+       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+-          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++          refresh, isHDRUsed, aml_resolution_screen_height()));
+   // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+   // and the renderer's own sum cannot differ by the truncation.
+   const double videoDelay = static_cast<double>(
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 9288397..d02b1a7 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -443,6 +443,30 @@ std::optional<uint32_t> aml_displayed_pts_ticks()
+   return ticks;
+ }
+ 
++namespace
++{
++std::atomic<float> g_resolutionRate{0.0f};
++std::atomic<int> g_resolutionScreenHeight{0};
++} // unnamed namespace
++
++float aml_resolution_rate()
++{
++  return g_resolutionRate.load(std::memory_order_relaxed);
++}
++
++int aml_resolution_screen_height()
++{
++  return g_resolutionScreenHeight.load(std::memory_order_relaxed);
++}
++
++void aml_resolution_refresh()
++{
++  const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++  const RESOLUTION_INFO info = gfx.GetResInfo();
++  g_resolutionRate.store(gfx.GetFPS(), std::memory_order_relaxed);
++  g_resolutionScreenHeight.store(info.iScreenHeight, std::memory_order_relaxed);
++}
++
+ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+ {
+   const auto winSystem = CServiceBroker::GetWinSystem();
+@@ -450,13 +474,13 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+ 
+   const bool isHDRUsed =
+       winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = aml_resolution_rate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+   const double latencyTweak = static_cast<double>(
+       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+-          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++          refresh, isHDRUsed, aml_resolution_screen_height()));
+ 
+   // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so the
+   // aim and the renderer's scheduling do not differ by the truncation.
+@@ -490,13 +514,13 @@ double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay)
+ 
+   const bool isHDRUsed =
+       winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+-  float refresh = gfx.GetFPS();
++  float refresh = aml_resolution_rate();
+   if (gfx.GetVideoResolution() == RES_WINDOW)
+     refresh = 0;
+ 
+   const double latencyTweak = static_cast<double>(
+       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+-          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++          refresh, isHDRUsed, aml_resolution_screen_height()));
+ 
+   // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+   // and the renderer's own sum cannot differ by the truncation.
+diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index b3ec70f..7552017 100644
+--- a/xbmc/utils/AMLUtils.h
++++ b/xbmc/utils/AMLUtils.h
+@@ -98,6 +98,15 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
+ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
+ double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay);
+ 
++//! \brief The current resolution's refresh rate (CGraphicContext::GetFPS()) and
++//! screen height, as the main thread last read them. The decode, present and
++//! clock threads take these instead of copying the resolution, which a hotplug
++//! rebuilds on the main thread without a lock. 0 until the first refresh.
++float aml_resolution_rate();
++int aml_resolution_screen_height();
++//! \brief Read them again. Main thread only.
++void aml_resolution_refresh();
++
+ //! \brief The whole number of refreshes the display shows each frame for, from
+ //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
+ //! when the video runs faster than the display, which drops frames rather than
+diff --git a/xbmc/windowing/amlogic/VideoSyncAML.cpp b/xbmc/windowing/amlogic/VideoSyncAML.cpp
+index ecba729..62a53b9 100644
+--- a/xbmc/windowing/amlogic/VideoSyncAML.cpp
++++ b/xbmc/windowing/amlogic/VideoSyncAML.cpp
+@@ -10,6 +10,7 @@
+ #include "ServiceBroker.h"
+ #include "windowing/GraphicContext.h"
+ #include "cores/VideoPlayer/VideoReferenceClock.h"
++#include "utils/AMLUtils.h"
+ #include "utils/TimeUtils.h"
+ #include "utils/log.h"
+ #include "threads/Thread.h"
+@@ -84,7 +85,7 @@ void CVideoSyncAML::Cleanup()
+ 
+ float CVideoSyncAML::GetFps()
+ {
+-  m_fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
++  m_fps = aml_resolution_rate();
+   CLog::Log(LOGDEBUG, "CVideoReferenceClock: fps: {:.3f}", m_fps);
+   return m_fps;
+ }
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index d4ae6e6..6219097 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -197,6 +197,8 @@ bool CWinSystemAmlogic::MessagePump()
+   if (m_hotplugPending.exchange(false))
+     HotplugEvent();
+ 
++  aml_resolution_refresh();
++
+   return false;
+ }
+ 
+@@ -409,6 +411,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
+ 
+   m_force_mode_switch = false;
+   m_hotplug_mode_switch = false;
++  // before the display reset restarts the reference clock, which reads it
++  aml_resolution_refresh();
+   return ret;
+ }
+ 
+@@ -581,7 +585,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+     return 0.0f;
+   };
+ 
+-  const double rate = GetGfxContext().GetFPS();
++  const double rate = aml_resolution_rate();
+   if (rate <= 0.0)
+     return stand_down();
+ 

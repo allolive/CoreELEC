@@ -58,6 +58,13 @@ broken timing as separate options, all on, and the languages to correct
 letters in, none until chosen. Its option filler and callback register in
 CSettings beside the others.
 
+The language CDVDStreamInfo carries is declared as the type of
+CDemuxStream::language, which it is copied from, and the codec reads it
+with auto, so the patch never names CLanguageTag's namespace. Kodi master
+moves the class from KODI::UTILS to KODI::LANGUAGE (xbmc/xbmc 9a33d95c42,
+"Move CLanguageTag to xbmc/language"); written this way, the patch builds
+on either side of that move.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
  CMakeLists.txt                                |    2 +
@@ -273,7 +280,7 @@ index 879f97a..b95d660 100755
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
-index f31e595..3a73f59 100644
+index f31e595..6089d20 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
 @@ -42,6 +42,22 @@ bool CDVDOverlayCodecText::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options
@@ -285,7 +292,7 @@ index f31e595..3a73f59 100644
 +  KODI::SUBTITLES::CLEANUP::Options repair;
 +  if (m_codecId != AV_CODEC_ID_SSA && KODI::SUBTITLES::CLEANUP::CurrentOptions(repair))
 +  {
-+    const KODI::UTILS::CLanguageTag& tag = hints.language;
++    const auto& tag = hints.language;
 +    std::string language;
 +    if (!tag.IsEmpty() && !tag.IsUndetermined())
 +      language = tag.AsIso6391().empty() ? tag.AsIso6392B() : tag.AsIso6391();
@@ -428,14 +435,15 @@ index 444a764..096f4e6 100644
    if (withextradata && right.extraData)
    {
 diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.h b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
-index a4f1ab7..fee6e46 100644
+index a4f1ab7..6e7056d 100644
 --- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
 +++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
-@@ -53,6 +53,7 @@ public:
+@@ -53,6 +53,8 @@ public:
    int source{STREAM_SOURCE_NONE};
    int flags;
    std::string filename;
-+  KODI::UTILS::CLanguageTag language; // as the container declares it; empty when it does not
++  // as the container declares it; empty when it does not
++  decltype(CDemuxStream::language) language;
    bool dvd;
    int codecOptions;
  

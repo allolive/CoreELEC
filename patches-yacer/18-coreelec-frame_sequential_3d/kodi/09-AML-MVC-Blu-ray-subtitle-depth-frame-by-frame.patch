@@ -1,0 +1,688 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 21:00:00 -0400
+Subject: [PATCH] AML: MVC Blu-ray subtitle depth, frame by frame
+
+A Blu-ray 3D gives its subtitles a depth for every frame ("1 plane +
+offset"): the first access unit of each GOP carries, in an SEI
+user_data_unregistered message (OFMD), one signed offset per displayed
+frame for each offset sequence, and a PG stream names the sequence it
+follows (ss_offset_sequence_id, or a remux's 3d-plane tag, which the
+player already passes on as DemuxPacket::subtitlePlane). Kodi read none
+of it, and the depth a picture could carry never reached the renderer.
+The layout and the missing links are from cinemaONE's CoreELEC/xbmc#77.
+
+The AML codec reads the table from the access unit before Convert(),
+keeps the last few GOPs' tables, each from its GOP's first picture in
+display order (the access unit that carried it, or an open GOP's leading
+picture fed after it), and gives each output picture the offset of its
+own pts. The decoder holds several pictures between input and output, so
+counting output pictures from the table's arrival would change depth
+before the cut it belongs to. A seek drops the tables; a picture past
+the end of a table keeps its last offset.
+
+Shared code: a PG overlay is marked as such; the overlay renderer gives
+its cached texture the overlay's depth and kind every frame, the overlays
+of a group get the picture's depth as a single overlay does. The depth
+adds to the subtitle depth setting, as upstream's code already meant.
+
+The OFMD table was only looked for in a top-level user_data_unregistered
+message, but MVC streams carry it nested in an MVC scalable nesting SEI
+(payload type 37), so no Blu-ray subtitle ever got a depth. Every SEI
+message's payload is now searched for the OFMD uuid, a top-level type 5 first,
+and the table is bounded by the end of the payload it was found in.
+
+The depth was written onto the overlay objects in the video thread
+(CVideoPlayerVideo::ProcessOverlays), objects the overlay renderer already
+holds for earlier render buffers and reads on the render thread: the depth of
+a later picture took effect several frames early, and the write was not
+synchronised. The depth now goes with the render buffer: CRenderManager::
+AddOverlay takes it with the overlay and the overlay renderer keeps it in the
+buffer's element, and the overlay is never written. Shared code: an optional
+argument to AddOverlay in the render manager and the overlay renderer, the
+element's field, and the picture's depth made an optional (see below); the
+upstream write onto the overlay is removed.
+
+The disc's depth replaces the setting; the setting covers subtitles without
+it. A PG subtitle whose picture has an offset (a table was found and the
+subtitle's sequence is in it) takes only that offset, in frame packing as in
+HFR VRR; other subtitles, PG on discs and remuxes without a table, and PG
+before the first table take subtitles.stereoscopicdepth, as upstream. For
+that the picture's depth is a std::optional, empty when the stream gives
+none, and so is the overlay's.
+
+The offsets are in pixels of a 1920 wide picture and were added in GUI
+coordinates: the disc's offset is now scaled by the GUI's width over 1920
+(the setting is in GUI pixels and is left as it is).
+
+A packet without a pts was keyed by its dts, which puts a reordered picture
+at another place than it is shown: such packets now feed neither a table nor
+the GOP start.
+
+One INFO line per film says what was found: the first table (sequences x
+frames, and the sequence the subtitle follows), or that after 10 s of
+pictures the stream carries none; and once if the subtitle's sequence is not
+in the table.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+index be99086..55cf211 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+@@ -62,6 +62,7 @@ public:
+     m_setForcedMargins = src.m_setForcedMargins;
+     m_stereoView = src.m_stereoView;
+     m_isMenu = src.m_isMenu;
++    m_isPgs = src.m_isPgs;
+   }
+ 
+   virtual ~CDVDOverlay() = default;
+@@ -125,6 +126,7 @@ public:
+   DVDOverlayStereoView m_stereoView;
+ 
+   int m_3dSubtitleDepth;
++  bool m_isPgs{false}; //!< a Blu-ray PG subtitle, which can follow the disc's 3D depth
+ protected:
+   DVDOverlayType m_type;
+   bool m_enableTextAlign;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp
+index 1af10d4..8dbfdb8 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp
+@@ -300,6 +300,7 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
+     overlay->iPTSStartTime = m_StartTime;
+     overlay->iPTSStopTime = m_StopTime;
+     overlay->replace = true;
++    overlay->m_isPgs = m_pCodecContext->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+     overlay->linesize = rect.w;
+     overlay->pixels.resize(rect.w * rect.h);
+     overlay->palette.resize(rect.nb_colors);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
+new file mode 100644
+index 0000000..238ee9c
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
+@@ -0,0 +1,215 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++// Blu-ray 3D subtitle depth ("1 plane + offset"): an MVC access unit opening a
++// GOP carries, in an SEI user_data_unregistered message, one signed offset per
++// displayed frame of the GOP for each offset sequence. A PG stream names the
++// sequence it follows (the STN-SS ss_offset_sequence_id, or a remux's 3d-plane
++// tag). The OFMD layout follows cinemaONE's CoreELEC/xbmc#77.
++
++#include <algorithm>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <iterator>
++#include <map>
++#include <optional>
++#include <utility>
++#include <vector>
++
++namespace AML_MVC_DEPTH
++{
++
++//! offsets[sequence][frame of the GOP in display order], in pixels of a 1920 wide plane
++using Offsets = std::vector<std::vector<int8_t>>;
++
++inline constexpr uint8_t OFMD_UUID[16] = {0x17, 0xee, 0x8c, 0x60, 0xf8, 0x4d, 0x11, 0xd9,
++                                          0x8c, 0xd6, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66};
++
++//! The OFMD table of a user_data_unregistered payload starting at its uuid, avail
++//! bytes long: "OFMD" after the uuid, the sequence count at 10, the frame count at
++//! 11 and the offsets from 14, sequence by sequence; bit 7 of an offset is its sign
++inline bool ParseOfmdPayload(const uint8_t* p, size_t avail, Offsets& offsets)
++{
++  if (avail < sizeof(OFMD_UUID) + 14 || std::memcmp(p, OFMD_UUID, sizeof(OFMD_UUID)) != 0 ||
++      std::memcmp(p + sizeof(OFMD_UUID), "OFMD", 4) != 0)
++    return false;
++  const uint8_t* o = p + sizeof(OFMD_UUID);
++  avail -= sizeof(OFMD_UUID);
++  const size_t sequences = o[10] & 0x3f;
++  const size_t frames = o[11] & 0x7f;
++  if (!sequences || !frames || 14 + sequences * frames > avail)
++    return false;
++  offsets.assign(sequences, std::vector<int8_t>(frames, 0));
++  for (size_t s = 0; s < sequences; s++)
++  {
++    for (size_t f = 0; f < frames; f++)
++    {
++      const uint8_t v = o[14 + s * frames + f];
++      offsets[s][f] = static_cast<int8_t>((v & 0x80) ? -(v & 0x7f) : (v & 0x7f));
++    }
++  }
++  return true;
++}
++
++//! The OFMD table of one SEI NAL (header byte included, emulation prevention still in).
++//! MVC streams carry it nested, in an MVC scalable nesting message (payload type 37),
++//! so any message's payload is searched for it, within that payload's bounds.
++inline bool ParseOfmdSei(const uint8_t* nal, size_t len, Offsets& offsets)
++{
++  if (len < 2 || (nal[0] & 0x1f) != 6)
++    return false;
++
++  std::vector<uint8_t> rbsp;
++  rbsp.reserve(len);
++  for (size_t i = 1; i < len; i++)
++  {
++    if (i + 2 < len && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3)
++    {
++      rbsp.push_back(0);
++      rbsp.push_back(0);
++      i += 2;
++    }
++    else
++      rbsp.push_back(nal[i]);
++  }
++
++  size_t pos = 0;
++  while (pos < rbsp.size() && rbsp[pos] != 0x80)
++  {
++    size_t type = 0;
++    while (pos < rbsp.size() && rbsp[pos] == 0xff)
++      type += rbsp[pos++];
++    if (pos >= rbsp.size())
++      return false;
++    type += rbsp[pos++];
++    size_t size = 0;
++    while (pos < rbsp.size() && rbsp[pos] == 0xff)
++      size += rbsp[pos++];
++    if (pos >= rbsp.size())
++      return false;
++    size += rbsp[pos++];
++    if (size > rbsp.size() - pos)
++      return false;
++
++    const uint8_t* p = rbsp.data() + pos;
++    const uint8_t* end = p + size;
++    // user_data_unregistered at the top level, or nested in another message
++    if (type == 5 && ParseOfmdPayload(p, size, offsets))
++      return true;
++    for (const uint8_t* q = p; q + sizeof(OFMD_UUID) + 4 <= end; q++)
++    {
++      q = std::search(q, end, std::begin(OFMD_UUID), std::end(OFMD_UUID));
++      if (q == end)
++        break;
++      if (ParseOfmdPayload(q, static_cast<size_t>(end - q), offsets))
++        return true;
++    }
++    pos += size;
++  }
++  return false;
++}
++
++//! The OFMD table of an access unit: length-prefixed NALs (avcC), or Annex B when lengthSize is 0
++inline bool ParseOfmd(const uint8_t* data, size_t size, int lengthSize, Offsets& offsets)
++{
++  if (!data)
++    return false;
++  if (lengthSize >= 1 && lengthSize <= 4)
++  {
++    for (size_t pos = 0; pos + lengthSize <= size;)
++    {
++      size_t len = 0;
++      for (int i = 0; i < lengthSize; i++)
++        len = (len << 8) | data[pos + i];
++      pos += lengthSize;
++      if (len == 0 || len > size - pos)
++        return false;
++      if (ParseOfmdSei(data + pos, len, offsets))
++        return true;
++      pos += len;
++    }
++    return false;
++  }
++  size_t start = SIZE_MAX;
++  for (size_t i = 0; i + 2 < size; i++)
++  {
++    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
++      continue;
++    if (start != SIZE_MAX)
++    {
++      size_t end = i;
++      while (end > start && data[end - 1] == 0)
++        end--;
++      if (ParseOfmdSei(data + start, end - start, offsets))
++        return true;
++    }
++    start = i + 3;
++  }
++  return start != SIZE_MAX && start < size && ParseOfmdSei(data + start, size - start, offsets);
++}
++
++/*!
++ * The tables of the last few GOPs, each from its first picture in display
++ * order: the access unit carrying it (the GOP's first in decode order) until a
++ * later one of the GOP turns out to be shown before it (an open GOP's leading
++ * pictures). A picture's offset is then read by its own pts, however many
++ * pictures the decoder holds between input and output.
++ */
++class CTables
++{
++public:
++  void Add(double pts, Offsets offsets)
++  {
++    m_tables[pts] = std::move(offsets);
++    while (m_tables.size() > MAX_TABLES)
++      m_tables.erase(m_tables.begin());
++  }
++
++  //! a picture of the newest table's GOP fed after it: shown before its start, it is the new start
++  void Fed(double pts)
++  {
++    if (m_tables.empty())
++      return;
++    auto last = std::prev(m_tables.end());
++    if (pts >= last->first)
++      return;
++    if (last != m_tables.begin() && pts <= std::prev(last)->first)
++      return;
++    auto node = m_tables.extract(last);
++    node.key() = pts;
++    m_tables.insert(std::move(node));
++  }
++
++  //! the offset for the picture shown at pts on the sequence; the last one of a table holds past its end
++  std::optional<int> Offset(double pts, int sequence, double frameDuration) const
++  {
++    if (m_tables.empty() || sequence < 0 || frameDuration <= 0)
++      return std::nullopt;
++    auto it = m_tables.upper_bound(pts + frameDuration / 2);
++    if (it == m_tables.begin())
++      return std::nullopt;
++    --it;
++    if (static_cast<size_t>(sequence) >= it->second.size() || it->second[sequence].empty())
++      return std::nullopt;
++    const std::vector<int8_t>& frames = it->second[sequence];
++    const long index =
++        std::clamp(std::lround((pts - it->first) / frameDuration), 0L,
++                   static_cast<long>(frames.size()) - 1);
++    return frames[index];
++  }
++
++  void Clear() { m_tables.clear(); }
++  bool Empty() const { return m_tables.empty(); }
++
++private:
++  static constexpr size_t MAX_TABLES = 4;
++  std::map<double, Offsets> m_tables;
++};
++
++} // namespace AML_MVC_DEPTH
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
+index 59388e3..c192407 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
+@@ -43,7 +43,7 @@ void VideoPicture::Reset()
+   colorBits = 8;
+   stereoMode.clear();
+ 
+-  m_3dSubtitleDepth = 0;
++  m_3dSubtitleDepth.reset();
+ 
+   qp_table = nullptr;
+   qstride = 0;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
+index 8c0e000..151838a 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
+@@ -21,6 +21,7 @@ extern "C" {
+ #include <vector>
+ #include <string>
+ #include <map>
++#include <optional>
+ 
+ class CSetting;
+ 
+@@ -60,7 +61,8 @@ public:
+   unsigned int colorBits = 8;
+   std::string stereoMode;
+ 
+-  int m_3dSubtitleDepth;
++  //! a Blu-ray 3D subtitle's own depth for this picture (MVC), if the stream gives one
++  std::optional<int> m_3dSubtitleDepth;
+ 
+   int8_t* qp_table;                //< Quantization parameters, primarily used by filters
+   int qstride;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 5ffa3f0..f30cc58 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -627,6 +627,50 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ 
+   if (pData)
+   {
++    // Blu-ray 3D subtitle depth, read before Convert() can rewrite the access unit
++    // Tables are keyed by display time: a packet without a pts is left out, its dts
++    // would put a reordered picture at the wrong place.
++    if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && packet.pts != DVD_NOPTS_VALUE)
++    {
++      m_mvcDepthSequence = packet.subtitlePlane;
++      AML_MVC_DEPTH::Offsets offsets;
++      if (AML_MVC_DEPTH::ParseOfmd(pData, iSize, m_nalLengthSize, offsets))
++      {
++        if (!m_mvcDepthLogged)
++        {
++          m_mvcDepthLogged = true;
++          CLog::Log(LOGINFO,
++                    "CDVDVideoCodecAmlogic: MVC subtitle depth: {} sequences x {} frames, "
++                    "subtitle follows sequence {}",
++                    offsets.size(), offsets.front().size(), m_mvcDepthSequence);
++        }
++        if (!m_mvcDepthRangeLogged &&
++            (m_mvcDepthSequence < 0 ||
++             static_cast<size_t>(m_mvcDepthSequence) >= offsets.size()))
++        {
++          m_mvcDepthRangeLogged = true;
++          CLog::Log(LOGINFO,
++                    "CDVDVideoCodecAmlogic: MVC subtitle depth: sequence {} is not in the "
++                    "table ({} sequences), the subtitle takes the depth setting",
++                    m_mvcDepthSequence, offsets.size());
++        }
++        m_mvcDepth.Add(packet.pts, std::move(offsets));
++      }
++      else
++      {
++        m_mvcDepth.Fed(packet.pts);
++        if (m_mvcDepthFirstPts == DVD_NOPTS_VALUE)
++          m_mvcDepthFirstPts = packet.pts;
++        else if (!m_mvcDepthLogged &&
++                 packet.pts - m_mvcDepthFirstPts > 10.0 * DVD_TIME_BASE)
++        {
++          m_mvcDepthLogged = true;
++          CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic: MVC subtitle depth: the stream carries "
++                             "none, subtitles take the depth setting");
++        }
++      }
++    }
++
+     // named by how the EL arrives; a track pair can open with solo packets, so
+     // dt-dl may correct an early st-dl
+     if (m_dualLayer && m_streamMeta.structure != "dt-dl")
+@@ -970,6 +1014,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
+ 
+   m_mpeg2_sequence_pts = 0;
+   m_has_keyframe = false;
++  m_mvcDepth.Clear();
+   if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && m_mvcParams == MvcParams::OWN)
+   {
+     m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
+@@ -1011,6 +1056,16 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+     pVideoPicture->videoBuffer = nullptr;
+     pVideoPicture->SetParams(m_videobuffer);
+ 
++    // none unless the stream gives this picture one: the setting covers that case
++    pVideoPicture->m_3dSubtitleDepth.reset();
++    if (!m_mvcDepth.Empty() && pVideoPicture->pts != DVD_NOPTS_VALUE && m_hints.fpsrate > 0)
++    {
++      const double frameDuration =
++          static_cast<double>(DVD_TIME_BASE) * m_hints.fpsscale / m_hints.fpsrate;
++      pVideoPicture->m_3dSubtitleDepth =
++          m_mvcDepth.Offset(pVideoPicture->pts, m_mvcDepthSequence, frameDuration);
++    }
++
+     if (m_seekPreroll.ShouldDrop(m_videobuffer.pts != DVD_NOPTS_VALUE
+                                      ? std::optional<double>{m_videobuffer.pts}
+                                      : std::nullopt))
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 8ef04c2..41eb6a6 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -10,6 +10,7 @@
+ 
+ #include "AMLFrameMetadata.h"
+ #include "AMLSeekPreroll.h"
++#include "AMLMvcSubtitleDepth.h"
+ #include "DVDVideoCodec.h"
+ #include "DVDStreamInfo.h"
+ #include "threads/CriticalSection.h"
+@@ -139,6 +140,14 @@ private:
+   //! one has, or for other codecs
+   int m_mvcParamsWait{0};
+   int m_mvcParamsSkipped{0};
++  //! MVC: the Blu-ray subtitle depth tables, and the offset sequence of the subtitle shown
++  AML_MVC_DEPTH::CTables m_mvcDepth;
++  int m_mvcDepthSequence{-1};
++  //! once per film: the first table, or that there is none after 10 s of pictures;
++  //! and a subtitle sequence the table does not have
++  bool m_mvcDepthLogged{false};
++  bool m_mvcDepthRangeLogged{false};
++  double m_mvcDepthFirstPts{DVD_NOPTS_VALUE};
+   static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
+   bool MvcParamsScan(const uint8_t* data, uint32_t size);
+   bool MvcParamsReady(const uint8_t* data, uint32_t size);
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+index 002c7e1..addda88 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+@@ -952,9 +952,6 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+ 
+       if((pOverlay->iPTSStartTime <= pts2 && (pOverlay->iPTSStopTime > pts2 || pOverlay->iPTSStopTime == 0LL)))
+       {
+-
+-        pOverlay->m_3dSubtitleDepth = pSource->m_3dSubtitleDepth;
+-
+         if(pOverlay->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
+           overlays.insert(overlays.end(),
+                           static_cast<CDVDOverlayGroup&>(*pOverlay).m_overlays.begin(),
+@@ -967,7 +964,9 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+     for(it = overlays.begin(); it != overlays.end(); ++it)
+     {
+       double pts2 = (*it)->bForced ? pts : pts - m_iSubtitleDelay;
+-      m_renderManager.AddOverlay(*it, pts2);
++      // the picture's subtitle depth goes with this render buffer, not onto the
++      // overlay, which the renderer may still be drawing for an earlier one
++      m_renderManager.AddOverlay(*it, pts2, pSource->m_3dSubtitleDepth);
+     }
+   }
+ }
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+index d00bd9f..0ab125d 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+@@ -68,13 +68,17 @@ CRenderer::~CRenderer()
+   Flush();
+ }
+ 
+-void CRenderer::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index)
++void CRenderer::AddOverlay(std::shared_ptr<CDVDOverlay> o,
++                           double pts,
++                           int index,
++                           std::optional<int> depth3d)
+ {
+   std::unique_lock lock(m_section);
+ 
+   SElement   e;
+   e.pts = pts;
+   e.overlay_dvd = std::move(o);
++  e.depth3d = depth3d;
+   m_buffers[index].push_back(e);
+ }
+ 
+@@ -1089,20 +1093,24 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
+       r = it->second;
+   }
+ 
+-  if (r)
++  if (!r)
+   {
+-    return r;
++    if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
++      r = COverlay::Create(static_cast<CDVDOverlayImage&>(o), m_rs);
++    else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
++      r = COverlay::Create(static_cast<CDVDOverlaySpu&>(o));
++
++    m_textureCache[m_textureid] = r;
++    o.m_textureid = m_textureid;
++    m_textureid++;
+   }
+ 
+-  if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+-    r = COverlay::Create(static_cast<CDVDOverlayImage&>(o), m_rs);
+-  else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
+-    r = COverlay::Create(static_cast<CDVDOverlaySpu&>(o));
+-
+-  m_textureCache[m_textureid] = r;
+-  o.m_textureid = m_textureid;
+-  m_textureid++;
+-
++  // the 3D depth follows the video picture: this buffer's, on the render thread
++  if (r)
++  {
++    r->m_3dSubtitleDepth = e.depth3d;
++    r->m_pgsSubtitle = o.m_isPgs;
++  }
+   return r;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+index 20dd2b4..a24c3f6 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+@@ -19,6 +19,7 @@
+ #include <atomic>
+ #include <map>
+ #include <memory>
++#include <optional>
+ #include <vector>
+ 
+ typedef struct ass_image ASS_Image;
+@@ -92,7 +93,7 @@ namespace OVERLAY {
+     // pixels are already HDR, matching video's colorimetry
+     bool m_isHDROverlay{false};
+ 
+-    int m_3dSubtitleDepth{0};
++    std::optional<int> m_3dSubtitleDepth;
+     bool m_pgsSubtitle{false};
+ 
+   protected:
+@@ -113,7 +114,10 @@ namespace OVERLAY {
+     // Implementation of Observer
+     void Notify(const Observable& obs, const ObservableMessage msg) override;
+ 
+-    void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index);
++    void AddOverlay(std::shared_ptr<CDVDOverlay> o,
++                    double pts,
++                    int index,
++                    std::optional<int> depth3d = std::nullopt);
+     virtual void Render(int idx, float depth = 0.0f);
+ 
+     // render overlays already in HDR (not sRGB)
+@@ -185,6 +189,8 @@ namespace OVERLAY {
+       SElement() : overlay_dvd(NULL) { pts = 0.0; }
+       double pts;
+       std::shared_ptr<CDVDOverlay> overlay_dvd;
++      //! the subtitle's own 3D depth for this buffer's picture, if it has one
++      std::optional<int> depth3d;
+       // libass output cached by PrepareOverlays; read by ConvertLibass during
+       // render. libass owns the pointer; valid only until the next
+       // ass_render_frame call.
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index be618c5..f820ebb 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -677,7 +677,7 @@ void ScaleRgbaLight(std::vector<uint32_t>& rgba, float factor)
+   }
+ }
+ 
+-int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
++int GetStereoscopicDepth(bool isPgs, std::optional<int> subtitleDepth)
+ {
+   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+ 
+@@ -689,14 +689,21 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
+     return 0;
+   }
+ 
+-  // get configured depth
+-  int depth = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_SUBTITLES_STEREOSCOPICDEPTH);
+-
+-  // in case of MVC playback and PGS subtitles, use the subtitle depth info additionally to the configured one
++  int depth = 0;
++  // In case of MVC playback and PGS subtitles, the depth the disc gives the subtitle
++  // replaces the configured one, which covers the subtitles without it. It is in
++  // pixels of a 1920 wide picture.
+   if ((stereo_mode == RenderStereoMode::HARDWAREBASED || stereo_mode == RenderStereoMode::HFR_VRR) &&
+-      isPgs)
++      isPgs && subtitleDepth)
++  {
++    const int width = CServiceBroker::GetWinSystem()->GetGfxContext().GetWidth();
++    depth = static_cast<int>(std::lround(*subtitleDepth * width / 1920.0));
++  }
++  else
+   {
+-    depth += subtitleDepth;
++    // get configured depth
++    depth = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++        CSettings::SETTING_SUBTITLES_STEREOSCOPICDEPTH);
+   }
+ 
+   // correct depth according to the current left/right eye view
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+index 24311ee..b5911e5 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+@@ -11,6 +11,7 @@
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <cstdint>
++#include <optional>
+ #include <vector>
+ 
+ class CDVDOverlayImage;
+@@ -137,6 +138,6 @@ void FindVisibleBox(const uint8_t* src,
+ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int passes);
+ 
+ bool convert_quad(ASS_Image* images, SQuads& quads, int max_x);
+-int GetStereoscopicDepth(bool isPgs, int subtitleDepth);
++int GetStereoscopicDepth(bool isPgs, std::optional<int> subtitleDepth);
+ 
+ } // namespace OVERLAY
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index d713c76..75602ed 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -1294,7 +1294,9 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
+   return true;
+ }
+ 
+-void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
++void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o,
++                                double pts,
++                                std::optional<int> depth3d)
+ {
+   int idx;
+   {
+@@ -1304,7 +1306,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
+     idx = m_free.front();
+   }
+   std::unique_lock lock(m_datalock);
+-  m_overlays.AddOverlay(std::move(o), pts, idx);
++  m_overlays.AddOverlay(std::move(o), pts, idx, depth3d);
+ }
+ 
+ bool CRenderManager::Supports(ERENDERFEATURE feature) const
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+index aa3116a..79d8edf 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+@@ -118,7 +118,8 @@ public:
+   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
+   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop,
+                        EINTERLACEMETHOD deintMethod, bool wait, uint64_t prerollGeneration = 0);
+-  void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
++  void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts,
++                  std::optional<int> depth3d = std::nullopt);
+   void ShowVideo(bool enable);
+ 
+   /*!

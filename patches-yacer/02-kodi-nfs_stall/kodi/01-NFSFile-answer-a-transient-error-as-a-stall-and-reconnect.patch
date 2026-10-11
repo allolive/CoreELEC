@@ -11,10 +11,40 @@ Reopening remounts the share, and every NFS file shares that mount, so doing it
 while the server is down takes playback with it. Check the server is answering
 first, and until it does, keep answering -EAGAIN.
 
+The reconnect used to tear the whole connection down (gNfsConnection.Deinit),
+which destroys every open libnfs context, including the ones other open files
+(the library scan, thumbnails, a second reader) were still reading through:
+their handles pointed into freed memory. A reconnect now leaves the shared
+context alone. It drops its own handle from the keep-alive list, mounts a
+context of its own for the export and reopens the file on it. That context is
+kept apart from the shared ones, under a key no other file uses: the NFSv4
+keep-alive finds it (and runs while only such contexts are open), but
+Deinit() and its teardown of every shared context do not free it. It is
+destroyed with the file on Close or on the next reconnect. GetPosition asks
+the file's own context, not the shared one, since the two can now differ. If
+the reopened file cannot be positioned where the reader was, it is closed
+again, rather than read from its start as if from that position.
+
+Open() had the same bug in upstream code: on NFS4ERR_EXPIRED it called
+Deinit(), freeing the contexts and handles of every other open file, and
+then opened through the connection's context, which Deinit() had just reset.
+It belongs with this fix: Open() now retries on a context of its own, as a
+reconnect does, and leaves the others alone. The size and the directory check
+then come from the open handle (nfs_fstat64): Stat() goes through the shared
+context whose lease just expired, and would fail the open after all. The
+expired shared context itself is left in place; it is rebuilt when it times
+out, and files still on it reconnect on their own.
+
+Not fixed: the handle on the old context is dropped, not closed. Closing it
+is a round trip on a connection that has just failed and would hold the
+reader for the RPC timeout, and libnfs has no call that frees a handle
+without closing it; the server drops its open state with the lease. The
+reconnect's log line counts the handles a file has let go of this way.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/filesystem/NFSFile.cpp b/xbmc/filesystem/NFSFile.cpp
-index 3242b96..9684e3d 100644
+index 3242b96..2cef1a1 100644
 --- a/xbmc/filesystem/NFSFile.cpp
 +++ b/xbmc/filesystem/NFSFile.cpp
 @@ -12,6 +12,10 @@
@@ -80,7 +110,133 @@ index 3242b96..9684e3d 100644
  constexpr auto SETTING_NFS_VERSION = "nfs.version";
  constexpr auto SETTING_NFS_CHUNKSIZE = "nfs.chunksize";
  } // unnamed namespace
-@@ -670,6 +709,8 @@ bool CNFSFile::Open(const CURL& url)
+@@ -177,6 +216,12 @@ struct nfs_context *CNfsConnection::getContextFromMap(const std::string &exportn
+       m_openContextMap.erase(it);
+     }
+   }
++  else if (auto own = m_privateContextMap.find(exportname); own != m_privateContextMap.end())
++  {
++    // a file's own context lives as long as the file
++    own->second.lastAccessedTime = std::chrono::steady_clock::now();
++    pRet = own->second.pContext;
++  }
+   return pRet;
+ }
+ 
+@@ -380,6 +425,50 @@ bool CNfsConnection::Connect(const CURL& url, std::string &relativePath)
+   return ret;
+ }
+ 
++struct nfs_context* CNfsConnection::OpenPrivateContext(const CURL& url,
++                                                       std::string& relativePath,
++                                                       std::string& mapId)
++{
++  std::unique_lock lock(*this);
++  std::string exportPath;
++
++  resolveHost(url);
++  if (!splitUrlIntoExportAndPath(url, exportPath, relativePath))
++    return nullptr;
++
++  struct nfs_context* context = nfs_init_context();
++  if (!context)
++    return nullptr;
++  setOptions(context);
++
++  if (nfs_mount(context, m_resolvedHostName.c_str(), exportPath.c_str()) != 0)
++  {
++    CLog::Log(LOGERROR, "NFS: Failed to mount nfs share: {} ({})", exportPath,
++              nfs_get_error(context));
++    nfs_destroy_context(context);
++    return nullptr;
++  }
++
++  mapId = StringUtils::Format("{}{}#{}", url.GetHostName(), exportPath,
++                              static_cast<const void*>(context));
++  std::unique_lock contextLock(openContextLock);
++  m_privateContextMap[mapId] = {context, std::chrono::steady_clock::now()};
++  m_privateContexts = m_privateContextMap.size();
++  return context;
++}
++
++void CNfsConnection::DestroyPrivateContext(const std::string& mapId)
++{
++  std::unique_lock lock(openContextLock);
++  auto it = m_privateContextMap.find(mapId);
++  if (it != m_privateContextMap.end())
++  {
++    nfs_destroy_context(it->second.pContext);
++    m_privateContextMap.erase(it);
++  }
++  m_privateContexts = m_privateContextMap.size();
++}
++
+ void CNfsConnection::Deinit()
+ {
+   if(m_pNfsContext)
+@@ -412,7 +501,8 @@ void CNfsConnection::CheckIfIdle()
+     }
+   }
+ 
+-  if( m_pNfsContext != NULL )
++  // a file on a context of its own needs its lease kept with no shared one open
++  if (m_pNfsContext != NULL || m_privateContexts > 0)
+   {
+     std::unique_lock lock(keepAliveLock);
+ 
+@@ -606,13 +696,13 @@ int64_t CNFSFile::GetPosition()
+   uint64_t offset = 0;
+   std::unique_lock lock(gNfsConnection);
+ 
+-  if (gNfsConnection.GetNfsContext() == NULL || m_pFileHandle == NULL) return 0;
++  if (m_pNfsContext == NULL || m_pFileHandle == NULL) return 0;
+ 
+-  ret = nfs_lseek(gNfsConnection.GetNfsContext(), m_pFileHandle, 0, SEEK_CUR, &offset);
++  ret = nfs_lseek(m_pNfsContext, m_pFileHandle, 0, SEEK_CUR, &offset);
+ 
+   if (ret < 0)
+   {
+-    CLog::Log(LOGERROR, "NFS: Failed to lseek({})", nfs_get_error(gNfsConnection.GetNfsContext()));
++    CLog::Log(LOGERROR, "NFS: Failed to lseek({})", nfs_get_error(m_pNfsContext));
+   }
+   return offset;
+ }
+@@ -652,17 +742,28 @@ bool CNFSFile::Open(const CURL& url)
+               "CNFSFile::Open: Unable to open file - trying again with a new context: error: '{}'",
+               nfs_get_error(m_pNfsContext));
+ 
+-    gNfsConnection.Deinit();
+-    m_pNfsContext = gNfsConnection.GetNfsContext();
+-    m_exportPath = gNfsConnection.GetContextMapId();
+-    ret = nfs_open(m_pNfsContext, filename.c_str(), O_RDONLY, &m_pFileHandle);
++    // A context of its own: tearing the connection down (Deinit) would free the
++    // contexts and handles every other open file is reading through.
++    std::string mapId;
++    std::string privateName;
++    m_pNfsContext = gNfsConnection.OpenPrivateContext(url, privateName, mapId);
++    if (m_pNfsContext)
++    {
++      m_exportPath = mapId;
++      m_privateContext = true;
++      ret = nfs_open(m_pNfsContext, privateName.c_str(), O_RDONLY, &m_pFileHandle);
++    }
+   }
+ 
+-  if (ret != 0)
++  if (ret != 0 || !m_pNfsContext)
+   {
+     CLog::Log(LOGERROR, "CNFSFile::Open: Unable to open file: '{}' error: '{}'", url.GetFileName(),
+-              nfs_get_error(m_pNfsContext));
++              m_pNfsContext ? nfs_get_error(m_pNfsContext) : "no context");
+ 
++    if (m_privateContext)
++      gNfsConnection.DestroyPrivateContext(m_exportPath);
++    m_privateContext = false;
++    m_pFileHandle = nullptr;
+     m_pNfsContext = nullptr;
+     m_exportPath.clear();
+     return false;
+@@ -670,15 +771,33 @@ bool CNFSFile::Open(const CURL& url)
  
    CLog::Log(LOGDEBUG, "CNFSFile::Open - opened {}", url.GetFileName());
    m_url=url;
@@ -89,7 +245,33 @@ index 3242b96..9684e3d 100644
  
    struct __stat64 tmpBuffer;
  
-@@ -742,6 +783,84 @@ int CNFSFile::Stat(const CURL& url, struct __stat64* buffer)
++  // On a context of its own (the shared one's lease expired), ask the open handle:
++  // Stat() goes through the shared context, which would fail the same way.
++  if (m_privateContext)
++  {
++    nfs_stat_64 st = {};
++    if (nfs_fstat64(m_pNfsContext, m_pFileHandle, &st) != 0)
++    {
++      m_url.Reset();
++      Close();
++      return false;
++    }
++    tmpBuffer = {};
++    tmpBuffer.st_mode = st.nfs_mode;
++    tmpBuffer.st_size = st.nfs_size;
++  }
++
+   // nfs_open succeeds on directories, which lets libdvdread / libbluray
+   // mis-classify a folder structure (DVD VIDEO_TS, Bluray BDMV) as a disc image
+   // and run UDF/BDMV parsing on it, which then fails. Reject directories here
+   // so callers fall back to file-by-file mode, the correct behaviour for folder
+   // structures on remote VFS shares.
+-  if (Stat(&tmpBuffer) != 0 || S_ISDIR(tmpBuffer.st_mode))
++  if ((!m_privateContext && Stat(&tmpBuffer) != 0) || S_ISDIR(tmpBuffer.st_mode))
+   {
+     m_url.Reset();
+     Close();
+@@ -742,6 +861,103 @@ int CNFSFile::Stat(const CURL& url, struct __stat64* buffer)
    return ret;
  }
  
@@ -144,16 +326,30 @@ index 3242b96..9684e3d 100644
 +    return false;
 +
 +  std::string filename;
++  std::string mapId;
 +  std::unique_lock lock(gNfsConnection);
 +
++  // Other files read through the context this one used: let go of the handle and
++  // leave the context to them. The new handle gets a mount of its own.
++  if (m_pFileHandle)
++  {
++    gNfsConnection.removeFromKeepAliveList(m_pFileHandle);
++    m_droppedHandles++;
++  }
 +  m_pFileHandle = nullptr;
-+  gNfsConnection.Deinit();
++  if (m_privateContext)
++    gNfsConnection.DestroyPrivateContext(m_exportPath);
++  m_pNfsContext = nullptr;
++  m_exportPath.clear();
++  m_privateContext = false;
 +
-+  if (!gNfsConnection.Connect(m_url, filename))
++  struct nfs_context* context = gNfsConnection.OpenPrivateContext(m_url, filename, mapId);
++  if (!context)
 +    return false;
 +
-+  m_pNfsContext = gNfsConnection.GetNfsContext();
-+  m_exportPath = gNfsConnection.GetContextMapId();
++  m_pNfsContext = context;
++  m_exportPath = mapId;
++  m_privateContext = true;
 +
 +  if (nfs_open(m_pNfsContext, filename.c_str(), O_RDONLY, &m_pFileHandle) != 0)
 +  {
@@ -163,10 +359,15 @@ index 3242b96..9684e3d 100644
 +
 +  uint64_t offset = 0;
 +  if (nfs_lseek(m_pNfsContext, m_pFileHandle, m_filePos, SEEK_SET, &offset) < 0)
++  {
++    // at the start of the file, the next read would hand that over as if from m_filePos
++    nfs_close(m_pNfsContext, m_pFileHandle);
++    m_pFileHandle = nullptr;
 +    return false;
++  }
 +
-+  CLog::Log(LOGINFO, "CNFSFile::{} - reopened {} at {}", __FUNCTION__, m_url.GetFileName(),
-+            m_filePos);
++  CLog::Log(LOGINFO, "CNFSFile::{} - reopened {} at {} ({} handle(s) left unclosed)",
++            __FUNCTION__, m_url.GetFileName(), m_filePos, m_droppedHandles);
 +  m_reconnecting = false;
 +  return true;
 +}
@@ -174,7 +375,7 @@ index 3242b96..9684e3d 100644
  ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
  {
    if (uiBufSize > SSIZE_MAX)
-@@ -751,7 +870,17 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
+@@ -751,7 +967,17 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
    std::unique_lock lock(gNfsConnection);
  
    if (m_pFileHandle == NULL || m_pNfsContext == NULL )
@@ -192,7 +393,7 @@ index 3242b96..9684e3d 100644
  #ifdef LIBNFS_API_V2
    numberOfBytesRead = nfs_read(m_pNfsContext, m_pFileHandle, lpBuf, uiBufSize);
  #else
-@@ -764,9 +893,21 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
+@@ -764,9 +990,21 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
  
    //something went wrong ...
    if (numberOfBytesRead < 0)
@@ -214,7 +415,7 @@ index 3242b96..9684e3d 100644
    return numberOfBytesRead;
  }
  
-@@ -786,6 +927,7 @@ int64_t CNFSFile::Seek(int64_t iFilePosition, int iWhence)
+@@ -786,6 +1024,7 @@ int64_t CNFSFile::Seek(int64_t iFilePosition, int iWhence)
                iFilePosition, iWhence, m_fileSize, nfs_get_error(m_pNfsContext));
      return -1;
    }
@@ -222,11 +423,62 @@ index 3242b96..9684e3d 100644
    return (int64_t)offset;
  }
  
+@@ -828,6 +1067,16 @@ void CNFSFile::Close()
+     m_pFileHandle = NULL;
+     m_pNfsContext = NULL;
+     m_fileSize = 0;
++    if (!m_privateContext)
++      m_exportPath.clear();
++  }
++
++  // a context of its own from a reconnect goes with the file
++  if (m_privateContext)
++  {
++    gNfsConnection.DestroyPrivateContext(m_exportPath);
++    m_privateContext = false;
++    m_pNfsContext = NULL;
+     m_exportPath.clear();
+   }
+ }
 diff --git a/xbmc/filesystem/NFSFile.h b/xbmc/filesystem/NFSFile.h
-index 237aae2..250cd5c 100644
+index 237aae2..c471874 100644
 --- a/xbmc/filesystem/NFSFile.h
 +++ b/xbmc/filesystem/NFSFile.h
-@@ -139,10 +139,16 @@ namespace XFILE
+@@ -15,6 +15,7 @@
+ #include "threads/CriticalSection.h"
+ 
+ #include <chrono>
++#include <atomic>
+ #include <list>
+ #include <map>
+ 
+@@ -68,6 +69,15 @@ public:
+   const std::string& GetConnectedExport() const {return m_exportPath;}
+   const std::string GetContextMapId() const {return m_hostName + m_exportPath;}
+ 
++  //! A context of its own for one file, mounted on the url's export. It is kept
++  //! apart from the shared contexts, under a key no other file uses: the
++  //! keep-alive finds it, Deinit() does not free it. Nullptr if the mount
++  //! fails. The file destroys it with DestroyPrivateContext().
++  struct nfs_context* OpenPrivateContext(const CURL& url,
++                                         std::string& relativePath,
++                                         std::string& mapId);
++  void DestroyPrivateContext(const std::string& mapId);
++
+ private:
+   enum class ContextStatus
+   {
+@@ -86,6 +96,9 @@ private:
+   std::chrono::time_point<std::chrono::steady_clock> m_IdleTimeout;
+   tFileKeepAliveMap m_KeepAliveTimeouts;//mapping filehandles to its idle timeout
+   tOpenContextMap m_openContextMap;//unique map for tracking all open contexts
++  //! the contexts files own (OpenPrivateContext), under openContextLock
++  tOpenContextMap m_privateContextMap;
++  std::atomic<size_t> m_privateContexts{0};
+   std::chrono::time_point<std::chrono::steady_clock>
+       m_lastAccessedTime; //last access time for m_pNfsContext
+   std::list<std::string> m_exportList;//list of exported paths of current connected servers
+@@ -139,10 +152,20 @@ namespace XFILE
    protected:
      CURL m_url;
      bool IsValidFile(const std::string& strFileName);
@@ -240,6 +492,10 @@ index 237aae2..250cd5c 100644
 +    int64_t m_filePos{0};
 +    bool m_reconnecting{false};
 +    std::chrono::time_point<std::chrono::steady_clock> m_nextReconnect{};
++    // m_pNfsContext is this file's own, from a reconnect, not the shared one
++    bool m_privateContext{false};
++    //! handles let go of by reconnects without closing them, for the log
++    unsigned int m_droppedHandles{0};
    };
  }
  

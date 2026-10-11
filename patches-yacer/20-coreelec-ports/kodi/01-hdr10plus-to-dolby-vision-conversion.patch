@@ -1778,7 +1778,7 @@ index aa21f60..2b6cc23 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 8d0a125..956e7dc 100644
+index 8b791e6..256713f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -17,6 +17,7 @@
@@ -1806,7 +1806,7 @@ index 8d0a125..956e7dc 100644
    }
  
    if (m_hints.contentLightMetadata)
-@@ -791,6 +795,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -806,6 +810,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        pData = m_bitstream->GetConvertBuffer();
        iSize = m_bitstream->GetConvertSize();
@@ -1815,7 +1815,7 @@ index 8d0a125..956e7dc 100644
        doviIsFEL = m_bitstream->GetDoviIsFEL();
        IsHdr10Plus = m_bitstream->GetIsHdrPlus();
        if (IsHdr10Plus && m_stripHdr10Plus &&
-@@ -819,6 +825,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -834,6 +840,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        if (picturePts == DVD_NOPTS_VALUE)
          m_hints.ptsinvalid = true;
  
@@ -1824,7 +1824,7 @@ index 8d0a125..956e7dc 100644
        m_processInfo.SetDoviIsFEL(doviIsFEL);
        m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
  
-@@ -845,7 +853,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -860,7 +868,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      return true;
    }
  
@@ -1834,7 +1834,7 @@ index 8d0a125..956e7dc 100644
    {
      const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                 packet.iSideDataElems,
-@@ -896,6 +905,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -911,6 +920,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    if (data_added && dual_layer_converted)
      DropDualLayerFront();
  
@@ -1844,7 +1844,7 @@ index 8d0a125..956e7dc 100644
    return data_added;
  }
  
-@@ -960,6 +972,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -975,6 +987,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
    if (m_Codec)
      m_Codec->Reset();
  
@@ -1854,7 +1854,7 @@ index 8d0a125..956e7dc 100644
    {
      DLDemuxPacket dual_layer_packet= m_packages.front();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 8ef04c2..c9b1069 100644
+index f5596c5..348c564 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -9,6 +9,7 @@
@@ -1863,9 +1863,9 @@ index 8ef04c2..c9b1069 100644
  #include "AMLFrameMetadata.h"
 +#include "AMLHdr10PlusHook.h"
  #include "AMLSeekPreroll.h"
+ #include "AMLMvcSubtitleDepth.h"
  #include "DVDVideoCodec.h"
- #include "DVDStreamInfo.h"
-@@ -110,6 +111,9 @@ protected:
+@@ -111,6 +112,9 @@ protected:
    h264_sequence  *m_h264_sequence;
    double          m_h264_sequence_pts;
    bool            m_has_keyframe;
@@ -1908,7 +1908,7 @@ index 2ff5351..533dab4 100644
    bool convert_to_dv = (!!aml_support_dolby_vision() &&
                          static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 229c9cb..be08c80 100644
+index 038a3d5..e52e46c 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -326,8 +326,9 @@ bool CWinSystemAmlogic::InitWindowSystem()
@@ -1922,7 +1922,7 @@ index 229c9cb..be08c80 100644
    }
  
    CServiceBroker::GetSettingsComponent()->GetSettings()->
-@@ -540,6 +541,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -558,6 +559,10 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(device_dv);
  

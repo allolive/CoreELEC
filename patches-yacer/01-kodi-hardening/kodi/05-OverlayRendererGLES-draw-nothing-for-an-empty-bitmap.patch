@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:00:00 -0400
+Subject: [PATCH] OverlayRendererGLES: draw nothing for an empty bitmap
+
+A palette overlay of width or height 0 went on to FindVisibleBox, which
+reports a 1x1 box for it, and ConvertIndices then read the first pixel of an
+empty pixel vector. The texture constructor now returns before creating a
+texture when the bitmap has no pixels, and Render draws nothing for an overlay
+without a texture (texture 0 would sample opaque black).
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+index 5950d41..62ee162 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+@@ -161,6 +161,10 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+ {
+   m_isHDROverlay = o.m_isHDROverlay;
+ 
++  // an empty bitmap has no pixel to read; it stays without a texture and draws nothing
++  if (o.width <= 0 || o.height <= 0)
++    return;
++
+   glGenTextures(1, &m_texture);
+   glBindTexture(GL_TEXTURE_2D, m_texture);
+ 
+@@ -488,6 +492,9 @@ COverlayTextureGLES::~COverlayTextureGLES()
+ 
+ void COverlayTextureGLES::Render(SRenderState& state)
+ {
++  if (m_texture == 0)
++    return;
++
+   glEnable(GL_BLEND);
+ 
+   glBindTexture(GL_TEXTURE_2D, m_texture);

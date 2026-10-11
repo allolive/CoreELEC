@@ -1,0 +1,397 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 20:00:00 -0400
+Subject: [PATCH] AML: start on a mode whose 1000/1001 rate is not listed
+
+The resolution list carries a 1000/1001 twin only for 24, 30 and 60 Hz,
+and the desktop resolution is taken from the list entry that matches the
+current mode exactly. A Kodi that died in frame-sequential 3D at 23.976
+fps leaves the output at 1080p 119.88 Hz, which nothing in the list
+matches: the desktop resolution kept its empty default, the mode switch
+to it failed, and every restart exited with "Unable to create GUI" until
+a reboot.
+
+The current mode now takes the listed entry of the same size whose rate
+rounds the same when there is no exact one, so Kodi starts at its twin
+(120 Hz) and the cleanup after a Kodi that died in 3D can run.
+
+The twin rule did not cover 1080p165: its VESA timing is not in the list
+(only with /flash/vesa.enable), so a Kodi left on it found neither the mode
+nor a twin of equal rounded rate and could not create its window. When there
+is no exact entry and no twin, the desktop now takes the listed mode of the
+same size and flags at the nearest rate, else the sink's preferred mode, else
+the first listed one: the desktop resolution never stays without a mode.
+
+The cleanup after a Kodi that died in 3D only looked at game VRR, so one that
+died at a film rate without VRR (vrr_mode none), or after a failed entry,
+left ALLM on, the eyes swapped, the video layer's 3D type and the 3D base
+mode behind. Entering 3D now records, in special://temp/fs3d-state, ALLM as
+it was and the mode the output was on; leaving deletes the record. On its
+first display refresh Kodi clears the video layer's 3D type and the eye swap
+whatever it finds (the kernel keeps the 3D type across a decoder reset, since
+a pause or a seek needs it, so nothing else clears it after a Kodi died), and
+takes the rest of 3D down if the record is there, the sink is in game VRR, or
+fa_swap_eyes was set: VRR off and ALLM back to the recorded value (0 without
+a record, since ALLM on next to the rest of 3D was ours). The record survives a reboot, as the
+output mode does. If the output is on the 3D base mode (1080p120 or
+1080p165), the desktop resolution is taken from the recorded mode rather
+than from the output, so Kodi switches back to it and the box no longer
+keeps, and boots at, 1080p120/165. The base mode alone, with nothing else
+of 3D left, is taken for a desktop someone chose and only the 3D state is
+cleared.
+
+If the record cannot be written, a warning says so; 3D is entered as before.
+
+The record is deleted only once the output is off the 3D base mode: after
+the switch back succeeds when 3D is left or an entry fails, and after the
+recovered desktop has been set on the next start. Leaving 3D when Kodi exits
+changes no mode, so it keeps the record, and the next start recovers the
+desktop; a Kodi exit or reboot in 3D, or a failed switch back, no longer
+leaves the GUI booting at 1080p120/165.
+
+If the recorded mode is no longer listed (another sink), the desktop is the
+sink's preferred mode, else the nearest mode of the current size that is not
+a 3D base, so the output still leaves 1080p120/165 and the record goes.
+
+Entering 3D keeps an existing record when the output is already on the 3D
+base mode (a switch back failed, or a recovered record is pending) instead
+of overwriting the desktop it names with the base mode. A record kept after
+a failed switch back is marked pending, so it is deleted once a later switch
+leaves the base mode in the same session.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index bc646f2..d73d414 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -8,6 +8,7 @@
+ #include <cmath>
+ #include <cstdlib>
+ #include <fcntl.h>
++#include <fstream>
+ #include <sys/ioctl.h>
+ #include <amcodec/codec.h>
+ 
+@@ -1154,20 +1155,91 @@ void CAMLDisplay::aml_refresh_display_caps()
+     m_support_fs3d = support_fs3d;
+   }
+ 
+-  // A Kodi that died in 3D left the sink in game VRR, and the video layer
+-  // alternating the eyes. Only on the first refresh, before this Kodi has
+-  // entered 3D itself: a hotplug refresh while entering (game VRR set, not
+-  // yet marked active) would take its own 3D down.
++  // A Kodi that died in 3D left the sink in game VRR (or ALLM alone, at a film
++  // rate without VRR), the video layer alternating the eyes, and the output on
++  // the 3D base mode. Only on the first refresh, before this Kodi has entered 3D
++  // itself: a hotplug refresh while entering (game VRR set, not yet marked
++  // active) would take its own 3D down.
+   const bool first_refresh = !m_fs3d_recovery_checked.exchange(true);
+-  if (first_refresh && !m_fs3d_active &&
+-      StringUtils::StartsWith(
+-          CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode").Get<std::string>().value_or(""),
+-          "game"))
++  if (first_refresh && !m_fs3d_active)
++    fs3d_recover();
++}
++
++namespace
++{
++// what entering HFR VRR changed, kept until it is left: a Kodi that dies in 3D
++// leaves it for the next one, across a reboot too (the output mode is kept)
++constexpr const char* FS3D_STATE = "special://temp/fs3d-state";
++} // unnamed namespace
++
++void CAMLDisplay::fs3d_state_save(const std::string& allm, const RESOLUTION_INFO& before)
++{
++  const std::string path = CSpecialProtocol::TranslatePath(FS3D_STATE);
++  std::ofstream state(path, std::ios::trunc);
++  state << allm << '\n' << before.strId << '\n' << before.fRefreshRate << '\n';
++  state.close();
++  if (!state)
++    CLog::Log(LOGWARNING, "CAMLDisplay::{} - could not write {}: after a crash in 3D the "
++              "ALLM and desktop mode from before cannot be restored", __FUNCTION__, path);
++}
++
++void CAMLDisplay::fs3d_state_clear()
++{
++  std::remove(CSpecialProtocol::TranslatePath(FS3D_STATE).c_str());
++}
++
++void CAMLDisplay::fs3d_recover()
++{
++  std::string allm;
++  std::string modeId;
++  float modeRate = 0.0f;
++  std::ifstream state(CSpecialProtocol::TranslatePath(FS3D_STATE));
++  const bool saved = static_cast<bool>(state);
++  if (saved)
++  {
++    std::getline(state, allm);
++    std::getline(state, modeId);
++    state >> modeRate;
++  }
++
++  const std::string vrrMode =
++      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode").Get<std::string>().value_or("");
++  const std::string mode = m_amlDRMUtils->aml_get_drmDevice_mode();
++  const bool onFs3dMode = StringUtils::EqualsNoCase(mode, FS3D_MODE) ||
++                          StringUtils::EqualsNoCase(mode, FS3D_MODE_165);
++  // left by a Kodi in 3D; the base mode alone is also a desktop someone chose
++  const bool left = saved || StringUtils::StartsWith(vrrMode, "game") ||
++                    CSysfsPath(FS3D_SWAP).Get<int>().value_or(0) != 0;
++
++  // Nothing plays yet: the video layer starts in 2D whatever is found. The
++  // kernel keeps the 3D type across a decoder reset (a pause or a seek needs it
++  // kept), so it is not cleared for us when a Kodi dies.
++  aml_set_3d_video_mode(0 /* MODE_3D_DISABLE */, false, 3);
++  CSysfsPath(FS3D_SWAP, 0);
++
++  if (!left && !onFs3dMode)
++    return;
++
++  CLog::Log(LOGINFO, "CAMLDisplay::{} - taking down frame-sequential 3D left by a previous run "
++            "(saved {}, vrr {}, mode {})", __FUNCTION__, saved, vrrMode, mode);
++  // ALLM goes back to what it was before 3D; without that record, ALLM on next
++  // to the rest of 3D was ours
++  if (left)
++    m_fs3d_allm = saved ? StringUtils::Trim(allm) : std::string("0");
++  else
++    m_fs3d_allm = CSysfsPath(FS3D_ALLM).Get<std::string>().value_or("0");
++  fs3d_apply(false, 0);
++
++  // Kodi takes its desktop from the mode the output is on: not the 3D base, or
++  // it keeps it, and the box boots at it, from now on. The record stays until
++  // the output has been switched off the base mode.
++  if (onFs3dMode && left)
+   {
+-    fs3d_apply(false, 0);
+-    aml_set_3d_video_mode(0 /* MODE_3D_DISABLE */, false, 3);
+-    CSysfsPath(FS3D_SWAP, 0);
++    m_fs3d_recovered_desktop = std::make_pair(modeId, modeRate);
++    m_fs3d_state_pending = saved;
+   }
++  else
++    fs3d_state_clear();
+ }
+ 
+ // Without HDMI 3D the only stereo output is HFR VRR. Taking stereo video as
+@@ -1218,6 +1290,11 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+       handle_display_stereo_mode(stereo_mode);
+   }
+ 
++  // a recovered desktop is set: the record of the 3D left behind can go
++  if (result && !StringUtils::EqualsNoCase(res.strId, FS3D_MODE) &&
++      !StringUtils::EqualsNoCase(res.strId, FS3D_MODE_165) && m_fs3d_state_pending.exchange(false))
++    fs3d_state_clear();
++
+   return result;
+ }
+ 
+@@ -1282,7 +1359,13 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_vrr_frac = false;
+     m_fs3d_vsync_hz = 0.0;
+     CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
+-    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++    // the record goes once the output is off the 3D base mode, not before
++    const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++    if (restored)
++      fs3d_state_clear();
++    else
++      m_fs3d_state_pending = true;
++    return restored;
+   }
+ 
+   // The film rate: the video's own, or the refresh Kodi picked for it.
+@@ -1308,6 +1391,14 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   {
+     m_fs3d_allm = CSysfsPath(FS3D_ALLM).Get<std::string>().value_or("0");
+     StringUtils::Trim(m_fs3d_allm);
++    RESOLUTION_INFO before;
++    // Already on the base mode (a switch back failed, or a recovery is under
++    // way): a record there names the desktop, and is kept.
++    const bool known = aml_get_native_resolution(&before);
++    const bool onBase = StringUtils::EqualsNoCase(before.strId, FS3D_MODE) ||
++                        StringUtils::EqualsNoCase(before.strId, FS3D_MODE_165);
++    if (known && !(onBase && std::ifstream(CSpecialProtocol::TranslatePath(FS3D_STATE)).good()))
++      fs3d_state_save(m_fs3d_allm, before);
+   }
+   const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
+   if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
+@@ -1329,7 +1420,12 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_vsync_hz = 0.0;
+     // for the rest of this film: it is not held back waiting for it
+     m_fs3d_entry_failed = true;
+-    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++    const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
++    if (restored)
++      fs3d_state_clear();
++    else
++      m_fs3d_state_pending = true;
++    return restored;
+   }
+ 
+   const int vrr_rate = rates.vrrRate;
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index dc9fee6..b80c7b2 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -10,6 +10,8 @@
+ #include <xf86drmMode.h>
+ #include <atomic>
+ #include <memory>
++#include <optional>
++#include <string>
+ #include <unistd.h>
+ #include <utility>
+ #include <vector>
+@@ -233,6 +235,12 @@ public:
+   void aml_fs3d_playback_stopped() { m_fs3d_entry_failed = false; }
+   //! a decoder closed: in frame-sequential 3D, the next film of a playlist may follow
+   void aml_fs3d_decoder_closed();
++  //! The mode (name, rate) the output was on before a previous Kodi entered 3D
++  //! and died in it, once: the desktop, not the 3D base mode it was left on.
++  std::optional<std::pair<std::string, float>> aml_fs3d_take_recovered_desktop()
++  {
++    return std::exchange(m_fs3d_recovered_desktop, std::nullopt);
++  }
+ private:
+   bool set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
+     const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
+@@ -247,6 +255,9 @@ private:
+     bool operator==(const Fs3dRates&) const = default;
+   };
+   Fs3dRates fs3d_rates(float fps) const;
++  void fs3d_state_save(const std::string& allm, const RESOLUTION_INFO& before);
++  void fs3d_state_clear();
++  void fs3d_recover();
+   static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
+   static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
+   static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
+@@ -280,4 +291,7 @@ private:
+   std::string m_fs3d_165_failed;
+   //! a refresh read frame-sequential 3D as gone and it was kept: the next one decides
+   bool m_fs3d_drop_seen = false;
++  std::optional<std::pair<std::string, float>> m_fs3d_recovered_desktop;
++  //! the record of a 3D left behind is kept until its desktop has been set
++  std::atomic<bool> m_fs3d_state_pending{false};
+ };
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 20839ca..3c12258 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -539,6 +539,61 @@ void CWinSystemAmlogic::RefreshResolutions()
+   if (m_amlDisplay->aml_get_native_resolution(&curDisplay))
+     resDesktop = curDisplay;
+ 
++  // left on the 3D base mode by a Kodi that died in 3D: the desktop is the mode before it
++  if (const auto before = m_amlDisplay->aml_fs3d_take_recovered_desktop())
++  {
++    for (const auto& res : resolutions)
++    {
++      if (StringUtils::EqualsNoCase(res.strId, before->first) &&
++          std::fabs(res.fRefreshRate - before->second) < 0.01f)
++      {
++        CLog::Log(LOGINFO, "{}: desktop {} at {:.3f} Hz, as before 3D", __FUNCTION__, res.strId,
++                  res.fRefreshRate);
++        resDesktop = res;
++        break;
++      }
++    }
++    // Not listed any more (another sink): the sink's preferred mode, else the
++    // nearest mode of the current size that is not a 3D base, so the output
++    // leaves the base and the record of the 3D left behind can go.
++    if (!StringUtils::EqualsNoCase(resDesktop.strId, before->first))
++    {
++      const auto isBase = [](const std::string& id) {
++        return StringUtils::EqualsNoCase(id, CAMLDisplay::FS3D_MODE) ||
++               StringUtils::EqualsNoCase(id, CAMLDisplay::FS3D_MODE_165);
++      };
++      const std::string preferred = m_amlDisplay->aml_get_preferred_mode();
++      std::optional<RESOLUTION_INFO> desktop;
++      for (const auto& res : resolutions)
++      {
++        if (isBase(res.strId))
++          continue;
++        if (StringUtils::EqualsNoCase(res.strId, preferred))
++        {
++          desktop = res;
++          break;
++        }
++        if (res.iScreenWidth == curDisplay.iScreenWidth &&
++            res.iScreenHeight == curDisplay.iScreenHeight &&
++            (res.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
++                (curDisplay.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
++            (!desktop || std::fabs(res.fRefreshRate - curDisplay.fRefreshRate) <
++                             std::fabs(desktop->fRefreshRate - curDisplay.fRefreshRate)))
++          desktop = res;
++      }
++      if (desktop)
++      {
++        CLog::Log(LOGWARNING, "{}: {} from before 3D is not listed, desktop {} at {:.3f} Hz",
++                  __FUNCTION__, before->first, desktop->strId, desktop->fRefreshRate);
++        resDesktop = *desktop;
++      }
++    }
++  }
++
++  bool desktopFound = false;
++  std::optional<RESOLUTION_INFO> desktopTwin;
++  std::optional<RESOLUTION_INFO> desktopNearest;
++
+   for (auto& res : resolutions)
+   {
+     CLog::Log(LOGINFO, "Found resolution {:d} x {:d} with {:d} x {:d}{} @ {:f} Hz",
+@@ -558,12 +613,48 @@ void CWinSystemAmlogic::RefreshResolutions()
+        resDesktop.iHeight == res.iHeight &&
+        resDesktop.iScreenWidth == res.iScreenWidth &&
+        resDesktop.iScreenHeight == res.iScreenHeight &&
+-       (resDesktop.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+-       fabs(resDesktop.fRefreshRate - res.fRefreshRate) < FLT_EPSILON)
++       (resDesktop.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK))
++    {
++      if (fabs(resDesktop.fRefreshRate - res.fRefreshRate) < FLT_EPSILON)
++      {
++        // update desktop resolution
++        CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
++        desktopFound = true;
++      }
++      else if (!desktopTwin &&
++               std::lround(resDesktop.fRefreshRate) == std::lround(res.fRefreshRate))
++        desktopTwin = res;
++      if (!desktopNearest || std::fabs(res.fRefreshRate - resDesktop.fRefreshRate) <
++                                 std::fabs(desktopNearest->fRefreshRate - resDesktop.fRefreshRate))
++        desktopNearest = res;
++    }
++  }
++
++  // A current mode the list has no entry for (119.88, or 1080p165 whose VESA timing
++  // is not listed, left by a Kodi that died in frame-sequential 3D) takes its listed
++  // twin, else the same size at the nearest rate, else the sink's preferred mode or
++  // the first listed: with no desktop mode the window is never created.
++  if (!desktopFound && !resolutions.empty())
++  {
++    std::optional<RESOLUTION_INFO> desktop = desktopTwin ? desktopTwin : desktopNearest;
++    if (!desktop)
+     {
+-      // update desktop resolution
+-      CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
++      const std::string preferred = m_amlDisplay->aml_get_preferred_mode();
++      for (const auto& res : resolutions)
++      {
++        if (StringUtils::EqualsNoCase(res.strId, preferred))
++        {
++          desktop = res;
++          break;
++        }
++      }
++      if (!desktop)
++        desktop = resolutions.front();
+     }
++    CLog::Log(LOGWARNING, "{}: current mode {} at {:.3f} Hz is not listed, using {} at {:.3f} Hz",
++              __FUNCTION__, resDesktop.strId, resDesktop.fRefreshRate, desktop->strId,
++              desktop->fRefreshRate);
++    CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = *desktop;
+   }
+ }
+ 

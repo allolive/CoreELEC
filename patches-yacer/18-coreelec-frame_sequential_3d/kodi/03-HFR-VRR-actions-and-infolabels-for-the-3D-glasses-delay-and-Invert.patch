@@ -21,6 +21,18 @@ only inside the player's video settings:
 Shared code: actions, infolabels and the player controller are generic
 Kodi; nothing here is Amlogic-specific.
 
+The two actions are numbered 990 and 991, just under ACTION_ERROR, and the
+two info labels 20000 and 20001, between the window ids (up to 10002) and
+the control ids (from 29996). The ids they took first, actions 273-274 and
+labels 75-76, are the next ones free in Kodi's own tables, which Kodi
+master (xbmc/xbmc 494721df6f) has not yet taken but will hand to its next
+action or player label. Kodi numbers its actions upwards from the bottom
+and its labels in blocks below the window ids, so neither reaches these.
+Keymaps, skins and JSON-RPC refer to both by name, never by number, so the
+move changes nothing for them. A static_assert in each header keeps them
+above Kodi's last action (ACTION_ANALOG_MOVE_Y_DOWN, 604) and below
+ACTION_ERROR, and between the window and control info labels.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
@@ -46,20 +58,24 @@ index 0800996..723512a 100644
      {"chaptercount",          PLAYER_CHAPTERCOUNT},
      {"chaptername",           PLAYER_CHAPTERNAME},
 diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-index 8f38ea6..adc9765 100644
+index 8f38ea6..ce4b632 100644
 --- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
 +++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-@@ -83,7 +83,9 @@ constexpr uint32_t PLAYER_SCENE_MARKERS              = 71;
- constexpr uint32_t PLAYER_HAS_SCENE_MARKERS          = 72;
- constexpr uint32_t PLAYER_BOOKMARKS                  = 73;
- constexpr uint32_t PLAYER_HAS_BOOKMARKS              = 74;
--// unused id 75 to 80
-+constexpr uint32_t PLAYER_FS3D_DELAY                 = 75;
-+constexpr uint32_t PLAYER_STEREO_INVERT              = 76;
-+// unused id 77 to 80
+@@ -843,6 +843,14 @@ constexpr uint32_t CONTROL_IS_VISIBLE                = 29998;
+ constexpr uint32_t CONTROL_GROUP_HAS_FOCUS           = 29999;
+ constexpr uint32_t CONTROL_HAS_FOCUS                 = 30000;
  
- // Keep player infolabels that work with offset and position together
- constexpr uint32_t PLAYER_PATH                       = 81;
++// Info labels this build adds, in the gap between the window and the control ids, which Kodi does
++// not number into from either side. Skins name an info label, never number it.
++constexpr uint32_t PLAYER_FS3D_DELAY                 = 20000;
++constexpr uint32_t PLAYER_STEREO_INVERT              = 20001;
++static_assert(PLAYER_FS3D_DELAY > WINDOW_IS_MODAL_DIALOG_TOPMOST &&
++              PLAYER_STEREO_INVERT < CONTROL_GET_LABEL,
++              "the info labels this build adds must stay clear of Kodi's own");
++
+ constexpr int      LISTITEM_START                    = 35000;
+ constexpr uint32_t LISTITEM_THUMB                    = LISTITEM_START;
+ constexpr uint32_t LISTITEM_LABEL                    = LISTITEM_START + 1;
 diff --git a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
 index 905438e..dff138c 100644
 --- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
@@ -97,22 +113,31 @@ index 905438e..dff138c 100644
        value = m_appPlayer->GetPlaySpeed() == 1.0f;
        return true;
 diff --git a/xbmc/input/actions/ActionIDs.h b/xbmc/input/actions/ActionIDs.h
-index 16f1fdb..b784316 100644
+index 16f1fdb..839e4fc 100644
 --- a/xbmc/input/actions/ActionIDs.h
 +++ b/xbmc/input/actions/ActionIDs.h
-@@ -471,6 +471,12 @@ constexpr const int ACTION_DIALOG_SELECT_AUDIO = 271;
- //! Open the dialog window to select a subtitle stream
- constexpr const int ACTION_DIALOG_SELECT_SUBTITLE = 272;
+@@ -521,8 +521,21 @@ constexpr const int ACTION_ANALOG_MOVE_Y_DOWN = 604;
  
+ ///@}
+ 
++// Actions this build adds. Kodi numbers its own upwards from the bottom, so these sit just under
++// ACTION_ERROR, out of the way of the next upstream ones. Keymaps, skins and JSON-RPC name an
++// action, never number it, so the value is free to move.
++
 +//! Show the slider for the 3D glasses delay (HFR VRR)
-+constexpr const int ACTION_FS3D_DELAY = 273;
++constexpr const int ACTION_FS3D_DELAY = 990;
 +
 +//! Swap the eyes of the playing 3D video (its Invert stereoscopic 3D mode)
-+constexpr const int ACTION_STEREO_INVERT = 274;
++constexpr const int ACTION_STEREO_INVERT = 991;
 +
- // Voice actions
- constexpr const int ACTION_VOICE_RECOGNIZE = 300;
- 
+ // The NOOP action can be specified to disable an input event. This is
+ // useful in user keyboard.xml etc to disable actions specified in the
+ // system mappings. ERROR action is used to play an error sound
+ constexpr const int ACTION_ERROR = 998;
+ constexpr const int ACTION_NOOP = 999;
++
++static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_STEREO_INVERT < ACTION_ERROR,
++              "the actions this build adds must stay clear of Kodi's own");
 diff --git a/xbmc/input/actions/ActionTranslator.cpp b/xbmc/input/actions/ActionTranslator.cpp
 index 242f63c..94d414a 100644
 --- a/xbmc/input/actions/ActionTranslator.cpp

@@ -7,65 +7,18 @@ Add GetStreamDetailsForFiles, which fetches the stream details of many file
 ids in a single query, and use it from VideoThumbLoader in batches of 500.
 The rows are interpreted through the same helper the single-file path uses.
 
+The prefetched details are handed to the item by copy; CStreamDetails gets
+no move constructor or move assignment. Kodi master guards the details with
+a lock that its copy assignment takes on both sides (xbmc/xbmc f86e154780,
+"Fixes a crash on the GUI thread in GetPreferredAudioStreamIndex() while a
+video library list is loading"); a move that does not take it would bring
+back the race that commit fixes. The copy is of a few streams per item, once,
+from a cache only the loader thread touches. The database side never copies
+or moves the details: it hands each entry over as a map node.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
-diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
---- a/xbmc/utils/StreamDetails.cpp
-+++ b/xbmc/utils/StreamDetails.cpp
-@@ -19,6 +19,7 @@
- #include <algorithm>
- #include <cmath>
- #include <ranges>
-+#include <utility>
- 
- const float VIDEOASPECT_EPSILON = 0.025f;
- 
-@@ -403,6 +404,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
-   *this = that;
- }
- 
-+CStreamDetails::CStreamDetails(CStreamDetails&& that) noexcept
-+  : m_vecItems(std::move(that.m_vecItems)),
-+    m_pBestVideo(std::exchange(that.m_pBestVideo, nullptr)),
-+    m_pBestAudio(std::exchange(that.m_pBestAudio, nullptr)),
-+    m_pBestSubtitle(std::exchange(that.m_pBestSubtitle, nullptr))
-+{
-+  that.m_vecItems.clear();
-+  for (const auto& item : m_vecItems)
-+    item->m_pParent = this;
-+}
-+
-+CStreamDetails& CStreamDetails::operator=(CStreamDetails&& that) noexcept
-+{
-+  if (this != &that)
-+  {
-+    m_vecItems = std::move(that.m_vecItems);
-+    that.m_vecItems.clear();
-+    m_pBestVideo = std::exchange(that.m_pBestVideo, nullptr);
-+    m_pBestAudio = std::exchange(that.m_pBestAudio, nullptr);
-+    m_pBestSubtitle = std::exchange(that.m_pBestSubtitle, nullptr);
-+    for (const auto& item : m_vecItems)
-+      item->m_pParent = this;
-+  }
-+  return *this;
-+}
-+
- void CStreamDetails::AddStream(CStreamDetail *item)
- {
-   item->m_pParent = this;
-diff --git a/xbmc/utils/StreamDetails.h b/xbmc/utils/StreamDetails.h
---- a/xbmc/utils/StreamDetails.h
-+++ b/xbmc/utils/StreamDetails.h
-@@ -139,7 +139,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
- public:
-   CStreamDetails() { Reset(); }
-   CStreamDetails(const CStreamDetails &that);
-+  CStreamDetails(CStreamDetails&& that) noexcept;
-   CStreamDetails& operator=(const CStreamDetails &that);
-+  CStreamDetails& operator=(CStreamDetails&& that) noexcept;
-   bool operator ==(const CStreamDetails &that) const;
-   bool operator !=(const CStreamDetails &that) const;
- 
 diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
+index 4e20b18..28c7541 100644
 --- a/xbmc/video/VideoDatabase.cpp
 +++ b/xbmc/video/VideoDatabase.cpp
 @@ -4840,6 +4840,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
@@ -126,6 +79,7 @@ diff --git a/xbmc/video/VideoDatabase.cpp b/xbmc/video/VideoDatabase.cpp
                                              std::map<std::string, CVideoInfoTag>& metadata)
  {
 diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
+index 9365192..df4bfb5 100644
 --- a/xbmc/video/VideoDatabase.h
 +++ b/xbmc/video/VideoDatabase.h
 @@ -544,6 +544,20 @@ public:
@@ -150,6 +104,7 @@ diff --git a/xbmc/video/VideoDatabase.h b/xbmc/video/VideoDatabase.h
     Obtaining the metadata of many files one by one is expensive if the database connection has
     high latency, as every single value requires its own round trip.
 diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
+index ef8002e..54911d3 100644
 --- a/xbmc/video/VideoThumbLoader.cpp
 +++ b/xbmc/video/VideoThumbLoader.cpp
 @@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
@@ -185,7 +140,7 @@ diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
 +      if (prefetched->second.HasItems())
 +      {
 +        CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
-+        tag.m_streamDetails = std::move(prefetched->second);
++        tag.m_streamDetails = prefetched->second;
 +        if (tag.m_streamDetails.GetVideoDuration() > 0)
 +          tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
 +        pItem->SetInvalid();
@@ -245,6 +200,7 @@ diff --git a/xbmc/video/VideoThumbLoader.cpp b/xbmc/video/VideoThumbLoader.cpp
  {
    const auto it = m_artCache.find(std::make_pair(mediaType, id));
 diff --git a/xbmc/video/VideoThumbLoader.h b/xbmc/video/VideoThumbLoader.h
+index fd6b537..cb89b86 100644
 --- a/xbmc/video/VideoThumbLoader.h
 +++ b/xbmc/video/VideoThumbLoader.h
 @@ -11,10 +11,12 @@

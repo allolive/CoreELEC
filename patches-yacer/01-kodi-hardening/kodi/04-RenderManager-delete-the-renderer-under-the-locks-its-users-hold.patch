@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 20:00:00 -0400
+Subject: [PATCH] RenderManager: delete the renderer under the locks its users
+ hold
+
+CVideoPlayer::CloseFile() uninitialises the render manager before it
+stops the player thread, and the player thread closes audio before
+video, so the video thread can still be in AddVideoPicture() while
+UnInit() runs. UnInit() deleted the renderer holding only m_statelock;
+AddVideoPicture() checks and uses it under m_presentlock and
+m_datalock, so it could write into a renderer just deleted.
+
+UnInit() now deletes it under both, in the order Configure() and
+Flush() take them; AddVideoPicture() then finds no renderer and
+returns.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index 5c51144..219fae7 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -537,7 +537,12 @@ void CRenderManager::UnInit()
+   m_debugRenderer.Dispose();
+ 
+   m_captureBlit.reset();
+-  DeleteRenderer();
++  {
++    // the player's video thread may still be in AddVideoPicture() until it is stopped
++    std::unique_lock lock2(m_presentlock);
++    std::unique_lock lock3(m_datalock);
++    DeleteRenderer();
++  }
+ 
+   m_renderState = STATE_UNCONFIGURED;
+   m_picture.Reset();

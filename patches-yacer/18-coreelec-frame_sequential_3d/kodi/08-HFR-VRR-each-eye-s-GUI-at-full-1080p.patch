@@ -1,0 +1,642 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 21:00:00 -0400
+Subject: [PATCH] HFR VRR: each eye's GUI at full 1080p
+
+HFR VRR drew the GUI once, the same for both eyes, so nothing in it had
+depth: the subtitle depth setting, the 3D effect strength of the skin
+and a Blu-ray's own subtitle depth were all ignored.
+
+It now draws each eye's GUI, as frame packing does: a surface twice the
+GUI's height, the left eye above the right, each a full 1080p picture.
+With osd_fa_3d at 2 the kernel scans out the half of the eye the video
+layer shows on each frame; with the video in 2D it shows the left one.
+The plane is not scaled and no eye loses resolution.
+
+The GUI was doubled and osd_fa_3d set to 2 whenever the stereo mode was HFR
+VRR, also in the menus and for a 2D film, where frame-sequential 3D is not on;
+and the parameter was written only while 3D was supported or on, so after a
+failed entry it stayed at 2 under a GUI of normal height. The stacking is now
+the window system's decision, made when it knows whether 3D is on: the AML
+display sets HFR VRR up with the GUI per eye (the plane's source is the
+stacked surface), and the window creates the surface of twice the height and
+reports the per-eye size only while 3D is on after the switch. Otherwise the
+GUI is drawn once, as in 18_01, with no subtitle depth. A 4K resolution with
+GUI scaling off no longer makes a 3840x4320 surface: each eye's GUI is at
+most 1920x1080, the output's size, so the surface is at most 1920x2160.
+
+osd_fa_3d is written just before the first flip of a surface of the other
+height, 2 for a stacked one and 0 otherwise, wherever the parameter exists:
+written at the mode switch, it took effect while the old surface was still
+shown (entering: 2 with the 1080 surface; leaving: 0 with the 2160 one) and
+a few frames were stretched or shown stacked. With the kernel's latch the
+value matches the surface it is committed with. Leaving at shutdown and the
+cleanup after a Kodi that died in 3D set it to 0 whatever state they find,
+and a non-zero osd_fa_3d is one of the signs that cleanup looks for.
+
+With the viewer's left/right swap (Invert) the video's eyes swap but the GUI's
+did not, so subtitle and GUI depth came out reversed; the 18_02 help text
+sends users to Invert to fix the glasses' timing. The kernel shows, on each
+frame, the GUI half of the eye it reports (fa_eye_view = frame XOR
+fa_swap_eyes), and the picture on that frame is the reported eye's for a
+plain source and the other eye's under Invert: for SBS/TAB fa_swap_eyes is
+right-first XOR Invert, so the right-first part cancels; for MVC
+fa_swap_eyes stays 0 and Invert swaps the decoder's view order. So the GUI
+follows Invert alone: with it the right eye's GUI is drawn in the upper half.
+A right-eye-first source stays a matter for the video layer only.
+
+With the HDR GUI composite the composite drew the stacked FBO through the
+upper half's viewport and cleared only that half, and the HDR subtitles were
+drawn once, with no eye. The clear and the composite now cover the whole
+surface, and in a stacked GUI the HDR subtitles are drawn for each eye.
+
+Shared code, all of it needed because the GUI's size and layout come from
+CGraphicContext: two CWinSystemBase hooks, StereoGuiDoubled (per-eye size, or
+false) and StereoGuiEyesSwapped, both false by default; GraphicContext places
+the right eye below (above when swapped) only while the GUI is stacked, gives
+the stacked GUI the per-eye size in GetResInfo, and reads its size again after
+a switch, since the window system decides it then; the render loop draws both
+eyes in HFR VRR only while the GUI is stacked; subtitle depth is 0 for a GUI
+drawn once; the render manager draws the HDR subtitles per eye in a stacked
+GUI. A packed stereo subtitle is sized against one eye of the video.
+
+A window creation that fails clears the stacked-GUI state first, so the GUI
+is never reported stacked without a stacked surface.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
+index 15420ed..fda7449 100644
+--- a/xbmc/application/Application.cpp
++++ b/xbmc/application/Application.cpp
+@@ -916,8 +916,12 @@ void CApplication::Render()
+   if (guiWillRender)
+   {
+     const RenderStereoMode stereoMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+-    // HFR VRR alternates the eyes in the video layer; the GUI is drawn once
+-    if (stereoMode != RenderStereoMode::OFF && stereoMode != RenderStereoMode::HFR_VRR)
++    int eyeWidth = 0;
++    int eyeHeight = 0;
++    // HFR VRR draws each eye's GUI while the window system stacks them, else once
++    if (stereoMode != RenderStereoMode::OFF &&
++        (stereoMode != RenderStereoMode::HFR_VRR ||
++         CServiceBroker::GetWinSystem()->StereoGuiDoubled(eyeWidth, eyeHeight)))
+     {
+       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
+       hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 9ae5c9f..d763af5 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2865,6 +2865,7 @@ void CAMLCodec::CloseDecoder()
+       CSysfsPath(CAMLDisplay::FS3D_SWAP, 0);
+       m_fs3dMode = FS3D_UNSET;
+     }
++    CWinSystemAmlogic::SetStereoGuiEyesSwapped(false);
+   }
+ 
+   // never leave vcodec ff/rw or paused.
+@@ -4061,11 +4062,14 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+     else if (hfr && (layout == "top_bottom" || layout == "bottom_top"))
+       mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_TB | MODE_3D_OUT_FA_L_FIRST;
+ 
+-    // The output is 1080p while Kodi's resolution may be 4K.
+-    if (amlDisplay->aml_display_fs3d_active() && display.Width() > 0 && display.Height() > 0)
++    // The output is 1080p while Kodi's resolution may be 4K; the rectangle is in
++    // the GUI's coordinates, each eye's GUI being at most 1080p there.
++    const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++    if (amlDisplay->aml_display_fs3d_active() && gfx.GetWidth() > 0 && gfx.GetHeight() > 0)
+     {
+-      const float xs = static_cast<float>(CAMLDisplay::FS3D_WIDTH) / display.Width();
+-      const float ys = static_cast<float>(CAMLDisplay::FS3D_HEIGHT) / display.Height();
++      const float xs = static_cast<float>(CAMLDisplay::FS3D_WIDTH) / gfx.GetWidth();
++      const float ys = static_cast<float>(CAMLDisplay::FS3D_HEIGHT) / gfx.GetHeight();
++      dst_rect = m_dst_rect;
+       dst_rect.x1 *= xs;
+       dst_rect.x2 *= xs;
+       dst_rect.y1 *= ys;
+@@ -4089,6 +4093,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+       m_fs3dSwap = swap;
+       m_fs3dView = mvc_view_mode;
+     }
++    // The kernel shows the GUI half of the eye it reports, and with the viewer's
++    // swap that eye is shown the other eye's picture: the GUI's eyes swap with it.
++    CWinSystemAmlogic::SetStereoGuiEyesSwapped(hfr && m_stereoInvert);
+   }
+ 
+ #if 1
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+index 47535fd..29cf3ef 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
+@@ -357,11 +357,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
+     const float subRatio{static_cast<float>(o.source_width) / o.source_height};
+     float vidRatio{rSource.Width() / rSource.Height()};
+     // One eye cut from a packed stereo bitmap, with the video not cropped to an
+-    // eye (HFR VRR, the GUI drawn once): compare it with one eye of the video.
++    // eye (HFR VRR shows the whole frame, one eye per refresh): compare it with
++    // one eye of the video.
+     if (o.m_stereoView != DVDOverlayStereoView::BOTH &&
+         CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() ==
+-            RenderStereoMode::HFR_VRR &&
+-        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView() == RenderStereoView::OFF)
++            RenderStereoMode::HFR_VRR)
+     {
+       const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
+       if (layout == "left_right" || layout == "right_left")
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+index 8d355c3..be618c5 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -683,9 +683,9 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
+ 
+   if (stereo_mode == RenderStereoMode::MONO ||
+       stereo_mode == RenderStereoMode::OFF ||
+-      stereo_mode == RenderStereoMode::HFR_VRR)
++      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView() == RenderStereoView::OFF)
+   {
+-    // 2D display or a GUI drawn once, so there's no subtitle depth
++    // 2D display, or a GUI drawn once (HFR VRR not in effect), so there's no subtitle depth
+     return 0;
+   }
+ 
+@@ -693,7 +693,8 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
+   int depth = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_SUBTITLES_STEREOSCOPICDEPTH);
+ 
+   // in case of MVC playback and PGS subtitles, use the subtitle depth info additionally to the configured one
+-  if(stereo_mode == RenderStereoMode::HARDWAREBASED && isPgs)
++  if ((stereo_mode == RenderStereoMode::HARDWAREBASED || stereo_mode == RenderStereoMode::HFR_VRR) &&
++      isPgs)
+   {
+     depth += subtitleDepth;
+   }
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index 17f5ff9..d713c76 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -920,7 +920,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
+     CRect src, dst, view;
+     m_pRenderer->GetVideoRect(src, dst, view);
+     m_overlays.SetVideoRect(src, dst, view);
+-    m_overlays.RenderHDROverlays(GuiSource());
++    // a GUI drawn per eye in HFR VRR takes these per eye too
++    CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
++    int eyeWidth = 0;
++    int eyeHeight = 0;
++    if (gfx.GetStereoMode() == RenderStereoMode::HFR_VRR &&
++        CServiceBroker::GetWinSystem()->StereoGuiDoubled(eyeWidth, eyeHeight))
++    {
++      std::unique_lock gfxLock(gfx);
++      gfx.SetStereoView(RenderStereoView::LEFT);
++      m_overlays.RenderHDROverlays(GuiSource());
++      gfx.SetStereoView(RenderStereoView::RIGHT);
++      m_overlays.RenderHDROverlays(GuiSource());
++      gfx.SetStereoView(RenderStereoView::OFF);
++    }
++    else
++      m_overlays.RenderHDROverlays(GuiSource());
+   }
+ 
+   if (gui || m_renderDebug)
+diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
+index d2d0f40..e239640 100644
+--- a/xbmc/rendering/RenderSystemTypes.h
++++ b/xbmc/rendering/RenderSystemTypes.h
+@@ -27,7 +27,7 @@ enum class RenderStereoMode
+   CHECKERBOARD,
+   HARDWAREBASED,
+   MONO,
+-  // One eye per refresh at a high refresh rate, the GUI drawn once
++  // One eye per refresh at a high refresh rate, each eye's GUI a full picture
+   HFR_VRR,
+   COUNT,
+ 
+diff --git a/xbmc/windowing/GraphicContext.cpp b/xbmc/windowing/GraphicContext.cpp
+index d06301d..f103485 100644
+--- a/xbmc/windowing/GraphicContext.cpp
++++ b/xbmc/windowing/GraphicContext.cpp
+@@ -27,6 +27,7 @@
+ #include "utils/log.h"
+ 
+ #include <cassert>
++#include <cmath>
+ #include <mutex>
+ 
+ using KODI::UTILS::COLOR::Color;
+@@ -267,6 +268,17 @@ CPoint CGraphicContext::StereoCorrection(const CPoint &point) const
+     if(m_stereoView == RenderStereoView::RIGHT)
+       res.y += info.iHeight + info.iBlanking;
+   }
++  // HFR VRR: each eye's GUI in full, one above the other, the right one below
++  // unless the viewer swapped the eyes
++  if (m_stereoMode == RenderStereoMode::HFR_VRR && m_stereoView != RenderStereoView::OFF)
++  {
++    const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
++    int eyeWidth = 0;
++    int eyeHeight = 0;
++    if (winSystem && winSystem->StereoGuiDoubled(eyeWidth, eyeHeight) &&
++        (m_stereoView == RenderStereoView::RIGHT) != winSystem->StereoGuiEyesSwapped())
++      res.y += eyeHeight;
++  }
+   if(m_stereoMode == RenderStereoMode::SPLIT_VERTICAL)
+   {
+     const RESOLUTION_INFO info = GetResInfo();
+@@ -470,6 +482,8 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
+ 
+   if (switched)
+   {
++    // the GUI's size can depend on what the window system made of the switch (HFR VRR)
++    UpdateInternalStateWithResolution(res);
+     m_scissors.SetRect(0, 0, (float)m_iScreenWidth, (float)m_iScreenHeight);
+ 
+     // make sure all stereo stuff are correctly setup
+@@ -659,6 +673,27 @@ const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
+     info.fRefreshRate = m_fFPSOverride;
+   }
+ 
++  // HFR VRR draws each eye's GUI in full: at the size the window system gives it
++  if (m_stereoMode == RenderStereoMode::HFR_VRR && res == m_Resolution)
++  {
++    const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
++    int eyeWidth = 0;
++    int eyeHeight = 0;
++    if (winSystem && winSystem->StereoGuiDoubled(eyeWidth, eyeHeight) && info.iWidth > 0 &&
++        info.iHeight > 0 && (eyeWidth != info.iWidth || eyeHeight != info.iHeight))
++    {
++      const float sx = static_cast<float>(eyeWidth) / info.iWidth;
++      const float sy = static_cast<float>(eyeHeight) / info.iHeight;
++      info.Overscan.left = static_cast<int>(std::lround(info.Overscan.left * sx));
++      info.Overscan.right = static_cast<int>(std::lround(info.Overscan.right * sx));
++      info.Overscan.top = static_cast<int>(std::lround(info.Overscan.top * sy));
++      info.Overscan.bottom = static_cast<int>(std::lround(info.Overscan.bottom * sy));
++      info.iSubtitles = static_cast<int>(std::lround(info.iSubtitles * sy));
++      info.iWidth = eyeWidth;
++      info.iHeight = eyeHeight;
++    }
++  }
++
+   return info;
+ }
+ 
+diff --git a/xbmc/windowing/WinSystem.h b/xbmc/windowing/WinSystem.h
+index ea87c6f..76dc12d 100644
+--- a/xbmc/windowing/WinSystem.h
++++ b/xbmc/windowing/WinSystem.h
+@@ -135,6 +135,20 @@ public:
+    */
+   virtual float GetVsyncRate();
+ 
++  /*!
++   * \brief In HFR VRR, whether each eye's GUI is drawn in full, the two stacked
++   * in a surface of twice the height, and the size of one eye's
++   *
++   * False while the platform draws the GUI once (HFR VRR not in effect).
++   */
++  virtual bool StereoGuiDoubled(int& eyeWidth, int& eyeHeight) const { return false; }
++
++  /*!
++   * \brief In a stacked HFR VRR GUI, whether the right eye's is the upper one:
++   * the viewer swapped the eyes of the video, and the GUI follows it
++   */
++  virtual bool StereoGuiEyesSwapped() const { return false; }
++
+   virtual bool Minimize() { return false; }
+   virtual bool Restore() { return false; }
+   virtual bool Hide() { return false; }
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index d73d414..43cf0d7 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -5,6 +5,7 @@
+  *  See LICENSES/README.md for more information.
+  */
+ #include <drm_fourcc.h>
++#include <algorithm>
+ #include <cmath>
+ #include <cstdlib>
+ #include <fcntl.h>
+@@ -1209,13 +1210,15 @@ void CAMLDisplay::fs3d_recover()
+                           StringUtils::EqualsNoCase(mode, FS3D_MODE_165);
+   // left by a Kodi in 3D; the base mode alone is also a desktop someone chose
+   const bool left = saved || StringUtils::StartsWith(vrrMode, "game") ||
+-                    CSysfsPath(FS3D_SWAP).Get<int>().value_or(0) != 0;
++                    CSysfsPath(FS3D_SWAP).Get<int>().value_or(0) != 0 ||
++                    CSysfsPath(FS3D_OSD).Get<int>().value_or(0) != 0;
+ 
+-  // Nothing plays yet: the video layer starts in 2D whatever is found. The
+-  // kernel keeps the 3D type across a decoder reset (a pause or a seek needs it
+-  // kept), so it is not cleared for us when a Kodi dies.
++  // Nothing plays yet: the video layer and the plane start in 2D whatever is
++  // found. The kernel keeps the 3D type across a decoder reset (a pause or a
++  // seek needs it kept), so it is not cleared for us when a Kodi dies.
+   aml_set_3d_video_mode(0 /* MODE_3D_DISABLE */, false, 3);
+   CSysfsPath(FS3D_SWAP, 0);
++  aml_set_fs3d_osd(0);
+ 
+   if (!left && !onFs3dMode)
+     return;
+@@ -1302,8 +1305,9 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+  * Frame-sequential 3D (HFR VRR). The sink keeps seeing a 2D 1080p 120 Hz signal,
+  * and game VRR slows it to the largest even multiple of the film rate it carries
+  * (24p at 96 Hz: each eye sees every frame twice). The video layer alternates the
+- * eyes; the GUI is drawn once, the same for both. ALLM keeps the TV out of motion
+- * smoothing, which would blend the eyes. Leaving puts all of it back.
++ * eyes, and the plane shows the half of the stacked GUI for the same eye. ALLM
++ * keeps the TV out of motion smoothing, which would blend the eyes. Leaving puts
++ * all of it back.
+  */
+ void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
+ {
+@@ -1322,11 +1326,9 @@ void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
+       CSysfsPath(FS3D_VRR_RATE, 0);
+       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
+     }
+-    CSysfsPath(FS3D_OSD, 0);
+   }
+   else
+   {
+-    CSysfsPath(FS3D_OSD, 0);
+     CSysfsPath(FS3D_VRR_RATE, 0);
+     CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
+     CSysfsPath(FS3D_ALLM, m_fs3d_allm.empty() ? std::string("0") : m_fs3d_allm);
+@@ -1358,6 +1360,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_vrr_rate = 0;
+     m_fs3d_vrr_frac = false;
+     m_fs3d_vsync_hz = 0.0;
++    m_fs3d_gui_width = 0;
++    m_fs3d_gui_height = 0;
+     CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
+     // the record goes once the output is off the 3D base mode, not before
+     const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+@@ -1373,7 +1377,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   if (fps <= 0)
+     fps = res.fRefreshRate;
+ 
+-  // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
++  // Only the mode changes; Kodi's resolution stays the film's.
+   const bool fast = m_fs3d_hz == 165;
+   const Fs3dRates rates = fs3d_rates(fps);
+   RESOLUTION_INFO base = res;
+@@ -1401,6 +1405,18 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+       fs3d_state_save(m_fs3d_allm, before);
+   }
+   const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
++  // Each eye's GUI in full, the left above the right: the plane takes the whole
++  // surface and the kernel scans out one half. At most 1080p per eye, which is
++  // all the output shows of it.
++  const float guiScale =
++      res.iWidth > 0 && res.iHeight > 0
++          ? std::min({1.0f, static_cast<float>(FS3D_WIDTH) / res.iWidth,
++                      static_cast<float>(FS3D_HEIGHT) / res.iHeight})
++          : 1.0f;
++  const int guiWidth = static_cast<int>(std::lround(res.iWidth * guiScale));
++  const int guiHeight = static_cast<int>(std::lround(res.iHeight * guiScale));
++  base.iWidth = guiWidth;
++  base.iHeight = guiHeight * 2;
+   if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
+   {
+     CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, m_fs3d_mode);
+@@ -1418,6 +1434,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_vrr_rate = 0;
+     m_fs3d_vrr_frac = false;
+     m_fs3d_vsync_hz = 0.0;
++    m_fs3d_gui_width = 0;
++    m_fs3d_gui_height = 0;
+     // for the rest of this film: it is not held back waiting for it
+     m_fs3d_entry_failed = true;
+     const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
+@@ -1442,6 +1460,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   m_fs3d_vsync_hz = vrr_rate ? vrr_rate / 100.0 * (fracVsync ? 1000.0 / 1001.0 : 1.0)
+                              : static_cast<double>(base.fRefreshRate);
+   m_fs3d_res = res;
++  m_fs3d_gui_width = guiWidth;
++  m_fs3d_gui_height = guiHeight;
+   m_fs3d_fps = fps;
+   m_fs3d_rates = rates;
+   m_fs3d_active = true;
+@@ -1519,6 +1539,11 @@ bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
+          (m_fs3d_res.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK);
+ }
+ 
++void CAMLDisplay::aml_set_fs3d_osd(int mode)
++{
++  CSysfsPath(FS3D_OSD, mode);
++}
++
+ bool CAMLDisplay::aml_display_fs3d_stale() const
+ {
+   const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
+@@ -1551,6 +1576,7 @@ bool CAMLDisplay::fs3d_next_film_starting() const
+ 
+ void CAMLDisplay::aml_fs3d_leave()
+ {
++  aml_set_fs3d_osd(0);
+   if (!m_fs3d_active)
+     return;
+   fs3d_apply(false, 0);
+@@ -1558,6 +1584,8 @@ void CAMLDisplay::aml_fs3d_leave()
+   m_fs3d_vrr_rate = 0;
+   m_fs3d_vrr_frac = false;
+   m_fs3d_vsync_hz = 0.0;
++  m_fs3d_gui_width = 0;
++  m_fs3d_gui_height = 0;
+ }
+ 
+ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index b80c7b2..6581cfe 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -229,6 +229,17 @@ public:
+   bool aml_display_fs3d_matches(const RESOLUTION_INFO& res) const;
+   //! frame-sequential 3D is on for another film rate than the playing one
+   bool aml_display_fs3d_stale() const;
++  //! In frame-sequential 3D, the size of each eye's GUI, stacked in a surface of
++  //! twice its height; false while it is off
++  bool aml_display_fs3d_gui(int& width, int& height) const
++  {
++    width = m_fs3d_gui_width;
++    height = m_fs3d_gui_height;
++    return m_fs3d_active && width > 0 && height > 0;
++  }
++  //! osd_fa_3d: 2 has the plane show the half of a stacked GUI for the eye the
++  //! video shows, 0 the whole surface. Written where the parameter exists.
++  void aml_set_fs3d_osd(int mode);
+   //! leave frame-sequential 3D, if it is on (Kodi shutting down)
+   void aml_fs3d_leave();
+   //! playback stopped: a failed entry into 3D no longer holds for the next film
+@@ -291,6 +302,8 @@ private:
+   std::string m_fs3d_165_failed;
+   //! a refresh read frame-sequential 3D as gone and it was kept: the next one decides
+   bool m_fs3d_drop_seen = false;
++  std::atomic<int> m_fs3d_gui_width{0};
++  std::atomic<int> m_fs3d_gui_height{0};
+   std::optional<std::pair<std::string, float>> m_fs3d_recovered_desktop;
+   //! the record of a 3D left behind is kept until its desktop has been set
+   std::atomic<bool> m_fs3d_state_pending{false};
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 3c12258..fff4f3c 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -758,6 +758,13 @@ float CWinSystemAmlogic::GetVsyncRate()
+   return fs3d > 0.0 ? static_cast<float>(fs3d) : aml_resolution_rate();
+ }
+ 
++bool CWinSystemAmlogic::StereoGuiDoubled(int& eyeWidth, int& eyeHeight) const
++{
++  eyeWidth = m_stereoGuiEyeWidth.load(std::memory_order_relaxed);
++  eyeHeight = m_stereoGuiEyeHeight.load(std::memory_order_relaxed);
++  return eyeWidth > 0 && eyeHeight > 0;
++}
++
+ void CWinSystemAmlogic::RegisterRenderThread()
+ {
+   m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+index 4ab3d75..f0a0fc9 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+@@ -81,6 +81,13 @@ public:
+   //! rate, while Kodi's resolution keeps the film's); else the resolution's.
+   float GetVsyncRate() override;
+ 
++  //! \brief In HFR VRR, each eye's GUI stacked in the surface the window has now.
++  bool StereoGuiDoubled(int& eyeWidth, int& eyeHeight) const override;
++  //! \brief The right eye's GUI on top: what the video layer was last given.
++  bool StereoGuiEyesSwapped() const override { return m_stereoGuiEyesSwapped; }
++  //! \brief Set by the codec when it gives the video layer its eyes (the viewer's swap).
++  static void SetStereoGuiEyesSwapped(bool swapped) { m_stereoGuiEyesSwapped = swapped; }
++
+   //! \brief Name the thread that schedules frames. Until this is called the
+   //! cached value is served to everyone, which is the base-class behaviour.
+   void RegisterRenderThread();
+@@ -128,7 +135,11 @@ protected:
+   static std::unique_ptr<CAMLDisplay> m_amlDisplay;
+   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
+   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
++  //! the stacked GUI of the surface the window has: one eye's size, 0 when drawn once
++  std::atomic<int> m_stereoGuiEyeWidth{0};
++  std::atomic<int> m_stereoGuiEyeHeight{0};
+ private:
++  static inline std::atomic<bool> m_stereoGuiEyesSwapped{false};
+   bool m_staleVblankSeen{false};
+   //! the stereo mode MessagePump last saw
+   RenderStereoMode m_fs3dStereoMode{RenderStereoMode::OFF};
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+index 27a726c..603e7df 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -186,6 +186,14 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
+   {
+     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
++    // the surface stays as it is, stacked HFR VRR GUI included
++    int eyeWidth = 0;
++    int eyeHeight = 0;
++    if (StereoGuiDoubled(eyeWidth, eyeHeight))
++    {
++      res.iWidth = eyeWidth;
++      res.iHeight = eyeHeight * 2;
++    }
+     return true;
+   }
+ 
+@@ -221,11 +229,34 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+   m_bFullScreen = fullScreen;
+   m_nativeGUI = nativeGUI;
+ 
++  // no stacked GUI until this window has one, if creating it fails too
++  m_stereoGuiEyeWidth = 0;
++  m_stereoGuiEyeHeight = 0;
++  m_fs3dOsdWanted = 0;
++
+   if (!CWinSystemAmlogic::CreateNewWindow(name, fullScreen, res))
+   {
+     return false;
+   }
+ 
++  // HFR VRR, entered or kept by this switch: each eye's GUI in full, the left above
++  // the right, in a surface of twice the height. Only then, and osd_fa_3d says so
++  // from the first flip of this surface.
++  int eyeWidth = 0;
++  int eyeHeight = 0;
++  if (!m_amlDisplay->aml_display_fs3d_gui(eyeWidth, eyeHeight))
++    eyeWidth = eyeHeight = 0;
++  m_stereoGuiEyeWidth = eyeWidth;
++  m_stereoGuiEyeHeight = eyeHeight;
++  m_fs3dOsdWanted = eyeHeight > 0 ? 2 : 0;
++  if (eyeHeight > 0)
++  {
++    res.iWidth = eyeWidth;
++    res.iHeight = eyeHeight * 2;
++    m_nWidth = res.iWidth;
++    m_nHeight = res.iHeight;
++  }
++
+   uint32_t format = m_pGLContext->GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
+   if (!m_amlGBMUtils->CreateSurface(res.iWidth, res.iHeight, format))
+   {
+@@ -335,6 +366,12 @@ void CWinSystemAmlogicGLESContext::PresentRender(bool rendered, bool videoLayer)
+     {
+       // this flip latches no earlier than the vsync after the last step: pace on the next one
+       m_presentStepSeen = CAMLCodec::PresentSteps();
++      // with the first flip of a surface of the other height, not before it
++      if (m_fs3dOsdWanted != m_fs3dOsdSet)
++      {
++        m_amlDisplay->aml_set_fs3d_osd(m_fs3dOsdWanted);
++        m_fs3dOsdSet = m_fs3dOsdWanted;
++      }
+       m_amlDisplay->FlipPage(m_amlGBMUtils->GetFBId());
+     }
+   }
+@@ -607,9 +644,12 @@ void CWinSystemAmlogicGLESContext::EndGuiComposite()
+   // video renders in the RenderEx pass with clear=false, so DrawBlackBars is
+   // never called. Without this clear, letterbox areas retain stale content
+   // from the swap chain when the display resolution doesn't change between
+-  // GUI and video playback.
++  // GUI and video playback. The whole surface: a stacked HFR VRR GUI is left
++  // with the scissor on its upper half.
++  glDisable(GL_SCISSOR_TEST);
+   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
++  glEnable(GL_SCISSOR_TEST);
+ }
+ 
+ // CompositeGui is the last GL operation in the frame (called just before EndRender).
+@@ -635,6 +675,12 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
+     return;
+   }
+ 
++  // the whole surface, both eyes of a stacked HFR VRR GUI included
++  GLint viewport[4];
++  glGetIntegerv(GL_VIEWPORT, viewport);
++  glViewport(0, 0, m_guiFboWidth, m_guiFboHeight);
++  glDisable(GL_SCISSOR_TEST);
++
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
+ 
+@@ -671,6 +717,9 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
+   glDisableVertexAttribArray(texLoc);
+ 
+   m_compositeShader->Disable();
++
++  glEnable(GL_SCISSOR_TEST);
++  glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+ }
+ 
+ EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
+index d9ef60c..3272dbb 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
+@@ -74,6 +74,9 @@ private:
+   std::unique_ptr<CEGLContextUtils> m_pGLContext;
+   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
+   uint64_t m_presentStepSeen{0};
++  //! osd_fa_3d for the surface the next flip shows, and the value last written
++  int m_fs3dOsdWanted{0};
++  int m_fs3dOsdSet{-1};
+ 
+   bool m_guiCompositing{false};
+   CFrameBufferObject m_guiFbo;

@@ -70,7 +70,12 @@ struct CCurrentStream
   };
   int syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
   int avsync = 0;
+  struct
+  {
+    int codec = 0;
+  } hint;
 };
+constexpr int AV_CODEC_ID_TRUEHD = 1, AV_CODEC_ID_DTS = 2;
 struct Clock
 {
   double now = 10001000, pts = 500000;
@@ -199,6 +204,8 @@ struct CVideoPlayer
   }
   void PublishPlaySpeed(int, bool) {}
   bool PollResumePreroll();
+  double ResumePrerollLeadIn(double rendererLeadUs, double& settle, double& receiverStart) const;
+  bool ResumePrerollHasLead(double target, double rendererLeadUs) const;
   bool CanPrepareResumePreroll() const { return true; }
   bool IsPassthrough() const { return true; }
   struct State
@@ -421,5 +428,31 @@ TEST(PlayerPrerollWiring, AStalledAudioCommitStillTimesOutAfterVideoSubmission)
   EXPECT_TRUE(player.PollResumePreroll());
   EXPECT_FALSE(player.recovery.empty());
   EXPECT_EQ(0u, player.m_resumePictureGeneration);
+}
+TEST(PlayerPrerollWiring, NoPreparationNearerTheStartThanTheLeadIn)
+{
+  // TrueHD with the renderer at its 100 ms floor: the 800 ms lead-in and the
+  // 106.7 ms settle the box logged when 3D films were paused at 0.4-0.7 s.
+  CVideoPlayer player;
+  player.m_CurrentAudio.hint.codec = AV_CODEC_ID_TRUEHD;
+  double settle = 0, receiverStart = 0;
+  EXPECT_DOUBLE_EQ(800000, player.ResumePrerollLeadIn(100000, settle, receiverStart));
+  EXPECT_DOUBLE_EQ(350000, receiverStart);
+  EXPECT_NEAR(106666.7, settle, 0.1);
+  EXPECT_FALSE(player.ResumePrerollHasLead(604000, 100000));
+  EXPECT_FALSE(player.ResumePrerollHasLead(906000, 100000));
+  EXPECT_TRUE(player.ResumePrerollHasLead(800000 + settle, 100000));
+  EXPECT_FALSE(player.ResumePrerollHasLead(1000000, 200000)) << "a longer renderer lead counts";
+}
+TEST(PlayerPrerollWiring, OtherCodecsNeedNoSettleOrReceiverAllowance)
+{
+  CVideoPlayer player;
+  player.m_CurrentAudio.hint.codec = AV_CODEC_ID_DTS;
+  double settle = 1, receiverStart = 1;
+  EXPECT_DOUBLE_EQ(450000, player.ResumePrerollLeadIn(100000, settle, receiverStart));
+  EXPECT_EQ(0, settle);
+  EXPECT_EQ(0, receiverStart);
+  EXPECT_FALSE(player.ResumePrerollHasLead(449999, 100000));
+  EXPECT_TRUE(player.ResumePrerollHasLead(450000, 100000));
 }
 } // namespace

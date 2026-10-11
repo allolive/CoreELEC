@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:00:00 -0400
+Subject: [PATCH] GUIWindowSettingsCategory: do not take a film's output mode for the GUI resolution
+
+With a settings category on screen, every window resize that leaves the
+graphic context's video resolution different from the GUI's current one is
+taken as a change of the GUI resolution: it is saved to
+videoscreen.screenmode, and CDisplaySettings asks "Keep this resolution?"
+from that setting's change callback, still inside CSettingsManager::SetString,
+which holds the settings lock shared. A film started while the window is shown
+(from a remote, JSON-RPC, a playlist or an add-on) switches the output to its
+own mode, so the film's refresh rate is saved as the GUI's and the dialog
+opens. Its render loop processes the player's switch to fullscreen video,
+and closing the settings window unregisters its setting callbacks, which takes
+that lock exclusively on the thread already holding it shared (CSharedSection
+is not reentrant): Kodi's main thread blocks for good, video freezes with
+audio still playing and JSON-RPC stops answering. Seen on an Amlogic box with System > Display open when a
+3D film started; any refresh-rate switch reaches it.
+
+While a video is playing the output follows the film, not the GUI setting,
+so the resize is no longer taken as a resolution change then; when playback
+ends the output returns to the GUI mode and the check finds nothing to save.
+
+The same lock is held across the prompt when the resolution is changed by
+hand, so a film started while that prompt is up still deadlocks; closing that
+would mean not holding the settings lock across a setting's callbacks, in
+shared settings code, and is left alone here.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/settings/windows/GUIWindowSettingsCategory.cpp b/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
+index 657ad77..f9ff071 100644
+--- a/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
++++ b/xbmc/settings/windows/GUIWindowSettingsCategory.cpp
+@@ -11,6 +11,8 @@
+ #include "GUIPassword.h"
+ #include "GUIUserMessages.h"
+ #include "ServiceBroker.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
+ #include "input/actions/Action.h"
+ #include "input/actions/ActionIDs.h"
+ #include "settings/DisplaySettings.h"
+@@ -107,7 +109,12 @@ bool CGUIWindowSettingsCategory::OnMessage(CGUIMessage &message)
+     {
+       if (message.GetParam1() == GUI_MSG_WINDOW_RESIZE)
+       {
+-        if (IsActive() && CDisplaySettings::GetInstance().GetCurrentResolution() != CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution())
++        // while a video plays the output follows the film, not the GUI setting
++        const auto& components = CServiceBroker::GetAppComponents();
++        const auto appPlayer = components.GetComponent<CApplicationPlayer>();
++        if (IsActive() && !(appPlayer && appPlayer->IsPlayingVideo()) &&
++            CDisplaySettings::GetInstance().GetCurrentResolution() !=
++                CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution())
+         {
+           CDisplaySettings::GetInstance().SetCurrentResolution(CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), true);
+           CreateSettings();
