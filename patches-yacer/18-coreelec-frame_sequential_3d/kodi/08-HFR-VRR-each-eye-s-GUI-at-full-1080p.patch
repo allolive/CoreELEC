@@ -85,10 +85,10 @@ index ab088ac9e2..8de45cd0a7 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 9ae5c9f7f1..d763af554b 100644
+index 78b6a08574..c7ba4c0f34 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2865,6 +2865,7 @@ void CAMLCodec::CloseDecoder()
+@@ -2888,6 +2888,7 @@ void CAMLCodec::CloseDecoder()
        CSysfsPath(CAMLDisplay::FS3D_SWAP, 0);
        m_fs3dMode = FS3D_UNSET;
      }
@@ -96,7 +96,7 @@ index 9ae5c9f7f1..d763af554b 100644
    }
  
    // never leave vcodec ff/rw or paused.
-@@ -4061,11 +4062,14 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4122,11 +4123,14 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      else if (hfr && (layout == "top_bottom" || layout == "bottom_top"))
        mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_TB | MODE_3D_OUT_FA_L_FIRST;
  
@@ -115,7 +115,7 @@ index 9ae5c9f7f1..d763af554b 100644
        dst_rect.x1 *= xs;
        dst_rect.x2 *= xs;
        dst_rect.y1 *= ys;
-@@ -4089,6 +4093,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4150,6 +4154,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
        m_fs3dSwap = swap;
        m_fs3dView = mvc_view_mode;
      }
@@ -475,10 +475,10 @@ index b80c7b28f0..6581cfe9ba 100644
    //! the record of a 3D left behind is kept until its desktop has been set
    std::atomic<bool> m_fs3d_state_pending{false};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 8eb133e33c..13f8743380 100644
+index 97657b03ff..09a1e443f2 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -758,6 +758,13 @@ float CWinSystemAmlogic::GetVsyncRate()
+@@ -831,6 +831,13 @@ float CWinSystemAmlogic::GetVsyncRate()
    return fs3d > 0.0 ? static_cast<float>(fs3d) : aml_resolution_rate();
  }
  

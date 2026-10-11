@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:00:00 -0400
+Subject: [PATCH] WinSystemAmlogic: keep the film's and the GUI's mode across an HDMI hotplug
+
+A TV or receiver that drops the HDMI hotplug line while a film plays (seen
+for 4 s, 12 s after a switch to 1080p50) left the box in the wrong mode,
+and then kept it there:
+
+- On reconnect HotplugEvent set the boot mode (the last vout= on the kernel
+  command line) whatever was playing, and nothing asked the player for the
+  film's mode again: the film ran on at the GUI's 2160p60.
+- RefreshResolutions fills the desktop entry from the mode the output is in
+  at that moment, the film's 1080p50. Stopping then "returned" to 1080p50,
+  the next Kodi start saved it to resolution.ini as the GUI's mode, and the
+  box booted into it from then on.
+
+The desktop entry, the mode the output is in and whether a video plays full
+screen are now taken before the list is rebuilt. The desktop entry is put
+back from the same mode in the new list whenever the display still offers
+it. While a video plays full screen its mode is set again whenever the
+display still offers it; when it does not, the preferred mode is set as
+before and the player picks the film's mode again from the new list.
+Otherwise the GUI takes its own setting (videoscreen.screenmode) again,
+resolved against the new list as at startup, rather than the preferred
+mode; a GUI set to the desktop lands on the restored desktop entry, so
+nothing is rewritten and no "keep this resolution" dialog appears. The
+setting's stored index is moved to the new list only once the mode itself
+is listed again, since setting it also writes the next boot mode.
+
+A desktop the display has stopped listing (a receiver that comes back with
+a short list first) is remembered for the rest of the session and taken
+back at the first later hotplug that lists it; until then the desktop is
+the preferred mode if a video was playing, not the film's. The dummy_l
+placeholder, which stands in for a display that was not there, is never
+kept as either mode.
+
+The hotplug itself came from the sink: the kernel logged a plain HPD LOW
+with nothing from the box before it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index f16c74d261..cce6347ef5 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -11,8 +11,11 @@
+ #include <string.h>
+ #include <float.h>
+ #include <exception>
++#include <cmath>
+ 
+ #include "ServiceBroker.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
+ #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
+ #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
+ #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
+@@ -194,10 +197,39 @@ bool CWinSystemAmlogic::MessagePump()
+   return false;
+ }
+ 
++namespace
++{
++RESOLUTION FindListedMode(const RESOLUTION_INFO& info)
++{
++  if (info.iWidth <= 0 || info.iHeight <= 0 || StringUtils::EqualsNoCase(info.strId, "dummy_l"))
++    return RES_INVALID;
++  auto& settings = CDisplaySettings::GetInstance();
++  for (size_t r = RES_CUSTOM; r < settings.ResolutionInfoSize(); r++)
++  {
++    const RESOLUTION_INFO& listed = settings.GetResolutionInfo(r);
++    if (listed.iWidth == info.iWidth && listed.iHeight == info.iHeight &&
++        listed.iScreenWidth == info.iScreenWidth && listed.iScreenHeight == info.iScreenHeight &&
++        (listed.dwFlags & D3DPRESENTFLAG_MODEMASK) == (info.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
++        std::fabs(listed.fRefreshRate - info.fRefreshRate) < 0.01f)
++      return static_cast<RESOLUTION>(r);
++  }
++  return RES_INVALID;
++}
++} // namespace
++
+ void CWinSystemAmlogic::HotplugEvent()
+ {
+   SetPresentationReady(false);
+ 
++  // the rebuilt list takes its desktop from the output's mode: the film's while one plays
++  static RESOLUTION_INFO lostDesktop(0, 0);
++  auto& gfx = GetGfxContext();
++  auto& displays = CDisplaySettings::GetInstance();
++  const RESOLUTION_INFO oldDesktop = displays.GetResolutionInfo(RES_DESKTOP);
++  const RESOLUTION_INFO oldMode = displays.GetResolutionInfo(gfx.GetVideoResolution());
++  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++  const bool playing = appPlayer && appPlayer->IsPlayingVideo() && gfx.IsFullScreenVideo();
++
+   try
+   {
+     m_amlDisplay->aml_init_drmDevice();
+@@ -227,6 +259,18 @@ void CWinSystemAmlogic::HotplugEvent()
+ 
+   CDisplaySettings::GetInstance().ClearCustomResolutions();
+   RefreshResolutions();
++  RESOLUTION desktop = FindListedMode(lostDesktop);
++  if (desktop != RES_INVALID)
++    lostDesktop = RESOLUTION_INFO(0, 0);
++  else
++  {
++    desktop = FindListedMode(oldDesktop);
++    if (desktop == RES_INVALID && lostDesktop.iWidth <= 0 && oldDesktop.iWidth > 0 &&
++        !StringUtils::EqualsNoCase(oldDesktop.strId, "dummy_l"))
++      lostDesktop = oldDesktop;
++  }
++  if (desktop != RES_INVALID)
++    displays.GetResolutionInfo(RES_DESKTOP) = displays.GetResolutionInfo(desktop);
+   CDisplaySettings::GetInstance().ApplyCalibrations();
+ 
+   if (!preferred_mode.empty())
+@@ -248,9 +292,40 @@ void CWinSystemAmlogic::HotplugEvent()
+     CLog::Log(LOGWARNING, "CWinSystemAmlogic - HotplugEvent, no preferred mode defined, use display mode: {}",
+       CDisplaySettings::GetInstance().GetResolutionInfo(res).strId);
+ 
++  if (desktop == RES_INVALID && playing)
++    displays.GetResolutionInfo(RES_DESKTOP) = displays.GetResolutionInfo(res);
++
++  // stored only once the mode itself is listed again: it is also the next boot mode
++  const std::string screenmode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
++      CSettings::SETTING_VIDEOSCREEN_SCREENMODE);
++  RESOLUTION guiRes = displays.GetResFromString(screenmode);
++  if (guiRes == RES_DESKTOP && screenmode != "DESKTOP")
++  {
++    if (const RESOLUTION listed = FindListedMode(displays.GetResolutionInfo(RES_DESKTOP));
++        listed != RES_INVALID)
++      guiRes = listed;
++  }
++  if (displays.GetStringFromRes(guiRes) == screenmode)
++    displays.SetCurrentResolution(guiRes);
++
++  bool repick = false;
++  if (playing)
++  {
++    const RESOLUTION kept = FindListedMode(oldMode);
++    repick = kept == RES_INVALID;
++    if (!repick)
++      res = kept;
++    CLog::Log(LOGINFO, "CWinSystemAmlogic - HotplugEvent during playback: {} {}",
++              repick ? "picking again, gone:" : "keeping", oldMode.strId);
++  }
++  else
++    res = guiRes;
++
+   m_amlDisplay->SetHotPlug();
+-  CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, true);
+-  CServiceBroker::GetWinSystem()->GetGfxContext().ApplyModeChange(res);
++  gfx.SetVideoResolution(res, true);
++  gfx.ApplyModeChange(res);
++  if (repick)
++    appPlayer->TriggerUpdateResolution();
+ }
+ 
+ void CWinSystemAmlogic::FDEventCallback(int id, int fd, short revents, void *data)

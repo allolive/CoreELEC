@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 23:00:00 -0400
+Subject: [PATCH] AMLCodec: keep a DVD's picture up while its next title opens
+
+A DVD that changes title set (intro to menu to feature) makes the player
+close the video decoder and open a new one, every time and whatever the
+format. On Amlogic the close switched the video layer off (blackout_policy
+1, then disable_video), and it stayed black until the new decoder had shown
+its first picture and the clock had caught up: about a second of black at
+each change, twice in a row at some.
+
+When a DVD's decoder closes, blackout_policy is set to 0 for the close, so
+the video layer keeps the last picture, and the layer is no longer switched
+off. The next decoder to open puts the policy back and, when it is a DVD's
+too, leaves the picture up until it shows its own. If none opens within
+1.5 s - the DVD was stopped - the layer is switched off and the policy put
+back then. A policy of 0 found at the start of this is one a run ended on
+before it could put it back, and 1, the box default, is what is restored.
+Only DVD navigation is touched (hints.dvd); files, Blu-ray and Dolby Vision
+close as before. The delayed switch-off is a CTimer that the next open or
+close stops first, so a stale one can never blank a newer title's picture;
+ShowMainVideo becomes static and serialised, since the timer calls it after
+the codec is gone. A picture still kept when Kodi exits is released in
+CWinSystemAmlogic::DestroyWindowSystem: the timer thread logs as it ends
+and must not outlive the logging, and the policy is put back.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index a0e274d587..e800a5d4bf 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -23,6 +23,7 @@
+ #include "settings/MediaSettings.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
++#include "threads/Timer.h"
+ #include "utils/AMLUtils.h"
+ #include "utils/log.h"
+ #include "utils/StreamDetails.h"
+@@ -57,6 +58,20 @@
+ 
+ namespace
+ {
++constexpr const char* BLACKOUT_POLICY = "/sys/class/video/blackout_policy";
++constexpr auto DVD_KEEP_FRAME = std::chrono::milliseconds(1500);
++std::mutex dvdKeepMutex;
++int dvdKeepPolicy = -1; // blackout_policy to put back; -1 while nothing is kept
++
++// with dvdKeepMutex held
++void RestoreDvdBlackout()
++{
++  if (dvdKeepPolicy < 0)
++    return;
++  CSysfsPath(BLACKOUT_POLICY, dvdKeepPolicy);
++  dvdKeepPolicy = -1;
++}
++
+ //! The largest audio offset worth honouring, in seconds. Well past anything a
+ //! viewer sets by hand, and short of the range where a mistaken sign would be
+ //! driving the clock somewhere absurd.
+@@ -2321,7 +2336,15 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+     return false;
+   }
+ 
+-  ShowMainVideo(false);
++  KeptFrameTimer().Stop(true);
++  bool keptFrame;
++  {
++    std::lock_guard<std::mutex> keep(dvdKeepMutex);
++    keptFrame = dvdKeepPolicy >= 0;
++    RestoreDvdBlackout();
++  }
++  if (!keptFrame || !hints.dvd)
++    ShowMainVideo(false);
+ 
+   am_packet_init(&am_private->am_pkt);
+   // default stream type
+@@ -2834,6 +2857,18 @@ void CAMLCodec::CloseDecoder()
+   if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE)
+     AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
+ 
++  CSysfsPath policy{BLACKOUT_POLICY};
++  const bool keepFrame = m_hints.dvd && !dv_enabled && policy.Exists();
++  if (keepFrame)
++  {
++    KeptFrameTimer().Stop(true);
++    std::lock_guard<std::mutex> keep(dvdKeepMutex);
++    // a 0 read here was left by a run that ended while a picture was kept
++    if (dvdKeepPolicy < 0)
++      dvdKeepPolicy = std::max(policy.Get<int>().value_or(1), 1);
++    policy.Set(0);
++  }
++
+   {
+     std::lock_guard<std::mutex> lock(m_frameMutex);
+     ++m_frameGeneration;
+@@ -2896,7 +2931,10 @@ void CAMLCodec::CloseDecoder()
+   AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "enable_mel 0");
+   AmlDisplay->aml_set_drmProperty("dv_debug", DRM_MODE_OBJECT_CRTC, "force_unmap");
+ 
+-  ShowMainVideo(false);
++  if (!keepFrame)
++    ShowMainVideo(false);
++  else
++    KeptFrameTimer().Start(DVD_KEEP_FRAME);
+ 
+   CloseAmlVideo();
+ }
+@@ -3741,9 +3779,32 @@ void CAMLCodec::SetSpeed(int speed)
+   }
+ }
+ 
++CTimer& CAMLCodec::KeptFrameTimer()
++{
++  static CTimer timer(BlankKeptFrame);
++  return timer;
++}
++
++void CAMLCodec::BlankKeptFrame()
++{
++  std::lock_guard<std::mutex> keep(dvdKeepMutex);
++  if (dvdKeepPolicy < 0)
++    return;
++  ShowMainVideo(false);
++  RestoreDvdBlackout();
++}
++
++void CAMLCodec::ReleaseKeptFrame()
++{
++  KeptFrameTimer().Stop(true);
++  BlankKeptFrame();
++}
++
+ void CAMLCodec::ShowMainVideo(const bool show)
+ {
++  static std::mutex lock;
+   static int saved_disable_video = -1;
++  std::lock_guard<std::mutex> guard(lock);
+ 
+   int disable_video = show ? 0:1;
+   if (saved_disable_video == disable_video)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 9338b862cb..38fb562be8 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -29,6 +29,7 @@ class PosixFile;
+ typedef std::shared_ptr<PosixFile> PosixFilePtr;
+ 
+ class CProcessInfo;
++class CTimer;
+ 
+ struct vpp_pq_ctrl_s {
+ 	unsigned int length;
+@@ -121,6 +122,7 @@ public:
+   static void   StopVsyncWait();
+   //! Signals the end of a vsync thread step; `vsync` if it followed a real vsync
+   static void   PublishPresentStep(bool vsync);
++  static void   ReleaseKeptFrame();
+   //! Marks that the vsync thread queued a shown frame; PollVsync refuses a STEP until the
+   //! next vsync (or timeout) so one vsync never gets two frames
+   static void   NotePresented();
+@@ -131,7 +133,9 @@ public:
+   static bool   WaitPresentStep(uint64_t& seen, int fenceFd);
+ 
+ private:
+-  void          ShowMainVideo(const bool show);
++  static void   ShowMainVideo(const bool show);
++  static CTimer& KeptFrameTimer();
++  static void   BlankKeptFrame();
+   void          SetVideoZoom(const float zoom);
+   void          SetVideoContrast(const int contrast);
+   void          SetVideoBrightness(const int brightness);
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index 4db51da9f2..5657c8702e 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -20,6 +20,7 @@
+ #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
+ #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
+ #include "cores/DataCacheCore.h"
++#include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
+ #include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
+ #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
+ #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
+@@ -448,6 +449,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
+ 
+ bool CWinSystemAmlogic::DestroyWindowSystem()
+ {
++  CAMLCodec::ReleaseKeptFrame();
+   return true;
+ }
+ 

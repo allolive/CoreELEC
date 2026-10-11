@@ -41,10 +41,10 @@ GetVsyncRate.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index ff7b1804d7..9ae5c9f7f1 100644
+index 0e4537280d..78b6a08574 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -120,7 +120,7 @@ void DrainVsyncKick()
+@@ -135,7 +135,7 @@ void DrainVsyncKick()
  // the kernel reports no missing vsync; this is the VideoSyncAML bound for the same flag
  std::chrono::milliseconds VsyncLivenessBound()
  {
@@ -53,7 +53,7 @@ index ff7b1804d7..9ae5c9f7f1 100644
    return std::chrono::milliseconds(static_cast<int>(3000.0f / (fps > 1.0f ? fps : 60.0f)));
  }
  
-@@ -3571,8 +3571,8 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
+@@ -3609,8 +3609,8 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
      return;
    }
  
@@ -289,10 +289,10 @@ index b4f540c657..dc9fee6cac 100644
    std::string m_fs3d_mode{FS3D_MODE};
    int m_fs3d_hz = 120;
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 5f996282f0..08a680ccb6 100644
+index 882ed97020..9419dc14b4 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -660,6 +660,13 @@ float CWinSystemAmlogic::GetDisplayLatency()
+@@ -733,6 +733,13 @@ float CWinSystemAmlogic::GetDisplayLatency()
    return CAMLLatencyStore::GetInstance().Get();
  }
  
@@ -306,7 +306,7 @@ index 5f996282f0..08a680ccb6 100644
  void CWinSystemAmlogic::RegisterRenderThread()
  {
    m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
-@@ -688,7 +695,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -761,7 +768,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
      return 0.0f;
    };
  

@@ -160,10 +160,10 @@ index 2cdd77a9e9..ab088ac9e2 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index a0e274d587..ff7b1804d7 100644
+index e800a5d4bf..0e4537280d 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -62,6 +62,23 @@ namespace
+@@ -77,6 +77,23 @@ void RestoreDvdBlackout()
  //! driving the clock somewhere absurd.
  constexpr double MAX_AUDIO_OFFSET_S = 1.0;
  
@@ -187,7 +187,7 @@ index a0e274d587..ff7b1804d7 100644
  
  std::mutex pollSyncMutex;
  
-@@ -315,9 +332,14 @@ public:
+@@ -330,9 +347,14 @@ public:
  #define MODE_3D_TO_2D_B         0x00000a02
  #define MODE_3D_OUT_TB          0x00010000
  #define MODE_3D_OUT_LR          0x00020000
@@ -202,7 +202,7 @@ index a0e274d587..ff7b1804d7 100644
  #define AV_SYNC_THRESH  PTS_FREQ*30
  
  #define TRICKMODE_NONE  0x00
-@@ -2300,6 +2322,8 @@ void CAMLCodec::SetDoviZeroLevel5(bool value)
+@@ -2315,6 +2337,8 @@ void CAMLCodec::SetDoviZeroLevel5(bool value)
  
  bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
  {
@@ -211,7 +211,7 @@ index a0e274d587..ff7b1804d7 100644
    m_speed = DVD_PLAYSPEED_NORMAL;
    m_drain = false;
    m_cur_pts = DVD_NOPTS_VALUE;
-@@ -2704,6 +2728,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2727,6 +2751,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
      m_trimWasPassthrough = false;
      m_opened.store(true, std::memory_order_release);
    }
@@ -222,7 +222,7 @@ index a0e274d587..ff7b1804d7 100644
  
    // vcodec is open, update speed if it was
    // changed before VideoPlayer called OpenDecoder.
-@@ -2814,8 +2842,10 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
+@@ -2837,8 +2865,10 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
  
  void CAMLCodec::CloseDecoder()
  {
@@ -233,7 +233,7 @@ index a0e274d587..ff7b1804d7 100644
    int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
    // A failed read (-1, e.g. connector not connected) is not an enabled core.
    bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC) > 0);
-@@ -2823,6 +2853,20 @@ void CAMLCodec::CloseDecoder()
+@@ -2846,6 +2876,20 @@ void CAMLCodec::CloseDecoder()
  
    SetPollDevice(-1);
  
@@ -254,7 +254,7 @@ index a0e274d587..ff7b1804d7 100644
    // never leave vcodec ff/rw or paused.
    if (m_speed != DVD_PLAYSPEED_NORMAL)
    {
-@@ -3787,6 +3831,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3848,6 +3892,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
    // this routine gets called every video frame
    // and is in the context of the renderer thread so
    // do not do anything stupid here.
@@ -264,7 +264,7 @@ index a0e274d587..ff7b1804d7 100644
    bool update = false;
  
    // video zoom adjustment.
-@@ -3835,6 +3882,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3896,6 +3943,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      m_guiStereoMode = guiStereoMode;
      update = true;
    }
@@ -305,7 +305,7 @@ index a0e274d587..ff7b1804d7 100644
    RenderStereoView guiStereoView = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
    if (m_guiStereoView != guiStereoView)
    {
-@@ -3879,7 +3960,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3940,7 +4021,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
    if (!update)
    {
      // mainvideo 'should' be showing already if we get here, make sure.
@@ -314,7 +314,7 @@ index a0e274d587..ff7b1804d7 100644
      return;
    }
  
-@@ -3923,7 +4004,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -3984,7 +4065,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
    }
  
@@ -325,7 +325,7 @@ index a0e274d587..ff7b1804d7 100644
    {
      int mvc_view_mode = 3;
      switch (am_private->video_format)
-@@ -3953,6 +4036,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4014,6 +4097,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
          break;
      }
    }
@@ -386,7 +386,7 @@ index a0e274d587..ff7b1804d7 100644
  
  #if 1
    std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
-@@ -3990,7 +4127,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4051,7 +4188,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
  
    // we only get called once gui has changed to something
    // that would show video playback, so show it.
@@ -396,7 +396,7 @@ index a0e274d587..ff7b1804d7 100644
  
  void CAMLCodec::SetVideoRate(int videoRate)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 9338b862cb..407d3acbae 100644
+index 38fb562be8..1dee5ec1bd 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -407,7 +407,7 @@ index 9338b862cb..407d3acbae 100644
  #include "AMLGenlock.h"
  #include "DVDVideoCodec.h"
  #include "cores/VideoPlayer/DVDStreamInfo.h"
-@@ -96,6 +97,14 @@ public:
+@@ -97,6 +98,14 @@ public:
  
    static int    PollFrame();
    static void   SetPollDevice(int device);
@@ -422,7 +422,7 @@ index 9338b862cb..407d3acbae 100644
  
    enum class VsyncWake
    {
-@@ -167,6 +176,18 @@ private:
+@@ -171,6 +180,18 @@ private:
    int              m_view_mode = -1;
    RenderStereoMode m_guiStereoMode = RenderStereoMode::OFF;
    RenderStereoView m_guiStereoView = RenderStereoView::OFF;
@@ -441,7 +441,7 @@ index 9338b862cb..407d3acbae 100644
    float            m_zoom = -1.0f;
    int              m_contrast = -1;
    int              m_brightness = -1;
-@@ -185,6 +206,7 @@ private:
+@@ -189,6 +210,7 @@ private:
    std::string      m_defaultVfmMap;
  
    static std::atomic_flag  m_pollSync;
@@ -1005,25 +1005,19 @@ index ec554af789..234557a21c 100644
 +  int m_fs3d_vrr_rate = 0;
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 19504566c9..5f996282f0 100644
+index 5657c8702e..882ed97020 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -15,9 +15,14 @@
- #include <optional>
- 
+@@ -17,6 +17,8 @@
  #include "ServiceBroker.h"
-+#include "application/ApplicationComponents.h"
-+#include "application/ApplicationPlayer.h"
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
 +#include "messaging/ApplicationMessenger.h"
 +#include "interfaces/AnnouncementManager.h"
  #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
  #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
  #include "cores/DataCacheCore.h"
-+#include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
- #include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
- #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
- #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
-@@ -86,6 +91,8 @@ CWinSystemAmlogic::CWinSystemAmlogic()
+@@ -89,6 +91,8 @@ CWinSystemAmlogic::CWinSystemAmlogic()
  
  CWinSystemAmlogic::~CWinSystemAmlogic()
  {
@@ -1032,7 +1026,7 @@ index 19504566c9..5f996282f0 100644
    MonitorStop();
  }
  
-@@ -197,6 +204,22 @@ bool CWinSystemAmlogic::MessagePump()
+@@ -200,6 +204,22 @@ bool CWinSystemAmlogic::MessagePump()
    if (m_hotplugPending.exchange(false))
      HotplugEvent();
  
@@ -1055,7 +1049,7 @@ index 19504566c9..5f996282f0 100644
    aml_resolution_refresh();
  
    return false;
-@@ -294,6 +317,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -369,6 +389,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
  {
    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
  
@@ -1066,10 +1060,10 @@ index 19504566c9..5f996282f0 100644
    RefreshDisplayCapabilities();
  
    if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
-@@ -374,9 +401,86 @@ bool CWinSystemAmlogic::InitWindowSystem()
- 
+@@ -450,9 +474,86 @@ bool CWinSystemAmlogic::InitWindowSystem()
  bool CWinSystemAmlogic::DestroyWindowSystem()
  {
+   CAMLCodec::ReleaseKeptFrame();
 +  if (auto announcements = CServiceBroker::GetAnnouncementManager())
 +    announcements->RemoveAnnouncer(this);
 +  // the sink is not left in game VRR

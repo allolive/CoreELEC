@@ -172,10 +172,10 @@ index ecba7291cc..62a53b93ec 100644
    return m_fps;
  }
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index c7d5e7d10f..19504566c9 100644
+index bc60d848d2..4db51da9f2 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -197,6 +197,8 @@ bool CWinSystemAmlogic::MessagePump()
+@@ -199,6 +199,8 @@ bool CWinSystemAmlogic::MessagePump()
    if (m_hotplugPending.exchange(false))
      HotplugEvent();
  
@@ -184,7 +184,7 @@ index c7d5e7d10f..19504566c9 100644
    return false;
  }
  
-@@ -409,6 +411,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
+@@ -483,6 +485,8 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
  
    m_force_mode_switch = false;
    m_hotplug_mode_switch = false;
@@ -193,7 +193,7 @@ index c7d5e7d10f..19504566c9 100644
    return ret;
  }
  
-@@ -580,7 +584,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -654,7 +658,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
      return 0.0f;
    };
  

@@ -1162,17 +1162,18 @@ index 04c76d2e57..a3d9164cd0 100644
    static const int m_numRenderBuffers = NUM_BUFFERS;
  
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index f16c74d261..69f34c9b21 100644
+index cce6347ef5..bb31f1e40d 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -11,10 +11,14 @@
- #include <string.h>
+@@ -12,12 +12,15 @@
  #include <float.h>
  #include <exception>
-+#include <cmath>
+ #include <cmath>
 +#include <optional>
  
  #include "ServiceBroker.h"
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
  #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
  #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
 +#include "cores/DataCacheCore.h"
@@ -1180,7 +1181,7 @@ index f16c74d261..69f34c9b21 100644
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
  #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
-@@ -32,6 +36,7 @@
+@@ -35,6 +38,7 @@
  #include "settings/lib/SettingsManager.h"
  #include "guilib/DispResource.h"
  #include "utils/AMLUtils.h"
@@ -1188,7 +1189,7 @@ index f16c74d261..69f34c9b21 100644
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -534,6 +539,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -609,6 +613,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  
