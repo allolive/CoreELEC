@@ -313,7 +313,7 @@ index 0000000000..84cba7fbe0
 +  unsigned int m_readings{0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index e581756d95..540f477ece 100644
+index 0c6aefa3aa..572fa9ce06 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,62 +31,6 @@
@@ -462,7 +462,7 @@ index e581756d95..540f477ece 100644
      if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
      {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index 692d627df4..8d114d3b80 100644
+index 8c860023c6..70f9b8130e 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 @@ -9,6 +9,7 @@
@@ -481,7 +481,7 @@ index 692d627df4..8d114d3b80 100644
  class CVideoPlayer;
  class CDVDAudioCodec;
  class CDVDAudioCodec;
-@@ -116,11 +116,7 @@ protected:
+@@ -117,11 +117,7 @@ protected:
    double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
    AESyncObservation m_lastSyncObservation;
    AESyncObservation m_lastCorrectionObservation;

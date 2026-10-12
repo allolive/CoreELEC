@@ -270,10 +270,10 @@ index 19e6298cb8..a3eeca2cd9 100644
    std::optional<double> m_firstAudioPts;
    std::optional<double> m_lastAudioHost;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index ebfca079dd..ba6417a09e 100644
+index a82e24c5fa..e8f9e5d6a8 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -3786,7 +3786,16 @@ void CVideoPlayer::HandleMessages()
+@@ -3832,7 +3832,16 @@ void CVideoPlayer::HandleMessages()
        if (m_resumeGate.IsHolding() && speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo())
          continue;
  
@@ -291,7 +291,7 @@ index ebfca079dd..ba6417a09e 100644
          RecoverResumePreroll("superseded by a speed request");
  
        const bool deferResume =
-@@ -3796,11 +3805,20 @@ void CVideoPlayer::HandleMessages()
+@@ -3842,11 +3851,20 @@ void CVideoPlayer::HandleMessages()
            m_CurrentVideo.id >= 0 && m_State.canseek && m_State.canpause && m_pInputStream &&
            m_pInputStream->IsStreamType(DVDSTREAM_TYPE_FILE) && !m_pInputStream->IsRealtime() &&
            !KODI::NETWORK::IsInternetStream(m_item) && IsPassthrough();
@@ -313,7 +313,7 @@ index ebfca079dd..ba6417a09e 100644
              m_renderManager.BeginVideoPreroll(m_resumeGate.OutputGeneration(), DVD_NOPTS_VALUE))
          {
            m_resumePictureGeneration = m_resumeGate.OutputGeneration();
-@@ -3887,6 +3905,13 @@ void CVideoPlayer::HandleMessages()
+@@ -3933,6 +3951,13 @@ void CVideoPlayer::HandleMessages()
  
        m_processInfo->SetFrameAdvance(false);
  
@@ -327,7 +327,7 @@ index ebfca079dd..ba6417a09e 100644
        m_playSpeed = speed;
  
        m_srcUnderrunHold = false;
-@@ -3895,6 +3920,13 @@ void CVideoPlayer::HandleMessages()
+@@ -3941,6 +3966,13 @@ void CVideoPlayer::HandleMessages()
        m_VideoPlayerAudio->SetSpeed(speed);
        m_VideoPlayerVideo->SetSpeed(speed);
        m_streamPlayerSpeed = speed;
@@ -341,7 +341,7 @@ index ebfca079dd..ba6417a09e 100644
      }
      else if (pMsg->IsType(CDVDMsg::PLAYER_AUDIO_PREROLL))
      {
-@@ -3932,6 +3964,14 @@ void CVideoPlayer::HandleMessages()
+@@ -3978,6 +4010,14 @@ void CVideoPlayer::HandleMessages()
      {
        if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
        {
@@ -356,7 +356,7 @@ index ebfca079dd..ba6417a09e 100644
          int frames = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
          double time = DVD_TIME_BASE / static_cast<double>(m_processInfo->GetVideoFps()) * frames;
          m_processInfo->SetFrameAdvance(true);
-@@ -4035,7 +4075,8 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
+@@ -4081,7 +4121,8 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
                release.request, release.generation,
                release.outcome == CPlaybackResumeGate::Outcome::TIMED_OUT ? "timeout" : "callback failure");
  
@@ -366,7 +366,7 @@ index ebfca079dd..ba6417a09e 100644
      return;
    if (m_resumePictureGeneration != 0)
    {
-@@ -4084,27 +4125,43 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
+@@ -4130,27 +4171,43 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
      // Audio authorization can already have submitted payload. If the
      // acknowledgement misses the presentation deadline, recover by seeking
      // the target rather than pretending that output can be rolled back.
@@ -413,7 +413,7 @@ index ebfca079dd..ba6417a09e 100644
      m_clock.Discontinuity(playing);
      if (!m_renderManager.ReleaseVideoPreroll(status.generation))
      {
-@@ -4159,19 +4216,104 @@ bool CVideoPlayer::CanPrepareResumePreroll() const
+@@ -4205,19 +4262,104 @@ bool CVideoPlayer::CanPrepareResumePreroll() const
           m_State.time_offset == 0.0 && m_offset_pts == 0.0;
  }
  
@@ -522,7 +522,7 @@ index ebfca079dd..ba6417a09e 100644
    if (sought)
    {
      if (m_pSubtitleDemuxer)
-@@ -4185,8 +4327,10 @@ bool CVideoPlayer::BeginResumePreroll()
+@@ -4231,8 +4373,10 @@ bool CVideoPlayer::BeginResumePreroll()
        !m_resumePreroll.Begin(m_resumePictureGeneration, target, m_clock.GetAbsoluteClock()))
    {
      RecoverResumePreroll("cannot prepare the earlier seek");
@@ -534,7 +534,7 @@ index ebfca079dd..ba6417a09e 100644
  
    // Decode video from the demuxer's preceding keyframe. Its output-PTS gate
    // selects the target; a DTS cutoff would lose reordered-picture dependencies.
-@@ -4197,18 +4341,22 @@ bool CVideoPlayer::BeginResumePreroll()
+@@ -4243,18 +4387,22 @@ bool CVideoPlayer::BeginResumePreroll()
        std::make_shared<CDVDMsgType<AudioPrerollCommand>>(
            CDVDMsg::AUDIO_PREROLL,
            AudioPrerollCommand{AudioPrerollCommand::Action::Begin,
@@ -561,7 +561,7 @@ index ebfca079dd..ba6417a09e 100644
    m_resumePictureGeneration = 0;
    m_resumePrerollTarget.reset();
    m_resumePrerollReleaseTime = 0.0;
-@@ -4232,6 +4380,11 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
+@@ -4278,6 +4426,11 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
  void CVideoPlayer::RecoverResumePreroll(const char* reason)
  {
    const auto target = m_resumePrerollTarget;
@@ -573,7 +573,7 @@ index ebfca079dd..ba6417a09e 100644
    CLog::Log(LOGWARNING, "CVideoPlayer::Preroll - ordinary seek fallback generation={} reason={}",
              m_resumePictureGeneration, reason);
    CancelResumePreroll(false);
-@@ -4239,8 +4392,8 @@ void CVideoPlayer::RecoverResumePreroll(const char* reason)
+@@ -4285,8 +4438,8 @@ void CVideoPlayer::RecoverResumePreroll(const char* reason)
    m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
    m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
    m_streamPlayerSpeed = DVD_PLAYSPEED_PAUSE;
@@ -584,7 +584,7 @@ index ebfca079dd..ba6417a09e 100644
  
    // A queued user command takes precedence. Do not append an internal seek
    // behind it: ordinary seek coalescing would then discard the user's target.
-@@ -4260,10 +4413,9 @@ void CVideoPlayer::RecoverResumePreroll(const char* reason)
+@@ -4306,10 +4459,9 @@ void CVideoPlayer::RecoverResumePreroll(const char* reason)
      return;
    }
  
@@ -596,7 +596,7 @@ index ebfca079dd..ba6417a09e 100644
      if (m_pSubtitleDemuxer)
        m_pSubtitleDemuxer->SeekTime(DVD_TIME_TO_MSEC(*target), true);
      m_State.dts = *target;
-@@ -4327,7 +4479,8 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4373,7 +4525,8 @@ bool CVideoPlayer::PollResumePreroll()
      // Reserve another 100ms for the audio authorization acknowledgement before
      // giving the retained target to the normal display scheduler.
      if (!m_resumePreroll.SetVideoReady(video.generation, video.firstPts, now,
@@ -606,7 +606,7 @@ index ebfca079dd..ba6417a09e 100644
      {
        RecoverResumePreroll("invalid target picture");
        return true;
-@@ -5591,8 +5744,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+@@ -5639,8 +5792,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
      // purge any pending PLAYER_STARTED messages
      m_messenger.Flush(CDVDMsg::PLAYER_STARTED);
  
@@ -621,10 +621,10 @@ index ebfca079dd..ba6417a09e 100644
      {
        m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 261a24bc0c..088d48a63b 100644
+index ecbef0f200..75405d1d60 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -496,7 +496,11 @@ protected:
+@@ -498,7 +498,11 @@ protected:
    void ReleaseResumeGate(const CPlaybackResumeGate::Release& release);
    bool CanPrepareResumePreroll() const;
    void HandleAudioPrerollStatus(const AudioPrerollStatus& status);
@@ -637,7 +637,7 @@ index 261a24bc0c..088d48a63b 100644
    bool PollResumePreroll();
    void CancelResumePreroll(bool restoreSpeed);
    void RecoverResumePreroll(const char* reason);
-@@ -624,6 +628,7 @@ protected:
+@@ -626,6 +630,7 @@ protected:
    bool m_resumePrerollSeekPending = false;
    uint64_t m_resumePictureGeneration = 0;
    bool m_seekingResumePreroll = false;
@@ -646,7 +646,7 @@ index 261a24bc0c..088d48a63b 100644
    int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
    struct SSpeedState
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 9947f824e6..1755c6b0bb 100644
+index c851b08f69..67a9c5bf1f 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -388,7 +388,7 @@ void CVideoPlayerAudio::Process()
@@ -754,10 +754,10 @@ index d368c3ef6f..002c7e14c4 100644
      return OUTPUT_DROPPED;
    if (preroll == CVideoPrerollGate::Picture::HOLD)
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
-index 86dc6cb1ac..1252123b2b 100644
+index 70fb10dc95..eaf8ba0ee1 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
-@@ -150,6 +150,9 @@ protected:
+@@ -151,6 +151,9 @@ protected:
    VideoPicture m_picture;
    uint64_t m_videoPrerollGeneration{0};
    bool m_videoPrerollTimestampValid{false};

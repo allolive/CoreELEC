@@ -1,0 +1,272 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 19:00:00 -0400
+Subject: [PATCH] VideoPlayer: show a disc's time for the picture on screen
+
+A DVD's elapsed time comes from the input stream: the demuxer stamps each
+packet with the navigator's time where it was read, and UpdatePlayState
+took the step from dts to display time from the last packet read and
+applied it to the clock. That is only right while the display time runs on
+in step across everything queued. When the reader crosses a cell or title
+boundary where the disc's time starts again, the picture on screen is still
+the old one but it gets the new title's time, less the read-ahead, and the
+new title's length.
+
+The read-ahead is large: the queues are bounded by data size, which at a
+DVD's bitrate is a minute or two. On one disc the time went from 0:02 to
+-1:59 of 2:03 thirteen seconds in, then to -2:45 of 1:03,
+while the picture played on. A negative time also means no resume point is
+saved when the disc is stopped there.
+
+The player now keeps an anchor each time that step (or the length) jumps
+as it reads, and shows the time with the last anchor the clock has reached.
+A step under a second is not a jump: the demuxer re-bases it on whichever
+stream's packet follows each NAV pack, so it wobbles by the gap between
+audio and video. A flush or a new file drops the anchors, a small step back
+in dts drops only those after it, and the anchor in use is never the one
+given up when they are full. The last packet read stays the fallback.
+
+While an old title plays out before the next opens (01_08) there is no
+demuxer and the play state stood still; the anchors still know the time of
+the picture on screen, so the time and length now follow it there too. That
+play-out can last a few minutes since 01_08, where the old wait gave up at
+40 s.
+
+When a new title set opens, the clock still holds the closed title's time
+until the new streams sync, a few hundred ms: the time showed 5:11 of 2:22
+for one reading at the start of a 2:22 title (stock shows the same). Until a
+stream is in sync the time now goes by the first picture to come, which
+also keeps the anchors from being dropped against a clock that is not the
+picture's.
+
+Only the time and length shown change. time_offset stays with the read
+position: a DVD seek resolves its time in the title being read, and the
+disc state saved with a resume point is the read position too, so both
+behave as before.
+
+This has to be in CVideoPlayer: it is the only place that sees both the
+time a packet was read at and the clock that plays it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
+new file mode 100644
+index 0000000000..52e0364e5c
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
+@@ -0,0 +1,80 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++
++#include <cmath>
++#include <deque>
++
++/** The display time of what is on screen, for an input stream that numbers
++ * its own time (a DVD's cells and titles).
++ *
++ * The demuxer stamps each packet with the input stream's time where it was
++ * read, which runs ahead of the picture by everything queued. The player adds
++ * one anchor each time the step from dts to display time jumps, as it reads,
++ * and takes the last one the clock has reached when it shows the time.
++ *
++ * The demuxer re-bases that step on whichever stream's packet follows each NAV
++ * pack, so it wobbles by the few hundred ms between audio and video; a jump
++ * under a second is that, not a new title.
++ */
++class CDisplayTimeAnchors
++{
++public:
++  /** \param dts the packet's dts, in the player clock's time base
++   *  \param dispTime the input stream's time at the packet, in ms
++   *  \param totalTime the length of what is being read, in ms
++   */
++  void Add(double dts, int dispTime, int totalTime)
++  {
++    if (dts == DVD_NOPTS_VALUE || dispTime <= 0)
++      return;
++
++    const double offset = DVD_MSEC_TO_TIME(dispTime) - dts;
++    if (!m_anchors.empty())
++    {
++      // a step back in dts leaves the anchors before it to the pictures still queued
++      while (!m_anchors.empty() && m_anchors.back().dts >= dts)
++        m_anchors.pop_back();
++      if (!m_anchors.empty() && std::abs(m_anchors.back().offset - offset) < DVD_SEC_TO_TIME(1) &&
++          m_anchors.back().totalTime == totalTime)
++        return;
++    }
++    // the first is the picture's: when full, give up the one after it
++    if (m_anchors.size() == MAX_ANCHORS)
++      m_anchors.erase(m_anchors.begin() + 1);
++    m_anchors.push_back({dts, offset, totalTime});
++  }
++
++  /** Sets offset (display time minus clock) and totalTime for the picture
++   * at clock; false when no anchor is known.
++   */
++  bool Get(double clock, double& offset, int& totalTime)
++  {
++    while (m_anchors.size() > 1 && m_anchors[1].dts <= clock)
++      m_anchors.pop_front();
++    if (m_anchors.empty())
++      return false;
++    offset = m_anchors.front().offset;
++    totalTime = m_anchors.front().totalTime;
++    return true;
++  }
++
++  void Clear() { m_anchors.clear(); }
++
++private:
++  static constexpr size_t MAX_ANCHORS = 256;
++
++  struct Anchor
++  {
++    double dts;
++    double offset;
++    int totalTime;
++  };
++  std::deque<Anchor> m_anchors;
++};
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 41a5afd28d..55b5eaee7e 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1571,6 +1571,8 @@ void CVideoPlayer::Prepare()
+   m_processInfo->SetFrameAdvance(false);
+   m_State.Clear();
+   m_nextStream.Cancel();
++  m_displayTime.Clear();
++  m_nextStreamSyncing = false;
+   m_CurrentVideo.hint.Clear();
+   m_CurrentAudio.hint.Clear();
+   m_CurrentSubtitle.hint.Clear();
+@@ -1786,10 +1788,14 @@ void CVideoPlayer::Process()
+             m_playSpeed == DVD_PLAYSPEED_PAUSE, std::chrono::steady_clock::now());
+       if (state == CNextStreamDrain::State::PLAYING_OUT)
+       {
++        UpdatePlayState(0);
+         CThread::Sleep(100ms);
+         continue;
+       }
+       m_nextStream.Cancel();
++      // the anchors left are all the old title's
++      m_displayTime.Clear();
++      m_nextStreamSyncing = true;
+       const bool drained = state == CNextStreamDrain::State::DONE;
+       if (!drained)
+         CLog::Log(LOGWARNING, "VideoPlayer: next stream, old streams given up");
+@@ -2787,6 +2793,13 @@ void CVideoPlayer::UpdateTimestamps(CCurrentStream& current, DemuxPacket* pPacke
+   current.dts = dts;
+ 
+   current.dispTime = pPacket->dispTime;
++
++  if (m_pInputStream &&
++      (&current == &m_CurrentVideo || (&current == &m_CurrentAudio && m_CurrentVideo.id < 0)))
++  {
++    if (CDVDInputStream::IDisplayTime* displayTime = m_pInputStream->GetIDisplayTime())
++      m_displayTime.Add(dts, pPacket->dispTime, displayTime->GetTotalTime());
++  }
+ }
+ 
+ static void UpdateLimits(double& minimum, double& maximum, double dts)
+@@ -4866,6 +4879,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
+ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+ {
+   m_syncStartPtsWait.reset();
++  m_displayTime.Clear();
++  m_nextStreamSyncing = false;
+   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
+ 
+   double startpts;
+@@ -5859,9 +5874,28 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
+ 
+ void CVideoPlayer::UpdatePlayState(double timeout)
+ {
+-  // the old streams play out with no demuxer to read a position from
++  // the old streams play out with no demuxer to read a position from; only the time moves on
+   if (m_nextStream.Pending())
++  {
++    double offset = 0.0;
++    int totalTime = 0;
++    if (!m_displayTime.Get(m_clock.GetClock(), offset, totalTime))
++      return;
++    SPlayerState state(m_State);
++    state.time = DVD_TIME_TO_MSEC(m_clock.GetClock() + offset);
++    state.timeMax = totalTime;
++    if (m_Edl.HasCuts())
++    {
++      state.time = static_cast<double>(
++          m_Edl.GetTimeWithoutCuts(std::chrono::milliseconds(std::lround(state.time))).count());
++      state.timeMax = state.timeMax - static_cast<double>(m_Edl.GetTotalCutTime().count());
++    }
++    m_processInfo->SetPlayTimes(state.startTime, state.time, state.timeMin, state.timeMax);
++    std::unique_lock lock(m_StateSection);
++    m_State.time = state.time;
++    m_State.timeMax = state.timeMax;
+     return;
++  }
+ 
+   if (m_State.timestamp != 0 &&
+       m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
+@@ -6005,8 +6039,30 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+ 
+         state.time_offset = DVD_MSEC_TO_TIME(dispTime) - state.dts;
+       }
+-      state.time += state.time_offset * 1000 / DVD_TIME_BASE;
+-      state.timeMax = pDisplayTime->GetTotalTime();
++      // the packets just read can be a title ahead of the picture; a seek and the
++      // disc's state go by the read position, so time_offset stays with it
++      double offset = state.time_offset;
++      int totalTime = pDisplayTime->GetTotalTime();
++      // a title set opening after the old one played out: until its streams sync
++      // the clock still holds the old title's time, so go by the first picture to come
++      double clock = m_clock.GetClock();
++      if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
++          m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC)
++        m_nextStreamSyncing = false;
++      if (m_nextStreamSyncing)
++      {
++        clock = m_CurrentVideo.startpts != DVD_NOPTS_VALUE ? m_CurrentVideo.startpts
++                                                         : m_CurrentAudio.startpts;
++        if (clock == DVD_NOPTS_VALUE)
++        {
++          clock = 0.0;
++          offset = 0.0;
++        }
++        state.time = DVD_TIME_TO_MSEC(clock);
++      }
++      m_displayTime.Get(clock, offset, totalTime);
++      state.time += offset * 1000 / DVD_TIME_BASE;
++      state.timeMax = totalTime;
+     }
+     else
+     {
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index ec30f4de89..6c6546ecde 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -10,6 +10,7 @@
+ 
+ #include "DVDClock.h"
+ #include "DVDMessageQueue.h"
++#include "DisplayTimeAnchors.h"
+ #include "Edl.h"
+ #include "FileItem.h"
+ #include "IVideoPlayer.h"
+@@ -665,6 +666,8 @@ protected:
+ 
+   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
+   CNextStreamDrain m_nextStream;
++  CDisplayTimeAnchors m_displayTime;
++  bool m_nextStreamSyncing = false;
+ 
+   CEdl m_Edl;
+   bool m_SkipCommercials;
