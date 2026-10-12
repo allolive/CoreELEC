@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 18:00:00 -0400
+Subject: [PATCH] VideoPlayer: stop a disc without playing out its old title
+
+At a DVD's title-set change the player closes the old audio and video
+streams with bWaitForBuffers, so they play out what is queued before the
+next title opens. When the source reads faster than playback, the player
+has often queued the rest of a short title by then, so that wait lasts as
+long as what is left of the title, up to the 40 s each drain allows. A
+stop in that window sets the player's abort and aborts the demuxer, but
+the drain waits only on the stream's own queue, so the stop hung until the
+drain ended: 12 s measured on a DVD stopped 28 s into its intro, with the
+old title still playing on behind Kodi's GUI.
+
+CloseFile now ends such a drain: the stream players get an AbortDrain()
+(a no-op by default) that releases a WaitUntilEmpty in progress, or one
+about to start, without flushing anything; WaitUntilEmpty returns false
+when it was cut short. The audio stream then also drops what its sink holds
+rather than playing it out, so nothing of the old title is heard after the
+stop, and both streams close as they do for any abort. The same wait sits
+behind the next stream of a Blu-ray played with its menus or of a PVR
+channel, and behind the end-of-file drain; a stop there is released the
+same way.
+
+The drain has a flag of its own rather than going through the queue's
+Abort(): that would also make the stream threads leave their loop the
+moment CloseFile runs, on every stop, before the player thread closes the
+streams. Playback is unchanged: outside CloseFile, the drain ends exactly as
+before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDMessageQueue.cpp b/xbmc/cores/VideoPlayer/DVDMessageQueue.cpp
+index 7b2bade5e6..003fbf56e7 100644
+--- a/xbmc/cores/VideoPlayer/DVDMessageQueue.cpp
++++ b/xbmc/cores/VideoPlayer/DVDMessageQueue.cpp
+@@ -38,6 +38,7 @@ void CDVDMessageQueue::Init()
+ {
+   m_iDataSize = 0;
+   m_bAbortRequest = false;
++  m_drainAborted = false;
+   m_bInitialized = true;
+   m_TimeBack = DVD_NOPTS_VALUE;
+   m_TimeFront = DVD_NOPTS_VALUE;
+@@ -69,6 +70,7 @@ void CDVDMessageQueue::Abort()
+   std::unique_lock lock(m_section);
+ 
+   m_bAbortRequest = true;
++  m_drainAborted = true;
+ 
+   // inform waiter for abort action
+   m_hEvent.Set();
+@@ -83,6 +85,7 @@ void CDVDMessageQueue::End()
+   m_bInitialized = false;
+   m_iDataSize = 0;
+   m_bAbortRequest = false;
++  m_drainAborted = false;
+ }
+ 
+ MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg, int priority)
+@@ -289,8 +292,16 @@ unsigned CDVDMessageQueue::GetPacketCount(CDVDMsg::Message type)
+   return count;
+ }
+ 
+-void CDVDMessageQueue::WaitUntilEmpty()
++void CDVDMessageQueue::AbortDrain()
+ {
++  m_drainAborted = true;
++}
++
++bool CDVDMessageQueue::WaitUntilEmpty()
++{
++  if (m_drainAborted)
++    return false;
++
+   {
+     std::unique_lock lock(m_section);
+     m_drain = true;
+@@ -299,12 +310,13 @@ void CDVDMessageQueue::WaitUntilEmpty()
+   CLog::Log(LOGINFO, "CDVDMessageQueue({})::WaitUntilEmpty", m_owner);
+   auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(40s, SYNCSOURCE_ANY);
+   Put(msg);
+-  msg->Wait(m_bAbortRequest, 0);
++  msg->Wait(m_drainAborted, 0);
+ 
+   {
+     std::unique_lock lock(m_section);
+     m_drain = false;
+   }
++  return !m_drainAborted;
+ }
+ 
+ int CDVDMessageQueue::GetLevel(bool dataLevel) const
+diff --git a/xbmc/cores/VideoPlayer/DVDMessageQueue.h b/xbmc/cores/VideoPlayer/DVDMessageQueue.h
+index 93288d1bec..543d3bab96 100644
+--- a/xbmc/cores/VideoPlayer/DVDMessageQueue.h
++++ b/xbmc/cores/VideoPlayer/DVDMessageQueue.h
+@@ -77,7 +77,8 @@ public:
+   double GetTimeSize() const;
+   unsigned GetPacketCount(CDVDMsg::Message type);
+   bool ReceivedAbortRequest() { return m_bAbortRequest; }
+-  void WaitUntilEmpty();
++  bool WaitUntilEmpty(); // false when AbortDrain or Abort ended it
++  void AbortDrain();
+ 
+   // non messagequeue related functions
+   bool IsFull() const { return GetLevel(true) == 100; }
+@@ -106,6 +107,7 @@ private:
+   mutable CCriticalSection m_section;
+ 
+   std::atomic<bool> m_bAbortRequest = false;
++  std::atomic<bool> m_drainAborted = false;
+   bool m_bInitialized;
+   bool m_drain = false;
+ 
+diff --git a/xbmc/cores/VideoPlayer/IVideoPlayer.h b/xbmc/cores/VideoPlayer/IVideoPlayer.h
+index 673f09a043..fb96beb463 100644
+--- a/xbmc/cores/VideoPlayer/IVideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/IVideoPlayer.h
+@@ -51,6 +51,8 @@ public:
+   virtual void CloseStream(bool bWaitForBuffers) = 0;
+   virtual void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) = 0;
+   virtual void FlushMessages() = 0;
++  // ends a CloseStream(true) waiting for the queue to play out, now or when it starts
++  virtual void AbortDrain() {}
+   virtual bool IsInited() const = 0;
+   virtual bool AcceptsData() const = 0;
+   virtual bool IsStalled() const = 0;
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index e0e6a5f861..b6cb117663 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -877,6 +877,10 @@ bool CVideoPlayer::CloseFile(bool reopen)
+   if(m_pInputStream)
+     m_pInputStream->Abort();
+ 
++  // release a stream that is still playing its queue out (CloseStream with bWaitForBuffers)
++  m_VideoPlayerAudio->AbortDrain();
++  m_VideoPlayerVideo->AbortDrain();
++
+   m_renderManager.UnInit();
+ 
+   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index c75e572bf6..6780b8476a 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -151,9 +151,9 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
+ {
+   bool bWait = bWaitForBuffers && m_speed > 0 && !CServiceBroker::GetActiveAE()->IsSuspended();
+ 
+-  // wait until buffers are empty
++  // wait until buffers are empty; if that was cut short, flush the sink instead of draining it
+   if (bWait)
+-    m_messageQueue.WaitUntilEmpty();
++    bWait = m_messageQueue.WaitUntilEmpty();
+ 
+   // send abort message to the audio queue
+   m_messageQueue.Abort();
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+index d424ebcb5f..e7757f8b9e 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+@@ -52,6 +52,7 @@ public:
+     m_messageQueue.Put(pMsg, priority);
+   }
+   void FlushMessages() override { m_messageQueue.Flush(); }
++  void AbortDrain() override { m_messageQueue.AbortDrain(); }
+ 
+   void SetDynamicRangeCompression(long drc) override { m_audioSink.SetDynamicRangeCompression(drc); }
+   float GetDynamicRangeAmplification() const override { return 0.0f; }
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
+index 556e22580a..b2b5ed95a7 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
+@@ -61,6 +61,7 @@ public:
+   bool IsInited() const override;
+   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override;
+   void FlushMessages() override;
++  void AbortDrain() override { m_messageQueue.AbortDrain(); }
+ 
+   void EnableSubtitle(bool bEnable) override { m_bRenderSubs = bEnable; }
+   bool IsSubtitleEnabled() override { return m_bRenderSubs; }

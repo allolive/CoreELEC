@@ -540,7 +540,7 @@ index db833adb22..5055f2e740 100644
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index d02c7c8684..54610e4000 100644
+index 7006c1204f..da6a0d3c59 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -163,6 +163,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)

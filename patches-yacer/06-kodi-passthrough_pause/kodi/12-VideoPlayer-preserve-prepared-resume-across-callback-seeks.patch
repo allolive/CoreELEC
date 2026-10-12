@@ -15,12 +15,12 @@ seeks and control cancellation keep their existing recovery path.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index ebfc2e5474..c68068a2f5 100644
+index 86e82f23ab..da5aa2399b 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -5680,12 +5680,22 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
- {
-   m_syncStartPtsWait.reset();
+@@ -5728,12 +5728,22 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+   m_displayTime.Clear();
+   m_nextStreamSyncing = false;
    CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
 -  // A callback seek replaces output without cancelling its resume request.
 -  // An ordinary seek during audio preparation returns to normal startup.

@@ -393,10 +393,10 @@ index 09e91197d7..198f665786 100644
        m_prevVPts = pts;
        return codec;
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 69f34c9b21..ae9a810804 100644
+index 1632da9f25..3b42df9aeb 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -580,11 +580,6 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -665,11 +665,6 @@ float CWinSystemAmlogic::SampleFrameLatency()
    if (CServiceBroker::GetDataCacheCore().GetSpeed() != 1.0f)
      return stand_down();
  

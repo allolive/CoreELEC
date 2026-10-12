@@ -17,10 +17,10 @@ feature existed; everything else keeps it.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index c68068a2f5..97999a26a0 100644
+index da5aa2399b..b5a40cac2c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -4237,7 +4237,15 @@ bool CVideoPlayer::CanPrepareResumePreroll() const
+@@ -4283,7 +4283,15 @@ bool CVideoPlayer::CanPrepareResumePreroll() const
           !m_pInputStream->IsRealtime() && !KODI::NETWORK::IsInternetStream(m_item) &&
           !m_pInputStream->GetIPosTime() && !m_pInputStream->GetITimes() &&
           !m_Edl.HasEdits() && !m_processInfo->GetVideoInterlaced() &&

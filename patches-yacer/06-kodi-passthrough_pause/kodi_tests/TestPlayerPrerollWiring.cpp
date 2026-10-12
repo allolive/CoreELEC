@@ -183,6 +183,11 @@ struct CVideoPlayer
     {
     }
   } m_syncTimer;
+  struct DisplayTime
+  {
+    void Clear() {}
+  } m_displayTime;
+  bool m_nextStreamSyncing = false;
   std::vector<std::string> events;
   Clock m_clock;
   CCurrentStream m_CurrentVideo, m_CurrentAudio;

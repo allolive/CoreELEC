@@ -524,7 +524,7 @@ index 8ab15de6af..6716a80807 100644
    double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
    bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 0790b0cd95..e581756d95 100644
+index 4e98146657..0c6aefa3aa 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -848,6 +848,28 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
@@ -575,10 +575,10 @@ index 0790b0cd95..e581756d95 100644
        {
          // Spent once the clock has moved, whichever path moved it. The residue
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index 68bb841999..692d627df4 100644
+index f06f25c27a..8c860023c6 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-@@ -114,6 +114,8 @@ protected:
+@@ -115,6 +115,8 @@ protected:
  
    int m_synctype;
    double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
@@ -587,7 +587,7 @@ index 68bb841999..692d627df4 100644
    double m_rawPrev{0.0};      //!< the last unscaled reading, to see it stop moving
    bool m_haveRawPrev{false};
    bool m_rawSettled{false};      //!< three readings running agreed
-@@ -138,4 +140,3 @@ protected:
+@@ -139,4 +141,3 @@ protected:
    unsigned int m_disconAdjustTimeMs = 50; // maximum sync-off before adjusting
    int m_disconAdjustCounter = 0;
  };

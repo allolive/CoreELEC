@@ -102,7 +102,7 @@ index 5d0ef69149..8ab15de6af 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 305547eba9..ac76d03f91 100644
+index b72f5431a6..a10e01abe7 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,6 +31,63 @@
@@ -273,10 +273,10 @@ index 305547eba9..ac76d03f91 100644
          m_disconAdjustCounter++;
          CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio:: sync error correctiom:{:.3f}", correction / DVD_TIME_BASE);
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index 64c442014c..68bb841999 100644
+index 239612d68c..f06f25c27a 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-@@ -113,6 +113,12 @@ protected:
+@@ -114,6 +114,12 @@ protected:
    XbmcThreads::EndTime<> m_syncTimer;
  
    int m_synctype;

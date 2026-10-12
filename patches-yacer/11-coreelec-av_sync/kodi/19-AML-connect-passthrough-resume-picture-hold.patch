@@ -194,7 +194,7 @@ index a157bc2ee9..b682d43ee7 100644
  
  class CAMLVideoBufferPool : public IVideoBufferPool
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 540f477ece..4669da5b8f 100644
+index 572fa9ce06..a5b71bb02d 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -239,6 +239,11 @@ void CVideoPlayerAudio::ResetPrerollCorrections()
