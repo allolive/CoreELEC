@@ -8,31 +8,30 @@ streams with bWaitForBuffers on its own thread, so nothing else ran until
 both queues had played out. Two things followed, both seen on a DVD whose
 intro the player had queued in full:
 
-- Pause did nothing for the rest of the title: the player reported speed 0
-  while 182 pictures and 95 audio packets went on playing in the next 3 s.
+- Pause and seek did nothing for the rest of the title: the player reported
+  speed 0 while 182 pictures and 95 audio packets went on playing in the
+  next 3 s.
 - Each drain gives up after 40 s, and the queues can hold more than that
   (they are bounded by data size, not time). The audio drain timed out at
   40 s and was dropped, and the old video played on for another 20 s in
   silence.
 
 The player now marks the next stream as pending and keeps running its loop
-while the old streams play out: messages are handled, a pause holds, and a
-stop or a new file ends it at once. Only the streams that are in sync play
-out, the ones CloseStream(true) waits for; one still starting is closed at
-once, as before. Once those queues are empty the old streams close as
-before (the sink and decoder drain left is short) and the next stream
-opens.
-
-Progress is judged by the old streams' position: a drain whose position
-does not move for 10 s is given up, as the timeout used to, and its
-streams are closed without waiting; a pause does not count against it. A
-seek or anything else that makes the player buffer again gives the old
-title up the same way, since with the demuxer closed there is nothing left
-to seek in it. A display that is lost meanwhile starts the progress check
-again when it is back.
+while the old streams still hold data: messages are handled, a pause holds,
+a stop or a new file ends it at once. Once both queues are empty the old
+streams close as before (the sink and decoder drain left is short) and the
+next stream opens. A drain that stops making progress while playing at
+normal speed for 10 s is given up, as the timeout used to; a pause does not
+count against it.
 
 The input stream's NextStream() is not asked again while the old title
 plays out, and the demuxer stays closed, as it did during the old wait.
+
+A seek in that window (or an audio or angle change, which seeks) has no
+demuxer to act on: it gives the old title up and the next one opens, and a
+DVD is no longer told to skip a HOP_CHANNEL that no seek will send. The play
+state is left as the old title last showed it, since with no demuxer it
+would add the DVD's time offset again on every update.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
@@ -114,7 +113,7 @@ index 0000000000..f8729f0003
 +  Clock::time_point m_progress;
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index b6cb117663..5b49a4f679 100644
+index b6cb117663..41a5afd28d 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1570,6 +1570,7 @@ void CVideoPlayer::Prepare()
@@ -188,6 +187,28 @@ index b6cb117663..5b49a4f679 100644
          continue;
        }
  
+@@ -3356,8 +3385,8 @@ void CVideoPlayer::HandleMessages()
+         m_processInfo->SeekFinished(0);
+       }
+ 
+-      // dvd's will issue a HOP_CHANNEL that we need to skip
+-      if(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
++      // dvd's will issue a HOP_CHANNEL that we need to skip; none comes without a demuxer
++      if (m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+         m_dvd.state = DVDSTATE_SEEK;
+ 
+       m_processInfo->SetStateSeeking(false);
+@@ -5830,6 +5859,10 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
+ 
+ void CVideoPlayer::UpdatePlayState(double timeout)
+ {
++  // the old streams play out with no demuxer to read a position from
++  if (m_nextStream.Pending())
++    return;
++
+   if (m_State.timestamp != 0 &&
+       m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
+     return;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
 index 535d2cefb2..ec30f4de89 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h

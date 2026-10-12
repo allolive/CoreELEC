@@ -37,3 +37,9 @@ yacer_add_test(
   NAME NextStreamDrain
   SOURCES TestNextStreamDrain.cpp
 )
+
+# Header-only: which of a disc's times belongs to the picture on screen.
+yacer_add_test(
+  NAME DisplayTimeAnchors
+  SOURCES TestDisplayTimeAnchors.cpp
+)

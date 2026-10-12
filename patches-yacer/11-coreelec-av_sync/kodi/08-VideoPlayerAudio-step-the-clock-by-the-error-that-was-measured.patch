@@ -198,7 +198,7 @@ index 82ced52da7..5d0ef69149 100644
    double m_resampleRatio = 0.0; // invalid
    CCriticalSection m_critSection;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 54610e4000..305547eba9 100644
+index da6a0d3c59..b72f5431a6 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -726,18 +726,46 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
