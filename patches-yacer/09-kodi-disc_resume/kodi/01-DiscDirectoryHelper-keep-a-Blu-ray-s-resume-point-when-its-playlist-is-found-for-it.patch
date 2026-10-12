@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 19:00:00 -0400
+Subject: [PATCH] DiscDirectoryHelper: keep a Blu-ray's resume point when its playlist is found for it
+
+A Blu-ray the scan could not resolve to a playlist stays in the library as
+its index.bdmv or its image. To play it, GetOrShowPlaylistSelection()
+finds the playlist and points the item and its tag at the bluray:// path
+of it. When the item stops, CSaveFileState keeps the resume point against
+that path and moves the library entry to it, so the next play finds both.
+It moves the entry only when the tag's path differs from the played one,
+or when new_playlist_path says the playlist changed; the tag was already
+pointed at the playlist, so that leaves the flag.
+
+The flag was set only for a playlist the user picked from the menu. One
+found without asking - the main title, as the "play main title" setting
+does at every start - left the entry on index.bdmv while the resume point
+went to the playlist, which nothing looks up: a film stopped at 20:00
+started from the beginning again.
+
+A playlist found without asking now sets the flag too when the item came
+as a disc image or folder. An item already on a bluray:// playlist keeps
+its link: the main title, found from the disc's root, need not be the
+playlist the user or an nfo chose for it, and moving the entry would lose
+that choice for good.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/filesystem/DiscDirectoryHelper.cpp b/xbmc/filesystem/DiscDirectoryHelper.cpp
+index b7590c888f..d9185940e2 100644
+--- a/xbmc/filesystem/DiscDirectoryHelper.cpp
++++ b/xbmc/filesystem/DiscDirectoryHelper.cpp
+@@ -4084,8 +4084,18 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(const CFileItem& item,
+     items.Add(newItem);
+   }
+   else if (!returnMultipleItems)
++  {
+     // Return single item
+-    items.Add(GenerateItem(item, *sourceItems[0]));
++    const auto newItem{GenerateItem(item, *sourceItems[0])};
++
++    // A playlist found for a disc image or folder is as much a change as one the user
++    // picked; an item already on a playlist keeps it
++    if (!URIUtils::IsBlurayPath(item.GetDynPath()) &&
++        sourceItems[0]->GetDynPath() != item.GetDynPath())
++      newItem->SetProperty("new_playlist_path", true);
++
++    items.Add(newItem);
++  }
+   else
+   {
+     // Return all items
