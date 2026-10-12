@@ -1374,7 +1374,7 @@ index 5055f2e740..cea0240de9 100644
  
    // player subtitle info
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index ac76d03f91..0790b0cd95 100644
+index a10e01abe7..4e98146657 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -786,6 +786,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
@@ -1457,10 +1457,10 @@ index 4b32b87166..b3ec70f8a7 100644
  //! \brief The whole number of refreshes the display shows each frame for, from
  //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index ae9a810804..c7d5e7d10f 100644
+index 3b42df9aeb..094d2da75c 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -40,6 +40,7 @@
+@@ -42,6 +42,7 @@
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
@@ -1468,7 +1468,7 @@ index ae9a810804..c7d5e7d10f 100644
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -504,6 +505,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -589,6 +590,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(sink_dv);
  

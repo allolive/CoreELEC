@@ -131,10 +131,10 @@ index d09a8005b6..7fa06b10ad 100644
    bool m_seenRunningUnsynced{false};
  };
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index ba6417a09e..ebfc2e5474 100644
+index e8f9e5d6a8..86e82f23ab 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -4102,9 +4102,26 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
+@@ -4148,9 +4148,26 @@ void CVideoPlayer::ReleaseResumeGate(const CPlaybackResumeGate::Release& release
  
  void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
  {
@@ -162,7 +162,7 @@ index ba6417a09e..ebfc2e5474 100644
    {
      // A newer user command can be behind this acknowledgement in the FIFO.
      // Retire the old target before it becomes visible; recovery leaves the
-@@ -4122,9 +4139,9 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
+@@ -4168,9 +4185,9 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
      const double now = m_clock.GetAbsoluteClock();
      const double age = now - status.hostUs;
      const double playing = status.estimatedPlayingPts + age;
@@ -175,7 +175,7 @@ index ba6417a09e..ebfc2e5474 100644
      // Clock and audio were anchored to each other at the audio start, and the
      // clock has run at normal speed since while the engine established sync.
      // Neither can have moved away from the other by more than that elapsed
-@@ -4157,8 +4174,8 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
+@@ -4203,8 +4220,8 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
        return;
      }
      // Spend the small acquisition residual while the picture is still held.
@@ -186,7 +186,7 @@ index ba6417a09e..ebfc2e5474 100644
      // The clock moves before the release deliberately: once released, the
      // render thread may schedule the picture, and it must do so against the
      // clock the audio is actually on.
-@@ -4170,6 +4187,13 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
+@@ -4216,6 +4233,13 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
        m_resumePrerollFailed = true;
        return;
      }
@@ -200,7 +200,7 @@ index ba6417a09e..ebfc2e5474 100644
      m_resumePreroll.Cancel();
      m_resumePrerollReleaseTime = now;
      m_playSpeed = DVD_PLAYSPEED_NORMAL;
-@@ -4361,6 +4385,7 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
+@@ -4407,6 +4431,7 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
    m_resumePrerollTarget.reset();
    m_resumePrerollReleaseTime = 0.0;
    m_resumePrerollFailed = false;
@@ -208,7 +208,7 @@ index ba6417a09e..ebfc2e5474 100644
    if (generation != 0)
    {
      m_renderManager.CancelVideoPreroll(generation);
-@@ -4434,13 +4459,14 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4480,13 +4505,14 @@ bool CVideoPlayer::PollResumePreroll()
      {
        const auto video = m_renderManager.GetVideoPreroll();
        if (video.generation != m_resumePictureGeneration || video.failed ||
@@ -226,7 +226,7 @@ index ba6417a09e..ebfc2e5474 100644
        {
          CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - submitted generation={} target={:.6f}",
                    m_resumePictureGeneration, video.firstPts / DVD_TIME_BASE);
-@@ -4448,6 +4474,13 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4494,6 +4520,13 @@ bool CVideoPlayer::PollResumePreroll()
          m_resumePrerollTarget.reset();
          m_resumePrerollReleaseTime = 0.0;
        }
@@ -240,7 +240,7 @@ index ba6417a09e..ebfc2e5474 100644
      }
      return false;
    }
-@@ -4517,7 +4550,7 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4563,7 +4596,7 @@ bool CVideoPlayer::PollResumePreroll()
      m_VideoPlayerAudio->SendMessage(
          std::make_shared<CDVDMsgType<AudioPrerollCommand>>(
              CDVDMsg::AUDIO_PREROLL,
@@ -250,10 +250,10 @@ index ba6417a09e..ebfc2e5474 100644
          1);
      return true;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 088d48a63b..7a6b82d852 100644
+index 75405d1d60..41fe5731ee 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -630,6 +630,7 @@ protected:
+@@ -632,6 +632,7 @@ protected:
    bool m_seekingResumePreroll = false;
    bool m_resumePrerollPaused = false;
    bool m_resumePrerollFailed = false;
@@ -262,7 +262,7 @@ index 088d48a63b..7a6b82d852 100644
    struct SSpeedState
    {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 1755c6b0bb..d02c7c8684 100644
+index 67a9c5bf1f..7006c1204f 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -399,7 +399,7 @@ void CVideoPlayerAudio::Process()
