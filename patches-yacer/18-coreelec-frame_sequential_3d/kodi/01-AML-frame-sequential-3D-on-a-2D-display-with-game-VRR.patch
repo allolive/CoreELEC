@@ -1005,7 +1005,7 @@ index ec554af789..234557a21c 100644
 +  int m_fs3d_vrr_rate = 0;
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 5657c8702e..882ed97020 100644
+index ea2c6106d6..77c95b8e93 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -17,6 +17,8 @@
@@ -1049,7 +1049,7 @@ index 5657c8702e..882ed97020 100644
    aml_resolution_refresh();
  
    return false;
-@@ -369,6 +389,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -380,6 +400,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
  {
    const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
  
@@ -1060,7 +1060,7 @@ index 5657c8702e..882ed97020 100644
    RefreshDisplayCapabilities();
  
    if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
-@@ -450,9 +474,86 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -461,9 +485,86 @@ bool CWinSystemAmlogic::InitWindowSystem()
  bool CWinSystemAmlogic::DestroyWindowSystem()
  {
    CAMLCodec::ReleaseKeptFrame();

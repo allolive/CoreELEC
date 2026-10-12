@@ -475,10 +475,10 @@ index b80c7b28f0..6581cfe9ba 100644
    //! the record of a 3D left behind is kept until its desktop has been set
    std::atomic<bool> m_fs3d_state_pending{false};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 97657b03ff..09a1e443f2 100644
+index 7f986c9b01..fca8389883 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -831,6 +831,13 @@ float CWinSystemAmlogic::GetVsyncRate()
+@@ -842,6 +842,13 @@ float CWinSystemAmlogic::GetVsyncRate()
    return fs3d > 0.0 ? static_cast<float>(fs3d) : aml_resolution_rate();
  }
  

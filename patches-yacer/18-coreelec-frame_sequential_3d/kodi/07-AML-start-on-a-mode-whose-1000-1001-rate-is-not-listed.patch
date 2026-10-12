@@ -277,10 +277,10 @@ index dc9fee6cac..b80c7b28f0 100644
 +  std::atomic<bool> m_fs3d_state_pending{false};
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 9419dc14b4..97657b03ff 100644
+index 81402af1a9..7f986c9b01 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -612,6 +612,61 @@ void CWinSystemAmlogic::RefreshResolutions()
+@@ -623,6 +623,61 @@ void CWinSystemAmlogic::RefreshResolutions()
    if (m_amlDisplay->aml_get_native_resolution(&curDisplay))
      resDesktop = curDisplay;
  
@@ -342,7 +342,7 @@ index 9419dc14b4..97657b03ff 100644
    for (auto& res : resolutions)
    {
      CLog::Log(LOGINFO, "Found resolution {:d} x {:d} with {:d} x {:d}{} @ {:f} Hz",
-@@ -631,12 +686,48 @@ void CWinSystemAmlogic::RefreshResolutions()
+@@ -642,12 +697,48 @@ void CWinSystemAmlogic::RefreshResolutions()
         resDesktop.iHeight == res.iHeight &&
         resDesktop.iScreenWidth == res.iScreenWidth &&
         resDesktop.iScreenHeight == res.iScreenHeight &&

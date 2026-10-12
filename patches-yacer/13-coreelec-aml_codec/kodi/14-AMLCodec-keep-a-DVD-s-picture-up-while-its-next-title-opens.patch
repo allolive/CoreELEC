@@ -173,7 +173,7 @@ index 9338b862cb..38fb562be8 100644
    void          SetVideoContrast(const int contrast);
    void          SetVideoBrightness(const int brightness);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 4db51da9f2..5657c8702e 100644
+index a90cc31c8c..ea2c6106d6 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -20,6 +20,7 @@
@@ -184,7 +184,7 @@ index 4db51da9f2..5657c8702e 100644
  #include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
  #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
  #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
-@@ -448,6 +449,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
+@@ -459,6 +460,7 @@ bool CWinSystemAmlogic::InitWindowSystem()
  
  bool CWinSystemAmlogic::DestroyWindowSystem()
  {

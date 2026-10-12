@@ -289,10 +289,10 @@ index b4f540c657..dc9fee6cac 100644
    std::string m_fs3d_mode{FS3D_MODE};
    int m_fs3d_hz = 120;
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 882ed97020..9419dc14b4 100644
+index 77c95b8e93..81402af1a9 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -733,6 +733,13 @@ float CWinSystemAmlogic::GetDisplayLatency()
+@@ -744,6 +744,13 @@ float CWinSystemAmlogic::GetDisplayLatency()
    return CAMLLatencyStore::GetInstance().Get();
  }
  
@@ -306,7 +306,7 @@ index 882ed97020..9419dc14b4 100644
  void CWinSystemAmlogic::RegisterRenderThread()
  {
    m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
-@@ -761,7 +768,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
+@@ -772,7 +779,7 @@ float CWinSystemAmlogic::SampleFrameLatency()
      return 0.0f;
    };
  

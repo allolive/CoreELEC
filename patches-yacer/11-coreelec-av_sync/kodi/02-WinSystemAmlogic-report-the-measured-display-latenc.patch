@@ -1162,7 +1162,7 @@ index 04c76d2e57..a3d9164cd0 100644
    static const int m_numRenderBuffers = NUM_BUFFERS;
  
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index cce6347ef5..bb31f1e40d 100644
+index cafa71e46f..1632da9f25 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -12,12 +12,15 @@
@@ -1189,7 +1189,7 @@ index cce6347ef5..bb31f1e40d 100644
  #include "utils/log.h"
  #include "threads/SingleLock.h"
  
-@@ -609,6 +613,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
+@@ -620,6 +624,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
    return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
  }
  

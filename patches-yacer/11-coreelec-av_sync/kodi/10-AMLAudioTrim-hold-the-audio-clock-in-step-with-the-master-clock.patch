@@ -1457,7 +1457,7 @@ index 4b32b87166..b3ec70f8a7 100644
  //! \brief The whole number of refreshes the display shows each frame for, from
  //! the refreshes per frame CRenderManager found matching (0 if none). Zero too
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 00c46c6e8b..bc60d848d2 100644
+index 3b42df9aeb..094d2da75c 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -42,6 +42,7 @@
@@ -1468,7 +1468,7 @@ index 00c46c6e8b..bc60d848d2 100644
  #include "platform/linux/SysfsPath.h"
  
  #include <linux/fb.h>
-@@ -578,6 +579,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
+@@ -589,6 +590,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
    if (setting)
      setting->SetVisible(sink_dv);
  
