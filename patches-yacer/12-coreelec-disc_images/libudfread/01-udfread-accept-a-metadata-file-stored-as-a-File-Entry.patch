@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 00:00:00 -0400
+Subject: [PATCH] udfread: accept a metadata file stored as a File Entry
+
+A UDF 2.50 volume keeps its directories in a metadata partition, whose
+location comes from the metadata file (and its mirror). The library only
+accepted that file as an Extended File Entry (tag 266) and gave up on any
+other tag, so a volume whose metadata file is a plain File Entry (tag 261)
+could not be mounted at all.
+
+Such images exist. On them every
+lookup failed, so Kodi did not see BDMV/index.bdmv, took it for a DVD and
+failed to open it; libbluray reads it through the same library.
+
+Ordinary files and directories are already read from either tag. The
+metadata file is now decoded the same way; the checks that follow (file
+type, allocation) are unchanged. With this the image lists in full (178
+entries, index.bdmv included), and an image that already worked lists
+byte for byte the same.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/src/udfread.c
++++ b/src/udfread.c
+@@ -526,12 +526,14 @@
+             tag_id = _read_descriptor_block(input, pd->start_block + mirror_lba, buf);
+         }
+ 
+-        if (tag_id != ECMA_ExtendedFileEntry) {
++        if (tag_id == ECMA_ExtendedFileEntry) {
++            fe = decode_ext_file_entry(buf, UDF_BLOCK_SIZE, pd->number);
++        } else if (tag_id == ECMA_FileEntry) {
++            fe = decode_file_entry(buf, UDF_BLOCK_SIZE, pd->number);
++        } else {
+             udf_error("read metadata file %u: unexpected tag %d\n", i, tag_id);
+             continue;
+         }
+-
+-        fe = decode_ext_file_entry(buf, UDF_BLOCK_SIZE, pd->number);
+         if (!fe) {
+             udf_error("parsing metadata file entry %u failed\n", i);
+             continue;
