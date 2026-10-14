@@ -27,150 +27,335 @@ line to make it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
-index 77862751cd32a5203c12d20899cb55818f417b7f..195b5e3c656a1aa0945f8467f89a391929277f62 100644
-GIT binary patch
-delta 417
-zcmZXQKTg9i6vpSW00aBSL|a7-6B2VJHUxr--Ho4#Ro5?ib`oXkA-DiXK;jlij2wWQ
-z;3O5QVE_L9Uavl{-@YchJ7Y*lWBEW{liVt=o=GkO3dh9;q4PzC*2WUCBxoBdr#c83
-zp-@slMREk>`8gV^iD5)-32jLpHo{o1!{8JZlX|OSQDV9#$1T_sc7w8y9_>>5u+K9p
-zM3Q7y{;+$Nfd!XiMKX5K49{_amDKy@K2L@}zw0(c)wpClW<64Twfq0g#z4+w2>b^M
-zwsna6agJ0&>0to3{(u$Om_^bwR${Fj*31qowV`E?^D)t!YOdFgkk5OFCj-TMlAE5}
-QJfFRMAD_K{OrB1E0JD6NQUCw|
-
-delta 12
-TcmX?Wxxj40RnE;#+}?r!CK&|>
-
+index 7786275..195b5e3 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
+@@ -79,6 +79,12 @@ public:
+   //! SurfaceView, the Amlogic video layer. Such a renderer must produce its
+   //! own capture frame; every other renderer is served by reading the framebuffer.
+   virtual bool VideoBypassesFramebuffer() { return !IsGuiLayer(); }
++  //! \brief Offered CRenderManager's clock sync, with the display refreshes per
++  //! video frame when it finds the rates match (below one when the video runs
++  //! faster than the display), or 0 when they do not. True when the renderer
++  //! keeps the clock in step with the display itself, so CRenderManager must
++  //! leave its own clock sync off.
++  virtual bool TakeClockSync(double /*refreshesPerFrame*/) { return false; }
+   //! \brief Render this renderer's video frame for screencap into result.
+   //! Overridden by renderers whose VideoBypassesFramebuffer() is true.
+   //! Default: capture unavailable.
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index c8a5952788f87ae705f4eccdbc97c2d20cf04779..50ad8d726baf857fa841cb434a3ef3dee2028d6c 100644
-GIT binary patch
-delta 182
-zcmaFlJJ)~18fL}B+?@F0)ROq3)U=}1;*8Yd_=41;__U(L+*Az%Jp)ba$t#)bCWo>L
-z*M}r#r#k24Cuav&<|S*S<d-Jpq$<F*1*8_afi!7yRdXpQ;4>8@SDuldlZvoY1Jf8y
-ZYoIYjsU@XFc?xNXImM})l~@ia0RY4qL@odT
-
-delta 16
-YcmbR1|Hya48s^Ctn5#EGV%e<(07caY(f|Me
-
+index c8a5952..50ad8d7 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -31,11 +31,18 @@ CRendererAML::CRendererAML()
+ 
+ CRendererAML::~CRendererAML()
+ {
++  aml_set_refreshes_per_frame(0.0);
+   Reset();
+   static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+       ->ReleaseHdrGuiSession(m_hdrGuiOwner);
+ }
+ 
++bool CRendererAML::TakeClockSync(double refreshesPerFrame)
++{
++  aml_set_refreshes_per_frame(aml_whole_refreshes(refreshesPerFrame));
++  return false;
++}
++
+ CBaseRenderer* CRendererAML::Create(CVideoBuffer *buffer)
+ {
+   if (buffer && dynamic_cast<CAMLVideoBuffer*>(buffer))
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 09358397cd044ecec27be5435fa74a7842c8bedd..166b0c0448b3a41a8d62f11bde4ccf5d62f4e16b 100644
-GIT binary patch
-delta 58
-zcmdlk`ayJq5u2`pLQ;NyjzUOccB*quesXqjWnQvIN`7flPO3stYFbfhaYkx!Kx&a&
-NQDScDW;M2nEC6am6%hac
-
-delta 12
-Tcmew$x?OaG5!>c$wpJDZA!7t*
-
+index 0935839..166b0c0 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+@@ -46,6 +46,7 @@ public:
+   virtual bool WaitVsync() override;
+   virtual bool PresentFrame(int index) override;
+   virtual void WakeVsyncPresent() override;
++  bool TakeClockSync(double refreshesPerFrame) override;
+ 
+   // Feature support
+   virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index e1a154039ac78e0348880eafbc69abf81ff93636..abd3020b55d68ff502e0d70e501ecf5b0513153b 100644
-GIT binary patch
-delta 258
-zcmcb2pXt;?rVZ+A<rEZB@=KF)QWc6)(~44yGg6BKQj6S*5_3}(Y!wVPE3XY>l)xsH
-zl9`q^xp>`tujKr^;u3|V{QMk+qQsKaV&BA)<P4x*kOBo81p_?;0|QfQE(HZ-g{gTd
-zsYR(p!IgQ*#R|4SNf4OKD<~5al9-+9oRgoN4U*G9GSME33#~xLYk~~VOjAHstfr=*
-ZScGheCQwcFWWjkNlXKT|PIg^C697USShN5D
-
-delta 45
-zcmV+|0Mh@;;R4>@0<b5ovq`N|0h76|nG$JcASh&MW@aEfATTa4FfcVKlR>Z{lQFQF
-D!#WYX
-
+index e1a1540..abd3020 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -1546,6 +1546,7 @@ void CRenderManager::CheckEnableClockSync()
+ {
+   // refresh rate can be a multiple of video fps
+   double diff = 1.0;
++  double refreshesPerFrame = 0.0;
+ 
+   if (m_fps != 0)
+   {
+@@ -1558,6 +1559,7 @@ void CRenderManager::CheckEnableClockSync()
+     }
+ 
+     diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
++    refreshesPerFrame = diff;
+     if (diff < 1.0)
+       diff = 1.0 / diff;
+ 
+@@ -1565,7 +1567,10 @@ void CRenderManager::CheckEnableClockSync()
+     diff = std::abs(std::round(diff) - diff);
+   }
+ 
+-  if (diff < 0.0005)
++  const bool ratesMatch = diff < 0.0005;
++  const bool rendererSyncs =
++      m_pRenderer && m_pRenderer->TakeClockSync(ratesMatch ? refreshesPerFrame : 0.0);
++  if (ratesMatch && !rendererSyncs)
+   {
+     m_clockSync.m_enabled = true;
+   }
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 7ed97dec615b900d1c13a1b664d12e6a7172e0d2..2932f9ab5c7e6a415dd28768278ad4c5a10e60f7 100644
-GIT binary patch
-delta 4189
-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
-
-delta 25
-hcmeyEeav%%B;#alM#arMOfrm<{g^d3_b|IF0RVI>2dn@9
-
+index 7ed97de..2932f9a 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -10,9 +10,20 @@
+ #include <regex>
+ #include <string.h>
+ #include <sys/ioctl.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "AMLUtils.h"
++
++#include <cstdint>
++
++#include <cstring>
++
++#include <atomic>
++#include <charconv>
++#include <cmath>
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "settings/AdvancedSettings.h"
+ #include "utils/log.h"
+ #include "utils/StringUtils.h"
+ #include "ServiceBroker.h"
+@@ -21,9 +32,11 @@
+ #include "settings/SettingsComponent.h"
+ #include "platform/linux/SysfsPath.h"
+ #include "windowing/amlogic/WinSystemAmlogic.h"
++#include "windowing/GraphicContext.h"
+ #include "windowing/WinSystem.h"
+ 
+ #include <amcodec/codec.h>
++#include <xf86drm.h>
+ 
+ int aml_get_cpufamily_id()
+ {
+@@ -348,3 +361,130 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
+     CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
+   }
+ }
++
++std::optional<double> aml_since_frame_start_us(double maxAgeUs)
++{
++  const auto reading = aml_vblank_seq_and_age(maxAgeUs);
++  if (!reading)
++    return std::nullopt;
++
++  return reading->second;
++}
++
++double aml_monotonic_us()
++{
++  // The base DRM reports on, so an age read against it can be carried forward.
++  // CurrentHostCounter() is CLOCK_MONOTONIC_RAW and runs 180ms apart here.
++  struct timespec now;
++  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++    return 0.0;
++
++  return static_cast<double>(now.tv_sec) * 1000000.0 +
++         static_cast<double>(now.tv_nsec) / 1000.0;
++}
++
++std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs)
++{
++  const auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
++  if (!winSystem)
++    return std::nullopt;
++
++  const CAMLDisplay* display = winSystem->GetAmlDisplay();
++  if (!display)
++    return std::nullopt;
++
++  const int fd = display->aml_get_Device_handle();
++  const uint32_t crtcId = display->aml_get_Crtc_id();
++  if (fd < 0 || crtcId == 0)
++    return std::nullopt;
++
++  uint64_t sequence = 0;
++  uint64_t vblankNs = 0;
++  if (drmCrtcGetSequence(fd, crtcId, &sequence, &vblankNs) != 0 || vblankNs == 0)
++    return std::nullopt;
++
++  // DRM reports on CLOCK_MONOTONIC, so read the clock DRM used.
++  struct timespec now;
++  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++    return std::nullopt;
++
++  const int64_t nowNs =
++      static_cast<int64_t>(now.tv_sec) * 1000000000 + static_cast<int64_t>(now.tv_nsec);
++
++  const double age = static_cast<double>(nowNs - static_cast<int64_t>(vblankNs)) / 1000.0;
++  if (age < -maxAgeUs || age > maxAgeUs)
++    return std::nullopt;
++
++  return std::make_pair(sequence, age);
++}
++
++std::optional<uint32_t> aml_displayed_pts_ticks()
++{
++  CSysfsPath path("/sys/class/tsync/pts_video");
++  if (!path.Exists())
++    return std::nullopt;
++
++  const std::string raw = path.Get<std::string>().value_or("");
++  const char* p = raw.c_str();
++  int base = 10;
++  if (raw.size() > 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X'))
++  {
++    p += 2;
++    base = 16;
++  }
++
++  uint32_t ticks = 0;
++  const auto res = std::from_chars(p, p + std::strlen(p), ticks, base);
++  if (res.ec != std::errc())
++    return std::nullopt;
++  if (ticks == 0)
++    return std::nullopt;
++
++  return ticks;
++}
++
++double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
++{
++  const auto winSystem = CServiceBroker::GetWinSystem();
++  CGraphicContext& gfx = winSystem->GetGfxContext();
++
++  const bool isHDRUsed =
++      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
++  float refresh = gfx.GetFPS();
++  if (gfx.GetVideoResolution() == RES_WINDOW)
++    refresh = 0;
++
++  const double latencyTweak = static_cast<double>(
++      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
++          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
++
++  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so the
++  // aim and the renderer's scheduling do not differ by the truncation.
++  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
++
++  // Without GetFrameLatencyAdjustment(). Callers that want the vblank term
++  // subtract it themselves, and CAMLGenlock does, so including it here would
++  // take it off twice and move the aim by the frame loop's wake jitter.
++  return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
++                          videoDelay);
++}
++
++namespace
++{
++// CRenderManager's verdict, handed over through CRendererAML::TakeClockSync().
++// Its call, not a second comparison here: it decides from its own copy of the
++// frame rate, and two tolerances on two copies disagree exactly where it
++// matters - a 23.976 mode divided in float lands a rounding error off the
++// content rate.
++std::atomic<double> g_amlRefreshesPerFrame{0.0};
++} // unnamed namespace
++
++void aml_set_refreshes_per_frame(double refreshes)
++{
++  g_amlRefreshesPerFrame.store(refreshes, std::memory_order_relaxed);
++}
++
++double aml_refreshes_per_frame()
++{
++  return g_amlRefreshesPerFrame.load(std::memory_order_relaxed);
++}
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index 859e42e94a8522640c7d6698a5730b63d87f07c9..4b32b871665c12575ef207e9d266dde62393ee6b 100644
-GIT binary patch
-literal 4137
-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
-a9hrs7P`Xy(m}Ikz(cm9Xuybz1&Hn*`{8#q?
-
-delta 11
-ScmZ3f@Rx7Gqs<(Qv)KS2{RE@{
-
+index 859e42e..4b32b87 100644
+--- a/xbmc/utils/AMLUtils.h
++++ b/xbmc/utils/AMLUtils.h
+@@ -8,6 +8,9 @@
+ 
+ #include "utils/StreamDetails.h"
+ 
++#include <cmath>
++#include <optional>
++
+ enum AML_SUPPORT_H264_4K2K
+ {
+   AML_SUPPORT_H264_4K2K_UNINIT = -1,
+@@ -67,3 +70,46 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
+ bool aml_video_started();
+ int aml_amdv_wait(StreamHdrType hdrType);
+ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
++
++//! \brief Microseconds since the display began painting the frame on screen,
++//! from the DRM vblank timestamp. Empty if DRM declines or the reading is older
++//! than maxAgeUs. App thread only.
++std::optional<double> aml_since_frame_start_us(double maxAgeUs);
++
++//! \brief Microseconds on CLOCK_MONOTONIC, the base the vblank age is measured
++//! against. Not CurrentHostCounter(), which is a different clock entirely.
++double aml_monotonic_us();
++
++//! \brief The display's vblank counter and how long ago that vblank was. The
++//! counter difference between two readings is an exact whole number of refresh
++//! periods - no timebase, no jitter, nothing to fold - and the age is what the
++//! frame on screen is measured against.
++std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs);
++
++//! \brief The timestamp of the frame the driver has on screen, in the 90kHz
++//! ticks it stores natively. Kept in ticks so it can be compared for equality:
++//! the kernel truncates once when it checks a frame in, so a microsecond round
++//! trip does not come back to the same number.
++std::optional<uint32_t> aml_displayed_pts_ticks();
++
++//! \brief What CRenderManager adds when it schedules a frame, in master clock
++//! units, without the vblank term that only the frame loop can use. See
++//! CRenderManager::PrepareNextRender().
++double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
++
++//! \brief The whole number of refreshes the display shows each frame for, from
++//! the refreshes per frame CRenderManager found matching (0 if none). Zero too
++//! when the video runs faster than the display, which drops frames rather than
++//! showing each of them a whole number of times.
++inline double aml_whole_refreshes(double refreshesPerFrame)
++{
++  return refreshesPerFrame >= 1.0 - 0.0005 ? std::round(refreshesPerFrame) : 0.0;
++}
++
++//! \brief Records aml_whole_refreshes() of CRenderManager's verdict. See
++//! CRendererAML::TakeClockSync().
++void aml_set_refreshes_per_frame(double refreshes);
++
++//! \brief How many times the display shows each frame, as recorded: a whole
++//! number, or 0 when the rates do not match that way.
++double aml_refreshes_per_frame();
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 1145c5b3de900715f5a7b27fd53cfc80adf35fcc..ed9347b09e2c5d6e389565b965aba2e0a18c31cf 100644
-GIT binary patch
-delta 118
-zcmZ2)b<ujm19qv>%)Am~qxceq#N3?t^wg60l%ibcqLSqJ%*hwI#Uz0&1$%|u_+%hM
-r*A7I+XQn7vDHu%F7Lwomlih+#9K!^-cG1Znge2G@+?36lLTuasAATw4
-
-delta 21
-dcmca;z20iW1NO<6g(Nq7a9D6{zAW^Q3jk_82?GEC
-
+index 1145c5b..ed9347b 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -85,6 +85,7 @@ public:
+   virtual ~CAMLDRMUtils();
+ 
+   int aml_get_drmDevice_handle() const { return m_fd; }
++  uint32_t aml_get_drmCrtc_id() const { return m_crtc ? m_crtc->crtc_id : 0; }
+   void aml_init_drmDevice();
+   void aml_drmDevice_vsync();
+   std::string aml_get_drmDevice_mode();
+@@ -153,6 +154,7 @@ public:
+ 
+   void aml_refresh_display_caps();
+   int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }
++  uint32_t aml_get_Crtc_id() const { return m_amlDRMUtils->aml_get_drmCrtc_id(); }
+   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
+   void aml_drmDevice_vsync() { m_amlDRMUtils->aml_drmDevice_vsync(); };
+   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }

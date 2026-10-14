@@ -51,72 +51,222 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..52e0364e5c0f03c206cacd0ca9e1d243eb81c53b
-GIT binary patch
-literal 2537
-zcmZuz+iu%N5PjEIOjE#-TwP)V&4XndFytULnu}4ZMu4^uR^-s!n%rf$ODV47fA5)H
-zij?8#!3LLeIdkUBEN6!UIwV@y>Y>(mxu@Y`M8|KA-_nv*Nx$1v2ZLp<9c8*;!v9Lu
-zo@^H0(u8vFD|a%R-NSh5H^Khq`tr-<gHG5uo?NADyv{V&C-naM!{m7SW@76}p*+{H
-zo(%>+SGBq;6<L!op0r7dCS`h+*qYt!R;O&Q3-!SD?8?9?Qwh(Oy42=wVU6?3csI>o
-z?RlOirSkcCAL=yauMM9M2D8IMTINitb`?UB*Ck6a+gy1m&Khz_&1}Y$*_xCgZK}qT
-z^R+PI#mqG2nrkPOY7dvKiD8C{E^jYiJ4(1H9DGxp`-0tQ3R^J`nYnDfagB(otQ@gQ
-za!{Jwv!|{0IZ}Y-y_|>_KyGuc@dj2Zqz0aJ4BQ(2bz_h($BEP;5h|Vd2KMU*;tkgi
-zJ_lO_4jN9U0f&?i7%ELeIBOV)lN?0{NFk?0a-J*7YFko@V!eG%-M<Zr7?W~>Odz?j
-z6dGz*_Y4PwD3pU@kU$=i!Y22W!vp3?&M9hO&<u`qyNwQ#{70PCJXtFjqM{E085$Ni
-zkSg0Qfw7j*%oc^j3>AI4xD{yfYD~@sD(!lW{s>C~E#ocajY(^ODsjqw3nh?hQf)&?
-z8<FCi6iL|<493DCIZiCv4FQQl#$>F=sX@G;0I6j*NWg=m#buP<5;a}~!rkC;P&Mm9
-zCnp0UQRv^8F{mvN4qUMsl!b#a#1X)@{R?#NG$Q061b}rRkW4ZKmmkRrJWA;?MF?I(
-z5Bnj!^{VJ%6m0IG(!G&cvq&q-5!hPy8G>xAPU#{|hp9z*7`h1G2MI|;$%p*A1S9x7
-zN^;T}4W;_CGa0GXr_a~Ro7L^bhd<xZ_wSuMou1Jfagtxn5WJZW!Xvr?$+c;1mN`sU
-z4E6Em-D0);yjos;d^eOWAUH<YV@Nmea{pAW;xM==mz94Qj$)dK4o#X#(`7Q&kdw4T
-z&=#yVt>jy8Xb5X0j4dW75FH28!CMzaJCSV(5HeUAzD!OB2h<~yl*7?fGM=AF;vEIF
-zXH?m06%Aumk<%ZCc0N5hQENARk)x$<f_@8!BRUQJ*yr$Q1axfy(uWr@y7o#pyN4e0
-zu5sf06as<WFpj!L6T?h(3+=T#iTfgJiegN6dc)LI!8~lR4EF;jyK7{R#_9ifI1&sW
-zFTSiUJ}rLx{Kw4>MQ_G6W@w)XzS9PNztGVrGTGZ!jmsm+kLbd<C28Cj`4n89M3XYs
-zH;k6Glm_i}HxTZ!2KR=n#!+0JyO{{r(4KIlGVE6$jpvl9!f~X;$dU>h9Gu-7+)LOy
-zu$EC=TU*e3_PbFGsmASu9CXMrjt4z_VJ9lSRc2p$%jP*9J=5l2NB;y}VlZPd0sz0>
-zQFMvh#Q0%Lr;K|4`q{MYhB_7*+3$wA_i4jT<Ev=a=?r84(z1ISjiUm|*A2@-=vUZX
-z3ruv4=0EPmNaERC%&J;%@EId(8`rtl35CVO-zwZi(A&!Iiw#hYe|;M^6h0@K#8ce=
-k9n1ZijJTfduXyxqUk0%9Ck$}-#5s*2&wIf0!P9*3Kl;-!hyVZp
-
-literal 0
-HcmV?d00001
-
+index 0000000..52e0364
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
+@@ -0,0 +1,80 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++
++#include <cmath>
++#include <deque>
++
++/** The display time of what is on screen, for an input stream that numbers
++ * its own time (a DVD's cells and titles).
++ *
++ * The demuxer stamps each packet with the input stream's time where it was
++ * read, which runs ahead of the picture by everything queued. The player adds
++ * one anchor each time the step from dts to display time jumps, as it reads,
++ * and takes the last one the clock has reached when it shows the time.
++ *
++ * The demuxer re-bases that step on whichever stream's packet follows each NAV
++ * pack, so it wobbles by the few hundred ms between audio and video; a jump
++ * under a second is that, not a new title.
++ */
++class CDisplayTimeAnchors
++{
++public:
++  /** \param dts the packet's dts, in the player clock's time base
++   *  \param dispTime the input stream's time at the packet, in ms
++   *  \param totalTime the length of what is being read, in ms
++   */
++  void Add(double dts, int dispTime, int totalTime)
++  {
++    if (dts == DVD_NOPTS_VALUE || dispTime <= 0)
++      return;
++
++    const double offset = DVD_MSEC_TO_TIME(dispTime) - dts;
++    if (!m_anchors.empty())
++    {
++      // a step back in dts leaves the anchors before it to the pictures still queued
++      while (!m_anchors.empty() && m_anchors.back().dts >= dts)
++        m_anchors.pop_back();
++      if (!m_anchors.empty() && std::abs(m_anchors.back().offset - offset) < DVD_SEC_TO_TIME(1) &&
++          m_anchors.back().totalTime == totalTime)
++        return;
++    }
++    // the first is the picture's: when full, give up the one after it
++    if (m_anchors.size() == MAX_ANCHORS)
++      m_anchors.erase(m_anchors.begin() + 1);
++    m_anchors.push_back({dts, offset, totalTime});
++  }
++
++  /** Sets offset (display time minus clock) and totalTime for the picture
++   * at clock; false when no anchor is known.
++   */
++  bool Get(double clock, double& offset, int& totalTime)
++  {
++    while (m_anchors.size() > 1 && m_anchors[1].dts <= clock)
++      m_anchors.pop_front();
++    if (m_anchors.empty())
++      return false;
++    offset = m_anchors.front().offset;
++    totalTime = m_anchors.front().totalTime;
++    return true;
++  }
++
++  void Clear() { m_anchors.clear(); }
++
++private:
++  static constexpr size_t MAX_ANCHORS = 256;
++
++  struct Anchor
++  {
++    double dts;
++    double offset;
++    int totalTime;
++  };
++  std::deque<Anchor> m_anchors;
++};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index cdbcbc86413225478e05fcb69081ff826e88d449..369be37cb14abed52abcaef88c02dad19bf18409 100644
-GIT binary patch
-delta 1459
-zcmZ`(&2Jk;6xVpDQBB-B%}3iL#Lo~pc59rJAR#$~5=Ej_MMXs-q#h!(*&WB*tar@L
-zEX1P4;!yQe737F_g?|8wdWaAbqKAM4;!9lN0tXNmP8@QAH|w>XHn113=gqu%zpwq~
-z_w*n8>AM&9QjV*dp4D1&8=dUl>Eo*{-*){?Sc016DRFOk@7Ckk`ZO`o`D%Zmv;XUp
-z?YTM7bpe)d*JYr<6EzK1KntE16{P2YcC{yFRSKe~Q5{?&$}66*f<kezU-ZScUe$rH
-z8iUJq5Q^RoTlz}FhLj#Sfpzc9Z`bbN$R$4ZBINUNlS1AOgFyHimX;vjsIGMXz3Mtb
-z!u9L$KlSC%aV6%SWh2;DiDaf&EK<X_qNZ*Q3h!rlmN}Tq@bZGGnCC$-%Z^iUv?@XK
-zie+yJ{nYaYDv>El;NT}WS?<<Oz;<_n#OB1%!J~%k;Q`)=?8Ov*_-*3kZsvBPy?tsC
-zr0=yNN;UO^hI~UPTEja>c&^<Y(vjhYCqUL}N)UFKFVA;bbBPKqwdI*nOd(z-P`QI+
-zi1G!Y3yrGnNqft@ub7uYu@v_#4Z1|!7zP5N!(`x_j#x?ZEWUe;&*0B#o*9C(@i~$g
-z&rR{sbbp9w`{ikVI@x6y>(ji9JJWm}7pC|LWLbXk5r7*hymFt7;qA}ZV>ndc&*A*j
-zi8-QfRa;t=4HGy#%SUkLBX%OK`iqyX?amipPvZXHEVKL55ndVX8MPS+qu^RdE+UsX
-zU|T+HkYT$v1*>irWi6t*>DoFB#3EId5L;w(a&uk8;*<ADUwc+TbTe#9*yu_WHEv4f
-zYFGLtP!g`1S*x)$w7sR^O;^{!)p4_j#T$T$Pjxi|cvwvQ_$Hfb_o_5g4~a2>Yzp55
-z*s5s}^aCk<0Vd{xfQGsPp|4$!MlnE4^5~a>KR{^`9(jW5E(N<zsaE}NCf+5=HxX!z
-zPGAQ_)ZBo0j%g(KfGtU~e=f0cd|j{!tglnret3z^;0qU7GD+z)K590o{>vI0!VfAe
-zi=VHv)JUUx=*!TV|8so!&?=r;V`V)5C?8M2dHivUo$9=oKi7F}@+hm|-Iv+ecvGt$
-zT|_5^Ai{?CUr9{jU*ECgPZ-x9%#ZOoJdi7V=Swz<JIDC+dUUw|0lN{ib~skizW+*6
-eZ<c}LaCRxa4c|V==Z^Mc)5&}fyEwt0x%w}uJJgl{
-
-delta 136
-zcmV;30C)fB`3=kG4X{VWlgM}tm+)5t1(O!W8MCUzRvnX$`Z1GD<0G@-<9LsUe{=!2
-ze{=$88keJM0Tq{^egO`*L5~7)cmWEN@ZBPp`APy0m*V#U61VIM13DC!NFxId3v+Z~
-qbY(7dX>Da+msTSKHJ4F`0UVcsEdd>uE)oL<mrW)E6}QYI0~}d0Q8i!y
-
+index cdbcbc8..369be37 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1571,6 +1571,8 @@ void CVideoPlayer::Prepare()
+   m_processInfo->SetFrameAdvance(false);
+   m_State.Clear();
+   m_nextStream.Cancel();
++  m_displayTime.Clear();
++  m_nextStreamSyncing = false;
+   m_CurrentVideo.hint.Clear();
+   m_CurrentAudio.hint.Clear();
+   m_CurrentSubtitle.hint.Clear();
+@@ -1786,10 +1788,14 @@ void CVideoPlayer::Process()
+             m_playSpeed == DVD_PLAYSPEED_PAUSE, std::chrono::steady_clock::now());
+       if (state == CNextStreamDrain::State::PLAYING_OUT)
+       {
++        UpdatePlayState(0);
+         CThread::Sleep(100ms);
+         continue;
+       }
+       m_nextStream.Cancel();
++      // the anchors left are all the old title's
++      m_displayTime.Clear();
++      m_nextStreamSyncing = true;
+       const bool drained = state == CNextStreamDrain::State::DONE;
+       if (!drained)
+         CLog::Log(LOGWARNING, "VideoPlayer: next stream, old streams given up");
+@@ -2822,6 +2828,13 @@ void CVideoPlayer::UpdateTimestamps(CCurrentStream& current, DemuxPacket* pPacke
+   current.dts = dts;
+ 
+   current.dispTime = pPacket->dispTime;
++
++  if (m_pInputStream &&
++      (&current == &m_CurrentVideo || (&current == &m_CurrentAudio && m_CurrentVideo.id < 0)))
++  {
++    if (CDVDInputStream::IDisplayTime* displayTime = m_pInputStream->GetIDisplayTime())
++      m_displayTime.Add(dts, pPacket->dispTime, displayTime->GetTotalTime());
++  }
+ }
+ 
+ static void UpdateLimits(double& minimum, double& maximum, double dts)
+@@ -4901,6 +4914,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
+ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+ {
+   m_syncStartPtsWait.reset();
++  m_displayTime.Clear();
++  m_nextStreamSyncing = false;
+   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
+ 
+   double startpts;
+@@ -5894,9 +5909,28 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
+ 
+ void CVideoPlayer::UpdatePlayState(double timeout)
+ {
+-  // the old streams play out with no demuxer to read a position from
++  // the old streams play out with no demuxer to read a position from; only the time moves on
+   if (m_nextStream.Pending())
++  {
++    double offset = 0.0;
++    int totalTime = 0;
++    if (!m_displayTime.Get(m_clock.GetClock(), offset, totalTime))
++      return;
++    SPlayerState state(m_State);
++    state.time = DVD_TIME_TO_MSEC(m_clock.GetClock() + offset);
++    state.timeMax = totalTime;
++    if (m_Edl.HasCuts())
++    {
++      state.time = static_cast<double>(
++          m_Edl.GetTimeWithoutCuts(std::chrono::milliseconds(std::lround(state.time))).count());
++      state.timeMax = state.timeMax - static_cast<double>(m_Edl.GetTotalCutTime().count());
++    }
++    m_processInfo->SetPlayTimes(state.startTime, state.time, state.timeMin, state.timeMax);
++    std::unique_lock lock(m_StateSection);
++    m_State.time = state.time;
++    m_State.timeMax = state.timeMax;
+     return;
++  }
+ 
+   if (m_State.timestamp != 0 &&
+       m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
+@@ -6040,8 +6074,30 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+ 
+         state.time_offset = DVD_MSEC_TO_TIME(dispTime) - state.dts;
+       }
+-      state.time += state.time_offset * 1000 / DVD_TIME_BASE;
+-      state.timeMax = pDisplayTime->GetTotalTime();
++      // the packets just read can be a title ahead of the picture; a seek and the
++      // disc's state go by the read position, so time_offset stays with it
++      double offset = state.time_offset;
++      int totalTime = pDisplayTime->GetTotalTime();
++      // a title set opening after the old one played out: until its streams sync
++      // the clock still holds the old title's time, so go by the first picture to come
++      double clock = m_clock.GetClock();
++      if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
++          m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC)
++        m_nextStreamSyncing = false;
++      if (m_nextStreamSyncing)
++      {
++        clock = m_CurrentVideo.startpts != DVD_NOPTS_VALUE ? m_CurrentVideo.startpts
++                                                         : m_CurrentAudio.startpts;
++        if (clock == DVD_NOPTS_VALUE)
++        {
++          clock = 0.0;
++          offset = 0.0;
++        }
++        state.time = DVD_TIME_TO_MSEC(clock);
++      }
++      m_displayTime.Get(clock, offset, totalTime);
++      state.time += offset * 1000 / DVD_TIME_BASE;
++      state.timeMax = totalTime;
+     }
+     else
+     {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index f8820935699bfb0442279423673ff523555ee241..617a287a7506fecbdc33e51573d9bcb681497905 100644
-GIT binary patch
-delta 112
-zcmaF3f$`Kv#tqzzLN1xb1v!b8A(^?Uj(N!$`9;MW|Hg#5D=0W)$|&T<ry!JDb15h!
-r<>%)BMe|ZCN`gy@QWJB7EAx^w^U@V;719!Oic=@Q3Uin|J^T~^oLDR8
-
-delta 19
-bcmX@Lk@4XM#tqzzo3$DJ!ZsfY=U@Z?QOyS<
-
+index f882093..617a287 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -10,6 +10,7 @@
+ 
+ #include "DVDClock.h"
+ #include "DVDMessageQueue.h"
++#include "DisplayTimeAnchors.h"
+ #include "Edl.h"
+ #include "FileItem.h"
+ #include "IVideoPlayer.h"
+@@ -666,6 +667,8 @@ protected:
+ 
+   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
+   CNextStreamDrain m_nextStream;
++  CDisplayTimeAnchors m_displayTime;
++  bool m_nextStreamSyncing = false;
+ 
+   std::optional<std::chrono::steady_clock::time_point> m_syncWait;
+ 

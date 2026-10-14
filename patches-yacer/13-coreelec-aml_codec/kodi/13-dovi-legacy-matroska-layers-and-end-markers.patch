@@ -1,0 +1,352 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 23:53:31 +0000
+Subject: [PATCH] Dolby Vision: pair the layers of older Matroska files; end
+ a picture after its metadata
+
+Pairing a picture's two Dolby Vision layers by timestamp is upstream's
+now, in CDemuxDualLayer. This keeps the two things it does not do.
+
+Recognize older Matroska files that carry Dolby Vision across two tracks
+using their Blu-ray source IDs. Keep both tracks bound to each other even
+when the file has additional video tracks, in either stream order. Honor
+explicit Dolby Vision configuration records first.
+
+Keep the enhancement picture and its brightness metadata before HEVC end
+markers. Rewriting the metadata must not skip or repeat the following
+part of the picture when the serialized size changes.
+
+Both are in shared Kodi code by necessity: the tracks are told apart
+where the demuxer adds its streams (DVDDemuxFFmpeg), and the end markers
+are placed where the HEVC stream is rebuilt (BitstreamConverter).
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 0ea0264..816966e 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -32,6 +32,7 @@
+ #include "settings/SettingsComponent.h"
+ #include "threads/SystemClock.h"
+ #include "utils/AMLUtils.h"
++#include "utils/DolbyVisionLegacy.h"
+ #include "utils/FontUtils.h"
+ #include "utils/LanguageTag.h"
+ #include "utils/StreamUtils.h"
+@@ -88,6 +89,35 @@ static const struct StereoModeConversionMap WmvToInternalStereoModeMap[] =
+ 
+ namespace
+ {
++std::optional<DolbyVisionLegacyPair> LegacyDoviLayers(const AVFormatContext* context)
++{
++  if (!context || !context->iformat || !context->iformat->name ||
++      std::string_view(context->iformat->name).find("matroska") == std::string_view::npos ||
++      !aml_dolby_vision_enabled())
++    return std::nullopt;
++  std::vector<DolbyVisionLegacyTrack> tracks;
++  tracks.reserve(context->nb_streams);
++  for (unsigned int i = 0; i < context->nb_streams; ++i)
++  {
++    const auto* stream = context->streams[i];
++    const auto* source = av_dict_get(stream->metadata, "SOURCE_ID", nullptr, 0);
++    if (!source)
++      source = av_dict_get(stream->metadata, "SOURCE_ID-eng", nullptr, 0);
++    const auto* codec = stream->codecpar;
++    tracks.push_back({codec->codec_type == AVMEDIA_TYPE_VIDEO && codec->codec_id == AV_CODEC_ID_HEVC,
++                      source && source->value ? source->value : "", codec->width, codec->height});
++  }
++  const auto layers = DolbyVisionLegacyLayers(tracks);
++  if (layers)
++  {
++    const auto* el = context->streams[layers->enhancement]->codecpar;
++    if (av_packet_side_data_get(el->coded_side_data, el->nb_coded_side_data,
++                               AV_PKT_DATA_DOVI_CONF))
++      return std::nullopt;
++  }
++  return layers;
++}
++
+ const std::vector<std::string> font_mimetypes = {"application/x-truetype-font",
+                                                  "application/vnd.ms-opentype",
+                                                  "application/x-font-ttf",
+@@ -2149,17 +2179,43 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+         st->colorTransferCharacteristic = pStream->codecpar->color_trc;
+         st->colorRange = pStream->codecpar->color_range;
+         st->hdr_type = DetermineHdrType(pStream);
++        const auto legacyLayers = LegacyDoviLayers(m_pFormatContext);
++        if (legacyLayers && legacyLayers->enhancement == static_cast<size_t>(streamIdx))
++        {
++          // Seed the EL too: AddStream may encounter either layer first.
++          st->dovi.dv_version_major = 1;
++          st->dovi.dv_version_minor = 0;
++          st->dovi.dv_profile = 7;
++          st->dovi.dv_level = 6;
++          st->dovi.rpu_present_flag = 1;
++          st->dovi.el_present_flag = 1;
++          st->dovi.bl_present_flag = 1;
++          st->dovi.dv_bl_signal_compatibility_id = 6;
++          CLog::Log(LOGINFO, "DVDDemuxFFmpeg::AddStream - legacy Matroska Dolby Vision "
++                    "EL {} paired with BL {} from Blu-ray SOURCE_ID tags", streamIdx, legacyLayers->base);
++        }
+ 
+         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
+         const AVPacketSideData* sideData = nullptr;
+ 
++        // Keep both tagged layers bound to each other even after the BL is
++        // promoted to DV, regardless of stream order or additional video tracks.
++        const auto matchesLegacyPartner = [&](int candidate)
++        {
++          if (candidate < 0 || static_cast<unsigned int>(candidate) >= m_pFormatContext->nb_streams)
++            return false;
++          return !legacyLayers || legacyLayers->AllowsPairing(streamIdx, candidate);
++        };
++
+         // check if it's dual video stream and one of it is type DV
+         auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-          [&st](const std::pair<int, CDemuxStream*>& v)
++          [&st, &matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+           {
+             if (v.second->type != StreamType::VIDEO)
+               return false;
+ 
++            if (!matchesLegacyPartner(v.first))
++              return false;
+             CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
+             return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
+                    (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
+@@ -2179,11 +2235,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+             {
+               // force dovi side data to base layer stream
+               auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-                [](const std::pair<int, CDemuxStream*>& v)
++                [&matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+                 {
+                   if (v.second->type != StreamType::VIDEO)
+                     return false;
+ 
++                  if (!matchesLegacyPartner(v.first))
++                    return false;
+                   return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
+                 });
+ 
+@@ -2233,9 +2291,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+           {
+             CDemuxStreamVideo *el_video_stream = nullptr;
+             auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-              [](const std::pair<int, CDemuxStream*>& v)
++              [&matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
+               {
+-                if (v.second->type != StreamType::VIDEO)
++                if (v.second->type != StreamType::VIDEO || !matchesLegacyPartner(v.first))
+                   return false;
+ 
+                 return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
+@@ -3268,7 +3326,10 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
+ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
+ {
+   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+-  bool convert_dual_stream((pStream->id == 0x1015) && aml_dolby_vision_enabled());
++  const auto legacyLayers = LegacyDoviLayers(m_pFormatContext);
++  const bool convert_dual_stream =
++      ((pStream->id == 0x1015) && aml_dolby_vision_enabled()) ||
++      (legacyLayers && legacyLayers->enhancement == static_cast<size_t>(pStream->index));
+ 
+   if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                               pStream->codecpar->nb_coded_side_data,
+diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
+index dea8e35..2a88e43 100644
+--- a/xbmc/utils/BitstreamConverter.cpp
++++ b/xbmc/utils/BitstreamConverter.cpp
+@@ -19,6 +19,8 @@
+ #include "HevcSei.h"
+ 
+ #include <algorithm>
++#include <utility>
++#include <vector>
+ 
+ extern "C"
+ {
+@@ -638,8 +640,9 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
+           {
+             uint32_t nal_buf_size = iSize;
+             AVIOContext *pb;
+-            uint32_t offset = 0, size_eos;
+-            uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
++            uint32_t offset = 0;
++            uint8_t *buf=NULL, *end, *start;
++            std::vector<std::pair<const uint8_t*, uint32_t>> endNals;
+ 
+             if (avio_open_dyn_buf(&pb) < 0)
+               return false;
+@@ -657,11 +660,11 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
+               size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+               buf += 4;
+               nal_type = (buf[0] >> 1) & 0x3f;
++              const uint32_t inputSize = size;
+ 
+-              if (nal_type == AVC_NAL_END_SEQUENCE)
++              if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
+               {
+-                buf_eos = buf;
+-                size_eos = size;
++                endNals.emplace_back(buf, size);
+               }
+               else if (nal_type == HEVC_NAL_UNSPEC62)
+               {
+@@ -693,12 +696,12 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
+                 CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: nal_type: {}, size: {}",
+                   nal_type, size);
+ 
+-              buf += size;
++              buf += inputSize;
+             }
+ 
+-            // append end of sequence if exist
+-            if (buf_eos)
+-              BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_eos, size_eos, AVC_NAL_END_SEQUENCE);
++            // A terminator flushes the picture: its RPU must already be present.
++            for (const auto& [data, size] : endNals)
++              BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, (data[0] >> 1) & 0x3f);
+ 
+             av_free(start);
+ 
+@@ -871,8 +874,10 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
+ 
+   if (pData_bl && pData_el)
+   {
+-    uint32_t offset = 0, size_eos;
+-    uint8_t *buf=NULL, *end, *start, *buf_eos=NULL;
++    uint32_t offset = 0;
++    uint8_t *buf=NULL, *end, *start;
++    std::vector<std::pair<const uint8_t*, uint32_t>> endNals;
++    std::vector<std::pair<const uint8_t*, uint32_t>> elEndNals;
+ 
+     uint32_t bl_frame_nal_buf_size = iSize_bl;
+     uint32_t el_frame_nal_buf_size = iSize_el;
+@@ -901,13 +906,10 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
+       buf += 4;
+       nal_type = (buf[0] >> 1) & 0x3f;
+ 
+-      if (nal_type != AVC_NAL_END_SEQUENCE)
+-        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
++      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
++        endNals.emplace_back(buf, size);
+       else
+-      {
+-        buf_eos = buf;
+-        size_eos = size;
+-      }
++        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
+       CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
+         nal_type, size);
+ 
+@@ -926,8 +928,11 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
+       size = std::min<uint32_t>(AV_RB32(buf), end - buf - 4);
+       buf += 4;
+       nal_type = (buf[0] >> 1) & 0x3f;
++      const uint32_t inputSize = size;
+ 
+-      if (nal_type == HEVC_NAL_UNSPEC62)
++      if (nal_type == HEVC_NAL_EOS_NUT || nal_type == HEVC_NAL_EOB_NUT)
++        elEndNals.emplace_back(buf, size);
++      else if (nal_type == HEVC_NAL_UNSPEC62)
+       {
+         const uint8_t *nalu_62_data = buf;
+ #ifdef HAVE_LIBDOVI
+@@ -956,12 +961,15 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
+         CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: EL nal_type: {}, size: {}",
+           nal_type, size);
+ 
+-      buf += size;
++      buf += inputSize;
+     }
+ 
+-    // append end of sequence if exist
+-    if (buf_eos)
+-      BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf_eos, size_eos, AVC_NAL_END_SEQUENCE);
++    // Complete both layers and the RPU before either decoder sees a terminator.
++    if (!m_convert_dovi)
++      for (const auto& [data, size] : elEndNals)
++        BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, HEVC_NAL_UNSPEC63);
++    for (const auto& [data, size] : endNals)
++      BitstreamAllocAndCopy(&m_convertBuffer, &offset, data, size, (data[0] >> 1) & 0x3f);
+ 
+     if (!m_convert_bitstream)
+       av_free(start);
+diff --git a/xbmc/utils/DolbyVisionLegacy.h b/xbmc/utils/DolbyVisionLegacy.h
+new file mode 100644
+index 0000000..455d625
+--- /dev/null
++++ b/xbmc/utils/DolbyVisionLegacy.h
+@@ -0,0 +1,70 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <optional>
++#include <string_view>
++#include <vector>
++
++struct DolbyVisionLegacyTrack
++{
++  bool hevc;
++  std::string_view sourceId;
++  int width;
++  int height;
++};
++
++struct DolbyVisionLegacyPair
++{
++  size_t base;
++  size_t enhancement;
++
++  // Neither member may be reassigned after AddStream promotes the BL to DV.
++  // Unrelated tracks retain the normal container-signalled pairing rules.
++  bool AllowsPairing(size_t first, size_t second) const
++  {
++    if (first == base || second == enhancement)
++      return first == base && second == enhancement;
++    if (first == enhancement || second == base)
++      return first == enhancement && second == base;
++    return true;
++  }
++};
++
++// Older mkvmerge versions retain Blu-ray PIDs in SOURCE_ID but do not write a
++// Dolby Vision configuration record. Accept only a unique tagged UHD BL/EL pair;
++// two video tracks, a title containing "DV", or a 1080p track alone prove nothing.
++inline std::optional<DolbyVisionLegacyPair> DolbyVisionLegacyLayers(
++    const std::vector<DolbyVisionLegacyTrack>& tracks)
++{
++  std::optional<size_t> base;
++  std::optional<size_t> enhancement;
++  for (size_t i = 0; i < tracks.size(); ++i)
++  {
++    const auto& track = tracks[i];
++    if (!track.hevc)
++      continue;
++    if (track.sourceId == "001015")
++    {
++      if (enhancement)
++        return std::nullopt;
++      enhancement = i;
++    }
++    if (track.sourceId == "001011")
++    {
++      if (base || track.width != 3840 || track.height != 2160)
++        return std::nullopt;
++      base = i;
++    }
++  }
++  if (!base || !enhancement)
++    return std::nullopt;
++  const auto& el = tracks[*enhancement];
++  if (!((el.width == 1920 && el.height == 1080) ||
++        (el.width == 3840 && el.height == 2160)))
++    return std::nullopt;
++  return DolbyVisionLegacyPair{*base, *enhancement};
++}

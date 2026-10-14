@@ -96,6 +96,14 @@ check_patches() {
          bad=1; continue ;;
     esac
 
+    # Ours are read, reviewed and applied at zero fuzz as text. A git binary
+    # delta is none of these: it applies only to the exact file it was made
+    # from, and goes around the fuzz check entirely.
+    if grep -qx 'GIT binary patch' "$f"; then
+      echo "yacer: $rel is a git binary patch - write it as a text diff" >&2
+      bad=1; continue
+    fi
+
     if ! grep -qxF "$pkg" <<<"$packages"; then
       echo "yacer: $rel - no package named '$pkg' in this tree, so nothing would" >&2
       echo "       ever look for that patch. Check the spelling." >&2

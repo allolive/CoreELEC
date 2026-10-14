@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 12:00:00 -0400
+Subject: [PATCH] DemuxDualLayer: cap the packets waiting for the other layer
+
+CDemuxDualLayer pairs a Dolby Vision dual-track file's base and
+enhancement layer packets by timestamp, and holds a packet until its
+partner arrives. Nothing limits that wait: when one layer stops finding
+its partner - an enhancement track that ends before the base, or two
+layers whose timestamps never meet exactly - every packet of the other
+is held to the end of the file. The picture freezes while the audio
+plays on, and the held packets grow at the base layer's bitrate, some
+7 MB/s for a UHD remux, until playback ends or the box runs out of
+memory.
+
+Hold at most 48 packets of a layer - two seconds of 24 fps video, less
+at higher rates, as the codec-side cap this replaces had it: a partner
+later than that is not coming. Past it, the oldest waiting packet is
+dropped, with a warning once for each such gap. This only stops the
+memory growing: the base layer cannot be decoded alone, so the picture
+still waits for the other layer to return, and pairs again as before
+when it does.
+
+The file is CoreELEC's own, added with the pairing; it sits in
+DVDDemuxers rather than with the Amlogic code because the demuxer is
+where the layers are paired. The patch replaces the earlier
+DVDVideoCodecAmlogic pairing patch, whose list had the same cap.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.cpp
+index d83f982..75c28c0 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.cpp
+@@ -22,11 +22,15 @@ extern "C"
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <utility>
+ 
+ namespace
+ {
+ // not a demuxer stream id and not a DMX_SPECIALID value; CDVDDemuxFFmpeg::Read() drops holds
+ constexpr int HOLD_STREAM_ID = -1000;
++// how many packets of one layer may wait for their partner (two seconds of 24 fps video); a
++// partner later than that is not coming
++constexpr size_t MAX_UNMATCHED = 48;
+ 
+ bool HasEnhancementLayer(const std::map<int, CDemuxStream*>& streams)
+ {
+@@ -108,6 +112,18 @@ DemuxPacket* CDemuxDualLayer::AddPacket(DemuxPacket* packet,
+       { return av_compare_ts(entry.key, entry.timeBase, key, timeBase) == 0; });
+   if (match == other.end())
+   {
++    if (own.size() == MAX_UNMATCHED)
++    {
++      if (!std::exchange(m_warnedUnmatched, true))
++        CLog::Log(LOGWARNING,
++                  "CDemuxDualLayer::AddPacket: {} {} packets wait for the other layer; dropping "
++                  "the oldest until it returns",
++                  MAX_UNMATCHED, isEL ? "EL" : "BL");
++      if (isEL)
++        DropEnhancementLayer(1);
++      else
++        DropBaseLayer(1);
++    }
+     own.push_back({packet, key, timeBase});
+     return Hold();
+   }
+@@ -150,6 +166,7 @@ DemuxPacket* CDemuxDualLayer::AddPacket(DemuxPacket* packet,
+     return Hold();
+   }
+   base->elSize = enhancement->iSize;
++  m_warnedUnmatched = false;
+   CLog::Log(LOGDEBUG, LOGVIDEO,
+             "CDemuxDualLayer::AddPacket: paired key {:.3f}, BL size {}, EL size {}",
+             Seconds(key, timeBase), base->iSize, base->elSize);
+@@ -177,6 +194,7 @@ void CDemuxDualLayer::DropEnhancementLayer(size_t count)
+ 
+ void CDemuxDualLayer::Flush()
+ {
++  m_warnedUnmatched = false;
+   for (const Entry& entry : m_baseLayer)
+     CDVDDemuxUtils::FreeDemuxPacket(entry.packet);
+   m_baseLayer.clear();
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.h
+index b820a98..eac7067 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxDualLayer.h
+@@ -55,4 +55,5 @@ private:
+ 
+   std::deque<Entry> m_baseLayer;
+   std::deque<Entry> m_enhancementLayer;
++  bool m_warnedUnmatched{false};
+ };

@@ -5,7 +5,7 @@
 
 namespace
 {
-TEST(DolbyVisionLegacy, RecognizesTheTaggedBirdsOfPreyPairInEitherOrder)
+TEST(DolbyVisionLegacy, RecognizesATaggedUhdBaseAndHalfResolutionEnhancementInEitherOrder)
 {
   const DolbyVisionLegacyTrack bl{true, "001011", 3840, 2160};
   const DolbyVisionLegacyTrack el{true, "001015", 1920, 1080};

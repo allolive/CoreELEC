@@ -25,135 +25,434 @@ a live stream (upstream); the resume exception applies on top of that.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index 1237f29b4ac29f7ac12cf762c80aa20be6fa624b..d4b6247174e7fe263baa844c89eb681bfd8e6ecb 100644
-GIT binary patch
-delta 32
-qcmV+*0N?+(b=-Hb4K9-o9q^O085ol<F0+%69Tb!Q3@EeUF4zm}Z4L4O
-
-delta 30
-mcmcapzN2&luioSxvOJTwN{USu)!)omJ6TXdYO|ujZf*d;(F*?n
-
+index 1237f29..d4b6247 100644
+--- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
++++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+@@ -416,12 +416,21 @@ void CAudioSinkAE::DiscardSyncErrorWindow()
+ {
+   std::unique_lock lock(m_critSection);
+   m_syncError = 0.0;
++  m_syncErrorRaw = 0.0;
++  m_syncErrorRawValid = false;
++  m_syncErrorScale = 1.0;
++  m_syncErrorSaturated = false;
++  m_syncErrorAcquire = false;
++  m_syncWasInSync = false;
+   m_syncErrorTime = 0;
++  m_syncObservation = {};
++  m_acceptedSyncObservation = {};
+   if (m_pAudioStream)
+   {
+     const CAESyncInfo info = m_pAudioStream->GetSyncInfo();
+     // Do not consume a preparation window as a new post-release correction.
+     m_syncErrorTime = info.errortime;
++    m_syncWasInSync = info.state == CAESyncInfo::SYNC_INSYNC;
+   }
+ }
+ 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index f7cd8469cdf81c392a2ace01633f0415f261a565..4338cb56d65e7689344ef18514e8d694b2b0e3a3 100644
-GIT binary patch
-delta 647
-zcmZ`%!AcxK5TzkOk)Wpt-YTb^#oZB9JSZVVUA?G@(RdT-ovGPvwzqrf>2Y@xWc>m`
-zB+S`^kVB4vIeAcjBbPwPP4N?~o)JB$bDMgvUcIW<Cr86)C&P!o+5c8LxMXE7GQ5rJ
-ziN#)dVFc)#oNVvq#Z^>jxD{GCApO^3Rd$e#N_PBa;`>X~^zTphHvQFO6NAMhiqL>i
-zp$IUBfGemY7))Xeq234Ebbm2g2r<wh8XvaM2rk7pp&GEc_;m%k!ZvBt)YLt*V{jjp
-zje*3p45@0lP^4#&W}ylYBBR@`K1hsmIvf;ssY+}5u+3Yj3PG)8AGGUmMmkzb^07}=
-zLB!C|3g-#n7P?%}yhxjZ=Nv1GrW8YLu~R9;x=j%@q0Re1WRwwYTFN_}gQAyIr4Cwj
-z5BP!-d5kN$r*!NG13&k-M!0u>{l`e22_!r3vFlgkP^{(J{6sl*k3vj0ciD9I=YZWV
-z`H4_=W_r)M6tGu;y4JL&(VYr7Xl|CE#zW5Ohf`Mi{KSBWz<VUYyZ7+qh4@nQ&?}eo
-kXF<oO+e5Xswf%9ewvgRiuyHn2t!;c-uI*&6uh{7F9V(dMC;$Ke
-
-delta 106
-zcmV-w0G0oxlL(WJ2!ON!=4+QZYym5mWPJf1w}xy1a100_AaZ4Nb#iW(v3~&*11&Kr
-zx3GEv?F6^8e*q#yB4clEb95keX>N2gGGBBcX>Md?cq|}dZ*OcMWO8qCDGGbHdc*-1
-M0Rb?#m&E}NME>_BJpcdz
-
+index f7cd846..4338cb5 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2774,7 +2774,11 @@ void CAMLCodec::CloseDecoder()
+   if (dv_enabled && dolby_vision_policy == AMDV_FORCE_OUTPUT_MODE)
+     AmlDisplay->aml_set_drmProperty("dv_mode", DRM_MODE_OBJECT_CRTC, AMDV_OUTPUT_MODE_BYPASS);
+ 
+-  m_dll->codec_close(&am_private->vcodec);
++  {
++    std::lock_guard<std::mutex> lock(m_frameMutex);
++    ++m_frameGeneration;
++    m_dll->codec_close(&am_private->vcodec);
++  }
+   dumpfile_close(am_private);
+   m_opened = false;
+   m_trimWasPassthrough = false;
+@@ -2863,10 +2867,20 @@ void CAMLCodec::Reset()
+   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
+ 
+   if (!m_opened)
++  {
++    ++m_frameGeneration;
+     return;
++  }
+ 
+   SetPollDevice(-1);
+ 
++  // Buffer indices can be reused by the reset decoder. Serializing QBUF with
++  // reset prevents an old retained reference from returning a new frame. Taken
++  // only once the poll device is gone: that waits for the presenter's step,
++  // which may itself be waiting for this lock in ReleaseFrame.
++  std::unique_lock<std::mutex> frameLock(m_frameMutex);
++  ++m_frameGeneration;
++
+   // set the system blackout_policy to leave the last frame showing
+   int blackout_policy = 0;
+   CSysfsPath video_blackout_policy{"/sys/class/video/blackout_policy"};
+@@ -2907,6 +2921,7 @@ void CAMLCodec::Reset()
+   m_buffer_level_ready = false;
+ 
+   SetSpeed(m_speed);
++  frameLock.unlock();
+ 
+   SetPollDevice(am_private->vcodec.cntl_handle);
+ }
+@@ -3423,8 +3438,11 @@ void CAMLCodec::GenlockTick(uint64_t omxPts)
+   m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+ }
+ 
+-int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
++int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+ {
++  std::lock_guard<std::mutex> lock(m_frameMutex);
++  if (generation != m_frameGeneration.load())
++    return -ESTALE;
+   int ret;
+   v4l2_buffer vbuf = v4l2_buffer();
+   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+@@ -3437,7 +3455,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+   }
+ 
+   if (!amlVideoFile)
+-    return 0;
++    return -ENODEV;
+ 
+   if (drop)
+     vbuf.flags |= V4L2_BUF_FLAG_DONE;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index ba6b37d59d27b9b0d1083f2012b8a04bc3f098b2..16afe2cb708aaa03645bfa015e928db53fb16425 100644
-GIT binary patch
-delta 186
-zcmZ2ueA;BgF3!mZI7RJJit-C|6iPGmO3X~+OBB*m^HPfvOEUBGG_AQ55aJ3T;GSCI
-zR+N~V>JC>lIe|k&G7VKsFDE}SMMKkCp?32V&S%{23JS#~DOOgwr6s8q3c2xM)xIDO
-f$O5obVo82(X0i>;5q2<D2z#mxYd4<|eZmX?10q85
-
-delta 60
-zcmX?Yvc`DBE>5lF{Ji24h0@Ht5@VzI5{1mXl++3xg{1ua9EBv8qWl5{TZOd5oZ?hX
-Q>&;eN&$u^dialZm0I}N@?EnA(
-
+index ba6b37d..16afe2c 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -87,7 +87,8 @@ public:
+   static float  OMXPtsToSeconds(int omxpts);
+   static int    OMXDurationToNs(int duration);
+   int           GetAmlDuration() const;
+-  int           ReleaseFrame(const uint32_t index, bool bDrop = false);
++  int           ReleaseFrame(uint32_t index, bool drop, uint64_t generation);
++  uint64_t      GetFrameGeneration() const { return m_frameGeneration.load(); }
+   bool          IsOpen() const { return m_opened; }
+   bool          IsRealtimeStream() const { return m_processInfo.IsRealtimeStream(); }
+   void          LatencyTick(uint64_t omxPts);
+@@ -157,6 +158,8 @@ private:
+   uint64_t         m_cur_pts;
+   uint64_t         m_last_pts;
+   uint32_t         m_bufferIndex;
++  std::mutex m_frameMutex;
++  std::atomic<uint64_t> m_frameGeneration{1};
+ 
+   CRect            m_dst_rect;
+   CRect            m_display_rect;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 7a73f311a5a0f0a8e2084cb032c996704af751c7..ac40659f892c543caff066e1e937e4bebc254e64 100644
-GIT binary patch
-delta 88
-zcmZp<#rX3U;|5mt$%^5slN&;KCvRjE<4-F}%uRJq%}XsxEXmBzn=HsGI(a{vz-BG>
-hZ4nAO3c2yl`6;Q%x_0iVC2punH8eFhKZ;l41ptocA7=mn
-
-delta 30
-mcmex)i?QVv;|5mt$%3q+llQX;Y;I)V7Qv)xy*WHVi5CF0dJ0|u
-
+index 7a73f31..ac40659 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -61,7 +61,8 @@ void CAMLVideoBufferPool::Return(int id)
+   std::unique_lock<CCriticalSection> lock(m_criticalSection);
+   if (m_videoBuffers[id]->m_amlCodec)
+   {
+-    m_videoBuffers[id]->m_amlCodec->ReleaseFrame(m_videoBuffers[id]->m_bufferIndex, true);
++    m_videoBuffers[id]->m_amlCodec->ReleaseFrame(m_videoBuffers[id]->m_bufferIndex, true,
++                                                m_videoBuffers[id]->m_frameGeneration);
+     m_videoBuffers[id]->m_amlCodec = nullptr;
+   }
+   m_freeBuffers.push_back(id);
+@@ -695,7 +696,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
+     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
+      m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex(), m_metadataToken,
+-     m_frameMeta);;
++     m_frameMeta, m_Codec->GetFrameGeneration());
+   }
+ 
+   // check for mpeg2 aspect ratio changes
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index fc4750dcf5f05431eccc909c644b4e141779997e..796935b7617cab6b434af470bd0032f22cef5f26 100644
-GIT binary patch
-delta 124
-zcmeB>c_Xu-o>@vqp)@nE#LOhVL?NvxF*nscH7~U&u_QA;Z*o2J9aRN|+;}u`1zQZ2
-d;Vjpc6c7esXsI@+wdSgw9Ka;8*`4(u2LK-7EgS#<
-
-delta 20
-ccmaDO(;>5=o_X?2<~x(;v0UCfiS-r-0ARKW9smFU
-
+index fc4750d..796935b 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -31,7 +31,7 @@ class CAMLVideoBuffer : public CVideoBuffer
+ public:
+   CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
+   void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, uint64_t omxPts, int amlDuration, uint32_t bufferIndex,
+-           uint32_t metadataToken, AMLFrameMetadataPtr metadata)
++           uint32_t metadataToken, AMLFrameMetadataPtr metadata, uint64_t frameGeneration)
+   {
+     m_codec = codec;
+     m_amlCodec = amlcodec;
+@@ -40,6 +40,7 @@ public:
+     m_bufferIndex = bufferIndex;
+     m_metadataToken = metadataToken;
+     m_metadata = std::move(metadata);
++    m_frameGeneration = frameGeneration;
+   }
+ 
+   CDVDVideoCodecAmlogic* m_codec;
+@@ -49,6 +50,7 @@ public:
+   uint32_t m_bufferIndex;
+   uint32_t m_metadataToken{0};
+   AMLFrameMetadataPtr m_metadata;
++  uint64_t m_frameGeneration{0};
+ };
+ 
+ class CAMLVideoBufferPool : public IVideoBufferPool
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 572fa9ce06f38d2793a3464d0c8d1f389a370dc3..a5b71bb02d78f222737ffad4e6939ed6530b19f5 100644
-GIT binary patch
-delta 106
-zcmV-w0G0puvjWex0<bb27$6{RUtwc$b!l>CQ)zBvWgtBuFfK4V3X_&*9+NR|7zBHL
-zI|`F8dmsXPeUo7%8k0Xm9J4YVF+%|%lW$QLlaOK_lU8yglh9%aldNE7lVlwelfQok
-MlaLS_voB%DIGau+_y7O^
-
-delta 35
-tcmV+;0Nnr2wF39E0<bb2lVT+sv-ceqLz575L6c=+Zj(rm6SMtc(l`*P4?X|@
-
+index 572fa9c..a5b71bb 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -239,6 +239,11 @@ void CVideoPlayerAudio::ResetPrerollCorrections()
+ {
+   m_audioSink.DiscardSyncErrorWindow();
+   m_audioSink.SetSyncErrorSuppressed(m_preroll.Active());
++  m_acquireSince = 0.0;
++  m_rawAcquisition.Reset();
++  m_lastSyncObservation = {};
++  m_lastCorrectionObservation = {};
++  m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
+ }
+ 
+ void CVideoPlayerAudio::AbortPreroll()
+@@ -732,11 +737,11 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+   // figure the correction above declines to use.
+   m_processInfo.SetAudioPassthrough(m_audioSink.IsPassthrough());
+   m_processInfo.SetAudioSyncError(
+-      (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
++      (!m_preroll.Active() && m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
+           ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()
+           : DVD_NOPTS_VALUE);
+ 
+-  if (m_synctype == SYNC_DISCON)
++  if (!m_preroll.Active() && m_synctype == SYNC_DISCON)
+   {
+     double syncerror = m_audioSink.GetSyncError();
+ 
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index ec0824b0df1beb798c27016cd40caa2c4f56f021..a84ee4cc24166cfca1d3aed34cc1c9c900505f9b 100644
-GIT binary patch
-delta 2399
-zcmcIlJ#Q015EW7YVQ2^uB8fp`Azf^65|9Fo2||e!K!6}5p#UMXw)c{i_I9n^J;J9<
-zg+u|()^s#fAi1ER;xACr(LqlSvv=q7*|{hnz;bmvyEF6Nn>X)n{|MfH935|j{!Cj@
-zB{{!H1y#f_DPSH>bw7;0-ZfbT5^y$sKB)VO1hgMgsoDC`@va>EzT18tJ5*kv>rC8Y
-zEh=xsua!e4%-OlRf%Wv=O5w5nRGsR?5!XUPA5>}u0Omuv6x17wQuu5=RI~+8o@DO9
-zxp@fcTgt59RRBdzs08?gYw8}$3B-Q-MbrwNOwc9CTX<|#ICy!9DQ)mz>$6LQaV#+J
-zXeDd}%$UK`q`o-A(?X#k?bW>p?fjv=$NvVeenU{oMaMyipeCqAed3q&L)^v=5XR_C
-z=b@0`(*v&GrG0gHys}6{lk)%CU$*oC-V;i5nA?WaDb7<;d;O$1WjM7j4j=2RP?K$I
-zX>cscD0*O`MITfle*hwd;?((6={r&6-P{4}^II!Ks*xNPZ&LemWdG^QdZ2_zkh${)
-zO)0dAr|!z|)FqVl6Ty7GkUVc#Hul-bk-5PtQk-@yWaXa}lIDxxu?Jw%>WNy%gO-wQ
-zG#bQtb{1AQm<Ift4GKOJgjYdGF^#P&(ln&ODJ(CnEkQ$uqD9oh8HkK*wi)RcG*ygn
-z_K3!>k#)ilPhh471dRuI#$Kj1<+SOh-d7%)BoHnIby<Zp(55P2T02)Y5_IGcGr2Ap
-zah0bU^cpnB9VFB9(Nws}#AD^|SI*FkesK!C>)!Ck^y<abv7L#epA*ZdWG4?q$a&kS
-zTETvpcvFjeXh;;R@1`wT2H3%t{8>@CP`ftyqUiEvFUF}HnE>|Z39sYWZ6nkOCjrjx
-zQ_x0H65t2^5Vw_RB@H9_g5IYJHaDn1#(FAfvnK8fBnkP`A+oheG@wbgiCa5TB-dRY
-zth$sf20YImD3<obA@<(U345V9F&g*m2H(BNackJgu`^Mn)#No-{-6D}UAxJPZe=Fv
-z9Gx*v05MW7)maxY1bQ#Zoe!~!y++pOwz`#L`#WjniA|(DyUPGiGj(J!>ZRxx(oZyO
-zzwt}yc{<UqmSVDyhjW!2G2Ji4g^{^PWeHEI*)NAQq>(A36-PGg+N#E`fFk`mRqQU8
-ozU^BZR1fMVmJ7Cp%F!EgQ=@|mPBr?+Z;QvSo?Pv|J^6gsFT1%U0ssI2
-
-delta 247
-zcmey8yFO~eZlTRLgk~}_X<AP<5Ru%xROBV=<XTPX$>s{yTv`e#MfnAqT-98Y*9(hJ
-zR#EDi{86b{Pm@al2&%!Pf<khBUU7*+Qht68ShZVGVs5H}EmRVyZnCM0;^c?w!jsEX
-zq|`Fg6f_`af{XwGEf8117NOUgi)(Vfh}dLL5fy}>rZv<+kO7JyEns^#d#gFIOkSiV
-xwt1fxJC}4$W?8C2aY<2XVy;4BUW!6qYFTQLLUBfZdGTZ^(-20r&3UG6i~thgOdbFL
-
+index ec0824b..a84ee4c 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -161,6 +161,7 @@ void CRendererAML::AddVideoPicture(const VideoPicture &picture, int index)
+   ReleaseBuffer(index);
+ 
+   BUFFER &buf(m_buffers[index]);
++  buf.prerollGeneration = 0;
+   if (picture.videoBuffer)
+   {
+     buf.videoBuffer = picture.videoBuffer;
+@@ -178,7 +179,7 @@ void CRendererAML::ReleaseBuffer(int idx)
+     {
+       if (amli->m_amlCodec)
+       {
+-        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, true);
++        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, true, amli->m_frameGeneration);
+         amli->m_amlCodec = nullptr; // Released
+       }
+       amli->Release();
+@@ -245,22 +246,94 @@ bool CRendererAML::Flush(bool saveBuffers)
+   return saveBuffers;
+ };
+ 
+-std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect, bool* drop)
++bool CRendererAML::BeginVideoPreroll(uint64_t generation)
+ {
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  if (!m_bConfigured || generation <= m_prerollGeneration)
++    return false;
++  m_prerollGeneration = generation;
++  m_prerollHold = true;
++  m_prerollFirst = false;
++  m_prerollFailed = false;
++  m_prerollSubmitted = false;
++  return true;
++}
++
++bool CRendererAML::ReleaseVideoPreroll(uint64_t generation)
++{
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  if (generation != m_prerollGeneration || !m_prerollHold || m_prerollFailed)
++    return false;
++  m_prerollHold = false;
++  m_prerollFirst = true;
++  return true;
++}
++
++void CRendererAML::CancelVideoPreroll(uint64_t generation)
++{
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  if (generation != m_prerollGeneration)
++    return;
++  m_prerollHold = false;
++  m_prerollFirst = false;
++  m_prerollFailed = true;
++  m_prerollSubmitted = false;
++}
++
++void CRendererAML::SetVideoPrerollFrameGeneration(int index, uint64_t generation)
++{
++  m_buffers[index].prerollGeneration = generation;
++}
++
++bool CRendererAML::IsVideoPrerollFailed(uint64_t generation) const
++{
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  return generation == m_prerollGeneration && m_prerollFailed;
++}
++
++bool CRendererAML::IsVideoPrerollSubmitted(uint64_t generation) const
++{
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  return generation == m_prerollGeneration && m_prerollSubmitted;
++}
++
++std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect, bool& drop)
++{
++  // This is the final, non-retractable QBUF boundary. Begin/cancel serialize
++  // against it; a renderer-selected frame alone is not permission to submit.
++  std::lock_guard<std::mutex> lock(m_prerollMutex);
++  const uint64_t generation = m_buffers[index].prerollGeneration;
++  if (m_prerollHold ||
++      (generation != 0 && (generation != m_prerollGeneration || m_prerollFailed)))
++    return nullptr;
++
+   CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
+   if(amli && amli->m_amlCodec)
+   {
+     uint64_t pts = amli->m_omxPts;
++    const bool firstPreroll = generation != 0 && m_prerollFirst;
+     // a new decoder can start at the pts the previous one ended on
+-    if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec)
++    if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec || firstPreroll)
+     {
+-      const bool dropFrame =
+-          m_prevVPts == DVD_NOPTS_VALUE && amli->m_amlCodec->IsRealtimeStream();
+-      if (drop)
+-        *drop = dropFrame;
+-
+-      amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, dropFrame);
+-      if (!dropFrame)
++      // the first frame after a reset is dropped on a live stream only, and
++      // never when it is the picture a resume was prepared on
++      drop = !firstPreroll && m_prevVPts == DVD_NOPTS_VALUE &&
++             amli->m_amlCodec->IsRealtimeStream();
++      const int result = amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, drop,
++                                                        amli->m_frameGeneration);
++      if (result != 0)
++      {
++        if (generation != 0)
++          m_prerollFailed = true;
++        amli->m_amlCodec = nullptr;
++        return nullptr;
++      }
++      if (firstPreroll)
++      {
++        m_prerollFirst = false;
++        m_prerollSubmitted = true;
++      }
++      if (!drop)
+       {
+         m_releasedToken = amli->m_metadataToken;
+         m_releasedMeta = amli->m_metadata;
+@@ -297,7 +370,8 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+   }
+ 
+   ObserveRefresh();
+-  QueueFrame(index, true);
++  bool drop = false;
++  QueueFrame(index, true, drop);
+   PublishReleasedFrame();
+   CAMLCodec::PollFrame();
+ }
+@@ -381,9 +455,10 @@ void CRendererAML::WakeVsyncPresent()
+ 
+ bool CRendererAML::PresentFrame(int index)
+ {
+-  // the first frame after a reset is queued as a drop on live stream and never shows
++  // the first frame after a reset is queued as a drop on a live stream and never
++  // shows, unless it is the picture a resume was prepared on
+   bool drop = false;
+-  std::shared_ptr<CAMLCodec> codec = QueueFrame(index, false, &drop);
++  std::shared_ptr<CAMLCodec> codec = QueueFrame(index, false, drop);
+   if (!codec)
+     return false;
+ 
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 70349075cbf8b2f980c38db79eb90a545451f3ff..69b8aa3fb58233aae48067582eb48d46aa7def82 100644
-GIT binary patch
-delta 643
-zcmeAadnUDkgSB2kAt^sUN5LsIJu@#XGbJ@YpeVH{KPN|{G&8Tn%p|@<Aw4xOwJ5P9
-zGe1vLA-^oOs0gUanhUBgC^aWFu{f19on`r%DGJVsdC93c^<?M_PAx&!<yMrKo9YgC
-zqz2I43YmE+sTDd3g#Azt^1Np;ig}5dIjJew{hyqlS6qS_3aADImnP+AmXr`>#%5O5
-zLMApfg_NTFg2`>{7iHm2E`Y=X!eiA2wVMMuwlV>uEVr~IF)1fip|~W)$_mIytx(8~
-zhidQzaY69|Hwi9<Vir6K;nE)YIVsg?i8;lowV0A_nMK7VU|A2W(%?YDsT&?7a1}r+
-E03599r2qf`
-
-delta 42
-ycmaDR)hV`tgLQKUTON~umO@HVeu09mLSAW3PC-f0<Ubr2H-F$<&%|77%>@8Fjt?~e
-
+index 7034907..69b8aa3 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+@@ -38,6 +38,12 @@ public:
+   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
+   virtual bool SupportsMultiPassRendering()override { return false; };
+   virtual bool Flush(bool saveBuffers) override;
++  bool BeginVideoPreroll(uint64_t generation) override;
++  bool ReleaseVideoPreroll(uint64_t generation) override;
++  void CancelVideoPreroll(uint64_t generation) override;
++  void SetVideoPrerollFrameGeneration(int index, uint64_t generation) override;
++  bool IsVideoPrerollFailed(uint64_t generation) const override;
++  bool IsVideoPrerollSubmitted(uint64_t generation) const override;
+ 
+   // Player functions
+   virtual bool IsGuiLayer() override { return false; };
+@@ -54,7 +60,7 @@ public:
+ 
+ private:
+   void Reset();
+-  std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect, bool* drop = nullptr);
++  std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect, bool& drop);
+   void PublishReleasedFrame();
+   void ObserveRefresh();
+ 
+@@ -64,6 +70,7 @@ private:
+   {
+     BUFFER() : videoBuffer(nullptr) {};
+     CVideoBuffer *videoBuffer;
++    uint64_t prerollGeneration{0};
+     int duration;
+   } m_buffers[m_numRenderBuffers];
+ 
+@@ -81,4 +88,10 @@ private:
+   //! Frame last released to amvideo, whose metadata goes out when the frame is shown
+   uint32_t m_releasedToken{0};
+   std::shared_ptr<const AMLFrameMetadata> m_releasedMeta;
++  mutable std::mutex m_prerollMutex;
++  uint64_t m_prerollGeneration{0};
++  bool m_prerollHold{false};
++  bool m_prerollFirst{false};
++  bool m_prerollFailed{false};
++  bool m_prerollSubmitted{false};
+ };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index abd3020b55d68ff502e0d70e501ecf5b0513153b..2290a56ba77231200a5d834ec9dc02ff682747b8 100644
-GIT binary patch
-delta 86
-zcmX^0km>#-rVTYbg1PZ2nZ*S;iIqXA#i=C<H8q>7d3v~cU62GdCNFH!5m!(^Q);VF
-UQdF8c*+5KUl8E$Xc8S9?0N7?Ak^lez
-
-delta 19
-bcmccri0RZrrVTYboBMdWxi`;|I6MOYVwDL_
-
+index abd3020..2290a56 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -122,7 +122,7 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
+   std::unique_lock lock2(m_presentlock);
+   if (!m_pRenderer || m_renderState != STATE_CONFIGURED || m_presentsource < 0 ||
+       !m_bRenderGUI || !g_application.GetRenderGUI() || m_bTriggerUpdateResolution ||
+-      generation == 0 ||
++      m_displayReset || generation == 0 ||
+       generation <= m_videoPreroll.Read().generation ||
+       (target != DVD_NOPTS_VALUE && !std::isfinite(target)))
+     return false;
+@@ -215,6 +215,13 @@ bool CRenderManager::RetainVideoPrerollPicture(uint64_t generation, double pts)
+   return m_videoPreroll.Retain(generation, pts);
+ }
+ 
++void CRenderManager::DisplayReset()
++{
++  std::unique_lock lock(m_presentlock);
++  m_displayReset = true;
++  m_videoPreroll.Fail();
++}
++
+ void CRenderManager::SetDelay(int delay)
+ {
+   std::unique_lock lock(m_presentlock);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-index 446d4dae2758d9b1e89793ff0254f19503dec206..4ea46d95886f50a71592998c1c91dd6f8b9d8b5a 100644
-GIT binary patch
-delta 14
-VcmeD4_~O1{GB2a`=5@RYVgN4(1%dzo
-
-delta 40
-vcmez3-siDlGOx5kwL)%uN@j6EPGV(HYH@0bf~`VHQE95RLha@$ya{3eK&uYi
-
+index 446d4da..4ea46d9 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+@@ -113,7 +113,7 @@ public:
+   bool Supports(ESCALINGMETHOD method) const;
+ 
+   int GetSkippedFrames()  { return m_QueueSkip; }
+-  void DisplayReset() { m_displayReset = true; }
++  void DisplayReset();
+ 
+   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
+   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop,
