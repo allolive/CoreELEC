@@ -17,1351 +17,459 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 244b183542..3662490220 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -8,6 +8,8 @@
- 
- 
- #include "AMLCodec.h"
-+
-+#include "AMLLatency.h"
- #include "DynamicDll.h"
- 
- #include "cores/VideoPlayer/Interface/TimingConstants.h"
-@@ -2637,6 +2639,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
-   CSysfsPath("/sys/class/video/freerun_mode", 1);
- 
-   m_opened = true;
-+
-   // vcodec is open, update speed if it was
-   // changed before VideoPlayer called OpenDecoder.
-   SetSpeed(m_speed);
-@@ -2769,6 +2772,11 @@ void CAMLCodec::CloseDecoder()
-   dumpfile_close(am_private);
-   m_opened = false;
- 
-+  // After m_opened, so a frame still queued in the renderer cannot tick this
-+  // back to life: the measured path belongs to this decoder, and whatever plays
-+  // next may not use this renderer at all.
-+  CAMLLatency::GetInstance().Forget();
-+
-   am_packet_release(&am_private->am_pkt);
-   am_private->extradata = {};
-   free(am_private->hdr_buf.data);
-@@ -2837,6 +2845,8 @@ void CAMLCodec::CloseAmlVideo()
- 
- void CAMLCodec::Reset()
- {
-+  CAMLLatency::GetInstance().Restart();
-+
-   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
- 
-   if (!m_opened)
-@@ -3247,6 +3257,28 @@ bool CAMLCodec::WaitPresentStep(uint64_t& seen, int fenceFd)
-   return true;
- }
- 
-+void CAMLCodec::LatencyTick(uint64_t omxPts)
-+{
-+  CDVDClock* clock = m_hints.pClock;
-+
-+  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
-+    return;
-+
-+  // Trick play and a slewed clock have no steady relationship to measure
-+  // against, and a paused clock has none at all. Each of them also moves the
-+  // clock by more than any drift will, so the drift baseline goes with them
-+  // rather than counting a pause as a minute of the audio running slow.
-+  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
-+      clock->GetSpeedAdjust() != 0.0)
-+  {
-+    CAMLLatency::GetInstance().NoteClockDisturbed();
-+    return;
-+  }
-+
-+  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
-+}
-+
-+
- int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
- {
-   int ret;
-@@ -3398,6 +3430,7 @@ void CAMLCodec::SetSpeed(int speed)
-   if (m_speed == speed)
-     return;
- 
-+
-   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
- 
-   // update internal vars regardless
+index 244b1835428b1f78bf5d7e7996b9f25766bf3277..3662490220d103fc74ee8f8027a85bfe1f1c4554 100644
+GIT binary patch
+delta 1043
+zcmaJ=!D`e{6eX+TY!pFUbaShyNg1aVM4?ipv{nYHl(xFi#c(INnLL}k7vFoC>0ry?
+zAGn)!KR`sN&QIv7QWtK;z2FCU-^-M)YBovkyZ79ab51^fojLhF^Zv(`#&sd%yh;eJ
+ztvub>Kua<nzB~SW9Q=AY`SL2rE{+x!U?sJrq3EcRBqdES3J_9_1%a_5&*4o)6(t}f
+z*o;7vOi1%Yj8ZBKR>Zq}AWQ>*(Yokf733nNB|lIQno2W3i8g~S<x2L9YvG}hfrMhk
+zfK5P|z#wCieFiUc98M7>?O7;r2yR<t$S*siffg{&TfBYs>?4<!o{()zV^PKwMy++F
+zdt}4tL4*6S=#<QoY)4O`-Qf7bjq?Y$h%vOE9RE29u1{vG;AeB(KMF3TQ$crFfUpwM
+z-n-kepo+asYof+mM`-QE+G?)i-Fb-J4VGEvj5|%M^mR{1q!7-X$`AYdFjqJ8lLH$c
+zeh6kqnrx+|?`M&Bv=iNF<W)m3ISp9hdN9L2u~_ULVKQW;a<oE8lZn#FKJ}xv3wtP7
+zrdoYui&)?@9K$e@0PV<Y439C+K&8&sf-9VqLiLHw%&3N|33P{C*Ul)EOmGN^7O8~+
+zhsnpw#i%ZI(NHdUMNcuzKyW}Db`7REFB}Djavx$<Nh@TJv*}3!8h$K<tSn6_0al4n
+zperd|qsi4^{73}1Mov`rT&tLjY0Ff#+GdL|x1ykJs|kxRay_2??T2l%>1FUmrsA&Y
+z5vOXqBuZA2*OlQ^z}zw{wiYAqa)zIi!D$GeDNCy^2W!Hxn_Ws=Al=ldy8s6+p#KT-
+s^D^N-B%Jqrn$xs3$LdpXwXt5BFk-}m#^mo|@a?h-?9IvVqo94~A9w?0t^fc4
+
+delta 70
+zcmV-M0J;Cx)CaH32awl+@U`#(;99rQTLEVemy~${F1J~10k8>|RWAV_w^4Qh+bow`
+cjR6n0E2aUw5|>gh0V0>IxB&>a61f3HF=j{{EdT%j
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index df2086ec83..542cbdba46 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -89,6 +89,7 @@ public:
-   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
-   bool          IsOpen() const { return m_opened; }
-   bool          IsRealtimeStream() const { return m_processInfo.IsRealtimeStream(); }
-+  void          LatencyTick(uint64_t omxPts);
- 
-   static int    PollFrame();
-   static void   SetPollDevice(int device);
-@@ -145,7 +146,7 @@ private:
-   bool             m_drain = false;
-   am_private_t    *am_private;
-   CDVDStreamInfo   m_hints;
--  int              m_speed;
-+  std::atomic<int> m_speed;
-   uint64_t         m_cur_pts;
-   uint64_t         m_last_pts;
-   uint32_t         m_bufferIndex;
+index df2086ec83ce83cd866711c631264e16854a69ec..542cbdba4633b1bc3fe9f246217c4acaeba26afb 100644
+GIT binary patch
+delta 80
+zcmZoQ*le&NoJ&_hp)5Z$MF9?c5=&C^k}E?ple0BSGxJK!OyWxv@^dQ!N{ThDH-~W*
+baS9Zdq*z%cmgMJVCffj2*loTctjhub@naeW
+
+delta 21
+ccmdmN&}y(DoNIF{S0U%*Qc>Z}oFZB*09C*SlmGw#
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
 new file mode 100644
-index 0000000000..0a9e535393
---- /dev/null
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
-@@ -0,0 +1,715 @@
-+/*
-+ *  Copyright (C) 2026 Team CoreELEC
-+ *
-+ *  SPDX-License-Identifier: GPL-2.0-or-later
-+ *  See LICENSES/README.md for more information.
-+ */
-+
-+#include "AMLLatency.h"
-+
-+#include "cores/VideoPlayer/DVDClock.h"
-+
-+#include <algorithm>
-+#include <cmath>
-+#include <string>
-+
-+#include "ServiceBroker.h"
-+#include "cores/VideoPlayer/Interface/TimingConstants.h"
-+#include "utils/AMLUtils.h"
-+#include "utils/log.h"
-+#include "windowing/GraphicContext.h"
-+#include "windowing/WinSystem.h"
-+
-+namespace
-+{
-+// The driver publishes pts_video from the vsync interrupt with a plain write,
-+// but the register writes that put the frame on screen go through RDMA
-+// (VSYNC_WR_MPEG_REG -> rdma_write_reg) and commit at the following vsync. So
-+// the timestamp leads the picture by one refresh, and the path from handover to
-+// photons is one refresh longer than the count of it.
-+constexpr uint64_t RDMA_COMMIT_VBLANKS = 1;
-+
-+// A pipeline outside this is a dropped frame or a mode change caught half way.
-+constexpr uint64_t MAX_VBLANKS = 4;
-+
-+// A lower answer than the one standing has to be seen this many times running.
-+constexpr unsigned int AGREE_BEFORE_PUBLISHING = 2;
-+
-+// How often to report where the picture actually landed.
-+constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
-+
-+// Opening a file drops frames on purpose to catch up with the clock, so the
-+// check stands down until the picture has run clean for about this long. Given
-+// in seconds and turned into refreshes, so it means the same at 24Hz and at 60.
-+constexpr double SETTLE_SECONDS = 2.0;
-+
-+// Armed regardless after this much again, so a picture that is never clean gets
-+// counted rather than quietly examined for ever.
-+constexpr unsigned int SETTLE_GIVE_UP = 4;
-+
-+// A frame held this many refreshes running is a stop of some kind rather than a
-+// cadence fault. Which kind is decided by whether anything announced it.
-+constexpr unsigned int HELD_IS_A_STOP = 4;
-+
-+// A stop within this of an announcement is that announcement - a pause, a seek,
-+// trick play. Beyond it nobody said the picture would stop, so it froze.
-+constexpr double ANNOUNCED_WITHIN_US = 1.0e6;
-+
-+// A reading this close to a vblank may have caught pts_video and the vblank
-+// counter on opposite sides of it: the two are bumped by different interrupt
-+// handlers with no ordering between them, and a mismatched pair reads exactly
-+// like a dropped frame. What has to be cleared is the spread between those two
-+// handlers, which is set by interrupt latency and does not shrink when the
-+// refresh period does - so an absolute figure, about ten times the spread to
-+// expect, capped so that it stays a guard band rather than most of the frame.
-+constexpr double EDGE_GUARD_US = 500.0;
-+constexpr double EDGE_GUARD_MAX = 0.10;
-+
-+// A jump beyond this is a seek or a stream change, not frames falling out.
-+constexpr double LOST_AT_MOST = 8.0;
-+
-+// Enough to see what is happening; the report carries the totals either way.
-+constexpr unsigned int WARN_LIMIT = 10;
-+
-+// And no faster than this: emitting one blocks the frame loop on a log
-+// flush, and the diagnostic must not cause the fault it exists to report.
-+constexpr double WARN_INTERVAL_US = 1.0e6;
-+} // namespace
-+
-+void CAMLLatency::Restart()
-+{
-+  // Called from the decode thread. Raised as a request because everything it
-+  // resets belongs to the thread that polls.
-+  m_rearm.store(true, std::memory_order_relaxed);
-+}
-+
-+void CAMLLatency::Forget()
-+{
-+  // The published value goes now: the caller may be closing the decoder, and no
-+  // further poll is guaranteed. The rest is the polling thread's.
-+  CAMLLatencyStore::GetInstance().Forget();
-+  m_forget.store(true, std::memory_order_relaxed);
-+}
-+
-+void CAMLLatency::Rearm()
-+{
-+  m_candidate = 0;
-+  m_agreed = 0;
-+  m_armed = false;
-+  m_haveShown = false;
-+  m_pollValid = false;
-+  m_reports = 0;
-+  m_alignSum = 0.0;
-+  m_cadenceSeq = 0;
-+  m_ratioIsOne = false;
-+  m_classArmed = false;
-+  m_classHaveRef = false;
-+  m_classWaitMove = true;
-+  // A re-arm follows a seek, a close or a mode change, all of which announce
-+  // themselves - so the stop that comes next is one of those, not a freeze.
-+  m_lastDisturbUs = aml_monotonic_us();
-+  m_cleanRun = m_seenRun = m_heldRun = m_heldPending = 0;
-+  m_refreshes = m_shown = m_held = m_lost = m_lostOn = 0;
-+  m_unwatched = m_resyncs = m_stalls = 0;
-+  m_warned = m_hidden = 0;
-+  m_lastWarnUs = 0.0;
-+  m_driftAnchored = false;
-+  m_driftWalkUs = 0.0;
-+  m_driftFrames = 0;
-+}
-+
-+void CAMLLatency::WarnFrame(const char* what, unsigned int frames, uint32_t ticks)
-+{
-+  if (m_warned >= WARN_LIMIT)
-+  {
-+    ++m_hidden;
-+    return;
-+  }
-+
-+  // Spaced in time, not merely capped in number: a cap alone lets the whole
-+  // allowance go out in consecutive passes, and each one is a synchronous log
-+  // flush on the frame loop.
-+  const double now = aml_monotonic_us();
-+  if (m_lastWarnUs != 0.0 && now - m_lastWarnUs < WARN_INTERVAL_US)
-+  {
-+    ++m_hidden;
-+    return;
-+  }
-+  m_lastWarnUs = now;
-+  ++m_warned;
-+
-+  // Deliberately not carrying the video component: something is wrong with the
-+  // picture and that should reach the log whatever the debug settings say.
-+  CLog::Log(LOGWARNING, "CAMLLatency: {} frame{} {} at pts {:.3f}s", frames,
-+            frames == 1 ? "" : "s", what, static_cast<double>(ticks) / 90000.0);
-+}
-+
-+void CAMLLatency::StandDown()
-+{
-+  // Keeps the counts and the arming: this means "wait for the picture to come
-+  // back", not "start the report window again".
-+  m_classHaveRef = false;
-+  m_classWaitMove = true;
-+  m_heldRun = 0;
-+  m_heldPending = 0;
-+  m_cleanRun = 0;
-+}
-+
-+void CAMLLatency::ClassifyRefresh(uint64_t seq, uint32_t ticks)
-+{
-+  // Under pulldown a frame is meant to persist across refreshes, so none of the
-+  // rules below mean anything there.
-+  if (!m_ratioIsOne)
-+  {
-+    StandDown();
-+    return;
-+  }
-+
-+  if (!m_classHaveRef)
-+  {
-+    m_lastClassSeq = seq;
-+    m_lastClassTicks = ticks;
-+    m_classHaveRef = true;
-+    return;
-+  }
-+
-+  // A sequence that went backwards is a counter that restarted, not a span.
-+  // Unsigned subtraction would turn it into billions of unwatched refreshes.
-+  if (seq < m_lastClassSeq)
-+  {
-+    ++m_resyncs;
-+    StandDown();
-+    return;
-+  }
-+
-+  const uint64_t gap = seq - m_lastClassSeq;
-+  m_lastClassSeq = seq;
-+  if (gap == 0)
-+    return;  // a second poll inside one refresh says nothing new
-+
-+  // Every refresh the window spanned, judged or not, so the report can say how
-+  // much of it was actually examined.
-+  m_refreshes += static_cast<unsigned int>(gap);
-+
-+  // Folded first, because a negative age is routine rather than wrong: inside
-+  // the blanking interval the kernel extrapolates to the frame about to start.
-+  // An age past a whole period is a different thing and is refused rather than
-+  // folded - folding it without also stepping the sequence back would leave the
-+  // timestamp and the sequence naming different vblanks, which is the very
-+  // mismatch this guards against.
-+  double age = m_pollAge;
-+  if (age < 0.0)
-+    age += m_period;
-+
-+  // Ahead of the unwatched branch below, because that one installs a reference
-+  // too: left unchecked there, an untrustworthy reading would be compared
-+  // against on the next refresh and produce the artefact one refresh later.
-+  // Counted rather than dropped quietly, so that if the guard ever takes a real
-+  // bite out of the coverage the report says so.
-+  const double guard = std::min(EDGE_GUARD_US, EDGE_GUARD_MAX * m_period);
-+  if (age < guard || age > m_period - guard)
-+  {
-+    m_unwatched += static_cast<unsigned int>(gap);
-+    m_classHaveRef = false;
-+    return;
-+  }
-+
-+  if (gap > 1)
-+  {
-+    // Nobody looked at the refreshes in between, and this one only tells us
-+    // where the picture got to, not how it got there. All of them counted, so
-+    // a run that stopped watching cannot read as a run with nothing to report.
-+    m_unwatched += static_cast<unsigned int>(gap);
-+    m_lastClassTicks = ticks;
-+    return;
-+  }
-+
-+  const uint32_t was = m_lastClassTicks;
-+  m_lastClassTicks = ticks;
-+
-+  // Signed, so the 90kHz counter wrapping reads as a small step rather than as
-+  // four billion ticks of loss.
-+  const double perRefresh = m_period * (90000.0 / DVD_TIME_BASE);
-+  const double frames = static_cast<double>(static_cast<int32_t>(ticks - was)) / perRefresh;
-+
-+  // The driver keeps publishing the old timestamp across a flush, so after a
-+  // stand-down the count resumes only once a genuinely new frame appears - and
-+  // the jump to it is the seek, not a loss.
-+  if (m_classWaitMove)
-+  {
-+    if (frames > 0.5)
-+      m_classWaitMove = false;
-+    return;
-+  }
-+
-+  if (frames > LOST_AT_MOST || frames < -0.5)
-+  {
-+    // A seek, a stream change or a pts discontinuity: not frames falling out of
-+    // a running picture, which is the only thing this set out to count.
-+    ++m_resyncs;
-+    StandDown();
-+    return;
-+  }
-+
-+  if (frames < 0.5)
-+  {
-+    // Nothing is committed while the picture stands still, because a held
-+    // refresh and the first refresh of a freeze look identical. Which it was is
-+    // known only when the picture moves again, or when it fails to.
-+    if (++m_heldRun < HELD_IS_A_STOP)
-+      return;
-+
-+    // It failed to. A pause, a seek or trick play says so first, through
-+    // NoteClockDisturbed; a decoder running dry or a plane hanging says nothing
-+    // at all, and that is a fault the viewer can see.
-+    if (!m_classArmed || aml_monotonic_us() - m_lastDisturbUs < ANNOUNCED_WITHIN_US)
-+    {
-+      // Either something announced it, or the picture has not yet run clean
-+      // once - and a file catching up to the clock at its start holds frames on
-+      // purpose, which is the whole reason for the settling period.
-+      ++m_resyncs;
-+    }
-+    else
-+    {
-+      ++m_stalls;
-+      WarnFrame("held, the picture stopped for", m_heldRun, ticks);
-+    }
-+    StandDown();
-+    return;
-+  }
-+
-+  // The picture moved, so whatever run sat behind it was a hold after all.
-+  m_heldPending = m_heldRun;
-+  m_heldRun = 0;
-+
-+  if (frames < 1.5)
-+  {
-+    if (m_classArmed)
-+      ++m_shown;
-+    if (m_heldPending == 0)
-+      ++m_cleanRun;
-+  }
-+  else
-+  {
-+    const unsigned int lost = static_cast<unsigned int>(std::lround(frames)) - 1;
-+    m_cleanRun = 0;
-+    if (m_classArmed)
-+    {
-+      m_lost += lost;
-+      ++m_lostOn;
-+      // The frame that went missing is the one after the last seen, not the one
-+      // that turned up in its place. Reported together with the hold it came
-+      // with, because the pair is the whole signature - split across the
-+      // warning interval, only half of it would ever be seen.
-+      WarnFrame(m_heldPending > 0 ? "repeated, then lost" : "never displayed", lost,
-+                was + static_cast<uint32_t>(perRefresh));
-+    }
-+  }
-+
-+  if (m_heldPending > 0)
-+  {
-+    if (m_classArmed)
-+    {
-+      m_held += m_heldPending;
-+      // A hold with no loss behind it is a clock losing ground to the display -
-+      // the commonest real fault, and the one the drift line predicts. Reported
-+      // here because the loss branch above has already spoken for the pair.
-+      if (frames < 1.5)
-+        WarnFrame("repeated", m_heldPending, was);
-+    }
-+    m_cleanRun = 0;
-+    m_heldPending = 0;
-+  }
-+
-+  if (!m_classArmed)
-+  {
-+    ++m_seenRun;
-+    const unsigned int settle =
-+        static_cast<unsigned int>(SETTLE_SECONDS * DVD_TIME_BASE / m_period);
-+    if (m_cleanRun >= settle || m_seenRun >= settle * SETTLE_GIVE_UP)
-+      m_classArmed = true;
-+  }
-+}
-+
-+void CAMLLatency::Poll()
-+{
-+  m_pollValid = false;
-+
-+  // Requests raised on the decode thread, acted on here where the members live.
-+  // Taken before anything can return: a rate of zero across a mode change is
-+  // exactly when a request is in flight, and dropping it would strand m_lastN.
-+  if (m_forget.exchange(false, std::memory_order_relaxed))
-+  {
-+    // The synchronous half already cleared the store, but a publish may have
-+    // overtaken it, so clear it again here rather than assume.
-+    CAMLLatencyStore::GetInstance().Forget();
-+    m_lastN = 0;
-+    Rearm();
-+  }
-+  if (m_rearm.exchange(false, std::memory_order_relaxed))
-+    Rearm();
-+  if (m_classReset.exchange(false, std::memory_order_relaxed))
-+  {
-+    // Kept as a time, not a flag: a stop has to be attributable to it seconds
-+    // later, and that is what tells a pause from a picture that simply froze.
-+    m_lastDisturbUs = aml_monotonic_us();
-+    StandDown();
-+  }
-+
-+  const double rate = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
-+  if (rate <= 0.0)
-+    return;
-+
-+  // A different refresh period voids the answer: it was published in
-+  // milliseconds, and the lowest-count rule below cannot raise it again.
-+  const double period = DVD_TIME_BASE / rate;
-+  if (period != m_period)
-+  {
-+    m_period = period;
-+    CAMLLatencyStore::GetInstance().Forget();
-+    m_lastN = 0;
-+    Rearm();
-+  }
-+
-+  // Bracket the timestamp read with the vblank counter. If it moved, the read
-+  // straddled a refresh and there is no telling which one the frame belongs to.
-+  const auto seq0 = aml_vblank_seq_and_age(2.0 * period);
-+  const std::optional<uint32_t> ticks = aml_displayed_pts_ticks();
-+  const auto seq1 = aml_vblank_seq_and_age(2.0 * period);
-+  if (!seq0 || !ticks || !seq1 || seq0->first != seq1->first)
-+    return;
-+
-+  // Counted for the periodic report rather than once at startup: the first
-+  // seconds of a title are the one time the GUI is certainly dirty and the loop
-+  // certainly paced, so a figure taken there would describe the wrong state.
-+  // Only clean readings are counted, which are the ones that cost anything.
-+  ++m_polls;
-+  if (seq1->first != m_cadenceSeq)
-+  {
-+    ++m_cadenceRefreshes;
-+    m_cadenceSeq = seq1->first;
-+  }
-+
-+  m_pollValid = true;
-+  m_pollAge = seq1->second;
-+  m_pollTicks = *ticks;
-+  m_pollSeq = seq1->first;
-+  m_pollHostUs = aml_monotonic_us();
-+
-+  if (m_armed)
-+  {
-+    // Only a reading that catches the change is worth having: seeing the frame
-+    // already up says nothing about which refresh it arrived on.
-+    if (m_haveShown && *ticks != m_lastTicks && *ticks == m_key)
-+    {
-+      const uint64_t n = seq1->first + RDMA_COMMIT_VBLANKS - m_seqArmed;
-+      if (n >= 1 && n <= MAX_VBLANKS)
-+      {
-+        // The lowest is the answer because both ends are biased the same way:
-+        // the arm takes the refresh the poll saw, which is never later than the
-+        // hand-over, and the detection is never earlier than the toggle. Neither
-+        // can read low, so the floor is the truth. A one-way rule has no way back
-+        // from a wrong low reading, though, so a lower answer has to turn up
-+        // twice running - and every reading confirms or replaces the candidate,
-+        // so a stray cannot wait an hour for a partner.
-+        if (n != m_candidate)
-+        {
-+          m_candidate = n;
-+          m_agreed = 1;
-+        }
-+        else
-+        {
-+          ++m_agreed;
-+        }
-+
-+        if ((m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
-+        {
-+          CAMLLatencyStore::GetInstance().Set(static_cast<float>(n * 1000.0 / rate));
-+          CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: pipeline {} refreshes, {:.1f}ms", n,
-+                    n * 1000.0 / rate);
-+          m_lastN = n;
-+        }
-+      }
-+      m_armed = false;
-+    }
-+    else if (seq1->first - m_seqArmed >= MAX_VBLANKS)
-+    {
-+      // Bounded by the same span a reading is accepted within, so the wait has
-+      // no region that could only produce an answer that would be thrown away.
-+      // Unsigned, so a vblank counter that resets trips this and re-arms rather
-+      // than counting on.
-+      m_armed = false;
-+    }
-+  }
-+
-+  ClassifyRefresh(seq1->first, *ticks);
-+
-+  m_lastTicks = *ticks;
-+  m_haveShown = true;
-+}
-+
-+void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
-+{
-+  if (!m_pollValid || m_period <= 0.0)
-+    return;
-+
-+  // Decided on every presented frame. Settled once per report instead, it would
-+  // spend the first minute of every file false - so the check would never run,
-+  // and the report would then print a clean sheet it had not earned.
-+  // Whether the rates match is CRenderManager's verdict; the measured ratio is
-+  // kept as well, whole or not, for sizing a frame interval under pulldown.
-+  const double rate = DVD_TIME_BASE / m_period;
-+  const double refreshes = fps > 0.0 ? rate / fps : 0.0;
-+  const double matched = aml_refreshes_per_frame();
-+  const bool steady = matched > 0.0;
-+  m_ratioIsOne = steady && matched == 1.0;
-+  if (m_ratioIsOne != m_ratioWas)
-+  {
-+    // Otherwise the check going quiet has no cause anywhere in the log.
-+    // Component-less, like the warnings: the line this explains can be a
-+    // warning, and a reader with debug logging off would otherwise see a report
-+    // that judged nothing and find no reason for it anywhere.
-+    CLog::Log(LOGINFO, "CAMLLatency: frame check {} ({:.3f} refreshes per frame)",
-+              m_ratioIsOne ? "on" : "off", refreshes);
-+    m_ratioWas = m_ratioIsOne;
-+  }
-+
-+  // Scoped so that a sample this guard turns away does not stop the frame
-+  // being armed, which needs none of it. The poll happened earlier in this
-+  // pass, with a V4L2 ioctl and a run of sysfs writes in between, so its age
-+  // is carried forward to the clock read rather than differencing two moments
-+  // hundreds of microseconds apart - hence the clock read below and not above.
-+  // Passing the clock into the poll would undo the one thing keeping the count
-+  // safe from anything that steps it.
-+  const double carried = aml_monotonic_us() - m_pollHostUs;
-+  if (carried >= 0.0 && carried <= m_period)
-+  {
-+    // pts_video names the frame that appears at the next vblank, so the one on
-+    // screen is a refresh older and its timestamp fell due a period sooner.
-+    double absolute;
-+    const double clockNow = clock.GetClock(absolute);
-+
-+    // Inside the blanking interval the kernel extrapolates to the frame about
-+    // to start, so the age comes back negative and the sequence names the next
-+    // vblank rather than the last. pts_video still names the last one, so put
-+    // both back on it - the same fold CWinSystemAmlogic::SampleFrameLatency
-+    // does for the phase. Left out, a reading lands a whole period wrong.
-+    double age = m_pollAge;
-+    uint64_t seq = m_pollSeq;
-+    if (age < 0.0)
-+    {
-+      age += m_period;
-+      --seq;
-+    }
-+    age += carried;
-+
-+    const double shownUs = static_cast<double>(m_pollTicks) * (DVD_TIME_BASE / 90000.0);
-+    const double alignment = clockNow - age - shownUs +
-+                             static_cast<double>(RDMA_COMMIT_VBLANKS) * m_period;
-+    CAMLLatencyStore::GetInstance().SetAlignment(static_cast<float>(alignment / 1000.0));
-+    m_lastAlign = alignment;
-+
-+    if (m_reports == 0)
-+    {
-+      m_alignMin = m_alignMax = alignment;
-+      m_since = absolute;
-+
-+      // Started here rather than at the first poll: everything before the clock
-+      // runs is the paced regime, and folding it in would drag the figure toward
-+      // the answer this exists to test for.
-+      m_polls = 0;
-+      m_cadenceRefreshes = 0;
-+    }
-+    else
-+    {
-+      m_alignMin = std::min(m_alignMin, alignment);
-+      m_alignMax = std::max(m_alignMax, alignment);
-+    }
-+    m_alignSum += alignment;
-+    ++m_reports;
-+
-+    if (absolute - m_since >= TIME_BETWEEN_REPORTS)
-+    {
-+      const double mean = m_alignSum / m_reports;
-+      CLog::Log(LOGDEBUG, LOGVIDEO,
-+                "CAMLLatency: alignment {:+.2f}ms [{:+.2f}..{:+.2f}] over {} frames, "
-+                "{:.1f} clean polls per refresh",
-+                mean / 1000.0, m_alignMin / 1000.0, m_alignMax / 1000.0, m_reports,
-+                m_cadenceRefreshes > 0
-+                    ? static_cast<double>(m_polls) / static_cast<double>(m_cadenceRefreshes)
-+                    : 0.0);
-+
-+      // The span comes first because the faults mean nothing without it: a
-+      // report that checked no refreshes has to read as exactly that, and not
-+      // as a clean run.
-+      // Always said, even when it judged nothing: a line that does not appear
-+      // is indistinguishable from a check that found nothing wrong, which is
-+      // the one thing this must never be mistaken for. How much of the window
-+      // was judged is stated too, so a zero can be weighed rather than trusted,
-+      // and the alignment's own count of swallowed refreshes sits beside it as
-+      // a second opinion arrived at from entirely different arithmetic.
-+      // Filled in by the drift block below, which is why this is reported after
-+      // it rather than before: taken here, the count would be the previous
-+      // window's, which is a plausible wrong number rather than an obvious one.
-+      bool haveSwallowed = false;
-+      int swallowedThisWindow = 0;
-+
-+      // The vblank edge, not the instant this ran: those sit a whole and
-+      // differing part of a period later, which on a short baseline swamps the
-+      // rate entirely. absolute is CLOCK_MONOTONIC_RAW, the 24MHz crystal that
-+      // nothing disciplines, which is what makes it worth measuring against.
-+      const double vblankAt = absolute - age;
-+
-+      if (m_disturbed.exchange(false, std::memory_order_relaxed) && m_driftAnchored)
-+      {
-+        // Said out loud, like the guard below: a baseline that quietly restarts
-+        // every time produces no drift line at all, and an absent line reads
-+        // exactly like a measurement that found nothing.
-+        CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: drift baseline dropped, clock disturbed");
-+        m_driftAnchored = false;
-+      }
-+
-+      if (!steady)
-+      {
-+        m_driftAnchored = false;
-+      }
-+      else if (!m_driftAnchored)
-+      {
-+        // Anchored at a report rather than at the first frame: the genlock
-+        // steps the clock in the opening seconds, and that is not drift.
-+        m_driftAnchored = true;
-+        m_driftAbsolute = m_driftPrevAbsolute = absolute;
-+        m_driftClock = m_driftPrevClock = clockNow;
-+        m_driftVblank = vblankAt;
-+        m_driftSeq = seq;
-+        m_driftAlign = m_lastAlign;
-+        m_driftWalkUs = 0.0;
-+        m_driftFrames = 0;
-+        m_driftSteps = 0;
-+      }
-+      else
-+      {
-+        const double elapsed = absolute - m_driftAbsolute;
-+        const double displayElapsed = vblankAt - m_driftVblank;
-+        const double clockRun = clockNow - m_driftClock;
-+        const double displayRun = static_cast<double>(seq - m_driftSeq) * m_period;
-+
-+        // Between corrections the clock advances at exactly the reference rate,
-+        // so whatever it gained or lost over this one window is a correction
-+        // somebody made. Taking that out of the alignment leaves the refreshes
-+        // the pipeline swallowed to pay for it, which are what the walk has to
-+        // count rather than measure.
-+        const double delta = m_lastAlign - m_driftAlign;
-+        const double step =
-+            (clockNow - m_driftPrevClock) - (absolute - m_driftPrevAbsolute);
-+        const double frames = std::round((delta - step) / m_period);
-+        const double resid = (delta - step) - frames * m_period;
-+        if (std::abs(step) > DVD_MSEC_TO_TIME(20))
-+          ++m_driftSteps;
-+        m_driftPrevAbsolute = absolute;
-+        m_driftPrevClock = clockNow;
-+        m_driftAlign = m_lastAlign;
-+
-+        // The cumulative pair is a backstop, deliberately wide enough to let
-+        // audio corrections through since those are the signal. The per-window
-+        // pair is the sharp one, and neither of its tolerances grows with the
-+        // baseline: a freeze must not get easier to absorb the longer the
-+        // measurement has been running.
-+        const double slack = 5.0e-4 * elapsed + DVD_MSEC_TO_TIME(250);
-+        const char* dropped = nullptr;
-+        if (elapsed <= 0.0 || displayElapsed <= 0.0)
-+          dropped = "no baseline";
-+        else if (std::abs(step) > DVD_MSEC_TO_TIME(350))
-+          // The dead band tops out at 80ms, so a step this size in one window is
-+          // a freeze or a seek that no hook caught, not a correction.
-+          dropped = "clock stepped";
-+        else if (std::abs(resid) > 0.35 * m_period)
-+          // Half a period from either neighbour there is no nearest refresh to
-+          // round to, so noise decides, and the wrong way buys a whole period of
-+          // invented drift. A 50ms dead band lands exactly there on 50Hz.
-+          dropped = "fold ambiguous";
-+        else if (std::abs(clockRun - elapsed) > slack ||
-+                 std::abs(displayRun - displayElapsed) > slack)
-+          dropped = "baseline adrift";
-+
-+        if (dropped)
-+        {
-+          CLog::Log(LOGDEBUG, LOGVIDEO,
-+                    "CAMLLatency: drift baseline dropped after {:.0f}s, {}: step {:+.1f}ms "
-+                    "fold {:+.1f}ms clock {:+.1f}ms display {:+.1f}ms",
-+                    elapsed / DVD_TIME_BASE, dropped, step / 1000.0, resid / 1000.0,
-+                    (clockRun - elapsed) / 1000.0, (displayRun - displayElapsed) / 1000.0);
-+          m_driftAnchored = false;
-+        }
-+        else
-+        {
-+          m_driftWalkUs += delta - frames * m_period;
-+          m_driftFrames += static_cast<int>(frames);
-+          swallowedThisWindow = static_cast<int>(frames);
-+          haveSwallowed = true;
-+
-+          const double walk = m_driftWalkUs / elapsed * 1e6;
-+          const double panel = (displayRun / displayElapsed - 1.0) * 1e6;
-+          const double audio = (clockRun - elapsed) / elapsed * 1e6;
-+
-+          // Sign is the whole answer: a clock that gains on the display brings
-+          // frames due earlier every refresh until two fall in one, and the
-+          // second is dropped. Losing repeats one instead. The swallowed count
-+          // is the walk checking itself - a rate that predicts one repeat every
-+          // ten minutes and a count that says four is a fold gone wrong.
-+          CLog::Log(LOGDEBUG, LOGVIDEO,
-+                    "CAMLLatency: walk {:+.2f}ppm one {} per {:.0f}min ({:+d} swallowed), "
-+                    "panel {:+.2f}ppm, audio {:+.1f}ppm from {} steps, over {:.0f}s",
-+                    walk, walk >= 0.0 ? "drop" : "repeat",
-+                    std::abs(walk) > 0.01 ? m_period / std::abs(walk) / 60.0 : 0.0,
-+                    m_driftFrames, panel, audio, m_driftSteps, elapsed / DVD_TIME_BASE);
-+        }
-+      }
-+
-+      // Said last, and always - even when it judged nothing. A line that does
-+      // not appear is indistinguishable from a check that found nothing wrong,
-+      // which is the one thing this must never be mistaken for. How much of the
-+      // window was judged is stated too, so a zero can be weighed rather than
-+      // trusted, and the alignment's own count of swallowed refreshes sits
-+      // beside it as a second opinion reached by different arithmetic. The two
-+      // are not meant to agree exactly: the genlock announces its corrections,
-+      // which stands this check down across the refreshes the fold counts.
-+      const unsigned int judged = m_shown + m_held + m_lostOn;
-+      const bool faulty = m_held > 0 || m_lost > 0 || m_stalls > 0;
-+      CLog::Log(faulty ? LOGWARNING : LOGDEBUG,
-+                "CAMLLatency: {} of {} refreshes judged, {} unwatched, {} repeated, "
-+                "{} lost over {}, {} resync, {} stall; alignment swallowed {}{}",
-+                judged, m_refreshes, m_unwatched, m_held, m_lost, m_lostOn, m_resyncs,
-+                m_stalls,
-+                haveSwallowed ? fmt::format("{}", swallowedThisWindow) : std::string("-"),
-+                m_hidden > 0 ? fmt::format(", {} warnings held back", m_hidden) : "");
-+      m_refreshes = m_shown = m_held = m_lost = m_lostOn = 0;
-+      m_unwatched = m_resyncs = m_stalls = 0;
-+      m_warned = m_hidden = 0;
-+
-+      m_reports = 0;
-+      m_alignSum = 0.0;
-+      m_polls = 0;
-+      m_cadenceRefreshes = 0;
-+    }
-+  }
-+
-+  // Hand-over: the frame going out now, and the refresh it went out on. Both
-+  // sides of the answer are counters, so there is no clock in the count at all.
-+  if (!m_armed)
-+  {
-+    // Zero is the driver's own "no timestamp" value, so it never appears on
-+    // screen; arming on it would only burn the wait.
-+    const uint32_t key = static_cast<uint32_t>((ptsUs * 9ULL) / 100ULL);
-+    if (key == 0)
-+      return;
-+
-+    // The refresh the poll saw, not a fresh read: between the two sit
-+    // ReleaseFrame and a run of sysfs writes, and a vblank falling in that gap
-+    // would put the count one low - the one direction the ratchet cannot climb
-+    // back from.
-+    m_key = key;
-+    m_seqArmed = m_pollSeq;
-+    m_armed = true;
-+  }
-+}
+index 0000000000000000000000000000000000000000..0a9e535393836844255b4136172c28b9eeac8d15
+GIT binary patch
+literal 28443
+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
+LBG!s@SH=GW8OC2!
+
+literal 0
+HcmV?d00001
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
 new file mode 100644
-index 0000000000..8784594ac9
---- /dev/null
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
-@@ -0,0 +1,217 @@
-+/*
-+ *  Copyright (C) 2026 Team CoreELEC
-+ *
-+ *  SPDX-License-Identifier: GPL-2.0-or-later
-+ *  See LICENSES/README.md for more information.
-+ */
-+
-+#pragma once
-+
-+#include <atomic>
-+#include <cstdint>
-+
-+class CDVDClock;
-+
-+//! \brief What the video pipeline costs, measured once rather than assumed.
-+//!
-+//! CGraphicContext::GetDisplayLatency() falls back to (buffers + 1) / fps when
-+//! the window system does not answer, and nothing checks it. Measured on g12b
-+//! that overstates the path by about two and a half frames, so every frame
-+//! reaches the screen that far before its timestamp. Audio has no matching
-+//! error, being written ahead by a measured CAudioSinkAE::GetDelay(), so the
-+//! two part company by whatever the video guess is wrong by.
-+class CAMLLatencyStore
-+{
-+public:
-+  static CAMLLatencyStore& GetInstance()
-+  {
-+    static CAMLLatencyStore store;
-+    return store;
-+  }
-+
-+  //! \brief Milliseconds, or negative while unknown, which is what
-+  //! CWinSystemBase returns to ask for the buffer-count estimate instead.
-+  float Get() const { return m_latencyMs.load(std::memory_order_relaxed); }
-+  void Set(float ms) { m_latencyMs.store(ms, std::memory_order_relaxed); }
-+  void Forget()
-+  {
-+    m_latencyMs.store(-1.0f, std::memory_order_relaxed);
-+    m_alignmentMs.store(0.0f, std::memory_order_relaxed);
-+  }
-+
-+  //! \brief How far the picture on screen is from where its timestamp says it
-+  //! should be, in milliseconds. Reported, never acted on.
-+  float GetAlignment() const { return m_alignmentMs.load(std::memory_order_relaxed); }
-+  void SetAlignment(float ms) { m_alignmentMs.store(ms, std::memory_order_relaxed); }
-+
-+private:
-+  CAMLLatencyStore() = default;
-+  std::atomic<float> m_latencyMs{-1.0f};
-+  std::atomic<float> m_alignmentMs{0.0f};
-+};
-+
-+//! \brief Counts the refreshes between handing a frame over and it appearing.
-+//!
-+//! The frame going out is stamped with the display's vblank counter. When the
-+//! driver reports that same timestamp on screen, the counter has advanced by
-+//! however many refreshes the path costs. That difference is a whole number by
-+//! construction, so there is no timebase to mix and nothing that steps the DVD
-+//! clock can reach it. The only statistic is an agreement count, which exists to
-+//! stop a single low reading latching, not to average anything.
-+//!
-+//! Published as whole refresh periods on purpose. The renderer can only put a
-+//! frame on a vblank, so the sub-period part of this belongs to
-+//! GetFrameLatencyAdjustment() and would only be counted twice here.
-+class CAMLLatency
-+{
-+public:
-+  //! \brief One instance: the matcher is polled from the renderer, which has no
-+  //! codec to reach through on a pass that presents no new frame.
-+  static CAMLLatency& GetInstance()
-+  {
-+    static CAMLLatency latency;
-+    return latency;
-+  }
-+
-+  //! \brief Called at least once per render refresh; extra calls within one
-+  //! refresh are absorbed. Counts the refreshes between a frame
-+  //! being handed over and the driver reporting it on screen. Needs no clock -
-+  //! both ends are counters - so nothing that steps the clock can reach it.
-+  void Poll();
-+
-+  //! \brief Called once per presented frame, with the timestamp being handed
-+  //! over. Arms the matcher and reports where the picture landed.
-+  void Update(CDVDClock& clock, uint64_t ptsUs, double fps);
-+
-+  //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
-+  //! path it travels, so the measured answer still stands.
-+  void Restart();
-+
-+  //! \brief Something moved the clock or the picture by more than any drift
-+  //! will. Ends the drift baseline and stands the frame check down until the
-+  //! picture runs again; the refresh count needs neither and is left be.
-+  void NoteClockDisturbed()
-+  {
-+    m_disturbed.store(true, std::memory_order_relaxed);
-+    m_classReset.store(true, std::memory_order_relaxed);
-+  }
-+
-+  //! \brief Drop the published answer too. For a refresh-period change, and for
-+  //! the decoder that measured it going away.
-+  void Forget();
-+
-+private:
-+  void Rearm();
-+
-+  //! \brief Says so at once, outside the video component so it is visible with
-+  //! debug logging off, and stops talking after a few so a broken stream cannot
-+  //! bury the rest of the log.
-+  void WarnFrame(const char* what, unsigned int frames, uint32_t ticks);
-+
-+  //! \brief Judge one refresh: did it put a new frame up, hold the last one, or
-+  //! jump past some. Keeps its own reference sample so the refresh count, which
-+  //! has different reset rules, is not disturbed.
-+  void ClassifyRefresh(uint64_t seq, uint32_t ticks);
-+
-+  //! \brief Wait for the picture to run again, without ending the report
-+  //! window. For a pause, a seek, or anything that leaves pts_video standing.
-+  void StandDown();
-+
-+  std::atomic<bool> m_rearm{false};   //!< raised by the decode thread
-+  std::atomic<bool> m_forget{false};  //!< raised by the decode thread
-+
-+  double m_period{0.0};   //!< a change to this is what voids the answer
-+  bool m_armed{false};
-+  uint32_t m_key{0};        //!< the armed frame's timestamp, in 90kHz ticks
-+  uint64_t m_seqArmed{0};   //!< the refresh it was handed over on
-+
-+  bool m_haveShown{false};
-+  uint32_t m_lastTicks{0};  //!< to catch the change rather than the steady state
-+  uint64_t m_lastN{0};      //!< the answer standing
-+  uint64_t m_candidate{0};  //!< a lower one, not yet believed
-+  unsigned int m_agreed{0}; //!< how many times running it has turned up
-+
-+  //! \brief What the last poll read, so the report does not read it again.
-+  bool m_pollValid{false};
-+  double m_pollAge{0.0};
-+  uint32_t m_pollTicks{0};
-+  uint64_t m_pollSeq{0};
-+  unsigned int m_polls{0};
-+  unsigned int m_cadenceRefreshes{0};
-+  uint64_t m_cadenceSeq{0};
-+  double m_pollHostUs{0.0};
-+
-+  //! \brief Anchors for the drift rates, over a baseline that keeps growing.
-+  //!
-+  //! The walk is the one measured directly, and the only one worth acting on:
-+  //! it is the alignment's own change with the whole refreshes the pipeline
-+  //! swallowed taken back out, so it depends on nothing but a per-frame reading
-+  //! and a count. The panel rate is measured too, by the vblank counter, which
-+  //! shares nothing with the alignment except the answer it should agree with.
-+  //!
-+  //! The audio rate is neither. The clock only moves when the loop's error
-+  //! passes its 50ms dead band (111ms on TrueHD passthrough), so it resolves no
-+  //! better than that over the baseline - a couple of dozen ppm across a whole
-+  //! title - and rests on however few corrections happened to fire. The step
-+  //! count is printed beside it so the figure can be discounted properly.
-+  std::atomic<bool> m_disturbed{false};  //!< raised by whatever moved the clock
-+  bool m_driftAnchored{false};
-+  double m_driftAbsolute{0.0};  //!< the instant this ran, for the clock
-+  double m_driftVblank{0.0};    //!< the vblank edge, for the refresh count
-+  double m_driftClock{0.0};
-+  uint64_t m_driftSeq{0};
-+  double m_driftPrevAbsolute{0.0};  //!< the previous report, to catch a step
-+  double m_driftPrevClock{0.0};
-+  double m_lastAlign{0.0};   //!< the newest sample, not the window mean
-+  double m_driftAlign{0.0};  //!< the same at the previous report
-+  double m_driftWalkUs{0.0};
-+  int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check
-+  unsigned int m_driftSteps{0};
-+
-+  //! \brief Conservation of frames, checked one refresh at a time.
-+  //!
-+  //! Where the display shows each frame once, every refresh must put a new
-+  //! frame on screen and every frame must appear exactly once. pts_video names
-+  //! the frame on screen and the vblank counter counts the refreshes, so
-+  //! comparing the two across a single refresh says which rule broke. Kodi
-+  //! counts a frame its own renderer discards, but nothing counts one that goes
-+  //! missing below it, which is what this is for.
-+  //!
-+  //! The span checked is reported with the faults, because a count of zero says
-+  //! nothing unless it is known that something was looked at.
-+  std::atomic<bool> m_classReset{false};  //!< raised by whatever disturbed it
-+
-+  bool m_ratioIsOne{false};      //!< one frame per refresh, so the rules apply
-+  bool m_classArmed{false};      //!< past the drops a start makes on purpose
-+  bool m_classHaveRef{false};    //!< holding a sample to compare against
-+  bool m_classWaitMove{true};    //!< pts stale or standing; wait for it to move
-+  uint32_t m_lastClassTicks{0};  //!< the check's own, not the matcher's
-+  uint64_t m_lastClassSeq{0};
-+  unsigned int m_cleanRun{0};  //!< consecutive good refreshes, for arming
-+  unsigned int m_seenRun{0};   //!< refreshes since the re-arm, to arm anyway
-+  unsigned int m_heldRun{0};   //!< consecutive held refreshes, to spot a stop
-+
-+  double m_lastDisturbUs{0.0};    //!< when something said the picture would stop
-+  unsigned int m_heldPending{0};  //!< a run not yet known to be a hold or a stop
-+  bool m_ratioWas{false};         //!< to say so when the check turns on or off
-+
-+  unsigned int m_refreshes{0};  //!< every refresh the window spanned
-+  unsigned int m_shown{0};      //!< refreshes that put a new frame up
-+  unsigned int m_held{0};       //!< refreshes that showed the same one again
-+  unsigned int m_lost{0};       //!< frames that never reached the screen
-+  unsigned int m_lostOn{0};     //!< refreshes those were noticed on
-+  unsigned int m_unwatched{0};  //!< refreshes no usable poll landed on
-+  unsigned int m_resyncs{0};    //!< a stop that was announced: not a fault
-+  unsigned int m_stalls{0};     //!< a stop that was not: the picture froze
-+  double m_lastWarnUs{0.0};
-+  unsigned int m_warned{0};
-+  unsigned int m_hidden{0};
-+
-+  //! \brief Where the picture landed, gathered for the periodic report.
-+  unsigned int m_reports{0};
-+  double m_since{0.0};
-+  double m_alignSum{0.0};
-+  double m_alignMin{0.0};
-+  double m_alignMax{0.0};
-+};
-+
+index 0000000000000000000000000000000000000000..8784594ac97130cf1f6a1496ec57c254d6c54716
+GIT binary patch
+literal 9809
+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
+MGgtOQy29i9AJV)01poj5
+
+literal 0
+HcmV?d00001
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-index 6e8283c395..8716bfa275 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/CMakeLists.txt
-@@ -14,8 +14,10 @@ endif()
- 
- if(TARGET ${APP_NAME_LC}::AML)
-   list(APPEND SOURCES AMLCodec.cpp
-+                      AMLLatency.cpp
-                       DVDVideoCodecAmlogic.cpp)
-   list(APPEND HEADERS AMLCodec.h
-+                      AMLLatency.h
-                       DVDVideoCodecAmlogic.h)
- endif()
- 
+index 6e8283c395f8773d633cdbe600edf5ef2ef3362a..8716bfa275c2731586d2855c891f2996096dfefd 100644
+GIT binary patch
+delta 46
+ucmZqSKEu6XBO{-qua8e+NornlrCxGD!Q|JBI+Kqv+HfI+H@{?@%?tpGi4h_I
+
+delta 22
+ccmX@Z-NL<LBjZFJ-pP*{U4Yc)aHdjb0ANxFoB#j-
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 5344890ecb..09e91197d7 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-@@ -10,6 +10,7 @@
- 
- #include "ServiceBroker.h"
- #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
-+#include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
- #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
- #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
- #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
-@@ -261,6 +262,9 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
-       }
-       if (setVideoRect)
-         amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
-+      // Refreshes what the decode thread and the debug overlay read.
-+      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->SampleFrameLatency();
-+      amli->m_amlCodec->LatencyTick(pts);
-       std::shared_ptr<CAMLCodec> codec = std::move(amli->m_amlCodec); //Mark frame as processed
-       m_prevVPts = pts;
-       return codec;
-@@ -285,6 +289,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
-     return;
-   }
- 
-+  ObserveRefresh();
-   QueueFrame(index, true);
-   PublishReleasedFrame();
-   CAMLCodec::PollFrame();
-@@ -298,6 +303,21 @@ void CRendererAML::PublishReleasedFrame()
-   CAMLFrameMetadataStore::GetInstance().Publish(m_releasedToken, std::move(m_releasedMeta));
- }
- 
-+void CRendererAML::ObserveRefresh()
-+{
-+  // On the thread that schedules frames, the one PrepareNextRender() runs on,
-+  // so it reads the vblank phase live rather than from the cache.
-+  static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->RegisterRenderThread();
-+
-+  // Every refresh, not every frame: the refresh the driver puts a frame up on is
-+  // only resolvable to the rate this is polled at. It must also stay ahead of
-+  // the hand-over - the measurement arms with the refresh this saw, and is only
-+  // safe while that cannot be later than the hand-over. Reversed, the count
-+  // reads one low, and the lowest-wins rule in CAMLLatency has no way back from
-+  // a low reading.
-+  CAMLLatency::GetInstance().Poll();
-+}
-+
- bool CRendererAML::StartVsyncPresent()
- {
-   m_lastWakeVsync = false;
-@@ -324,17 +344,21 @@ bool CRendererAML::WaitVsync()
-       case CAMLCodec::VsyncWake::VSYNC:
-       case CAMLCodec::VsyncWake::TIMEOUT:
-         m_lastWakeVsync = wake == CAMLCodec::VsyncWake::VSYNC;
-+        ObserveRefresh();
-         // amvideo shows a released frame from the vsync after the release
-         PublishReleasedFrame();
-         return true;
-       case CAMLCodec::VsyncWake::STEP:
-         // a requested step leaves the GUI pacing as it is
-+        ObserveRefresh();
-         return true;
-       case CAMLCodec::VsyncWake::HANDOVER:
-       case CAMLCodec::VsyncWake::NO_DEVICE:
-         // no frame goes out and the first vsync after the handover picks again; only a
-         // real vsync keeps the GUI paced
-         m_lastWakeVsync = wake == CAMLCodec::VsyncWake::HANDOVER;
-+        if (m_lastWakeVsync)
-+          ObserveRefresh();
-         CAMLCodec::PublishPresentStep(m_lastWakeVsync);
-         break;
-       case CAMLCodec::VsyncWake::INTERRUPTED:
+index 50ad8d726baf857fa841cb434a3ef3dee2028d6c..7ae3cfb91d27073180043c5c666d6c6708bba086 100644
+GIT binary patch
+delta 940
+zcmZ8fO^Xvj5GBbi2T>P9R7|ldCXf%$*(I=kvbdThF6y47GE>=UGSfYD_ap`nIeGIU
+zbM`+7xp?(Ic+kHfUi=4EcaLaxPCeCK@6~&+K8@eM{(M?%9y~ibLQ67Qef)iIb6VTG
+z{%|mW3C%Q_gbXYbv|tm0m?9MuA2neNDC4R+EzUqKNT;|0chzqKf8~$H!PVaA1!j3l
+zk2Pjgv9vpT&9b#~<#KOSRZc`SZ|Bx@HXm+0tzQ~X4e13{6Y%rRx0{VxdAGH*K7ZAG
+z$6P$^So&G2(X5-;L<z-3$^vGN+;sg5B?*o-<*4a7y|ojPG3j;(bRi8W*$r?;fv{eS
+z@m-5)igFJ5odgX*Di#D9*%HmSD49TI{#}Gj+AqI1?yq~J37rXJNe7M-@0!ydC?2t4
+z&MxnA7o@U4zT~GJdbsM=pJUCe8uG##z#s{VoJR&>0-}<s12igK;B=jGP%5BsxO@<X
+zUqY_ZlsG)wheHclVJu+Ea*gHiFmb`ES-^9Vv%0wFvW1?<$_P!NDI>{!I^*RKHVG_2
+zNgy(~UUvP4Fr}NTvK42<>m=N4E}{sf(>-NNdB)1jE!sZsA+sBbLwu1cqzzzh(;PTA
+ztBTCE@(&r?i<W`|)to;F2@n45I7>3@HY{216r;HhFCe08_Nfbb=9c)sw&Cyz*+a=T
+z$%xvW{xSPleuZnBpDk6tcz!L*@$Rn++r{$B?r<Y+)oTMWgLd{NMPpy#oL-uhj5<vA
+O_uFo3cQ$x?zwrmA96){m
+
+delta 48
+zcmV-00MGx0Se;L>Spl<?0XrL$LMkJ(z8xR}qw*gClZ6Bmv*jai0+Vhg;<IWeFafjE
+GC^7@N(h;-(
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 04c76d2e57..a3d9164cd0 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -56,6 +56,7 @@ private:
-   void Reset();
-   std::shared_ptr<CAMLCodec> QueueFrame(int index, bool setVideoRect, bool* drop = nullptr);
-   void PublishReleasedFrame();
-+  void ObserveRefresh();
- 
-   static const int m_numRenderBuffers = NUM_BUFFERS;
- 
+index 166b0c0448b3a41a8d62f11bde4ccf5d62f4e16b..70349075cbf8b2f980c38db79eb90a545451f3ff 100644
+GIT binary patch
+delta 34
+pcmew$+9|eS1-qz%LRo%hih_SqacWUnYEWugQEG9<<|XVt%mCcy41E9q
+
+delta 12
+TcmeAa`yjeu1^ecM>>kVjBJ>2x
+
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index cafa71e46f..1632da9f25 100644
---- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-+++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -12,12 +12,15 @@
- #include <float.h>
- #include <exception>
- #include <cmath>
-+#include <optional>
- 
- #include "ServiceBroker.h"
- #include "application/ApplicationComponents.h"
- #include "application/ApplicationPlayer.h"
- #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
- #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
-+#include "cores/DataCacheCore.h"
-+#include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
- #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
- #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
- #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
-@@ -35,6 +38,7 @@
- #include "settings/lib/SettingsManager.h"
- #include "guilib/DispResource.h"
- #include "utils/AMLUtils.h"
-+#include "utils/StringUtils.h"
- #include "utils/log.h"
- #include "threads/SingleLock.h"
- 
-@@ -620,6 +624,118 @@ HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
-   return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
- }
- 
-+float CWinSystemAmlogic::GetDisplayLatency()
-+{
-+  return CAMLLatencyStore::GetInstance().Get();
-+}
-+
-+void CWinSystemAmlogic::RegisterRenderThread()
-+{
-+  m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
-+}
-+
-+float CWinSystemAmlogic::GetFrameLatencyAdjustment()
-+{
-+  // Read where it is used. PrepareNextRender() runs earlier in the pass than the
-+  // renderer, so a value sampled there is a pass old: out by however long the
-+  // pass takes, and wrapping a whole refresh when that approaches one, which
-+  // costs a frame. Any other thread, which has no relationship to the vblank,
-+  // is served the cached one rather than taking a DRM read of its own.
-+  if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
-+    return SampleFrameLatency();
-+
-+  return m_frameLatencyMs.load(std::memory_order_relaxed);
-+}
-+
-+float CWinSystemAmlogic::SampleFrameLatency()
-+{
-+  // Nothing steady to report. Zero is what the base class returns, so the
-+  // renderer simply schedules without the term rather than with a stale one.
-+  const auto stand_down = [this]() {
-+    m_frameLatencyMs.store(0.0f, std::memory_order_relaxed);
-+    m_vblankPhaseMs.store(0.0f, std::memory_order_relaxed);
-+    return 0.0f;
-+  };
-+
-+  const double rate = GetGfxContext().GetFPS();
-+  if (rate <= 0.0)
-+    return stand_down();
-+
-+  // Trick play and pause have the player driving the clock.
-+  if (CServiceBroker::GetDataCacheCore().GetSpeed() != 1.0f)
-+    return stand_down();
-+
-+  // Stand down while CRenderManager centres the frame itself, or this would add
-+  // a second half period on top of its.
-+  if (CServiceBroker::GetDataCacheCore().IsRenderClockSync())
-+    return stand_down();
-+
-+  // Whole-number match only, so pulldown, where there is no fixed phase, is left
-+  // alone.
-+  const double refreshes = aml_refreshes_per_frame();
-+  if (refreshes <= 0.0)
-+    return stand_down();
-+
-+  const double periodUs = 1000000.0 / rate;
-+  const std::optional<double> sinceFrameStart = aml_since_frame_start_us(2.0 * periodUs);
-+  if (!sinceFrameStart)
-+    return stand_down();
-+
-+  // Time since the LAST vblank, which is what PrepareNextRender() subtracts from
-+  // a clock read of its own - and it does not take that difference modulo the
-+  // period, so the fold is what keeps it one. Inside the blanking interval the
-+  // kernel extrapolates to the frame about to start, so the reading comes back a
-+  // little negative and refers to the next vblank rather than the last; adding a
-+  // period puts it back. A record a whole period stale still says where in the
-+  // frame the display is, so fold that too rather than refuse it. Only a reading
-+  // with nothing sensible left in it is turned away.
-+  double phase = *sinceFrameStart;
-+  if (phase >= periodUs)
-+  {
-+    // Said once, because there is no known mechanism for it: the kernel
-+    // recomputes the vblank from the scanout position on every call, so it
-+    // should not be able to lag a whole period. If this never appears the
-+    // branch can go, and refusing the reading would then cost nothing.
-+    if (!m_staleVblankSeen)
-+    {
-+      m_staleVblankSeen = true;
-+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemAmlogic: vblank record a period stale ({:.2f}ms)",
-+                *sinceFrameStart / 1000.0);
-+    }
-+    phase -= periodUs;
-+  }
-+  if (phase < 0.0)
-+    phase += periodUs;
-+
-+  if (phase < 0.0 || phase >= periodUs)
-+    return stand_down();
-+
-+  // Half a period of lead, so renderPts >= pts settles half a frame before the
-+  // display switches rather than on the flip. Only while the display shows each
-+  // frame once: with two or more refreshes per frame PrepareNextRender() already
-+  // flips early on the vblanks with no frame due.
-+  const double lead = refreshes == 1.0 ? periodUs / 2.0 : 0.0;
-+
-+  const float adjustment = static_cast<float>((phase - lead) / 1000.0);
-+  m_frameLatencyMs.store(adjustment, std::memory_order_relaxed);
-+  m_vblankPhaseMs.store(static_cast<float>(phase / 1000.0), std::memory_order_relaxed);
-+
-+  return adjustment;
-+}
-+
-+DEBUG_INFO_RENDER CWinSystemAmlogic::GetDebugInfo()
-+{
-+  const float pipeline = CAMLLatencyStore::GetInstance().Get();
-+
-+  DEBUG_INFO_RENDER info;
-+  info.videoOutput = StringUtils::Format(
-+      "AML pipeline: {} | align: {:+.2f}ms | vblank phase: {:+.2f}ms",
-+      pipeline < 0.0f ? std::string("measuring") : StringUtils::Format("{:.1f}ms", pipeline),
-+      CAMLLatencyStore::GetInstance().GetAlignment(),
-+      m_vblankPhaseMs.load(std::memory_order_relaxed));
-+  return info;
-+}
-+
- void CWinSystemAmlogic::Register(IDispResource *resource)
- {
-   std::unique_lock<CCriticalSection> lock(m_resourceSection);
+index cafa71e46f1bff8282c4e7e0ede767f426c9a63f..1632da9f25b819b728c011918229066ffc7e5d64 100644
+GIT binary patch
+delta 4422
+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
+
+delta 33
+rcmV++0N(%P$^p)%0kA9qvp@kA0kg0I^a8WP1z${)gi;{0%43=V>hBGa
+
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 528888fdd5..44f8355712 100644
---- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
-+++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-@@ -18,7 +18,10 @@
- #include "utils/EGLFence.h"
- #include "utils/EGLUtils.h"
- 
-+#include "cores/VideoPlayer/VideoRenderers/DebugInfo.h"
-+
- #include <atomic>
-+#include <thread>
- #include <gbm.h>
- 
- class IDispResource;
-@@ -48,6 +51,30 @@ public:
-   virtual uint64_t ConfigureHdrGuiSession(uint64_t owner, int colorTransfer, bool dvGraphics) = 0;
-   virtual void ReleaseHdrGuiSession(uint64_t owner) = 0;
- 
-+  //! \brief The measured cost of the video pipeline, in milliseconds, or -1
-+  //! until it is known, which asks CGraphicContext for its buffer-count
-+  //! estimate instead. Measured by CAMLLatency during playback.
-+  float GetDisplayLatency() override;
-+
-+  //! \brief Milliseconds since the display began the frame on screen, less half
-+  //! a refresh period. PrepareNextRender() subtracts it from m_displayLatency,
-+  //! so the frame is decided as of the frame on screen and half a frame before
-+  //! the display switches, instead of against a free-running clock.
-+  float GetFrameLatencyAdjustment() override;
-+
-+  //! \brief Name the thread that schedules frames. Until this is called the
-+  //! cached value is served to everyone, which is the base-class behaviour.
-+  void RegisterRenderThread();
-+
-+  //! \brief Read the vblank phase, refresh what other threads see, and return
-+  //! it: milliseconds since the display began the frame on screen, less half a
-+  //! refresh.
-+  float SampleFrameLatency();
-+
-+  //! \brief Feeds the playback debug overlay: what the pipeline measured at,
-+  //! how far the picture is from its timestamp, and where the display is in its
-+  //! own frame. The only way to see these once the diagnostics patch is gone.
-+  DEBUG_INFO_RENDER GetDebugInfo() override;
-   virtual void Register(IDispResource *resource);
-   virtual void Unregister(IDispResource *resource);
- 
-@@ -83,6 +110,10 @@ protected:
-   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
-   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
- private:
-+  bool m_staleVblankSeen{false};
-+  std::atomic<std::thread::id> m_renderThread{};
-+  std::atomic<float> m_frameLatencyMs{0.0f};
-+  std::atomic<float> m_vblankPhaseMs{0.0f};
-   struct callback_data
-   {
-     struct udev_monitor* udevMonitor;
+index 528888fdd572268d8a3f8d7e215bccbf15821f30..44f835571299478789795ae3a3c6a3fe8b43e6b6 100644
+GIT binary patch
+delta 1540
+zcmbVMO=}!S5G4}!LFD3_kL8eqMOG{4x()$HUl=S|tUpcxQPWei(@{_N(A~3}MVL9~
+z7VzEoT!KM=(64)D<wd?37It^0`t^HN@74d0|NHs#qn%%VQqD^_e6LG!mxkBkhu?Ft
+zrFik-@K}m&@zPfA<L=Irhq3m;<?Z90e|G!B!zc7-;k8uswiarHL+7O=<w7J^QN+V#
+z0;X2CVziYBX-kbZMh8*OmSIB9)4{KML<y|3Q5({cbf9bNR(3+GTC18kTn9Qj^W5U^
+zk+V_$j?`B;t7D*|t19sa%HjNoBq8dCqu{;}L3m2%8+OH-j$WL<dWE-Et*Pw1whL;Z
+zy<l}c1wdsSM>>;utV4P}mOkAlw-oQ8==mPXw)LNHX`-O5lB~WQ0H}}!+x(>R+z2^K
+zL3t4fG!g>UY^sqtla~r3si_sO9hhHwY1zvKG!Ih&k<b;f_pG2E?W(+MsJR+%8|h9)
+zz~HtnMq^7+P*9?$n;G5XL~P5<h#1I;ZXsy3jCg6P`KF%N6jnN_S}@14(Fv0moc`tG
+zA_u;+Hnmt8cdx&v34NsdqWr51u@M{Z_j$`^7l}<GkZjm<iEm6QfI-=zkptZ@rFYp#
+zv4&iH6dMD<I5$dAoKDb^O$Ubr3gVZkz>#3UYnO~V7!NPgbp;1GP=+z8LTX-W*ZFA=
+zw58J}&1IqCGCxe`ZBEG3{p^t~?sM2MgDnfg_L|xnpp(04uaXjn%RGuw#u6>OPs8vM
+zJ8wtwI?jd&^<##<({IEh;OMun&VR#AYh-&k->Nwk=|M3yXA>Pb3!5Tm1fiLsgHV(U
+z#`J&P5F9t|tlf$#PMQIv6?Eo_WJjlLBgV)w2o0TBp+B2w^*Nkrepo7~9pzwc3_h6V
+zt>mm((+XC_bkWdsQAh#2ODHca_LWwFT85Vs-U1Ft?KnR9<K5ZS%Zt<3SM!sL<CA$_
+z3Y&fS<F-+6KRwue&=<}b1QCRdyw78PgOJ};Y=V4v4#W`4*^HxWwE8Xo9%en8>GF3R
+v^m*$J4!Zf~K;BEKET?kJ&3U+aHhos*;{9#-yXwJjm&tB-#kZgK{{7(#k;f6o
+
+delta 29
+lcmZ3fvQA=yAk$<oCgIKbOts95KXS27zAPxRd4oVDBLJ5W3J3rI
+

@@ -128,1154 +128,417 @@ decoded in software at the 5 s bound.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 3f8796098e..63de17fed3 100644
---- a/addons/resource.language.en_gb/resources/strings.po
-+++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -22671,6 +22671,12 @@ msgctxt "#36511"
- msgid "Checkerboard"
- msgstr ""
- 
-+#. Stereoscopic 3D mode: one eye per refresh at a high refresh rate with VRR, for shutter glasses on a 2D display
-+#: system/settings/settings.xml
-+msgctxt "#60030"
-+msgid "Active 3D for 120 Hz VRR displays"
-+msgstr ""
-+
- #empty strings from id 36512 to 36519
- #end of reserved strings for 3d modes
- 
+index 3ea53a5dbf4eb16611143d499022c53039689a72..911cd563af49a93333b18705573c77df5d7b4d97 100644
+GIT binary patch
+delta 178
+zcmZ2-Rqf9;wT2eP7N!>F7M2#)7Pc+ynctc96oRLJ{L3yJW~Gpym#UCjnW|8bTBJ~v
+znpTuroS~3dqL8SNk(r(W7b!|CNmVG%EXhy^3kuRvNXsu$D9$J?DFJFq&q*vUPAvu+
+z1k_~YqL7kVJpH0Io4%Tvfq}7s5?5|<dS;4(l4Ej7W?8C&u?twUp^<@tM-|Ah=_emD
+Q>bBQ^XWw4`okMjq07{KMzW@LL
+
+delta 38
+ucmex!O>N0lwT2eP7N!>F7M2#)7Pc+ynct^7G_#4fNBm&l9`S=iWitRbr4O3`
+
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
-index 2cdd77a9e9..ab088ac9e2 100644
---- a/xbmc/application/Application.cpp
-+++ b/xbmc/application/Application.cpp
-@@ -915,7 +915,9 @@ void CApplication::Render()
- 
-   if (guiWillRender)
-   {
--    if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RenderStereoMode::OFF)
-+    const RenderStereoMode stereoMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
-+    // HFR VRR alternates the eyes in the video layer; the GUI is drawn once
-+    if (stereoMode != RenderStereoMode::OFF && stereoMode != RenderStereoMode::HFR_VRR)
-     {
-       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
-       hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+index 2cdd77a9e90d9f7e31522a7be9be42608b73bb74..ab088ac9e29644fc0a7da5d7b7c90e3a90d97202 100644
+GIT binary patch
+delta 208
+zcmcb-mhJyKwhcck6_fMxic1uNQu9($i-Jp1i&FD_^HWk4is8)3hP}#@18M{&>sIk6
+zT5~A?fxf<ihg*<BSWu8cVh&JYUSdgVu|i2kszPcdkdc`OW|w8Aq~<H+Bvz&tS%U@K
+zLp>ETixpCe63g=x^7E2Y!G>j~DQF<s7EmoF=<nvHpr(fG2B0WA(8_qAm6H{M6ekN*
+T$xcqFQE1*=wS99Hqk;?okUvO2
+
+delta 30
+mcmeyrj_vYVwhcckC$C%~KKVkm6SKdYTQg(zcE)PPIvD`%=nWzO
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e800a5d4bf..0e4537280d 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -77,6 +77,23 @@ void RestoreDvdBlackout()
- //! driving the clock somewhere absurd.
- constexpr double MAX_AUDIO_OFFSET_S = 1.0;
- 
-+// as a picture of this codec gets its layout: the stream's stereo mode, which
-+// GetPicture passes on, and the file's video settings only when it has none
-+bool StreamIsStereo(const CDVDStreamInfo& hints, const CVideoSettings& settings)
-+{
-+  if (!hints.stereo_mode.empty())
-+    return hints.stereo_mode != "mono";
-+  switch (static_cast<RenderStereoMode>(settings.m_StereoMode))
-+  {
-+    case RenderStereoMode::SPLIT_VERTICAL:
-+    case RenderStereoMode::SPLIT_HORIZONTAL:
-+    case RenderStereoMode::HARDWAREBASED:
-+      return true;
-+    default:
-+      return false;
-+  }
-+}
-+
- 
- std::mutex pollSyncMutex;
- 
-@@ -330,9 +347,14 @@ public:
- #define MODE_3D_TO_2D_B         0x00000a02
- #define MODE_3D_OUT_TB          0x00010000
- #define MODE_3D_OUT_LR          0x00020000
-+// frame-sequential output: the video layer shows one eye per vsync
-+#define MODE_3D_OUT_FA_L_FIRST  0x00001000
-+#define MODE_FORCE_3D_FA_LR     0x10000000
-+#define MODE_FORCE_3D_FA_TB     0x20000000
- 
- #define PTS_FREQ        90000
- #define UNIT_FREQ       96000
-+
- #define AV_SYNC_THRESH  PTS_FREQ*30
- 
- #define TRICKMODE_NONE  0x00
-@@ -2315,6 +2337,8 @@ void CAMLCodec::SetDoviZeroLevel5(bool value)
- 
- bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
- {
-+  m_openedLayout = StreamIsStereo(hints, m_processInfo.GetVideoSettings()) ? OpenedLayout::STEREO
-+                                                                          : OpenedLayout::MONO;
-   m_speed = DVD_PLAYSPEED_NORMAL;
-   m_drain = false;
-   m_cur_pts = DVD_NOPTS_VALUE;
-@@ -2727,6 +2751,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
-     m_trimWasPassthrough = false;
-     m_opened.store(true, std::memory_order_release);
-   }
-+  {
-+    std::lock_guard<std::mutex> lock(m_videoRectMutex);
-+    m_videoRectOpen = true;
-+  }
- 
-   // vcodec is open, update speed if it was
-   // changed before VideoPlayer called OpenDecoder.
-@@ -2837,8 +2865,10 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
- 
- void CAMLCodec::CloseDecoder()
- {
-+  m_openedLayout = OpenedLayout::NONE;
-   auto* AmlDisplay =
-       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-+  AmlDisplay->aml_fs3d_decoder_closed();
-   int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
-   // A failed read (-1, e.g. connector not connected) is not an enabled core.
-   bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC) > 0);
-@@ -2846,6 +2876,20 @@ void CAMLCodec::CloseDecoder()
- 
-   SetPollDevice(-1);
- 
-+  // The next stream starts in 2D, whatever this one had the video layer do. Under
-+  // the lock SetVideoRect runs under, and closing it to SetVideoRect first, so
-+  // a geometry update already past the renderer's IsOpen() cannot set it again.
-+  {
-+    std::lock_guard<std::mutex> lock(m_videoRectMutex);
-+    m_videoRectOpen = false;
-+    if (m_fs3dMode != FS3D_UNSET)
-+    {
-+      aml_set_3d_video_mode(MODE_3D_DISABLE, false, 3);
-+      CSysfsPath(CAMLDisplay::FS3D_SWAP, 0);
-+      m_fs3dMode = FS3D_UNSET;
-+    }
-+  }
-+
-   // never leave vcodec ff/rw or paused.
-   if (m_speed != DVD_PLAYSPEED_NORMAL)
-   {
-@@ -3848,6 +3892,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
-   // this routine gets called every video frame
-   // and is in the context of the renderer thread so
-   // do not do anything stupid here.
-+  std::lock_guard<std::mutex> videoRectLock(m_videoRectMutex);
-+  if (!m_videoRectOpen)
-+    return;
-   bool update = false;
- 
-   // video zoom adjustment.
-@@ -3896,6 +3943,40 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
-     m_guiStereoMode = guiStereoMode;
-     update = true;
-   }
-+  // the viewer's left/right swap, for frame-sequential 3D
-+  const bool stereoInvert = m_processInfo.GetVideoSettings().m_StereoInvert;
-+  if (m_stereoInvert != stereoInvert)
-+  {
-+    m_stereoInvert = stereoInvert;
-+    update = true;
-+  }
-+  // HFR VRR switches the output on after the stereo mode has changed: work the
-+  // video layer's mode out again when it does, or the video keeps the mode found
-+  // before the switch, 2D, and nothing alternates.
-+  const bool fs3dActive = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-+                              ->GetAmlDisplay()
-+                              ->aml_display_fs3d_active();
-+  if (m_fs3dActive != fs3dActive)
-+  {
-+    m_fs3dActive = fs3dActive;
-+    update = true;
-+  }
-+  // HFR VRR is entered and left from here, whatever Kodi's refresh rate
-+  // setting: ask for the output to switch while it is not as it should be (once,
-+  // and again if that did not take), and show the film once it is on.
-+  auto* fs3dDisplay =
-+      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-+  const bool fs3dWanted = fs3dDisplay->aml_display_fs3d_wanted(m_guiStereoMode);
-+  // on for the previous film of a playlist, at its rate, counts as not as it should be
-+  if (fs3dWanted == m_fs3dActive && !(fs3dWanted && fs3dDisplay->aml_display_fs3d_stale()))
-+    m_fs3dAsked = {};
-+  else if (m_fs3dAsked == std::chrono::steady_clock::time_point{} ||
-+           std::chrono::steady_clock::now() - m_fs3dAsked > std::chrono::seconds(3))
-+  {
-+    m_fs3dAsked = std::chrono::steady_clock::now();
-+    CWinSystemAmlogic::RequestFs3dCheck();
-+  }
-+  const bool fs3dPending = fs3dWanted && !m_fs3dActive;
-   RenderStereoView guiStereoView = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
-   if (m_guiStereoView != guiStereoView)
-   {
-@@ -3940,7 +4021,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
-   if (!update)
-   {
-     // mainvideo 'should' be showing already if we get here, make sure.
--    ShowMainVideo(true);
-+    ShowMainVideo(!fs3dPending);
-     return;
-   }
- 
-@@ -3984,7 +4065,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
-     dst_rect.y2 = info.iHeight * 2 + info.iBlanking;
-   }
- 
--  if (static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
-+  auto* amlDisplay =
-+      static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
-+  if (amlDisplay->aml_display_support_3d())
-   {
-     int mvc_view_mode = 3;
-     switch (am_private->video_format)
-@@ -4014,6 +4097,60 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
-         break;
-     }
-   }
-+  // also once the capability went away, to take the video layer back to 2D
-+  else if (amlDisplay->aml_display_support_fs3d() ||
-+           (m_fs3dMode != FS3D_UNSET && m_fs3dMode != MODE_3D_DISABLE))
-+  {
-+    // HFR VRR: the video layer shows one eye per vsync, full screen, taking the
-+    // eyes from the source's own layout. Any other stereo mode is plain Kodi.
-+    const std::string& layout = m_processInfo.GetVideoStereoMode();
-+    const bool hfr = m_guiStereoMode == RenderStereoMode::HFR_VRR &&
-+                     amlDisplay->aml_display_fs3d_active();
-+    const bool mvc = am_private->video_format == VFORMAT_H264MVC;
-+    unsigned int mode = MODE_3D_DISABLE;
-+    int mvc_view_mode = 3;
-+
-+    if (mvc)
-+    {
-+      // the decoder puts the requested view first: that is MVC's eye swap
-+      mvc_view_mode = (m_hints.stereo_mode == "block_rl") != m_stereoInvert ? 2 : 3;
-+      mode = hfr ? MODE_3D_ENABLE | MODE_3D_FA | MODE_3D_OUT_FA_L_FIRST
-+                 : MODE_3D_ENABLE | MODE_3D_FA | MODE_3D_TO_2D_L;
-+    }
-+    else if (hfr && (layout == "left_right" || layout == "right_left"))
-+      mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_LR | MODE_3D_OUT_FA_L_FIRST;
-+    else if (hfr && (layout == "top_bottom" || layout == "bottom_top"))
-+      mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_TB | MODE_3D_OUT_FA_L_FIRST;
-+
-+    // The output is 1080p while Kodi's resolution may be 4K.
-+    if (amlDisplay->aml_display_fs3d_active() && display.Width() > 0 && display.Height() > 0)
-+    {
-+      const float xs = static_cast<float>(CAMLDisplay::FS3D_WIDTH) / display.Width();
-+      const float ys = static_cast<float>(CAMLDisplay::FS3D_HEIGHT) / display.Height();
-+      dst_rect.x1 *= xs;
-+      dst_rect.x2 *= xs;
-+      dst_rect.y1 *= ys;
-+      dst_rect.y2 *= ys;
-+    }
-+
-+    // Side by side and top and bottom alternate the halves the same way; a
-+    // right-eye-first source or the viewer's swap only changes which eye each
-+    // refresh carries, and the glasses follow that.
-+    const bool rightFirst = layout == "right_left" || layout == "bottom_top";
-+    const bool swap = !mvc && rightFirst != m_stereoInvert;
-+
-+    if (mode != m_fs3dMode || swap != m_fs3dSwap || mvc_view_mode != m_fs3dView)
-+    {
-+      CLog::Log(LOGDEBUG,
-+                "CAMLCodec::SetVideoRect: frame-sequential 3D mode {:#x} ({}, gui {}, swap {})",
-+                mode, layout, static_cast<int>(m_guiStereoMode), swap);
-+      CSysfsPath(CAMLDisplay::FS3D_SWAP, swap ? 1 : 0);
-+      aml_set_3d_video_mode(mode, false, mvc_view_mode);
-+      m_fs3dMode = mode;
-+      m_fs3dSwap = swap;
-+      m_fs3dView = mvc_view_mode;
-+    }
-+  }
- 
- #if 1
-   std::string s_dst_rect = StringUtils::Format("{:d},{:d},{:d},{:d}",
-@@ -4051,7 +4188,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
- 
-   // we only get called once gui has changed to something
-   // that would show video playback, so show it.
--  ShowMainVideo(true);
-+  ShowMainVideo(!fs3dPending);
- }
- 
- void CAMLCodec::SetVideoRate(int videoRate)
+index e800a5d4bf59dc97915d5c5962af5a92dfd5d44f..0e4537280dd060b3c02b394a53ba4fab7c548c7f 100644
+GIT binary patch
+delta 5041
+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
+
+delta 120
+zcmV-;0EhqH@(8EH2(W1gv!e<<B9o;pJ+tF2_4~J)DgpgNxASfR_Y0R1djV~?r+Wca
+z0k(eueu1^&0+t20{tN<a1O#+)b!C&_J{Gr(5dwb&1Zid<D3?(P0za2LNdYIfoEHKm
+a1h?fS0?P&jbaHiNm!SUvAGg~q0)q?|?=Lz4
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 38fb562be8..1dee5ec1bd 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -8,6 +8,7 @@
- 
- #pragma once
- 
-+#include <chrono>
- #include "AMLGenlock.h"
- #include "DVDVideoCodec.h"
- #include "cores/VideoPlayer/DVDStreamInfo.h"
-@@ -97,6 +98,14 @@ public:
- 
-   static int    PollFrame();
-   static void   SetPollDevice(int device);
-+  //! the stereo layout of the stream a decoder was last opened on, none since a close
-+  enum class OpenedLayout
-+  {
-+    NONE,
-+    MONO,
-+    STEREO
-+  };
-+  static OpenedLayout GetOpenedLayout() { return m_openedLayout; }
- 
-   enum class VsyncWake
-   {
-@@ -171,6 +180,18 @@ private:
-   int              m_view_mode = -1;
-   RenderStereoMode m_guiStereoMode = RenderStereoMode::OFF;
-   RenderStereoView m_guiStereoView = RenderStereoView::OFF;
-+  bool m_stereoInvert = false;
-+  bool m_fs3dActive = false;
-+  //! when the output was last asked to enter or leave HFR VRR
-+  std::chrono::steady_clock::time_point m_fs3dAsked;
-+  //! SetVideoRect against CloseDecoder: the 3D state below is only touched under it
-+  std::mutex m_videoRectMutex;
-+  bool m_videoRectOpen = false;
-+  // the frame-sequential 3D state last given to the video layer
-+  static constexpr unsigned int FS3D_UNSET = ~0u;
-+  unsigned int m_fs3dMode = FS3D_UNSET;
-+  bool m_fs3dSwap = false;
-+  int m_fs3dView = -1;
-   float            m_zoom = -1.0f;
-   int              m_contrast = -1;
-   int              m_brightness = -1;
-@@ -189,6 +210,7 @@ private:
-   std::string      m_defaultVfmMap;
- 
-   static std::atomic_flag  m_pollSync;
-+  static inline std::atomic<OpenedLayout> m_openedLayout{OpenedLayout::NONE};
-   static int m_pollDevice;
-   static double m_ttd;
-   CProcessInfo &m_processInfo;
+index 38fb562be8ac1442b0202258ad145100eba62f30..1dee5ec1bd552847b99bca7fa9859e396362c227 100644
+GIT binary patch
+delta 818
+zcmZ9K!HN?>5Qfo%Nc1l3sRR!SSyl;nnCvbrCc6ro3}j+X!qVGQNg8{)V|Ptvmk{#`
+zf{)=z@&Fz^dG-Z-3QtydvT=3~Gt6}TU4PYA_4oD9qc6W79?Ge+#vXtF^{uf2I5>C;
+zG)3@)4lQVLZA$_>-X1y>1qjGd+8iBJ!n4G)V1@>Bu%-#d8osWKL>5YIJvIQ)lm-6?
+z?;(xS^O%?;3w{9lX}{ZSd<dVtw4XNPVK(dzx+#Ay+x+q*NXc8*;S8ys?)eK?fI}*s
+zf#PCQ)5fR`%XRhW{PF72TFtRdd+*E~9l;Tdh4vUsw&AgF<tLKV9P7crrkbLOEEvm-
+z$?OOS|B(TZ<yILTSO*#f-+y~LfYD$O8_1KdfA*fOV)h^pjv;A=G*UU*0ZIZf5y~*q
+zHvwH|13HP8txkl1aEaPhpgi-|*X&u!DSMYDj6~7aDk)0BEADlEle!lU+F{DuHg}N#
+z@ph-taO^~Z`yM})+>{a;b``{-PnZwGuu&Uxg?&L63y8y#mOH_#nd9QTnuHZmMiZQ7
+zt<J^!e%2kb>*tqc08vvAR~;brc*$7sUwvmpStVxmvX!~HIZ{}0WdGIr$CKgx6RpBd
+eQl2D&Y@y^~eQS>I?8>4ZOp>sg%k_gjy7v!vKo&dz
+
+delta 25
+hcmX?Z`^#*?^^GqVa&1oI@#filNGgD7bAoI-BLJm>3f2Gs
+
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 2db7b1e2d8..aa68d2ef9e 100644
---- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -2359,7 +2359,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
-           st->m_description = av_dict_get(pStream->metadata, "title", NULL, 0)->value;
- 
-         if (pStream->codecpar->codec_id == AV_CODEC_ID_H264 &&
--            static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
-+            static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_stereo())
-         {
-           if (CDVDCodecUtils::IsH264AnnexB(m_pFormatContext->iformat->name, pStream))
-           {
+index 816966e678d747c3045f3f06e5959fb3ea2fc621..df1768f6e0b07082829e43705145790e68e757a8 100644
+GIT binary patch
+delta 35
+rcmey{#opM>-mrzS%7?wUB(*3tUt{`2Nk;MM4Qm)#w$Jckd|Ckj_QVZ%
+
+delta 20
+bcmZqdX8+s8-mrzS%7@7~WqX4UBV#21R1pU>
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 34b72cb841..1c8beb0cfc 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-@@ -338,7 +338,11 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
-         m_releasedMeta = amli->m_metadata;
-       }
-       if (setVideoRect)
-+      {
-         amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
-+        std::lock_guard<std::mutex> geometryLock(m_pendingGeometryLock);
-+        m_geometryCodec = amli->m_amlCodec;
-+      }
-       // Refreshes what the decode thread and the debug overlay read.
-       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->SampleFrameLatency();
-       amli->m_amlCodec->LatencyTick(pts);
-@@ -355,12 +359,34 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
- {
-   ManageRenderArea();
- 
-+  // HFR VRR entered or left with no new frame on its way (paused): the video
-+  // layer's 3D mode follows now rather than with the next frame
-+  const bool fs3d = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
-+                        ->GetAmlDisplay()
-+                        ->aml_display_fs3d_active();
-+  if (fs3d != m_fs3dSeen)
-+  {
-+    std::shared_ptr<CAMLCodec> codec;
-+    {
-+      std::lock_guard<std::mutex> lock(m_pendingGeometryLock);
-+      codec = m_geometryCodec.lock();
-+    }
-+    // seen only once a codec has been told, or the change is lost
-+    if (codec && codec->IsOpen())
-+    {
-+      codec->SetVideoRect(m_sourceRect, m_destRect);
-+      m_fs3dSeen = fs3d;
-+    }
-+  }
-+
-   if (m_vsyncPresent)
-   {
-     std::shared_ptr<CAMLCodec> codec;
-     {
-       std::lock_guard<std::mutex> lock(m_pendingGeometryLock);
-       codec.swap(m_pendingGeometry);
-+      if (codec)
-+        m_geometryCodec = codec;
-     }
-     if (codec && codec->IsOpen())
-       codec->SetVideoRect(m_sourceRect, m_destRect);
+index a84ee4cc24166cfca1d3aed34cc1c9c900505f9b..87077999ef56701e71c2df395484231603d24578 100644
+GIT binary patch
+delta 515
+zcmZ8e%Sr=55F}ni5d|-Lils=B4Zc9UL?Rf24-kYEyh)hs_L{}nov<^yh7kOSIr|TR
+ze1N~;&9fJ8-uwW2vgG2x3{7`eb#={e@@>YSmD13DRIY4mt-SC+Dj|~%uB}+ZGWaB&
+zS<Y@$Q5sEFt2cA6`}?>&_i^X@pwv)CAyfuQkwG4t9#VyrazvR(2r5NvG;%ROtuLN5
+zg<b=uM|h4yQi}kyNim?Ts&UvxqC!HXq*S?Pq8ypv=8O>{E!fQlgHw7j#Q<gqRH_ZS
+zN=ZceFtqP0t<s|X+FoDXJ-Hxrn#gvn`#hxPP1DWY6OqVHSR^|R(-DD*pQ+{@GhZB`
+z=91WKvI8!<B}zT64EfrFqb>X9`2k#Y=Fb`H4)&x99t#d&#J$t)G=td&Ip8NC2-eHJ
+z=n0LkD;Xuj9p|8PCEz_D2(gA#+SuiKl|Sg9-YC1zm`UNuE_7OpIU{@Tjdu#=Q+6k|
+QIR7LvblNbPum3Fl0q~iofB*mh
+
+delta 29
+lcmaD>@+Eh}b+yUnA|jK6bqqEyP<LaRyijM&=6c=dJOIoj47~sV
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 6ae5a42b36..a33849b34f 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -87,6 +87,9 @@ private:
-   //! Frame last released to amvideo, whose metadata goes out when the frame is shown
-   uint32_t m_releasedToken{0};
-   std::shared_ptr<const AMLFrameMetadata> m_releasedMeta;
-+  //! the codec the geometry last went to, and the HFR VRR state it saw then
-+  std::weak_ptr<CAMLCodec> m_geometryCodec;
-+  bool m_fs3dSeen{false};
-   mutable std::mutex m_prerollMutex;
-   uint64_t m_prerollGeneration{0};
-   bool m_prerollHold{false};
+index 69b8aa3fb58233aae48067582eb48d46aa7def82..d6235072993cb7a37c7ec01bb7174143016ea167 100644
+GIT binary patch
+delta 130
+zcmaDR^;3GoLLM)DeMN<mj8ui>{FKyWFe^PZKR30cs8S&(vA9H`JT<RGp(I~NAu%rn
+zEbZYIq!1Pqq)=RvSdyxcS)x#!SPqiNn{2@)rw-HX3^LA|OF<ziKR-tyH$JV{I3+kW
+RHLp4?F{e1ScJf@FlK{HBE>Zvh
+
+delta 11
+Scmew<{Y+}ZLY~Pcyhi~cO9cx6
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 913ef27033..47535fd33d 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-@@ -14,6 +14,7 @@
- #include "OverlayRendererUtil.h"
- #include "RenderManager.h"
- #include "ServiceBroker.h"
-+#include "cores/DataCacheCore.h"
- #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
- #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySSA.h"
- #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
-@@ -354,7 +355,20 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
-     m_y = (0.5f * o.height + o.y) / o.source_height;
- 
-     const float subRatio{static_cast<float>(o.source_width) / o.source_height};
--    const float vidRatio{rSource.Width() / rSource.Height()};
-+    float vidRatio{rSource.Width() / rSource.Height()};
-+    // One eye cut from a packed stereo bitmap, with the video not cropped to an
-+    // eye (HFR VRR, the GUI drawn once): compare it with one eye of the video.
-+    if (o.m_stereoView != DVDOverlayStereoView::BOTH &&
-+        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() ==
-+            RenderStereoMode::HFR_VRR &&
-+        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView() == RenderStereoView::OFF)
-+    {
-+      const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
-+      if (layout == "left_right" || layout == "right_left")
-+        vidRatio /= 2.0f;
-+      else if (layout == "top_bottom" || layout == "bottom_top")
-+        vidRatio *= 2.0f;
-+    }
- 
-     // We always consider aligning 4/3 subtitles to the video,
-     // for example SD DVB subtitles (4/3) must be stretched on fullhd video
+index 913ef27033c254b59507da5f91f1f3d759d3cf7d..47535fd33d56cc5dc067bc4ed3e809fa899eceae 100644
+GIT binary patch
+delta 639
+zcmZvZzfRmh5QpU^1wu-JM3ZK6l?^A~fzo6nD-w4)pg<=X;?~-;$J~mu$J!h2gao>W
+zaKk&$AW<Yu8eW2Tpx_y@Yu}#`Wy{&w@Au8@%TMRmZ|CvZ+3ri0J(-NLN4k1*f~QyK
+z+OM$tWdY`NIxs8{@CG5dX2>+<Afc4W6{av{)JQN=oXfHebH!ueF~Urxrd$w1qNyxR
+zClknGYYDV4_hb-46o&2k!SRn%NVS|7Kt+O{fQ0fgk{UsAgQcYeWt#-Q2C58P^7FWn
+zi4@M^a{&FQKb)bS$eZ(8($<AI8eW`KpWJr!u>0|=e~jE*o>7Xf2SHE+t))F77AfjY
+zhY-d&HqI-;-iBcDHR0W>CUiI$c+~;yET)_aF=efaOE6+&_8CC$9Q8~kc%<nHwGc+?
+z?;kN<HYKtf-Ke<Ux239`e#Hu)HNlKytuDvhg4^45in-BhVXCohXnE^7%}<4r6+tI}
+qL%*A?usE5T-M?oumGOv}DgT$<RAbZdKlI)b{h?01d%Ev_-~R(}A<YZ`
+
+delta 33
+pcmdn7m+|^`#tnxUC#x`NZ02Sv)niT0&nqsOTyJ2yxysm18vx#23@HEr
+
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index 4359d7b46c..8d355c3e85 100644
---- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-@@ -682,9 +682,10 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
-   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
- 
-   if (stereo_mode == RenderStereoMode::MONO ||
--      stereo_mode == RenderStereoMode::OFF)
-+      stereo_mode == RenderStereoMode::OFF ||
-+      stereo_mode == RenderStereoMode::HFR_VRR)
-   {
--    // 2D display, so there's no subtitle depth
-+    // 2D display or a GUI drawn once, so there's no subtitle depth
-     return 0;
-   }
- 
+index 4359d7b46c8e72632aa7ed1d6842ee6b33300fc5..8d355c3e85d8bd1dfad8afd012ae1348a88b525e 100644
+GIT binary patch
+delta 69
+zcmZpl$9Q%g<Ay4q$v!^XMjmcK@nJzhnp_GB)j+JEps%lB<f4$0SzM5lSgDX-q>!lK
+X9_p!(Qj}Ppr;wkQoVt0UPZ<*c_tX{K
+
+delta 38
+scmX>*kFk9o<Ay39aZN4-g=!#HP|(*`Fmh2y$t*6&Nvzy_-KUHR0OQ{a@Bjb+
+
 diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
-index 788e541256..1fc98f41e3 100644
---- a/xbmc/guilib/StereoscopicsManager.cpp
-+++ b/xbmc/guilib/StereoscopicsManager.cpp
-@@ -85,6 +85,7 @@ static const struct StereoModeMap StringToGuiModeMap[] = {
-     {"anaglyph_yellow_blue", RenderStereoMode::ANAGLYPH_YELLOW_BLUE},
-     {"hardware_based", RenderStereoMode::HARDWAREBASED},
-     {"monoscopic", RenderStereoMode::MONO},
-+    {"hfr_vrr", RenderStereoMode::HFR_VRR},
-     {}};
- 
- CStereoscopicsManager::CStereoscopicsManager()
-@@ -317,6 +318,9 @@ std::string CStereoscopicsManager::GetLabelForStereoMode(const RenderStereoMode
-     case RenderStereoMode::MONO:
-       msgId = 36509;
-       break;
-+    case RenderStereoMode::HFR_VRR:
-+      msgId = 60030;
-+      break;
-     default:
-       msgId = 36502 + static_cast<int>(mode);
-   }
-@@ -592,7 +596,7 @@ void CStereoscopicsManager::OnStreamChange()
- 
-   // early return if playback mode should be ignored and we're in no stereoscopic mode right now
-   if ((playbackMode == STEREOSCOPIC_PLAYBACK_MODE_IGNORE && mode == RenderStereoMode::OFF) ||
--      !static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_3d())
-+      !static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay()->aml_display_support_stereo())
-     return;
- 
-   if (!CStereoscopicsManager::IsVideoStereoscopic())
+index 788e541256763079bfba75afdd0769e42933a435..1fc98f41e323a1949db2f1451e86dbdf491389f9 100644
+GIT binary patch
+delta 84
+zcmdnEjdA&Q#tq`U97-8!Me$`tMUxNmh_Sf^#fJq2ZRY1ym!5n;O<cwUB4EX(00z0m
+h>7FSHwhCqj2F3=Pl{GAs*@{b2i&FD9$9iAk2LNa08NUDk
+
+delta 27
+jcmZ3!opIwf#tq`Uo1J;(r8lq8P*r9!PT73f`wBk*j#3Hn
+
 diff --git a/xbmc/interfaces/json-rpc/schema/methods.json b/xbmc/interfaces/json-rpc/schema/methods.json
-index 9bf0f92891..ebe0ea7981 100644
---- a/xbmc/interfaces/json-rpc/schema/methods.json
-+++ b/xbmc/interfaces/json-rpc/schema/methods.json
-@@ -5572,7 +5572,8 @@
-           "hardware_based",
-           "anaglyph_cyan_red",
-           "anaglyph_green_magenta",
--          "monoscopic"
-+          "monoscopic",
-+          "hfr_vrr"
-         ],
-         "required": true
-       }
+index 9bf0f92891f1fe59f3885cf21aebd3c5d9efc3b4..ebe0ea7981ab95be56e5c21ed184c7039ac308dd 100644
+GIT binary patch
+delta 43
+scmZ2Fk!#mPu7)j)%YKULa4EonQbt-)d|6SE(&WOjknO*IGOq3e07BCb<NyEw
+
+delta 21
+dcmdlrk!$Hhu7)j)%YIHSEDPDr|BG>T9{_JV3Nioy
+
 diff --git a/xbmc/interfaces/json-rpc/schema/types.json b/xbmc/interfaces/json-rpc/schema/types.json
-index 9d495ab339..07c04ea636 100644
---- a/xbmc/interfaces/json-rpc/schema/types.json
-+++ b/xbmc/interfaces/json-rpc/schema/types.json
-@@ -4312,7 +4312,8 @@
-           "anaglyph_cyan_red",
-           "anaglyph_green_magenta",
-           "anaglyph_yellow_blue",
--          "monoscopic"
-+          "monoscopic",
-+          "hfr_vrr"
-         ]
-       },
-       "label": {
+index 9d495ab339295452ba5412c03d3e0ff768b887c6..07c04ea63639cc0dc26a076f3a3ca286b4bc5632 100644
+GIT binary patch
+delta 53
+zcmdnFiS67bwuUW?v%^GmxD?<(DI={YzO1Nd`o{uBnd!PUj4sm`<S_DY=L}~wZ~_3-
+CXb_qJ
+
+delta 26
+icmX@NiEZa5wuUW?v%{u83SktQd|r!l`{^*oW+womJqs}a
+
 diff --git a/xbmc/interfaces/json-rpc/schema/version.txt b/xbmc/interfaces/json-rpc/schema/version.txt
-index cf2784fd93..0cc5c4c6b0 100644
---- a/xbmc/interfaces/json-rpc/schema/version.txt
-+++ b/xbmc/interfaces/json-rpc/schema/version.txt
-@@ -1 +1 @@
--JSONRPC_VERSION 13.1000.0
-+JSONRPC_VERSION 13.1001.0
+index cf2784fd934fb5f1d5b19f06608db5acc87797ce..0cc5c4c6b02ad3c8fb31fc72516f5aa9ea5ab3a3 100644
+GIT binary patch
+delta 9
+Qcmb1=njpqvsAs?h00;vCcmMzZ
+
+delta 9
+Qcmb1=njpqvpl84Z00;j8cK`qY
+
 diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
-index 38fce27490..d2d0f40bc1 100644
---- a/xbmc/rendering/RenderSystemTypes.h
-+++ b/xbmc/rendering/RenderSystemTypes.h
-@@ -27,6 +27,8 @@ enum class RenderStereoMode
-   CHECKERBOARD,
-   HARDWAREBASED,
-   MONO,
-+  // One eye per refresh at a high refresh rate, the GUI drawn once
-+  HFR_VRR,
-   COUNT,
- 
-   // Pseudo modes
+index 38fce27490cd1fc2e9288372b477f7934e86eed4..d2d0f40bc18aa8d9627cfccf1e0665b7ad5834cf 100644
+GIT binary patch
+delta 87
+zcmbQp@_=Q-Wkzp(eFgu#RE5;aRE2`nB88&Vw4&7F428rJg+zsn%=8SnNKs-*s*XZQ
+jMyi5)sHZ|oQDS+XLVjLyDwl$Shg(p5SWwX9^NdaaEt4IN
+
+delta 11
+ScmaFBGLdD&WyZ-$Om+Yp#{=^K
+
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 72f3168782..5ad96c144b 100644
---- a/xbmc/windowing/amlogic/AMLDisplay.cpp
-+++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
-@@ -5,11 +5,17 @@
-  *  See LICENSES/README.md for more information.
-  */
- #include <drm_fourcc.h>
-+#include <cmath>
-+#include <cstdlib>
- #include <fcntl.h>
- #include <sys/ioctl.h>
- #include <amcodec/codec.h>
- 
- #include "AMLDisplay.h"
-+#include "application/ApplicationComponents.h"
-+#include "application/ApplicationPlayer.h"
-+#include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
-+#include "cores/DataCacheCore.h"
- #include "filesystem/SpecialProtocol.h"
- #include "platform/linux/SysfsPath.h"
- #include "linux/fb.h"
-@@ -1083,6 +1089,67 @@ void CAMLDisplay::aml_refresh_display_caps()
-     support_3d = amhdmitx0_support_3d.Get<int>().value_or(0);
- 
-   m_support_3d = support_3d;
-+
-+  // Frame-sequential 3D: a 2D sink that takes game VRR (the kernel's own test,
-+  // vrr_min) and 1080p 120 Hz, and a kernel that alternates the eyes of both
-+  // the video and the GUI on every vsync. A sink re-syncing its HDMI link reads
-+  // disconnected with one dummy mode for a second or two: keep what it could do,
-+  // or a 3D film drops to 2D and that mode switch makes the sink re-sync again.
-+  if (aml_get_display_connected())
-+  {
-+    bool support_fs3d = false;
-+    if (!support_3d && CSysfsPath(FS3D_VRR_RATE).Exists() &&
-+        CSysfsPath(FS3D_OSD).Exists() && CSysfsPath("/sys/class/video/fa_sync").Exists())
-+    {
-+      CSysfsPath vrr_cap{"/sys/class/amhdmitx/amhdmitx0/vrr_cap"};
-+      for (const auto& line : StringUtils::Split(vrr_cap.Get<std::string>().value_or(""), "\n"))
-+      {
-+        std::vector<std::string> kv = StringUtils::Split(line, ":");
-+        if (kv.size() == 2 && StringUtils::Trim(kv[0]) == "vrr_min")
-+          support_fs3d = std::atoi(StringUtils::Trim(kv[1]).c_str()) > 0;
-+      }
-+      if (support_fs3d)
-+        support_fs3d = m_amlDRMUtils->aml_get_drmDevice_modes().find(FS3D_MODE) != std::string::npos;
-+    }
-+    if (support_fs3d != m_support_fs3d)
-+      CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D {}", __FUNCTION__,
-+                support_fs3d ? "available" : "not available");
-+    m_support_fs3d = support_fs3d;
-+  }
-+
-+  // A Kodi that died in 3D left the sink in game VRR, and the video layer
-+  // alternating the eyes. Only on the first refresh, before this Kodi has
-+  // entered 3D itself: a hotplug refresh while entering (game VRR set, not
-+  // yet marked active) would take its own 3D down.
-+  const bool first_refresh = !m_fs3d_recovery_checked.exchange(true);
-+  if (first_refresh && !m_fs3d_active &&
-+      StringUtils::StartsWith(
-+          CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode").Get<std::string>().value_or(""),
-+          "game"))
-+  {
-+    fs3d_apply(false, 0);
-+    aml_set_3d_video_mode(0 /* MODE_3D_DISABLE */, false, 3);
-+    CSysfsPath(FS3D_SWAP, 0);
-+  }
-+}
-+
-+// Without HDMI 3D the only stereo output is HFR VRR. Taking stereo video as
-+// stereo then (both MVC views, the 3D mode dialog, the preferred mode) is for a
-+// user who has chosen HFR VRR; on a 2D TV with game VRR everyone else keeps
-+// playing 3D files as 2D, as before.
-+bool CAMLDisplay::aml_display_support_stereo() const
-+{
-+  if (m_support_3d)
-+    return true;
-+  if (!m_support_fs3d)
-+    return false;
-+  const auto& component = CServiceBroker::GetSettingsComponent();
-+  const auto settings = component ? component->GetSettings() : nullptr;
-+  if (!settings)
-+    return false;
-+  const int hfrVrr = static_cast<int>(RenderStereoMode::HFR_VRR);
-+  return settings->GetInt(CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE) == hfrVrr ||
-+         settings->GetInt(CSettings::SETTING_VIDEOSCREEN_STEREOSCOPICMODE) == hfrVrr;
- }
- 
- bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-@@ -1090,6 +1157,12 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
- {
-   bool result = false;
- 
-+  // Leaving runs even if the sink stopped offering frame-sequential 3D (TV
-+  // switched off), so nothing is stranded.
-+  if (m_fs3d_active || aml_display_fs3d_wanted(stereo_mode))
-+    return set_fs3d_resolution(res, framebuffer_name, stereo_mode, force_mode_switch,
-+                               hotplug_mode_switch);
-+
-   if (aml_get_cpufamily_id() < AML_T7)
-   {
-     handle_display_stereo_mode(stereo_mode);
-@@ -1111,6 +1184,182 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
-   return result;
- }
- 
-+/*
-+ * Frame-sequential 3D (HFR VRR). The sink keeps seeing a 2D 1080p 120 Hz signal,
-+ * and game VRR slows it to the largest even multiple of the film rate it carries
-+ * (24p at 96 Hz: each eye sees every frame twice). The video layer alternates the
-+ * eyes; the GUI is drawn once, the same for both. ALLM keeps the TV out of motion
-+ * smoothing, which would blend the eyes. Leaving puts all of it back.
-+ */
-+void CAMLDisplay::fs3d_apply(bool on, int vrr_rate)
-+{
-+  if (on)
-+  {
-+    CSysfsPath(FS3D_ALLM, std::string("1"));
-+    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode",
-+               std::string(vrr_rate ? "game-vrr" : "none"));
-+    CSysfsPath(FS3D_VRR_RATE, vrr_rate);
-+    CSysfsPath(FS3D_OSD, 0);
-+  }
-+  else
-+  {
-+    CSysfsPath(FS3D_OSD, 0);
-+    CSysfsPath(FS3D_VRR_RATE, 0);
-+    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
-+    CSysfsPath(FS3D_ALLM, m_fs3d_allm.empty() ? std::string("0") : m_fs3d_allm);
-+  }
-+}
-+
-+bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-+  const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch)
-+{
-+  bool enter = aml_display_fs3d_wanted(stereo_mode);
-+  // Kodi turns the stereo mode off as each film of a playlist starts and on
-+  // again when it has read the new one's layout: not a reason to leave
-+  if (!enter && fs3d_next_film_starting())
-+  {
-+    CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D kept for the next film",
-+              __FUNCTION__);
-+    enter = true;
-+    force_mode_switch = false;
-+  }
-+
-+  // the sink is never told about 3D
-+  if (m_stereo_mode != RenderStereoMode::OFF)
-+    handle_display_stereo_mode(RenderStereoMode::OFF);
-+
-+  if (!enter)
-+  {
-+    fs3d_apply(false, 0);
-+    m_fs3d_active = false;
-+    m_fs3d_vrr_rate = 0;
-+    CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
-+    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
-+  }
-+
-+  // The film rate: the video's own, or the refresh Kodi picked for it.
-+  float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-+  if (fps <= 0)
-+    fps = res.fRefreshRate;
-+
-+  // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
-+  // A 1000/1001 film rate takes the 119.88 Hz twin, so VRR lands on it exactly.
-+  RESOLUTION_INFO base = res;
-+  base.strId = FS3D_MODE;
-+  base.iScreenWidth = FS3D_WIDTH;
-+  base.iScreenHeight = FS3D_HEIGHT;
-+  base.fRefreshRate = 120.0f;
-+  if (fps > 0 && std::fabs(fps * 1.001f - std::round(fps * 1.001f)) < 0.01f &&
-+      std::fabs(fps - std::round(fps)) > 0.01f)
-+    base.fRefreshRate = FractionalRate(120);
-+
-+  // the 120/119.88 twins share a mode name: switch when the policy differs
-+  const int frac = base.fRefreshRate == std::floor(base.fRefreshRate) ? 0 : 1;
-+  const bool twin = m_amlDRMUtils->aml_get_drmProperty("FRAC_RATE_POLICY",
-+                                                      DRM_MODE_OBJECT_CONNECTOR) != frac;
-+
-+  if (!m_fs3d_active)
-+  {
-+    m_fs3d_allm = CSysfsPath(FS3D_ALLM).Get<std::string>().value_or("0");
-+    StringUtils::Trim(m_fs3d_allm);
-+  }
-+  const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
-+  if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
-+  {
-+    CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, FS3D_MODE);
-+    if (m_fs3d_active)
-+      fs3d_apply(false, 0);
-+    m_fs3d_active = false;
-+    m_fs3d_vrr_rate = 0;
-+    // for the rest of this film: it is not held back waiting for it
-+    m_fs3d_entry_failed = true;
-+    return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
-+  }
-+
-+  // The largest even multiple of the film rate the base carries. vrr_rate is in
-+  // the base mode's nominal units (the driver scales the base line rate by it),
-+  // so on the 119.88 Hz twin 9600 is 95.904 Hz.
-+  int multiple = fps > 0 ? static_cast<int>(base.fRefreshRate * 1.0001f / fps) : 0;
-+  multiple -= multiple % 2;
-+  const int vrr_rate = multiple >= 2 && fps * multiple >= 40.0f
-+                           ? static_cast<int>(fps * multiple / base.fRefreshRate * 12000.0f + 0.5f)
-+                           : 0;
-+  // the same mode and rate again need no rewrite: the sink can take one as a change
-+  if (switch_mode || vrr_rate != m_fs3d_vrr_rate)
-+    fs3d_apply(true, vrr_rate);
-+  m_fs3d_vrr_rate = vrr_rate;
-+  m_fs3d_res = res;
-+  m_fs3d_fps = fps;
-+  m_fs3d_active = true;
-+
-+  CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D, {:.3f} fps at vrr_rate {}",
-+            __FUNCTION__, fps, vrr_rate);
-+  return true;
-+}
-+
-+// HFR VRR is for a 3D film that is playing: the GUI on its own (playback
-+// stopping, the mode chosen in the menus) and a 2D film stay in their resolution.
-+bool CAMLDisplay::aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const
-+{
-+  if (!m_support_fs3d || m_fs3d_entry_failed || stereo_mode != RenderStereoMode::HFR_VRR)
-+    return false;
-+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
-+  if (!appPlayer || !appPlayer->IsPlayingVideo())
-+    return false;
-+  const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
-+  return !layout.empty() && layout != "mono";
-+}
-+
-+bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
-+{
-+  const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-+  return m_fs3d_active && (fps <= 0 || fps == m_fs3d_fps) &&
-+         m_fs3d_res.iWidth == res.iWidth && m_fs3d_res.iHeight == res.iHeight &&
-+         m_fs3d_res.iScreenWidth == res.iScreenWidth &&
-+         m_fs3d_res.iScreenHeight == res.iScreenHeight &&
-+         m_fs3d_res.fRefreshRate == res.fRefreshRate &&
-+         (m_fs3d_res.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK);
-+}
-+
-+bool CAMLDisplay::aml_display_fs3d_stale() const
-+{
-+  const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-+  return m_fs3d_active && fps > 0 && fps != m_fs3d_fps;
-+}
-+
-+void CAMLDisplay::aml_fs3d_decoder_closed()
-+{
-+  m_fs3d_closed_at = m_fs3d_active ? std::chrono::steady_clock::now().time_since_epoch().count()
-+                                   : 0;
-+}
-+
-+// A film follows one shown in 3D: the player plays, and its decoder has not
-+// opened yet or opened on a stereo layout, not long after. Kodi asks for 2D at
-+// the new film's first picture, before it has read the layout, so a picture is
-+// no sign. A stop is not playing; a 2D film leaves once its decoder has opened,
-+// one decoded in software at the bound, and so does a 3D one Kodi plays in 2D.
-+bool CAMLDisplay::fs3d_next_film_starting() const
-+{
-+  const int64_t closed = m_fs3d_closed_at;
-+  if (!m_fs3d_active || closed == 0 ||
-+      std::chrono::steady_clock::now().time_since_epoch().count() - closed >=
-+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(5))
-+              .count())
-+    return false;
-+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
-+  return appPlayer && appPlayer->IsPlaying() &&
-+         CAMLCodec::GetOpenedLayout() != CAMLCodec::OpenedLayout::MONO;
-+}
-+
-+void CAMLDisplay::aml_fs3d_leave()
-+{
-+  if (!m_fs3d_active)
-+    return;
-+  fs3d_apply(false, 0);
-+  m_fs3d_active = false;
-+  m_fs3d_vrr_rate = 0;
-+}
-+
- void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
- {
-   if (m_stereo_mode == RenderStereoMode::UNDEFINED)
+index 72f316878228e3d0b777b873ba836823df745b84..5ad96c144bf4e368708bff1fdbb00e84a286dc23 100644
+GIT binary patch
+delta 9082
+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
+
+delta 34
+scmV+-0NwxRkpr&20+6tg)LygY0pxg-lc5!p6^6vK8i?EivtXx(Av`P*MF0Q*
+
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index ec554af789..234557a21c 100644
---- a/xbmc/windowing/amlogic/AMLDisplay.h
-+++ b/xbmc/windowing/amlogic/AMLDisplay.h
-@@ -204,12 +204,55 @@ public:
-   bool aml_display_support_dv() const
-     { return m_hdr_caps.SupportsDolbyVision() != DolbyVisionFormat::DOLBYVISION_TYPE_NONE; }
-   bool aml_display_support_3d() const { return m_support_3d; }
-+  //! frame-sequential 3D: the sink sees 2D 1080p 120 Hz, the eyes alternate per vsync
-+  static constexpr const char* FS3D_MODE = "1920x1080p120hz";
-+  static constexpr int FS3D_WIDTH = 1920;
-+  static constexpr int FS3D_HEIGHT = 1080;
-+  static constexpr const char* FS3D_SWAP = "/sys/module/aml_media/parameters/fa_swap_eyes";
-+  //! 2D sink with game VRR, on a kernel that alternates the video's eyes per vsync
-+  bool aml_display_support_fs3d() const { return m_support_fs3d; }
-+  //! stereo video is to be handled as stereo: HDMI 3D, or frame-sequential
-+  //! for a user who has chosen HFR VRR (preferred or current mode)
-+  bool aml_display_support_stereo() const;
-+  //! frame-sequential 3D is on: the output is 1080p, whatever Kodi's resolution says
-+  bool aml_display_fs3d_active() const { return m_fs3d_active; }
-+  //! frame-sequential 3D should be on: HFR VRR, supported, and a 3D film playing
-+  bool aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const;
-+  //! frame-sequential 3D is on for this resolution of Kodi's and this film rate
-+  bool aml_display_fs3d_matches(const RESOLUTION_INFO& res) const;
-+  //! frame-sequential 3D is on for another film rate than the playing one
-+  bool aml_display_fs3d_stale() const;
-+  //! leave frame-sequential 3D, if it is on (Kodi shutting down)
-+  void aml_fs3d_leave();
-+  //! playback stopped: a failed entry into 3D no longer holds for the next film
-+  void aml_fs3d_playback_stopped() { m_fs3d_entry_failed = false; }
-+  //! a decoder closed: in frame-sequential 3D, the next film of a playlist may follow
-+  void aml_fs3d_decoder_closed();
- private:
-+  bool set_fs3d_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
-+    const RenderStereoMode stereo_mode, bool force_mode_switch, bool hotplug_mode_switch);
-+  void fs3d_apply(bool on, int vrr_rate);
-+  static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
-+  static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
-+  static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
-   std::unique_ptr<CAMLDRMUtils> m_amlDRMUtils;
-   bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
-   bool m_bHotPlug = false;
-   RenderStereoMode m_stereo_mode;
-   CHDRCapabilities m_hdr_caps;
-   bool m_is_widescreen = false;
--  bool m_support_3d = false;
-+  std::atomic<bool> m_support_3d{false};
-+  std::atomic<bool> m_support_fs3d{false};
-+  std::atomic<bool> m_fs3d_active{false};
-+  //! entering 3D failed for the film playing: it plays in 2D
-+  std::atomic<bool> m_fs3d_entry_failed{false};
-+  //! when a decoder closed in frame-sequential 3D (steady clock), else 0
-+  std::atomic<int64_t> m_fs3d_closed_at{0};
-+  bool fs3d_next_film_starting() const;
-+  std::string m_fs3d_allm;
-+  RESOLUTION_INFO m_fs3d_res;
-+  std::atomic<float> m_fs3d_fps{0.0f};
-+  //! the check for a 3D left behind by a Kodi that died has been made
-+  std::atomic<bool> m_fs3d_recovery_checked{false};
-+  int m_fs3d_vrr_rate = 0;
- };
+index ec554af7890b1d6780c883c33e03f25fa1c32b78..234557a21cf1352021e674d1e64ac242d8fad19a 100644
+GIT binary patch
+delta 2518
+zcmb7G!EPf(5ETbFti*}~dtDVdfP)NnVuZli1tK}Y7Rd(1fjy2o(>0k^dZvf&ww>8%
+zHQI0RPjKW@;A1!<QPnecMjJZ|w{fPY>eYL%UgypC|4jc#o>l<8-Y1Y)k>M8(f16?M
+zmC!I44Z)`fPUY9&5FPA~V6Xp8zkt2{K8#;=!)q+*jnE!#E<8ek7Ur(Z<3|9_3$J2`
+zP3}D26t;eXI2HDDIGzqh(dpUfsDkIPv-j<O|0Wct+UcvEgH4~S+}EGIoQy8U^cjEk
+z@X7Jf<j3&^A0^-$kH!_lYlE7;Jp7q4^<3$CnUOP%J(1}sL#afs5KI(}>w1ZZ+(Hx)
+zQxFg{k3>>nY@vJ#S9BD9JwNY)$w9z1k%XFP6aJ2}0~dIlD~aYa2Z7Hvi<ib|;Qms%
+zLW?qTv!XE8M~NFO|9t$UYW<c6@S2!o97MTA1EDM^>S5p#Ar-mQC_%X9z!1ix(+P=9
+z5bZq^G_?|XC1B=A+eK=qh$Fs?!yLxP=M@hKox);*)>3Uc9M9;9)FSq9mx^qip+?!+
+zt*yZVZSf+HVDj3LX6B2T=fAM3heelAk@w~V?<XS_k!aBwJ@blKccOHg5D<GZ60uiv
+zT>ka=<Er)hj>HX10WLK&EtyQlLj=?UH!7g)0&z@q4MvbCodIj6@~f>F79#g3-|H-Y
+z_;9ECuS5V#;!~oaHL6Kg^D~0*HXyJ>&erys@NtT+6Sj1D_2{GOQ?B{HfQZ~sQjmRk
+zUhc*g&x5U->4~fD5GW@!u02pSCeSG6c+Zi+sVV^#^e25gEIElX^PX4+X%;y<Zf+Eb
+zKwA@Z4YfMED}OPlOA%A7c~cZ9ha^`b6fXwmmA55O)EHJUH=s>^MYE+wOV`kjkmHRH
+z<KAnvsvR}8X|7wyY8bQ<wv3ui&#9$$cxN^N5@RDPY8GqSE`p`<%>-~RuOR^GE`rUp
+zq9n^iNielGi+k8YeY8<sp7|)Onv-5bIvRG=p?^PMUA}qpd$SWoq03HqYw|8L19NL5
+zmN^jm?vy{9jyC0~v{^e%jgv%8G?44?uO7ZUD0ZUr!;7PJ?N|%vD5_JLDSxwm==WB5
+z*OebGe0Xwl%0+j>4Y0MU&^n7a;dTy|`P08E=jCuHyvbDjjOqH0WM5_TK;8zmU)Oig
+z_JeHKcN}dcRqJH0qR=OUq2)E;@Tm=52L&xsD~rfjJ{ZQa!}dp{{wDCDQQNcacGPW=
+z(hbnK7H!qIc8h7DLs>6m$*1D$-7X-RANp^#CU<@PRpgnv(7kqQB>ZhZP#0_%-mv{6
+z9*P!CSla#SY8@e~qRt00np&(E(|>+6Jv;g3VsiE(n!GqZTeYIldt01D8*zsvDco)U
+z%YG7o@HNF-NZCm_!X#HA@--%&?uJxR0$-NIPKc*)<4Z;P!guE-5^tH1oQPX_x0D5R
+aqm@zUfNfLo3N|yXoK1H9fd0QBX#WDE$y?+A
+
+delta 51
+zcmewx+-SccO^&0WD6=fFB-LtiyV_T|r2PCGh1~e!(t?8gqLO&y6a`y_w8Wg^RBNtU
+GYc2p8=o1eB
+
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index ea2c6106d6..77c95b8e93 100644
---- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-+++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -17,6 +17,8 @@
- #include "ServiceBroker.h"
- #include "application/ApplicationComponents.h"
- #include "application/ApplicationPlayer.h"
-+#include "messaging/ApplicationMessenger.h"
-+#include "interfaces/AnnouncementManager.h"
- #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
- #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
- #include "cores/DataCacheCore.h"
-@@ -89,6 +91,8 @@ CWinSystemAmlogic::CWinSystemAmlogic()
- 
- CWinSystemAmlogic::~CWinSystemAmlogic()
- {
-+  if (auto announcements = CServiceBroker::GetAnnouncementManager())
-+    announcements->RemoveAnnouncer(this);
-   MonitorStop();
- }
- 
-@@ -200,6 +204,22 @@ bool CWinSystemAmlogic::MessagePump()
-   if (m_hotplugPending.exchange(false))
-     HotplugEvent();
- 
-+  // A stereo mode chosen while no new frame reaches the codec (paused) enters or
-+  // leaves HFR VRR from here; the codec only asks when it shows a frame.
-+  const RenderStereoMode stereoMode = GetGfxContext().GetStereoMode();
-+  if (stereoMode != m_fs3dStereoMode)
-+  {
-+    m_fs3dStereoMode = stereoMode;
-+    if (m_amlDisplay->aml_display_fs3d_wanted(stereoMode) !=
-+        m_amlDisplay->aml_display_fs3d_active())
-+      RequestFs3dCheck();
-+  }
-+  if (m_fs3dCheckRetry && std::chrono::steady_clock::now() >= *m_fs3dCheckRetry)
-+  {
-+    m_fs3dCheckRetry.reset();
-+    RequestFs3dCheck();
-+  }
-+
-   aml_resolution_refresh();
- 
-   return false;
-@@ -380,6 +400,10 @@ bool CWinSystemAmlogic::InitWindowSystem()
- {
-   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
- 
-+  // a stopped film leaves HFR VRR, whatever Kodi's refresh rate settings
-+  if (auto announcements = CServiceBroker::GetAnnouncementManager())
-+    announcements->AddAnnouncer(this, ANNOUNCEMENT::Player);
-+
-   RefreshDisplayCapabilities();
- 
-   if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
-@@ -461,9 +485,86 @@ bool CWinSystemAmlogic::InitWindowSystem()
- bool CWinSystemAmlogic::DestroyWindowSystem()
- {
-   CAMLCodec::ReleaseKeptFrame();
-+  if (auto announcements = CServiceBroker::GetAnnouncementManager())
-+    announcements->RemoveAnnouncer(this);
-+  // the sink is not left in game VRR
-+  if (m_amlDisplay)
-+    m_amlDisplay->aml_fs3d_leave();
-   return true;
- }
- 
-+namespace
-+{
-+void Fs3dCheckNow(void*)
-+{
-+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-+  if (!winSystem)
-+    return;
-+  if (auto* aml = dynamic_cast<CWinSystemAmlogic*>(winSystem); aml && aml->HoldFs3dCheck())
-+    return;
-+  auto& gfxContext = winSystem->GetGfxContext();
-+  gfxContext.SetVideoResolution(gfxContext.GetVideoResolution(), true);
-+}
-+
-+KODI::MESSAGING::ThreadMessageCallback fs3dCheck{&Fs3dCheckNow, nullptr};
-+} // namespace
-+
-+void CWinSystemAmlogic::RequestFs3dCheck()
-+{
-+  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_CALLBACK, -1, -1,
-+                                             static_cast<void*>(&fs3dCheck));
-+}
-+
-+bool CWinSystemAmlogic::HoldFs3dCheck()
-+{
-+  // Back-to-back 3D films: after one ends, Kodi asks for 2D until it has read
-+  // the next one's stereo layout. Leaving costs the sink two re-syncs and a mode
-+  // switch under the next film's decoder opening; while that decoder has not
-+  // opened or opened on a stereo layout, ask again shortly, for at most a few
-+  // seconds (a film decoded in software never says).
-+  // A 2D film follows: a check from here leaves at the mode the 3D film had,
-+  // and Kodi's resolution update, once the film shows, switches again to the
-+  // mode it picks for it. Keep holding briefly for that update to leave in one
-+  // switch, and leave from here if it does not come (refresh rate not adjusted).
-+  using namespace std::chrono_literals;
-+  const auto now = std::chrono::steady_clock::now();
-+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
-+  if (m_fs3dAwaitNext && m_amlDisplay && m_amlDisplay->aml_display_fs3d_active() && appPlayer &&
-+      appPlayer->IsPlaying())
-+  {
-+    if (!m_fs3dCheckHeldSince)
-+      m_fs3dCheckHeldSince = now;
-+    if (CAMLCodec::GetOpenedLayout() == CAMLCodec::OpenedLayout::MONO && !m_fs3dCheckMonoSince)
-+      m_fs3dCheckMonoSince = now;
-+    if (now - *m_fs3dCheckHeldSince < 5s &&
-+        (!m_fs3dCheckMonoSince || now - *m_fs3dCheckMonoSince < 1500ms))
-+    {
-+      m_fs3dCheckRetry = now + 200ms;
-+      return true;
-+    }
-+  }
-+  m_fs3dAwaitNext = false;
-+  m_fs3dCheckHeldSince.reset();
-+  m_fs3dCheckMonoSince.reset();
-+  m_fs3dCheckRetry.reset();
-+  return false;
-+}
-+
-+void CWinSystemAmlogic::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
-+                                 const std::string& sender,
-+                                 const std::string& message,
-+                                 const CVariant& data)
-+{
-+  if (flag == ANNOUNCEMENT::Player && message == "OnStop" && m_amlDisplay)
-+    m_amlDisplay->aml_fs3d_playback_stopped();
-+  if (flag == ANNOUNCEMENT::Player && message == "OnStop" && m_amlDisplay &&
-+      m_amlDisplay->aml_display_fs3d_active())
-+  {
-+    m_fs3dAwaitNext = true;
-+    RequestFs3dCheck();
-+  }
-+}
-+
- bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
-                                     bool fullScreen,
-                                     RESOLUTION_INFO& res)
+index ea2c6106d6200c4f2192722f134b44f4ab2a7296..77c95b8e934eb6a2b62fe27eb46c4730f8def295 100644
+GIT binary patch
+delta 3524
+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
+
+delta 50
+zcmV-20L}l3?E!|)0kFUUlYRpRvmOFK3A4=$Dh;zk8%Y|I$0H@Pel~pzlgL64laLq~
+Iv&T)tDB%qf?f?J)
+
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 44f8355712..e2bc91361a 100644
---- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
-+++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-@@ -6,6 +6,7 @@
-  *  See LICENSES/README.md for more information.
-  */
- 
-+#include "interfaces/IAnnouncer.h"
- #include "AMLDisplay.h"
- #include "DynamicDll.h"
- 
-@@ -21,14 +22,28 @@
- #include "cores/VideoPlayer/VideoRenderers/DebugInfo.h"
- 
- #include <atomic>
-+#include <chrono>
-+#include <optional>
- #include <thread>
- #include <gbm.h>
- 
- class IDispResource;
- 
--class CWinSystemAmlogic : public CWinSystemBase
-+class CWinSystemAmlogic : public CWinSystemBase, public ANNOUNCEMENT::IAnnouncer
- {
- public:
-+  //! Ask the main thread to set Kodi's resolution again, read when the request
-+  //! is handled, so that the window code enters or leaves HFR VRR as it should.
-+  static void RequestFs3dCheck();
-+  //! Main thread: whether to put a check off, the next film having shown no
-+  //! picture yet, rather than leave 3D and enter it again
-+  bool HoldFs3dCheck();
-+
-+  void Announce(ANNOUNCEMENT::AnnouncementFlag flag,
-+                const std::string& sender,
-+                const std::string& message,
-+                const CVariant& data) override;
-+
-   CWinSystemAmlogic();
-   virtual ~CWinSystemAmlogic();
- 
-@@ -111,6 +126,14 @@ protected:
-   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
- private:
-   bool m_staleVblankSeen{false};
-+  //! the stereo mode MessagePump last saw
-+  RenderStereoMode m_fs3dStereoMode{RenderStereoMode::OFF};
-+  //! a film in 3D has stopped: the check may wait for the next one's first picture
-+  std::atomic<bool> m_fs3dAwaitNext{false};
-+  //! a check put off: since when, and when it is asked again
-+  std::optional<std::chrono::steady_clock::time_point> m_fs3dCheckHeldSince;
-+  std::optional<std::chrono::steady_clock::time_point> m_fs3dCheckMonoSince;
-+  std::optional<std::chrono::steady_clock::time_point> m_fs3dCheckRetry;
-   std::atomic<std::thread::id> m_renderThread{};
-   std::atomic<float> m_frameLatencyMs{0.0f};
-   std::atomic<float> m_vblankPhaseMs{0.0f};
+index 44f835571299478789795ae3a3c6a3fe8b43e6b6..e2bc91361a3123791c4bf05a5a215da904994eec 100644
+GIT binary patch
+delta 1190
+zcmbVMJ#Q015EZGAB@iWoX82G@B$E{BE)kLyVg-Sn;6U1FvODKnd2jdF-LtVGbbkSf
+zo}Ln=MWUnNS24S16O7V;3(L2D`{vEOH}~c7x2GR}-c=@$%TbWue$g|=)<%%qDjt6Q
+z{`tl|Q8;Vtv(6)BgsvsQo~?qi2KA@cYm=r6Rei3NfZlL;^me#^FgO^#$+9b+&PAt1
+zWF3I*?FZ2F69@%CiOTQ~M<^j!@D$*smFkHHN8ai>76BYHs>>$~niUi;5I?=E$%n|-
+zFro5Lpplwn7rbQzh6I}_Bkc@?WziH{^k5xm!YO$;?2q7dGy?RX0{Ft#T5d6;4;Z+c
+zsZ|n2ZJoZ~k^2RS$;RgHqKCm!dxJ8I!dRAzT~u`d1QF3-^Sqmc7<wNdSGr`KQ)R}n
+z+{}Qn3${v$P&<M-1#T5vE^evS3Omn%+iP2hV$)3c>bbSLfkUh1ibDP;sb4y|vFgn7
+zxa5)aHI5<YuP$F&{RnG3&n3t#^TDy`b#}-|a;wnec<UN$N#5g_R>4=;{Zn)bO;`ts
+z0XM-;$vGuyw{!Vp?bWR&<|I1p*)_6IMhgcm<#AnBpfQTW8Ot6eRVN8Jh`91BXTz=z
+zF8)Sj*-^j$VQD3{&Ttla&IQN82isH?v9D1<Yh{UZm?6(T=LE&$WT`d8Y0Z^mF$)h_
+zP?{MATPm>^Eqb<4)Qbc|j>1Kb+S4Bb+8QxB9GMKfYIp%t+`Gy76nrkuK}SC!`8xrr
+z)N&p7(o?&x(KKF}`I*pGOtLJflFlm2i@sEo0)0qYp737t+!wlAvIg~kunqV<aUI*g
+SlilR?8BuWa%iDMEul)jD=aMM^
+
+delta 35
+rcmdm^yHaJssf}+ZGfrN{6wk#~%~epEl#`ikwK<U0hj;T*5pgB}3`h+Y
+
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-index 3c4c05ad58..27a726cae9 100644
---- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-+++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-@@ -124,9 +124,17 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
- 
-   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
-   bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
--  bool force_mode_switch_by_stereo_mode = (m_stereo_mode != stereo_mode);
-+  // Without HDMI 3D, a stereo mode changes the output only by entering or
-+  // leaving HFR VRR.
-+  bool force_mode_switch_by_stereo_mode =
-+      m_amlDisplay->aml_display_support_3d()
-+          ? m_stereo_mode != stereo_mode
-+          : m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) !=
-+                m_amlDisplay->aml_display_fs3d_active();
-   bool force_mode_switch_by_fractional_rate = (cur_fractional_rate != fractional_rate);
-   bool force_mode_switch_by_hotplug = m_amlDisplay->GetHotPlug();
-+  // HFR VRR kept from one 3D film to the next: the new film's rate
-+  const bool force_mode_switch_by_fs3d_rate = m_amlDisplay->aml_display_fs3d_stale();
- 
-   // get current used resolution
-   if (!m_amlDisplay->aml_get_native_resolution(&current_resolution))
-@@ -157,16 +165,25 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
-     __FUNCTION__,
-     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
- 
-+  // In HFR VRR the output is 1080p 120 Hz whatever Kodi's resolution says, so
-+  // the resolution it was entered with counts as the current one.
-+  const bool fs3d_same = m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) &&
-+                         m_amlDisplay->aml_display_fs3d_matches(res);
-+  // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
-+  if (fs3d_same)
-+    force_mode_switch_by_fractional_rate = false;
-+
-   // check if mode switch is needed
--  if (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
--      current_resolution.iScreenWidth == res.iScreenWidth &&
--      current_resolution.iScreenHeight == res.iScreenHeight && m_bFullScreen == fullScreen &&
--      current_resolution.fRefreshRate == res.fRefreshRate &&
--      (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
--          (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
--      m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
-+  if ((fs3d_same ||
-+       (current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
-+        current_resolution.iScreenWidth == res.iScreenWidth &&
-+        current_resolution.iScreenHeight == res.iScreenHeight &&
-+        current_resolution.fRefreshRate == res.fRefreshRate &&
-+        (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) ==
-+            (res.dwFlags & D3DPRESENTFLAG_MODEMASK))) &&
-+      m_bFullScreen == fullScreen && m_bWindowCreated && nativeGUI == m_nativeGUI && !force_mode_switch_by_hdr &&
-       !force_mode_switch_by_hotplug && !force_mode_switch_by_fractional_rate &&
--      !force_mode_switch_by_stereo_mode)
-+      !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
-   {
-     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
-     return true;
-@@ -181,7 +198,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
-     m_force_mode_switch = true;
-     m_hotplug_mode_switch = true;
-   }
--  else if (force_mode_switch_by_stereo_mode)
-+  else if (force_mode_switch_by_stereo_mode || force_mode_switch_by_fs3d_rate)
-   {
-     m_force_mode_switch = true;
-   }
-@@ -690,5 +707,8 @@ bool CWinSystemAmlogicGLESContext::SupportsStereo(const RenderStereoMode mode) c
-     return true;
-   }
- 
-+  if (mode == RenderStereoMode::HFR_VRR)
-+    return m_amlDisplay->aml_display_support_fs3d();
-+
-   return CRenderSystemGLES::SupportsStereo(mode);
- }
+index 3c4c05ad5813ff59eda04e11bab5d8e54ff873db..27a726cae93d46e085debc75f27b05eea4701380 100644
+GIT binary patch
+delta 1012
+zcma)5L2DCH5T+Mx6OCBXq;1qr6yvV8$)**lsj(hHNi8`TAzswwHT$-^xcgq%_mUVX
+z<Og{0@Xj836@)@TJP97ezoFM2{0ZXhZejz9^}(_;Z|2R+H{Z;+_fxMwOdUQ=Juj8u
+zi7Or6l~AuWwqdQd3<QLv0p;Lxi$dEWY>x_%4h3}UpeJYE0CopJ8Tz?w4|tFOz)&6~
+zy-=@jHKEmP7S&SfvidZeoPjDjghx%c3d4~c>YL!3aW*r`mamSIN9u%Q1s#d+)m+i>
+z$YA9@%BB@7rY+Vivrn)ZOPdI$Lw=k#OcfuDa_wJXNL#u+s;Pt2+nos02n)QR9SL^8
+zeS}Z3Phh*A50XcXVf3Y}jHG^Kxgj7Rk|KgOXF{rcDrZD>hPO~X4ULe*qeqnsAI}W8
+z*|?vR9Jm6?#=6mg@~Q##SI~DbZjT1A!!0*VP6hY6(&Y>U8Hi;N9BV<2LLMiKu7o}j
+zF_qMUJ`Mv`++|V#UZe9fXm^7EsSa@$$9Q0ua}Odwg82Ud=x_8C3JG;FxiCD1S)a(Z
+zLxqM_>l-H^;$cLn*nv{He7Cs19yY?}p2z#~yv7tcILynyxcsv>7|pfMgZ3MUo>0SC
+zZ5j!(i6^K!o?FSBSYdx3UqnY!Mmnu-WgaS#*~IUX`nh-=|8uI5JEuz7D{3dZrQT%q
+zq^<)3jUK7v%#!+?{i1$k7pKS5pp4t|>M(ut=<EEWDfK<KFf+DLb+DivJy>M-R$Uvk
+tXhEt~Xi{d;;BmC04P4Pm1!vU6ebb{X0hQf=g`0NuY#2$?H`Ke<onM|iO4|Sc
+
+delta 130
+zcmeC)#`s_@<AxZ%$x3`ule0v)Srlv)G$zaO%S@K#lb<|KUSRSg{=Chv1h%kE4wqD&
+zJV`Qca;2Qv<RUr6$=*_OlQpH~fo!SClJY#0Cj$8!rCcU|ms00cP*dYl0D;LK(nmKN
+g$V_6K>@BOYnMW?qhOH>Iq_ik+a)Fx2<j+wO0E>PpK>z>%
+

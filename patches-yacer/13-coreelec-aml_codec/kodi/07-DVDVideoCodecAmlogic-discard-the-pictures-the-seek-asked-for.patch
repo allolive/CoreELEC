@@ -18,162 +18,53 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
 new file mode 100644
-index 0000000000..b5c71512f1
---- /dev/null
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
-@@ -0,0 +1,65 @@
-+/*
-+ *  Copyright (C) 2026 Team Kodi
-+ *  This file is part of Kodi - https://kodi.tv
-+ *
-+ *  SPDX-License-Identifier: GPL-2.0-or-later
-+ *  See LICENSES/README.md for more information.
-+ */
-+
-+#pragma once
-+
-+#include <limits>
-+#include <optional>
-+
-+class CAMLSeekPreroll
-+{
-+public:
-+  void SetDrop(bool drop) { m_dropRequested = drop; }
-+
-+  void AcceptPacket(std::optional<double> pts)
-+  {
-+    if (!m_dropRequested)
-+      return;
-+
-+    if (m_pendingPictures < std::numeric_limits<unsigned int>::max())
-+      ++m_pendingPictures;
-+    if (pts)
-+    {
-+      if (!m_dropUntilPts || *pts > *m_dropUntilPts)
-+        m_dropUntilPts = pts;
-+    }
-+    else
-+      m_usePictureCount = true;
-+  }
-+
-+  bool ShouldDrop(std::optional<double> pts)
-+  {
-+    // The driver synthesizes PTS for untimestamped input. Count every preroll
-+    // output once; its numeric timestamp cannot identify those input packets.
-+    const bool beforeCutoff = m_dropUntilPts && (!pts || *pts <= *m_dropUntilPts);
-+    const bool drop = m_dropRequested || beforeCutoff ||
-+                      (m_usePictureCount && m_pendingPictures > 0);
-+    if (drop)
-+    {
-+      if (m_pendingPictures > 0)
-+        --m_pendingPictures;
-+      if (m_pendingPictures == 0)
-+        m_usePictureCount = false;
-+    }
-+    else
-+    {
-+      m_dropUntilPts.reset();
-+      m_pendingPictures = 0;
-+      m_usePictureCount = false;
-+    }
-+    return drop;
-+  }
-+
-+  void Reset() { *this = {}; }
-+
-+private:
-+  bool m_dropRequested{false};
-+  std::optional<double> m_dropUntilPts;
-+  unsigned int m_pendingPictures{0};
-+  bool m_usePictureCount{false};
-+};
+index 0000000000000000000000000000000000000000..b5c71512f1c3b8f4c16308f9780f39ef8eac0b31
+GIT binary patch
+literal 1562
+zcma)6U2obz5PbKq*s4+lM8+r&eJ~$VL{Jr#Rw$-Y-;iUk@hSG*_3j*%0{^{xXPW>{
+zrC353ZgyvPZgzu#2Lph)kUPb;xq;ri4|k)xFR;eAgl{5c4zSLdhKv;m^etm$KxFO|
+ze8`QFIt+pr0uRkA;ay0ydidopS%O@n|Ck~-EMurb__|v9cf*k{lwZUKRgFf3<>P$u
+zBU(hk)8hW&`(jw8kO>8)P(;h=wTulDd`JO-=Y5tc-j*>4o*?~VJSnOaVN$S?89h7u
+zM@SnM7c<XGidbuy-+y05h%YOJN)&~+_hj{4uq5;VUIj}bLi3=6>^%!nKuT|Y*h9Io
+zZ%_EULTxaGsXH0N(QCu*lLVz%#mNhro;GP1w$zhU5ChIY8r>)Oo<0C9gWjjBwD#0K
+z3QeW>*ygT*<whb;8Q-p0LPw}!0*-@MB`TI|>c%G(*KEtFKE}-~49oaWuiqxUz3pTf
+zp9q@L+Tt$C`$@M~tc-@k0R{ww84T*e+mn_88lBqzNhZSAEJw$Mg~q1Ia#Lw+`k9N0
+z8$ugZp@lnH-33IssEX8G$Ol9X0$Arrcf(#$f!=YGqh^0euhlwoh9VwT(jCU7bTY}x
+z3~2-`JyOgLWaA4fJ*5+sA&4{D7|2`DC=RDIki?t|1FW|B4oohzHLZ=4&JUVwOHU%W
+zHsIQNMzS={D<iUu`o5GCZf?jMR_Rvp$+RPRt?F4yYtU1wH>XmH3$nwZ(ce~d{`9&R
+zLUnXJL$^QbzZu63h|9Qd@>*lRA9W)3{SKhc_&>K#r$l-R?-n|REGB2wNv@pM)^(}z
+zkcNl`wduqf_j<yJvMuUEg!RzYdx1)Q+YC=N6K#=!v8!|n`=i?&l59##&~6@QimPp~
+gcRd|#5${|7vLlN-pZ{)4`;kl5a9vH`iH$J-0Is9)8UO$Q
+
+literal 0
+HcmV?d00001
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index a0f29b6a19..a3d51174d7 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -488,6 +488,7 @@ void CDVDVideoCodecAmlogic::Close(void)
-     m_Codec->CloseDecoder(), m_Codec = nullptr;
- 
-   m_videobuffer.iFlags = 0;
-+  m_seekPreroll.Reset();
- 
-   if (m_mpeg2_sequence)
-     delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
-@@ -505,6 +506,11 @@ void CDVDVideoCodecAmlogic::Close(void)
- 
- bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
- {
-+  // Enhancement-layer packets are sent with drop false, so taking the flag as it
-+  // stands would clear the request halfway through a dual layer run.
-+  if (!packet.isELPackage)
-+    m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
-+
-   // Handle Input, add demuxer packet to input queue, we must accept it or
-   // it will be discarded as VideoPlayerVideo has no concept of "try again".
- 
-@@ -700,6 +706,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
- 
-   if (data_added && packet.pData)
-   {
-+    // Decode timestamps cannot bound pictures reordered into presentation order.
-+    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && packet.pts != DVD_NOPTS_VALUE
-+                                  ? std::optional<double>{packet.pts}
-+                                  : std::nullopt);
-+
-     m_pendingMeta.Inherit(*m_lastMeta);
-     // consecutive frames with equal values share one copy
-     if (!(m_pendingMeta == *m_lastMeta))
-@@ -738,6 +749,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
- 
-   m_mpeg2_sequence_pts = 0;
-   m_has_keyframe = false;
-+  m_seekPreroll.Reset();
-   m_metadataSequencer.Reset();
-   m_pendingMeta = m_streamMeta;
-   if (m_bitstream)
-@@ -771,6 +783,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
-     pVideoPicture->videoBuffer = nullptr;
-     pVideoPicture->SetParams(m_videobuffer);
- 
-+    if (m_seekPreroll.ShouldDrop(m_videobuffer.pts != DVD_NOPTS_VALUE
-+                                     ? std::optional<double>{m_videobuffer.pts}
-+                                     : std::nullopt))
-+      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
-+
-     m_metadataSequencer.Consume(static_cast<double>(m_Codec->GetOMXPts()), m_frameMeta);
-     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
-     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
-@@ -808,10 +825,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
-     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
-     m_codecControlFlags = flags;
- 
--    if (flags & DVD_CODEC_CTRL_DROP)
--      m_videobuffer.iFlags |= DVP_FLAG_DROPPED;
--    else
--      m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
-+    if (flags & DVD_CODEC_CTRL_DRAIN)
-+      m_seekPreroll.SetDrop(false);
- 
-     if (m_Codec)
-       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
+index 68a10ca561186e390ec343a0403bdc61d7a0f6a6..2b22fe048f7df7b112ff7a7934a23b3496e90509 100644
+GIT binary patch
+delta 569
+zcmaKp&q~8U5XPw>N<EcYLG&>7Pi+vZ=c<+3co0N`)gna*X?CKao9vR^^djOz<kn{p
+z6!HXK1rH+Ly!ZktK7mQ9Nb8?D&V1j@Z@+zfN?ksuu8(Sy0FEvY+nR?SqqMY-0%cKI
+zO$V<hQ=zCeQxpAyI!e`Jycpb&T#&c2V|$tc`E^){JmIa{&0Q=ngNi022-0>?NW<X*
+zOv81VgckE%0^ByG@1Xz>nMcq=0=6p|@TiBbG^EX3NG7E;MAc7FHBIDFGt72Gns@Zm
+z$SX=*3ft`%)Se|!C;(5!aW{rj8>+s$rybPwMs??KD;;D;X680PNK!5{9-lMl8ex8m
+zV&&}HdY%X~<(|;>DUHPOJN2d<%Kj2tcz66hv}s#V>_@JjGM|zpH%IT-1X;_sEcE{2
+zn_v8k@5hD&bG|TusU*<>@J4)3>qWj)3A#8Pyy0+ge>@&O=vTuF)$QFc?Ev-XS6c=Z
+KsDv+gGWr1oTF1fw
+
+delta 129
+zcmZ4Ukn!pr#tjk9n+u&w88;ibP8Z$$GCH4W@-H6g%{_4!nKnl!9cGpA576XN0E684
+zvdom!{G`&fwA3QK$yP}+79jD|oZ?ihDl*-264Q$n)NB>%T*3n4-FzI~<6VOM0|H!K
+KHoIn|a{vGnq%2PW
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index b682d43ee7..e4f7b49b0c 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -9,6 +9,7 @@
- #pragma once
- 
- #include "AMLFrameMetadata.h"
-+#include "AMLSeekPreroll.h"
- #include "DVDVideoCodec.h"
- #include "DVDStreamInfo.h"
- #include "threads/CriticalSection.h"
-@@ -122,6 +123,8 @@ private:
-   bool m_stripHdr10Plus{false};
-   bool m_dualLayer{false};
-   int m_nalLengthSize{0};
-+  //! Which decoded pictures still answer the player's drop request.
-+  CAMLSeekPreroll m_seekPreroll;
-   AMLFrameMetadata m_streamMeta;
-   AMLFrameMetadata m_pendingMeta;
-   AMLFrameMetadataPtr m_lastMeta;
+index 796935b7617cab6b434af470bd0032f22cef5f26..89a7ad1098ec397a555ec5e5a4ec56eef8cddf07 100644
+GIT binary patch
+delta 132
+zcmaDO^G<fcH$F#SpWxKg?0}-wqWqkkjW15}B<brbDuicbCTA$5q$cO5q^2koWG0uC
+z7Nr&|6qjV?<R~QO6_=+LDU@WSDiq`-R;CuI7b~O`<rgRvr52W^7MJL8DJVFj8my2T
+RUyQJ3@&{g#$p?8?0{};`GJ*gA
+
+delta 19
+bcmaDS`$lHMx6ML~yLl#u@Ci?L<68j$SVRZD
+

@@ -29,178 +29,62 @@ start at.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 941b70c37d..28bb923812 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -124,6 +124,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
-   m_hints = hints;
-   m_hints.pClock = hints.pClock;
- 
-+  m_mvcParams = MvcParams::UNKNOWN;
-+  m_mvcParamsWait = 0;
-+  m_mvcParamsSkipped = 0;
-   m_nalLengthSize = 0;
-   m_streamMeta = {};
-   m_stripHdr10Plus = false;
-@@ -214,7 +217,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
-       }
- 
-       if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
-+      {
-         m_pFormatName = "am-h264mvc";
-+        m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
-+      }
-       else
-         m_pFormatName = "am-h264";
- 
-@@ -511,6 +517,92 @@ void CDVDVideoCodecAmlogic::Close(void)
-   m_opened = false;
- }
- 
-+/*
-+ * MVC remuxes can carry a stale PPS in their header (avcC/mvcC): on one Blu-ray
-+ * remux both PPS of the header differed from the ones every in-stream SPS/PPS
-+ * carried. The film's own sets reach the decoder from the stream and stay in use
-+ * for the IDRs that repeat none, so playing on works; but a decoder opened or
-+ * flushed at such an IDR has only the header's, the MVC decoder takes none of
-+ * its pictures and the player waits on it for good (a resume or seek that lands
-+ * there). So after an open, MVC pictures are held back until one carries its
-+ * own SPS, subset SPS and PPS, at most about two seconds; a file that never
-+ * repeats them then plays from the header as before. A flush waits again only
-+ * when the stream's own sets have turned out to differ from the header's, so a
-+ * file whose sets match the header, or that has none, loses nothing on a seek.
-+ */
-+int CDVDVideoCodecAmlogic::MvcParamsWaitLimit(const CDVDStreamInfo& hints)
-+{
-+  const double fps = hints.fpsrate > 0 && hints.fpsscale > 0
-+                         ? static_cast<double>(hints.fpsrate) / hints.fpsscale
-+                         : 24.0;
-+  return std::max(1, static_cast<int>(fps * 2.0 + 0.5));
-+}
-+
-+// Whether the picture carries SPS, subset SPS and PPS; notes whether they are
-+// the header's (the converted header, as m_hints holds it, has them verbatim).
-+bool CDVDVideoCodecAmlogic::MvcParamsScan(const uint8_t* data, uint32_t size)
-+{
-+  bool sps = false;
-+  bool subsetSps = false;
-+  bool pps = false;
-+  bool own = false;
-+  const uint8_t* header = m_hints.extradata.GetData();
-+  const size_t headerSize = header ? m_hints.extradata.GetSize() : 0;
-+  const int lengthSize = m_nalLengthSize > 0 ? m_nalLengthSize : 4;
-+  for (uint32_t i = 0; i + lengthSize < size;)
-+  {
-+    uint32_t nalSize = 0;
-+    for (int b = 0; b < lengthSize; b++)
-+      nalSize = (nalSize << 8) | data[i + b];
-+    i += lengthSize;
-+    if (nalSize == 0 || nalSize > size - i)
-+      break;
-+    const uint8_t type = data[i] & 0x1f;
-+    sps |= type == 7; // SPS
-+    subsetSps |= type == 15; // the second view's SPS
-+    pps |= type == 8; // PPS
-+    if ((type == 7 || type == 15 || type == 8) &&
-+        std::search(header, header + headerSize, data + i, data + i + nalSize) ==
-+            header + headerSize)
-+      own = true;
-+    i += nalSize;
-+  }
-+  if (own && m_mvcParams != MvcParams::OWN)
-+  {
-+    CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: MVC stream carries parameter sets that "
-+              "differ from its header's", __FUNCTION__);
-+    m_mvcParams = MvcParams::OWN;
-+  }
-+  else if ((sps || subsetSps || pps) && m_mvcParams != MvcParams::OWN)
-+    m_mvcParams = MvcParams::HEADER;
-+  return sps && subsetSps && pps;
-+}
-+
-+bool CDVDVideoCodecAmlogic::MvcParamsReady(const uint8_t* data, uint32_t size)
-+{
-+  if (MvcParamsScan(data, size))
-+  {
-+    if (m_mvcParamsSkipped)
-+      CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: MVC starts after {} pictures, at one with its "
-+                "own SPS and PPS", __FUNCTION__, m_mvcParamsSkipped);
-+    m_mvcParamsWait = 0;
-+    return true;
-+  }
-+  if (++m_mvcParamsSkipped >= m_mvcParamsWait)
-+  {
-+    CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: no MVC picture with its own SPS and PPS in {}; "
-+              "starting from the header's", __FUNCTION__, m_mvcParamsSkipped);
-+    if (m_mvcParams == MvcParams::UNKNOWN)
-+      m_mvcParams = MvcParams::NONE;
-+    m_mvcParamsWait = 0;
-+    return true;
-+  }
-+  if (m_mvcParamsSkipped == 1)
-+    CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: MVC waits for a picture with its own SPS and "
-+              "PPS", __FUNCTION__);
-+  return false;
-+}
-+
- bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
- {
-   // Enhancement-layer packets are sent with drop false, so taking the flag as it
-@@ -668,6 +760,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-       }
-       else
-       {
-+        if (m_mvcParamsWait)
-+        {
-+          if (!MvcParamsReady(pData, iSize))
-+          {
-+            m_pendingMeta = m_streamMeta;
-+            return true;
-+          }
-+        }
-+        else if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') &&
-+                 m_mvcParams != MvcParams::OWN)
-+          MvcParamsScan(pData, iSize);
-         if (!m_bitstream->Convert(pData, iSize))
-         {
-           m_pendingMeta = m_streamMeta;
-@@ -813,6 +916,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
- 
-   m_mpeg2_sequence_pts = 0;
-   m_has_keyframe = false;
-+  if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && m_mvcParams == MvcParams::OWN)
-+  {
-+    m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
-+    m_mvcParamsSkipped = 0;
-+  }
-   m_seekPreroll.Reset();
-   m_metadataSequencer.Reset();
-   m_pendingMeta = m_streamMeta;
+index 2b22fe048f7df7b112ff7a7934a23b3496e90509..4fb94c31873b76a6f549812c4d9c524430eb84ae 100644
+GIT binary patch
+delta 3744
+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
+aeef5%BQhp`Z3GpZ@n+RMeENCio&NzC4XG#q
+
+delta 48
+zcmV-00MGx^f&#4J0kE<Rvj+_f4wF<O771uFHZ*N^V<J1Vc^k$lvq@9j2(x%y*ATP)
+GZdMYm*b-s@
+
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index dd486491cf..0ff3954c01 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -126,6 +126,23 @@ private:
-   bool m_stripHdr10Plus{false};
-   bool m_dualLayer{false};
-   int m_nalLengthSize{0};
-+  //! MVC: what the stream's own parameter sets have shown so far
-+  enum class MvcParams
-+  {
-+    UNKNOWN, //!< none seen yet
-+    HEADER, //!< the header's, byte for byte: a flush needs no wait
-+    OWN, //!< some differ from the header's: a flush waits for them
-+    NONE, //!< a wait found none: the stream does not repeat them
-+  };
-+  MvcParams m_mvcParams{MvcParams::UNKNOWN};
-+  //! MVC: pictures held back after an open, or a flush of a stream with its
-+  //! own parameter sets, until one carries them, and how many so far; 0 once
-+  //! one has, or for other codecs
-+  int m_mvcParamsWait{0};
-+  int m_mvcParamsSkipped{0};
-+  static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
-+  bool MvcParamsScan(const uint8_t* data, uint32_t size);
-+  bool MvcParamsReady(const uint8_t* data, uint32_t size);
-   //! Which decoded pictures still answer the player's drop request.
-   CAMLSeekPreroll m_seekPreroll;
-   AMLFrameMetadata m_streamMeta;
+index 89a7ad1098ec397a555ec5e5a4ec56eef8cddf07..82876b9862d47d3fdd4ba6e71b879bb3c317040e 100644
+GIT binary patch
+delta 812
+zcmZ`%+iDa+5XDy^pCBGVjmkoTzR1KE$u20Gjbt%-Txxr2m?qQRLw8S>bqVtc{)&*V
+z$fG~vH(1>}n+;wbW|--!b55O8{p->9r$2t~^(W`Y1(r2M#F`PJXEOT%ZfVhyC&Q6F
+z0>^-wuB4$(mEcg3e+aPc3{*oQ;N(huNq`{7Yk7dL(@)dWi|Ggl2T$I?IxBEyixtOQ
+z|1fz!?k8tMJ;~QhCHws_!eSK}mGk+d0HJESP{T5pL8!1Ky&>5N1ZNnft|}S0^3G&K
+zTgDwlLWWE&il)z#Oi!niVGPRDQtxb;XD;pqgVJ%5kMP{`CNm=p*GKZY3jk(rwqdOA
+zPK#p5BR5MVNYVFbwThh=+M1gZ3sRS$DuqrKu4Oxdq_FkxD*4<j2}>Poh!>GgY=3WT
+zgw96YAO)|;do3c#^GK*m$Rc5=x2s{BM>v#D#alW7)g+q`^|S{kNDt*oR!LFYc;DuQ
+zgt|V=&i<&(E_K^-ITS;rs8vR9g6ZYLB=Bc#bbO(l4H3uV^YJWS#E-Ue&ru6yc$p$z
+zIM?iQo++{eq?4An^Y{uSMH1ig`{wmLBIs}Y59FELvsH#Zj=A~2*qhtEXAgb@Ruc}~
+
+delta 12
+TcmeBIc_+K!BJbu;0<w$%CDa8V
+

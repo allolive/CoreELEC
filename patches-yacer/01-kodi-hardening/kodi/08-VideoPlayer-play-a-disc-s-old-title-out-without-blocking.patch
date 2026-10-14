@@ -37,195 +37,64 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/NextStreamDrain.h b/xbmc/cores/VideoPlayer/NextStreamDrain.h
 new file mode 100644
-index 0000000000..f8729f0003
---- /dev/null
-+++ b/xbmc/cores/VideoPlayer/NextStreamDrain.h
-@@ -0,0 +1,71 @@
-+/*
-+ *  Copyright (C) 2026 Team Kodi
-+ *  This file is part of Kodi - https://kodi.tv
-+ *  SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+
-+#pragma once
-+
-+#include <chrono>
-+
-+/** The wait between an input stream asking for its next stream and the old
-+ * streams closing: the old ones play out what they queued while the player
-+ * keeps serving its messages.
-+ *
-+ * The player polls it once per loop with what the stream players report. A
-+ * drain whose position does not move for STALL is given up, as the message
-+ * queue's own drain timeout used to; a pause does not count against it.
-+ */
-+class CNextStreamDrain
-+{
-+public:
-+  using Clock = std::chrono::steady_clock;
-+  static constexpr std::chrono::seconds STALL{10};
-+
-+  enum class State
-+  {
-+    PLAYING_OUT, //!< the old streams still hold data: keep waiting
-+    DONE, //!< nothing left: close the old streams and open the next
-+    STALLED, //!< no progress for STALL: give up, as for DONE
-+  };
-+
-+  void Begin()
-+  {
-+    m_pending = true;
-+    m_moved = true;
-+  }
-+  void Cancel() { m_pending = false; }
-+  bool Pending() const { return m_pending; }
-+
-+  /** \param hasData either old stream still holds queued data
-+   *  \param position a figure that moves while they play out (their pts)
-+   *  \param paused progress is not expected
-+   */
-+  State Poll(bool hasData, double position, bool paused, Clock::time_point now)
-+  {
-+    if (!m_pending)
-+      return State::DONE;
-+
-+    if (hasData)
-+    {
-+      if (m_moved || position != m_position || paused)
-+      {
-+        m_moved = false;
-+        m_position = position;
-+        m_progress = now;
-+        return State::PLAYING_OUT;
-+      }
-+      if (now - m_progress <= STALL)
-+        return State::PLAYING_OUT;
-+    }
-+
-+    m_pending = false;
-+    return hasData ? State::STALLED : State::DONE;
-+  }
-+
-+private:
-+  bool m_pending = false;
-+  bool m_moved = true;
-+  double m_position = 0.0;
-+  Clock::time_point m_progress;
-+};
+index 0000000000000000000000000000000000000000..f8729f00039ffe7b07679c067eec227b57de6ce4
+GIT binary patch
+literal 1897
+zcmZWqU2h^c6n&pxaie`GL3}k2eHcQk6jrNMqbyRW)RihBXXe6K4EEIaz@qH__nzxv
+z7?MRwBJBHh&OOH&_Y>+9&24pZdRqkQ&2Q;$a`zjpSncUAo9h^`DzvAKE}8JRQZA6)
+z#9JCt5klqD@py;eQ8>i-=jGy`;iJyjcpiSv*#y1O>{9x)d>r15CPV9nr3&m2Jx-Dj
+zl~dcjB5N|nH*K=A&YAAB!dYW~Pm*!JPpg9IsC1wg4o7A~%8)iy9moeK(<;ByW=k9E
+zNC!`bzjaq8r+|E0<}zQC;3+GuM@rh>VE_icQk}@6?y*oou1@q{%{AvZ5DKJ_#Kh@o
+z$6R^x><-dg8t>VAwPim-E9oYKH}O>2vh)awNU35+rL`3ubto>~S~yLLC&!g_VMGs7
+zD|bp8gj$c97(QrgD7To}*g$)G;E4Zu_3-#8yV~jln5wG**olLmhm%?n)Gwaw5hY^X
+zp!Y1mYY(u&PDx?e_|kRAY;6LmEvE1RKm_AB$x7ut&7Z*dbKJ#3$|bK!Rlk%vOA|s#
+zp=Vy&Y)3Od%+s{lZkqbQDnG5UjBGbWs1GXWj53QB{H=2Dq8S&trwH-&*U67*f*dyW
+z9_y4bo{`Qtdc_aX^6}y8=ciBWFMqEFG#=mFUv}M!zz1EHR6rV(tDw@j(Wo>`9BVAT
+zJbgSTgXKbil)MRP)K8-a$!-fOh|N}@U4$Ykj78$S9~YN8R5`nKkV?0(G_I@NmgrbI
+zBfG(PusWwdd8<wD7KaVK{TiKe8EHnr)hq-O?bjlO{Oarn&SQbOg2~F>ExjVD%iXBb
+z^OPj)#oCgVO;yCjJs{d~sGaGOBpA_R&42MEz<`DF3ou9wIYZhVC!nU~*tcF1u4UFf
+zwdof<D?ByZ+6l8Tpdj&`^-i5XduXE_Rly4%*Of%HdB-q}AohTmI17v?0KsGYj#8l|
+zOxcT|&j1F{JA~UgY|wBLy^s$Y6{o4VWnEbfLl}GPR-!l5ySZ>1M?=FieX(Vl%3`B%
+zi6s2oxQT5R+g!AZ{QkYO`^`+2(3)RvBHXr7n|`f=X1jtrey-AIm%5E|<Q~_pHfI8@
+zyLk)Z%3E!S=tn*R3Yqx#a8>Mn*0{Ev^gSs*)r$g)^ISB3h2%U;tGYj$b*AarX_U4H
+v4cV|!l2lF~@I1(i6gQ6PelC5!d2gY!DBh4a8BGLweAnJ6qJuq6VBh}%`e9t;
+
+literal 0
+HcmV?d00001
+
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index b6cb117663..41a5afd28d 100644
---- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -1570,6 +1570,7 @@ void CVideoPlayer::Prepare()
-   m_processInfo->SetTempo(1.0);
-   m_processInfo->SetFrameAdvance(false);
-   m_State.Clear();
-+  m_nextStream.Cancel();
-   m_CurrentVideo.hint.Clear();
-   m_CurrentAudio.hint.Clear();
-   m_CurrentSubtitle.hint.Clear();
-@@ -1755,6 +1756,8 @@ void CVideoPlayer::Process()
-     // check display lost
-     if (m_displayLost)
-     {
-+      if (m_nextStream.Pending())
-+        m_nextStream.Begin(); // the outage is no stall
-       CThread::Sleep(50ms);
-       continue;
-     }
-@@ -1768,6 +1771,38 @@ void CVideoPlayer::Process()
-     if (m_bAbortRequest)
-       break;
- 
-+    // the last stream plays out before the next one opens, with messages still served
-+    if (m_nextStream.Pending())
-+    {
-+      // only streams in sync play out, as in CloseStream(true); a seek gives the rest up
-+      const bool audio = m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC;
-+      const bool video = m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
-+      auto state = CNextStreamDrain::State::STALLED;
-+      if (m_caching == CACHESTATE_DONE)
-+        state = m_nextStream.Poll(
-+            (audio && m_VideoPlayerAudio->HasData()) || (video && m_VideoPlayerVideo->HasData()),
-+            (audio ? m_VideoPlayerAudio->GetCurrentPts() : 0.0) +
-+                (video ? m_VideoPlayerVideo->GetCurrentPts() : 0.0),
-+            m_playSpeed == DVD_PLAYSPEED_PAUSE, std::chrono::steady_clock::now());
-+      if (state == CNextStreamDrain::State::PLAYING_OUT)
-+      {
-+        CThread::Sleep(100ms);
-+        continue;
-+      }
-+      m_nextStream.Cancel();
-+      const bool drained = state == CNextStreamDrain::State::DONE;
-+      if (!drained)
-+        CLog::Log(LOGWARNING, "VideoPlayer: next stream, old streams given up");
-+      CloseStream(m_CurrentAudio, drained);
-+      CloseStream(m_CurrentVideo, drained);
-+
-+      m_syncStartPtsWait.reset();
-+      m_CurrentAudio.Clear();
-+      m_CurrentVideo.Clear();
-+      m_CurrentSubtitle.Clear();
-+      continue;
-+    }
-+
-     // should we open a new input stream?
-     if (!m_pInputStream)
-     {
-@@ -1913,13 +1948,7 @@ void CVideoPlayer::Process()
- 
-         SetCaching(CACHESTATE_DONE);
-         CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
--        CloseStream(m_CurrentAudio, true);
--        CloseStream(m_CurrentVideo, true);
--
--        m_syncStartPtsWait.reset();
--        m_CurrentAudio.Clear();
--        m_CurrentVideo.Clear();
--        m_CurrentSubtitle.Clear();
-+        m_nextStream.Begin();
-         continue;
-       }
- 
-@@ -3356,8 +3385,8 @@ void CVideoPlayer::HandleMessages()
-         m_processInfo->SeekFinished(0);
-       }
- 
--      // dvd's will issue a HOP_CHANNEL that we need to skip
--      if(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
-+      // dvd's will issue a HOP_CHANNEL that we need to skip; none comes without a demuxer
-+      if (m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
-         m_dvd.state = DVDSTATE_SEEK;
- 
-       m_processInfo->SetStateSeeking(false);
-@@ -5830,6 +5859,10 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
- 
- void CVideoPlayer::UpdatePlayState(double timeout)
- {
-+  // the old streams play out with no demuxer to read a position from
-+  if (m_nextStream.Pending())
-+    return;
-+
-   if (m_State.timestamp != 0 &&
-       m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
-     return;
+index 1ce4c3bf49ab34597b2e415ad932dd2424a57488..cdbcbc86413225478e05fcb69081ff826e88d449 100644
+GIT binary patch
+delta 1149
+zcmah|O-NKx80Ef5<@uM&m?6cd#PB8u9SMR)%&{3OVbBRR2r9YGyN<8k+&j&CV<RmF
+zif|Dn@)oyc>lUUB5k!Fyx(UKXv?^VN5fl#PzWaXs8K|7iWA44*`Of*ibLKzSzTd1}
+z>|AM}ByWzGS%TA@QB0FWx0drhUU)7YE=E>x%cwR9N_u?Xs|2B{MpH^4AcOZSyFX7-
+z8dU;4(A5Rz6akhqaf*Ou0A*m9Sl4B%`@65W_(eel`+<%PQ(V{-Afw|M!!CgdGRd;U
+zL9m+xqXH^Js1bxanmGk&Vi*F~5S5y)gF&*>M0FS)#Q3hqTkyNas6ONMHbA3b%+RDm
+z!sZYJ>>NgQW)OEqikZz3p$&_M<QAl~X~Do2ktISzF5^Kb88u8kcMcurg>H0;zlou$
+zM&}SF7}H@|Qwf7!o<LG7e>#Sa@r~E0!g+QY=S*i#CV^gv4(+Zdmc<$kheu3o67d=B
+zkH-gMJx)Wu(1rYG++~OfJC$WSNibbkJZ|nY1?N<af#1*PW#r>W+EJ|xip$IIx0asy
+z;1V`s*u-Md!M~OE@luC$Qid>uIzs{IkonSesab+PQQX2KL8+$NyR*yr+#m{~AYXeT
+zwS@yNZ2)^!9^wCJO~m`J4h~%$A08X!mzPnKweUMsaAlOKbp0!==h59aaMd0jQN=_L
+zZWkLK8rXrb3ATB~dw!3`nN_zfb9@Cg`@ylN>)#+SUETGQ?G7qT(JmPAwRO~Leb}y)
+zchKCk_UgU=vbD9PShK(Cte^QBet%wSvIa}_eDxb@wDeNF^<cBbdbHsy{#bv}&{(G2
+z$z1Vv>EXu{JtAfzDoG{+;v~fm69$!}b9s`r@K>L8;a-S8zA07l#ZRbWHnNIdMOLME
+zXK(BTcAo@0k4_w&%!vSdI3PSK0;>w-3^O!SV-zN{EG;JgulVt|QR(Q*%0n{!1IxpJ
+ALI3~&
+
+delta 153
+zcmV;K0A~No=M9nE4X`f7lgM}tmvDIk1+!VjVHlI<^bfNm-Y5Z+Y2_8O$>g#Tm$~Qx
+z6_*g*0S5<ka&=`XI|`Sv=m8y*pN|d&3LqdLAeSFp0U(zH0|FP5?|2KB1p@*Pm(W!K
+z29s>$50?o80t=Ub*#QZYjpPrLI`<p1vi4@w0ScEq(*i?>iOT`EiOT}RIhXVG0T#E@
+H1q1kP#CJWX
+
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 535d2cefb2..ec30f4de89 100644
---- a/xbmc/cores/VideoPlayer/VideoPlayer.h
-+++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -13,6 +13,7 @@
- #include "Edl.h"
- #include "FileItem.h"
- #include "IVideoPlayer.h"
-+#include "NextStreamDrain.h"
- #include "VideoPlayerAudioID3.h"
- #include "VideoPlayerRadioRDS.h"
- #include "VideoPlayerSubtitle.h"
-@@ -663,6 +664,7 @@ protected:
-   XbmcThreads::EndTime<> m_syncTimer;
- 
-   std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
-+  CNextStreamDrain m_nextStream;
- 
-   CEdl m_Edl;
-   bool m_SkipCommercials;
+index 3328e68ce3d2adec12e5b7a1c0b3b8e4f2023959..f8820935699bfb0442279423673ff523555ee241 100644
+GIT binary patch
+delta 78
+zcmZ3yf$`x6#tlA<{C=qwCBY>{sfoERMTwbtlNT~dPM#CUu{oY`PpG_tf-{=DLT-E>
+PT*u_IVGffc!%qPKpZy-2
+
+delta 26
+icmaF3fpPH$#tlA<lg}`6Z!Tdx5<2-!nBC;*;imwdz6<UE
+
