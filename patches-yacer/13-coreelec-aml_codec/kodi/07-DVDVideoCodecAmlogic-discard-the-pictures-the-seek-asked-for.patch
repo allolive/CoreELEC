@@ -88,10 +88,10 @@ index 0000000..b5c7151
 +  bool m_usePictureCount{false};
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 68a10ca..2b22fe0 100644
+index 4153d55..be13536 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -482,6 +482,7 @@ void CDVDVideoCodecAmlogic::Close(void)
+@@ -496,6 +496,7 @@ void CDVDVideoCodecAmlogic::Close(void)
      m_Codec->CloseDecoder(), m_Codec = nullptr;
  
    m_videobuffer.iFlags = 0;
@@ -99,7 +99,7 @@ index 68a10ca..2b22fe0 100644
  
    if (m_mpeg2_sequence)
      delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
-@@ -499,6 +500,8 @@ void CDVDVideoCodecAmlogic::Close(void)
+@@ -513,6 +514,8 @@ void CDVDVideoCodecAmlogic::Close(void)
  
  bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  {
@@ -108,7 +108,7 @@ index 68a10ca..2b22fe0 100644
    // Handle Input, add demuxer packet to input queue, we must accept it or
    // it will be discarded as VideoPlayerVideo has no concept of "try again".
  
-@@ -648,6 +651,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -676,6 +679,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
    if (data_added && packet.pData)
    {
@@ -120,15 +120,15 @@ index 68a10ca..2b22fe0 100644
      m_pendingMeta.Inherit(*m_lastMeta);
      // consecutive frames with equal values share one copy
      if (!(m_pendingMeta == *m_lastMeta))
-@@ -669,6 +677,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
- 
-   m_mpeg2_sequence_pts = 0;
+@@ -699,6 +707,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
    m_has_keyframe = false;
+   if (m_frameNumRewriter)
+     m_frameNumRewriter->ResetState();
 +  m_seekPreroll.Reset();
    m_metadataSequencer.Reset();
    m_pendingMeta = m_streamMeta;
    if (m_bitstream)
-@@ -702,6 +711,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+@@ -732,6 +741,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
      pVideoPicture->videoBuffer = nullptr;
      pVideoPicture->SetParams(m_videobuffer);
  
@@ -140,7 +140,7 @@ index 68a10ca..2b22fe0 100644
      m_metadataSequencer.Consume(static_cast<double>(m_Codec->GetOMXPts()), m_frameMeta);
      pVideoPicture->videoBuffer = m_videoBufferPool->Get();
      static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
-@@ -739,10 +753,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+@@ -769,10 +783,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
      CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
      m_codecControlFlags = flags;
  
@@ -154,7 +154,7 @@ index 68a10ca..2b22fe0 100644
      if (m_Codec)
        m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 796935b..89a7ad1 100644
+index 9d668fa..8f40fcf 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -9,6 +9,7 @@
@@ -165,7 +165,7 @@ index 796935b..89a7ad1 100644
  #include "DVDVideoCodec.h"
  #include "DVDStreamInfo.h"
  #include "threads/CriticalSection.h"
-@@ -118,6 +119,8 @@ private:
+@@ -124,6 +125,8 @@ private:
    bool m_stripHdr10Plus{false};
    bool m_dualLayer{false};
    int m_nalLengthSize{0};

@@ -29,7 +29,7 @@ start at.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 2b22fe0..4fb94c3 100644
+index be13536..68f8649 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -118,6 +118,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
@@ -42,18 +42,23 @@ index 2b22fe0..4fb94c3 100644
    m_nalLengthSize = 0;
    m_streamMeta = {};
    m_stripHdr10Plus = false;
-@@ -208,7 +211,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
-       }
- 
-       if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
-+      {
+@@ -235,6 +238,15 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+           m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
+       {
          m_pFormatName = "am-h264mvc";
-+        m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
-+      }
-       else
-         m_pFormatName = "am-h264";
- 
-@@ -498,6 +504,92 @@ void CDVDVideoCodecAmlogic::Close(void)
++        if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
++        {
++          m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
++          // the stream's own parameter sets are told apart from the header's as
++          // it was written, before the frame_num rewrite changes its SPS
++          if (m_hints.extradata)
++            m_mvcHeader.assign(m_hints.extradata.GetData(),
++                               m_hints.extradata.GetData() + m_hints.extradata.GetSize());
++        }
+         m_frameNumRewriter = std::make_unique<CMVCFrameNumRewriter>();
+         if (m_hints.extradata && m_frameNumRewriter->ProcessAnnexB(m_hints.extradata.GetData(),
+                                                                    m_hints.extradata.GetSize(),
+@@ -512,6 +524,93 @@ void CDVDVideoCodecAmlogic::Close(void)
    m_opened = false;
  }
  
@@ -79,15 +84,16 @@ index 2b22fe0..4fb94c3 100644
 +}
 +
 +// Whether the picture carries SPS, subset SPS and PPS; notes whether they are
-+// the header's (the converted header, as m_hints holds it, has them verbatim).
++// the header's (the converted header, as written before the frame_num rewrite, has them
++// verbatim).
 +bool CDVDVideoCodecAmlogic::MvcParamsScan(const uint8_t* data, uint32_t size)
 +{
 +  bool sps = false;
 +  bool subsetSps = false;
 +  bool pps = false;
 +  bool own = false;
-+  const uint8_t* header = m_hints.extradata.GetData();
-+  const size_t headerSize = header ? m_hints.extradata.GetSize() : 0;
++  const uint8_t* header = m_mvcHeader.data();
++  const size_t headerSize = m_mvcHeader.size();
 +  const int lengthSize = m_nalLengthSize > 0 ? m_nalLengthSize : 4;
 +  for (uint32_t i = 0; i + lengthSize < size;)
 +  {
@@ -146,7 +152,7 @@ index 2b22fe0..4fb94c3 100644
  bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  {
    m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
-@@ -558,6 +650,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -572,6 +671,17 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        else
        {
@@ -164,10 +170,10 @@ index 2b22fe0..4fb94c3 100644
          if (!m_bitstream->Convert(pData, iSize))
          {
            m_pendingMeta = m_streamMeta;
-@@ -677,6 +780,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
- 
-   m_mpeg2_sequence_pts = 0;
+@@ -707,6 +817,11 @@ void CDVDVideoCodecAmlogic::Reset(void)
    m_has_keyframe = false;
+   if (m_frameNumRewriter)
+     m_frameNumRewriter->ResetState();
 +  if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && m_mvcParams == MvcParams::OWN)
 +  {
 +    m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
@@ -177,10 +183,10 @@ index 2b22fe0..4fb94c3 100644
    m_metadataSequencer.Reset();
    m_pendingMeta = m_streamMeta;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 89a7ad1..82876b9 100644
+index 8f40fcf..f838885 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -119,6 +119,23 @@ private:
+@@ -125,6 +125,24 @@ private:
    bool m_stripHdr10Plus{false};
    bool m_dualLayer{false};
    int m_nalLengthSize{0};
@@ -198,6 +204,7 @@ index 89a7ad1..82876b9 100644
 +  //! one has, or for other codecs
 +  int m_mvcParamsWait{0};
 +  int m_mvcParamsSkipped{0};
++  std::vector<uint8_t> m_mvcHeader;
 +  static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
 +  bool MvcParamsScan(const uint8_t* data, uint32_t size);
 +  bool MvcParamsReady(const uint8_t* data, uint32_t size);

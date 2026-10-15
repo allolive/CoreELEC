@@ -32,7 +32,7 @@ Co-authored-by: doppingkoala <doppingkoala@users.noreply.github.com>
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 9c8bf32..d8df23a 100644
+index 56620c9..41d8803 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -8966,6 +8966,18 @@ msgctxt "#14304"
@@ -1778,7 +1778,7 @@ index aa21f60..2b6cc23 100644
                        DVDVideoCodecAmlogic.h)
  endif()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index a7a816b..224bf9a 100644
+index 0bab531..38114be 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -15,6 +15,7 @@
@@ -1797,7 +1797,7 @@ index a7a816b..224bf9a 100644
    m_metadataSequencer.Reset();
  
    CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::Opening: codec {:d} profile:{:d} extra_size:{:d}", m_hints.codec, hints.profile, hints.extradata.GetSize());
-@@ -450,6 +452,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -470,6 +472,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
        if (m_hints.dovi.dv_profile > 0)
          m_streamMeta.flags.push_back("rpu-removed");
      }
@@ -1806,7 +1806,7 @@ index a7a816b..224bf9a 100644
    }
  
    if (m_hints.contentLightMetadata)
-@@ -725,6 +729,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -746,6 +750,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        }
        pData = m_bitstream->GetConvertBuffer();
        iSize = m_bitstream->GetConvertSize();
@@ -1815,7 +1815,7 @@ index a7a816b..224bf9a 100644
        doviIsFEL = m_bitstream->GetDoviIsFEL();
        IsHdr10Plus = m_bitstream->GetIsHdrPlus();
        if (IsHdr10Plus && m_stripHdr10Plus &&
-@@ -753,6 +759,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -788,6 +794,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        if (packet.pts == DVD_NOPTS_VALUE)
          m_hints.ptsinvalid = true;
  
@@ -1824,7 +1824,7 @@ index a7a816b..224bf9a 100644
        m_processInfo.SetDoviIsFEL(doviIsFEL);
        m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
  
-@@ -773,7 +781,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -808,7 +816,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
    if (!m_Codec)
      return true;
  
@@ -1834,7 +1834,7 @@ index a7a816b..224bf9a 100644
    {
      const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                 packet.iSideDataElems,
-@@ -819,6 +828,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -854,6 +863,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
      m_pendingMeta = m_streamMeta;
    }
  
@@ -1844,7 +1844,7 @@ index a7a816b..224bf9a 100644
    return data_added;
  }
  
-@@ -827,6 +839,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -862,6 +874,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
    if (m_Codec)
      m_Codec->Reset();
  
@@ -1852,9 +1852,9 @@ index a7a816b..224bf9a 100644
 +
    m_mpeg2_sequence_pts = 0;
    m_has_keyframe = false;
-   m_mvcDepth.Clear();
+   if (m_frameNumRewriter)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index 1189f16..9d47c6c 100644
+index d78f60e..80a17b6 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -9,6 +9,7 @@
@@ -1865,7 +1865,7 @@ index 1189f16..9d47c6c 100644
  #include "AMLSeekPreroll.h"
  #include "AMLMvcSubtitleDepth.h"
  #include "DVDVideoCodec.h"
-@@ -109,6 +110,9 @@ protected:
+@@ -112,6 +113,9 @@ protected:
    h264_sequence  *m_h264_sequence;
    double          m_h264_sequence_pts;
    bool            m_has_keyframe;
