@@ -17,6 +17,10 @@ seqcount, and:
   the vsync count as a generation);
 - add fa_swap_eyes (parameter): the first half is the right eye, for
   right-eye-first sources and the viewer's swap.
+The stamp is the av_probe interrupt-entry stamp moved onto the raw monotonic
+clock, which NTP does not slew: an emitter fits these stamps over minutes,
+and on the slewed clock they wandered +-1.5 ms from the vsyncs (connman
+slews several ms every quarter hour).
 The A frame selects vd1's second picture (psel, as VPP_PIC1_FIRST does), so
 it is reported as the right eye; measured with a left-white right-black
 source and the post-processor CRC. The waiter is woken from the vsync
@@ -35,7 +39,7 @@ diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
 index 431e6ec..348565c 100644
 --- a/drivers/media/video_sink/video.c
 +++ b/drivers/media/video_sink/video.c
-@@ -5371,6 +5371,113 @@ static void av_probe_stamp(void)
+@@ -5371,6 +5371,115 @@ static void av_probe_stamp(void)
  	raw_write_seqcount_end(&av_probe_seq);
  }
  
@@ -77,7 +81,9 @@ index 431e6ec..348565c 100644
 +		return;
 +	raw_write_seqcount_begin(&fa_sync_seq);
 +	fa_sync_vsync = av_probe_vsync;
-+	fa_sync_ns = av_probe_isr_ns;
++	/* the interrupt-entry stamp, moved onto the clock NTP does not slew */
++	fa_sync_ns = av_probe_isr_ns +
++		     (ktime_get_raw_fast_ns() - ktime_get_mono_fast_ns());
 +	fa_sync_eye = fa_eye_view(toggle_3d_fa_frame);
 +	raw_write_seqcount_end(&fa_sync_seq);
 +#ifndef FIQ_VSYNC
@@ -149,7 +155,7 @@ index 431e6ec..348565c 100644
  #ifdef FIQ_VSYNC
  void vsync_fisr_in(void)
  #else
-@@ -5389,6 +5496,7 @@ static irqreturn_t vsync_isr_in(int irq, void *dev_id)
+@@ -5389,6 +5498,7 @@ static irqreturn_t vsync_isr_in(int irq, void *dev_id)
  	if (debug_flag & DEBUG_FLAG_VSYNC_DONONE)
  		return IRQ_HANDLED;
  	post_vsync_process();
@@ -157,7 +163,7 @@ index 431e6ec..348565c 100644
  	return IRQ_HANDLED;
  }
  
-@@ -10943,6 +11051,41 @@ static ssize_t av_probe_show
+@@ -10943,6 +11053,41 @@ static ssize_t av_probe_show
  		mono, vsync, line, vpp_crc_result);
  }
  
@@ -199,7 +205,7 @@ index 431e6ec..348565c 100644
  static ssize_t vpp_crc_show
  	(struct class *cla,
  	struct class_attribute *attr,
-@@ -13500,6 +13643,9 @@ static struct class_attribute amvideo_class_attrs[] = {
+@@ -13500,6 +13645,9 @@ static struct class_attribute amvideo_class_attrs[] = {
  	       path_select_show,
  	       path_select_store),
  	__ATTR_RO(av_probe),
