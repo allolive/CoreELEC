@@ -9,8 +9,8 @@ yacer_add_test(
 )
 
 yacer_add_test(
-  NAME DolbyVisionTiming
-  SOURCES TestDolbyVisionTiming.cpp
+  NAME DolbyVisionLegacy
+  SOURCES TestDolbyVisionLegacy.cpp
 )
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

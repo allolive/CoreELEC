@@ -1,13 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:53:31 +0000
-Subject: [PATCH] AML: keep Dolby Vision brightness matched to each picture
+Subject: [PATCH] Dolby Vision: pair the layers of older Matroska files; end
+ a picture after its metadata
 
-Match the two Dolby Vision video layers by picture timestamp and keep
-that picture's base-layer timing through decoding. Missing or mistimed
-packets must not shift brightness metadata to another picture. Files with
-missing or incompatible layer timestamps can fail to pair instead of
-falling back to arrival order.
+Pairing a picture's two Dolby Vision layers by timestamp is upstream's
+now, in CDemuxDualLayer. This keeps the two things it does not do.
 
 Recognize older Matroska files that carry Dolby Vision across two tracks
 using their Blu-ray source IDs. Keep both tracks bound to each other even
@@ -18,216 +16,14 @@ Keep the enhancement picture and its brightness metadata before HEVC end
 markers. Rewriting the metadata must not skip or repeat the following
 part of the picture when the serialized size changes.
 
+Both are in shared Kodi code by necessity: the tracks are told apart
+where the demuxer adds its streams (DVDDemuxFFmpeg), and the end markers
+are placed where the HEVC stream is rebuilt (BitstreamConverter).
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
-new file mode 100644
-index 0000000000..43e16c4457
---- /dev/null
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLDolbyVisionTiming.h
-@@ -0,0 +1,37 @@
-+/*
-+ *  Copyright (C) 2026 Team CoreELEC
-+ *  SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+
-+#pragma once
-+
-+#include <cmath>
-+#include <optional>
-+
-+struct AMLDoviTiming
-+{
-+  double pts;
-+  double dts;
-+};
-+
-+// Both layers share the demuxer's time base. Prefer presentation timestamps;
-+// decode timestamps are evidence only when a presentation timestamp is absent.
-+// Missing or conflicting timestamps must never silently become arrival pairing.
-+// Return the base layer's timing, regardless of which layer arrived second.
-+inline std::optional<AMLDoviTiming> AMLDoviMatchTiming(
-+    bool firstIsEL, AMLDoviTiming first, bool secondIsEL, AMLDoviTiming second,
-+    double noPts, double tolerance)
-+{
-+  if (firstIsEL == secondIsEL)
-+    return std::nullopt;
-+  const auto valid = [noPts](double value)
-+  { return value != noPts && std::isfinite(value); };
-+  bool matches = false;
-+  if (valid(first.pts) && valid(second.pts))
-+    matches = std::abs(first.pts - second.pts) < tolerance;
-+  else if (valid(first.dts) && valid(second.dts))
-+    matches = std::abs(first.dts - second.dts) < tolerance;
-+  if (!matches)
-+    return std::nullopt;
-+  return firstIsEL ? second : first;
-+}
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 77a6e34594..941b70c37d 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -14,6 +14,7 @@
- #include "DVDVideoCodecAmlogic.h"
- #include "cores/VideoPlayer/Interface/TimingConstants.h"
- #include "DVDStreamInfo.h"
-+#include "AMLDolbyVisionTiming.h"
- #include "AMLCodec.h"
- #include "ServiceBroker.h"
- #include "utils/AMLUtils.h"
-@@ -427,8 +428,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
-   m_processInfo.SetVideoDAR(m_hints.aspect);
- 
-   m_has_keyframe = false;
--  m_dualLayerPaired = false;
--  m_dualLayerByArrival = false;
-+  m_dualLayerUnmatchedWarned = false;
- 
-   if (m_bitstream)
-   {
-@@ -527,6 +527,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-   bool IsHdr10Plus = false;
-   int data_added = false;
-   bool dual_layer_converted = false;
-+  double picturePts = packet.pts;
-+  double pictureDts = packet.dts;
- 
-   if (pData)
-   {
-@@ -572,25 +574,22 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-         // Both layers carry the same container timestamp, and 2 ms is well
-         // under half a frame even at 120 fps without trusting a rate hint
-         const double tolerance = DVD_MSEC_TO_TIME(2);
--        const bool byArrival = m_dualLayerByArrival;
-+        std::optional<AMLDoviTiming> pairedTiming;
-         auto match = std::find_if(m_packages.begin(), m_packages.end(),
--                                  [&packet, tolerance, byArrival](const DLDemuxPacket& queued)
-+                                  [&packet, tolerance, &pairedTiming](const DLDemuxPacket& queued)
-                                   {
--                                    if (std::get<2>(queued) == packet.isELPackage)
--                                      return false;
--                                    if (byArrival)
--                                      return true;
--                                    if (std::get<3>(queued) != DVD_NOPTS_VALUE &&
--                                        packet.pts != DVD_NOPTS_VALUE)
--                                      return fabs(std::get<3>(queued) - packet.pts) < tolerance;
--                                    if (std::get<4>(queued) != DVD_NOPTS_VALUE &&
--                                        packet.dts != DVD_NOPTS_VALUE)
--                                      return fabs(std::get<4>(queued) - packet.dts) < tolerance;
--                                    return true;
-+                                    pairedTiming = AMLDoviMatchTiming(
-+                                        std::get<2>(queued),
-+                                        {std::get<3>(queued), std::get<4>(queued)},
-+                                        packet.isELPackage, {packet.pts, packet.dts},
-+                                        DVD_NOPTS_VALUE, tolerance);
-+                                    return pairedTiming.has_value();
-                                   });
- 
-         if (match != m_packages.end())
-         {
-+          picturePts = pairedTiming->pts;
-+          pictureDts = pairedTiming->dts;
-           // both tracks arrive in decode order, so anything queued ahead of
-           // the partner has lost its own
-           while (m_packages.begin() != match)
-@@ -634,9 +633,6 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-               }
-             }
-           }
--          // only a pair that converted proves the timestamps line up
--          if (dual_layer_converted)
--            m_dualLayerPaired = true;
-         }
- 
-         if (!dual_layer_converted)
-@@ -655,21 +651,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-           while (m_packages.size() > MAX_DUAL_LAYER_PACKAGES)
-             DropDualLayerFront();
- 
--          // a full queue holding both layers that never paired means they
--          // carry offset timestamps: pair by arrival as before, from an empty
--          // queue so the stale backlog does not skew every later pair. A queue
--          // of one layer only is a missing partner and keeps waiting for it
--          if (m_packages.size() == MAX_DUAL_LAYER_PACKAGES && !m_dualLayerPaired &&
--              !m_dualLayerByArrival &&
--              std::any_of(m_packages.begin(), m_packages.end(),
--                          [&packet](const DLDemuxPacket& queued)
--                          { return std::get<2>(queued) != packet.isELPackage; }))
-+          // Keep waiting for a timestamp match, with bounded storage. Pairing
-+          // by arrival after a missing packet would bind the next EL/RPU to the
-+          // wrong base picture. Warn once instead of hiding that loss of sync.
-+          if (m_packages.size() == MAX_DUAL_LAYER_PACKAGES && !m_dualLayerUnmatchedWarned)
-           {
--            CLog::Log(LOGWARNING, "CDVDVideoCodecAmlogic::{}: dual layer timestamps never match, pairing by arrival", __FUNCTION__);
--            m_dualLayerByArrival = true;
--            while (!m_packages.empty())
--              DropDualLayerFront();
--            return true;
-+            m_dualLayerUnmatchedWarned = true;
-+            CLog::Log(LOGWARNING, "CDVDVideoCodecAmlogic::{}: dual layer queue full; "
-+                      "dropping unmatched packets, timestamp pairing required", __FUNCTION__);
-           }
-           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
-             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
-@@ -717,11 +706,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-       else
-         m_has_keyframe = true;
-     }
--    FrameRateTracking( pData, iSize, packet.dts, packet.pts);
-+    FrameRateTracking( pData, iSize, pictureDts, picturePts);
- 
-     if (!m_opened)
-     {
--      if (packet.pts == DVD_NOPTS_VALUE)
-+      if (picturePts == DVD_NOPTS_VALUE)
-         m_hints.ptsinvalid = true;
- 
-       m_processInfo.SetDoviIsFEL(doviIsFEL);
-@@ -776,23 +765,23 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
-     }
-   }
- 
--  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
-+  data_added = m_Codec->AddData(pData, iSize, pictureDts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : picturePts);
- 
-   if (data_added && packet.pData)
-   {
-     // Decode timestamps cannot bound pictures reordered into presentation order.
--    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && packet.pts != DVD_NOPTS_VALUE
--                                  ? std::optional<double>{packet.pts}
-+    m_seekPreroll.AcceptPacket(!m_hints.ptsinvalid && picturePts != DVD_NOPTS_VALUE
-+                                  ? std::optional<double>{picturePts}
-                                   : std::nullopt);
- 
-     m_pendingMeta.Inherit(*m_lastMeta);
-     // consecutive frames with equal values share one copy
-     if (!(m_pendingMeta == *m_lastMeta))
-       m_lastMeta = std::make_shared<const AMLFrameMetadata>(m_pendingMeta);
--    if (m_hints.ptsinvalid || packet.pts == DVD_NOPTS_VALUE)
-+    if (m_hints.ptsinvalid || picturePts == DVD_NOPTS_VALUE)
-       CAMLFrameMetadataStore::GetInstance().Publish(m_metadataToken, m_lastMeta);
-     else
--      m_metadataSequencer.Commit(packet.pts, m_lastMeta);
-+      m_metadataSequencer.Commit(picturePts, m_lastMeta);
-     m_pendingMeta = m_streamMeta;
-   }
- 
-diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index da2bef34e6..dd486491cf 100644
---- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-+++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -120,8 +120,7 @@ private:
-   static std::atomic<bool> m_InstanceGuard;
- 
-   std::list<DLDemuxPacket> m_packages;
--  bool m_dualLayerPaired{false};
--  bool m_dualLayerByArrival{false};
-+  bool m_dualLayerUnmatchedWarned{false};
- 
-   uint32_t m_metadataToken{0};
-   bool m_stripHdr10Plus{false};
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 5cd43a0aab..2db7b1e2d8 100644
+index 0ea0264..816966e 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -32,6 +32,7 @@
@@ -274,7 +70,7 @@ index 5cd43a0aab..2db7b1e2d8 100644
  const std::vector<std::string> font_mimetypes = {"application/x-truetype-font",
                                                   "application/vnd.ms-opentype",
                                                   "application/x-font-ttf",
-@@ -2068,17 +2098,43 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+@@ -2149,17 +2179,43 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
          st->colorTransferCharacteristic = pStream->codecpar->color_trc;
          st->colorRange = pStream->codecpar->color_range;
          st->hdr_type = DetermineHdrType(pStream);
@@ -319,7 +115,7 @@ index 5cd43a0aab..2db7b1e2d8 100644
              CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
              return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
                     (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
-@@ -2098,11 +2154,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+@@ -2179,11 +2235,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
              {
                // force dovi side data to base layer stream
                auto it = std::find_if(m_streams.begin(), m_streams.end(),
@@ -334,7 +130,7 @@ index 5cd43a0aab..2db7b1e2d8 100644
                    return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
                  });
  
-@@ -2152,9 +2210,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+@@ -2233,9 +2291,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
            {
              CDemuxStreamVideo *el_video_stream = nullptr;
              auto it = std::find_if(m_streams.begin(), m_streams.end(),
@@ -346,7 +142,7 @@ index 5cd43a0aab..2db7b1e2d8 100644
                    return false;
  
                  return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION;
-@@ -3187,7 +3245,10 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
+@@ -3268,7 +3326,10 @@ void CDVDDemuxFFmpeg::GetL16Parameters(int &channels, int &samplerate)
  StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
  {
    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
@@ -359,7 +155,7 @@ index 5cd43a0aab..2db7b1e2d8 100644
    if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                pStream->codecpar->nb_coded_side_data,
 diff --git a/xbmc/utils/BitstreamConverter.cpp b/xbmc/utils/BitstreamConverter.cpp
-index dea8e3527f..2a88e432a9 100644
+index dea8e35..2a88e43 100644
 --- a/xbmc/utils/BitstreamConverter.cpp
 +++ b/xbmc/utils/BitstreamConverter.cpp
 @@ -19,6 +19,8 @@
@@ -480,7 +276,7 @@ index dea8e3527f..2a88e432a9 100644
        av_free(start);
 diff --git a/xbmc/utils/DolbyVisionLegacy.h b/xbmc/utils/DolbyVisionLegacy.h
 new file mode 100644
-index 0000000000..455d6250c5
+index 0000000..455d625
 --- /dev/null
 +++ b/xbmc/utils/DolbyVisionLegacy.h
 @@ -0,0 +1,70 @@

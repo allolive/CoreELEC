@@ -27,7 +27,7 @@ line to make it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
-index 2dac8b457f..7ed61f848d 100644
+index 7786275..195b5e3 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/BaseRenderer.h
 @@ -79,6 +79,12 @@ public:
@@ -44,7 +44,7 @@ index 2dac8b457f..7ed61f848d 100644
    //! Overridden by renderers whose VideoBypassesFramebuffer() is true.
    //! Default: capture unavailable.
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 0e3ef8bd26..5344890ecb 100644
+index c8a5952..50ad8d7 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -31,11 +31,18 @@ CRendererAML::CRendererAML()
@@ -67,22 +67,22 @@ index 0e3ef8bd26..5344890ecb 100644
  {
    if (buffer && dynamic_cast<CAMLVideoBuffer*>(buffer))
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index a0dab21cf3..04c76d2e57 100644
+index 0935839..166b0c0 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 @@ -46,6 +46,7 @@ public:
    virtual bool WaitVsync() override;
-   virtual void PresentFrame(int index) override;
+   virtual bool PresentFrame(int index) override;
    virtual void WakeVsyncPresent() override;
 +  bool TakeClockSync(double refreshesPerFrame) override;
  
    // Feature support
    virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index ac5c1b915a..7412a44d8d 100644
+index e1a1540..abd3020 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -1539,6 +1539,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1546,6 +1546,7 @@ void CRenderManager::CheckEnableClockSync()
  {
    // refresh rate can be a multiple of video fps
    double diff = 1.0;
@@ -90,7 +90,7 @@ index ac5c1b915a..7412a44d8d 100644
  
    if (m_fps != 0)
    {
-@@ -1551,6 +1552,7 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1558,6 +1559,7 @@ void CRenderManager::CheckEnableClockSync()
      }
  
      diff = static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) / fps;
@@ -98,7 +98,7 @@ index ac5c1b915a..7412a44d8d 100644
      if (diff < 1.0)
        diff = 1.0 / diff;
  
-@@ -1558,7 +1560,10 @@ void CRenderManager::CheckEnableClockSync()
+@@ -1565,7 +1567,10 @@ void CRenderManager::CheckEnableClockSync()
      diff = std::abs(std::round(diff) - diff);
    }
  
@@ -111,7 +111,7 @@ index ac5c1b915a..7412a44d8d 100644
      m_clockSync.m_enabled = true;
    }
 diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
-index 7ed97dec61..2932f9ab5c 100644
+index 7ed97de..2932f9a 100644
 --- a/xbmc/utils/AMLUtils.cpp
 +++ b/xbmc/utils/AMLUtils.cpp
 @@ -10,9 +10,20 @@
@@ -279,7 +279,7 @@ index 7ed97dec61..2932f9ab5c 100644
 +  return g_amlRefreshesPerFrame.load(std::memory_order_relaxed);
 +}
 diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
-index 859e42e94a..4b32b87166 100644
+index 859e42e..4b32b87 100644
 --- a/xbmc/utils/AMLUtils.h
 +++ b/xbmc/utils/AMLUtils.h
 @@ -8,6 +8,9 @@
@@ -340,7 +340,7 @@ index 859e42e94a..4b32b87166 100644
 +//! number, or 0 when the rates do not match that way.
 +double aml_refreshes_per_frame();
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 1145c5b3de..ed9347b09e 100644
+index 1145c5b..ed9347b 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -85,6 +85,7 @@ public:

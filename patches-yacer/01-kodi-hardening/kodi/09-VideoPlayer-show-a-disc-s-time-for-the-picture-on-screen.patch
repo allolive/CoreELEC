@@ -51,7 +51,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
 new file mode 100644
-index 0000000000..52e0364e5c
+index 0000000..52e0364
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DisplayTimeAnchors.h
 @@ -0,0 +1,80 @@
@@ -136,7 +136,7 @@ index 0000000000..52e0364e5c
 +  std::deque<Anchor> m_anchors;
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 41a5afd28d..55b5eaee7e 100644
+index cdbcbc8..369be37 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1571,6 +1571,8 @@ void CVideoPlayer::Prepare()
@@ -163,7 +163,7 @@ index 41a5afd28d..55b5eaee7e 100644
        const bool drained = state == CNextStreamDrain::State::DONE;
        if (!drained)
          CLog::Log(LOGWARNING, "VideoPlayer: next stream, old streams given up");
-@@ -2787,6 +2793,13 @@ void CVideoPlayer::UpdateTimestamps(CCurrentStream& current, DemuxPacket* pPacke
+@@ -2822,6 +2828,13 @@ void CVideoPlayer::UpdateTimestamps(CCurrentStream& current, DemuxPacket* pPacke
    current.dts = dts;
  
    current.dispTime = pPacket->dispTime;
@@ -177,7 +177,7 @@ index 41a5afd28d..55b5eaee7e 100644
  }
  
  static void UpdateLimits(double& minimum, double& maximum, double dts)
-@@ -4866,6 +4879,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
+@@ -4901,6 +4914,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
  void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
  {
    m_syncStartPtsWait.reset();
@@ -186,7 +186,7 @@ index 41a5afd28d..55b5eaee7e 100644
    CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
  
    double startpts;
-@@ -5859,9 +5874,28 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
+@@ -5894,9 +5909,28 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
  
  void CVideoPlayer::UpdatePlayState(double timeout)
  {
@@ -216,7 +216,7 @@ index 41a5afd28d..55b5eaee7e 100644
  
    if (m_State.timestamp != 0 &&
        m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
-@@ -6005,8 +6039,30 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+@@ -6040,8 +6074,30 @@ void CVideoPlayer::UpdatePlayState(double timeout)
  
          state.time_offset = DVD_MSEC_TO_TIME(dispTime) - state.dts;
        }
@@ -250,7 +250,7 @@ index 41a5afd28d..55b5eaee7e 100644
      else
      {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index ec30f4de89..6c6546ecde 100644
+index f882093..617a287 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -10,6 +10,7 @@
@@ -261,12 +261,12 @@ index ec30f4de89..6c6546ecde 100644
  #include "Edl.h"
  #include "FileItem.h"
  #include "IVideoPlayer.h"
-@@ -665,6 +666,8 @@ protected:
+@@ -666,6 +667,8 @@ protected:
  
    std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
    CNextStreamDrain m_nextStream;
 +  CDisplayTimeAnchors m_displayTime;
 +  bool m_nextStreamSyncing = false;
  
-   CEdl m_Edl;
-   bool m_SkipCommercials;
+   std::optional<std::chrono::steady_clock::time_point> m_syncWait;
+ 

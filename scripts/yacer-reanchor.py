@@ -148,12 +148,14 @@ def prepare(args):
 def prepare_one(name, repo, old, new, download):
     git(repo, "init", "-q", "-b", "series")
     # Commits are made here by whoever resolves a stop, with no identity of
-    # their own; and blobs must be stored exactly as the files are.
+    # their own; and blobs must be stored exactly as the files are. Diffs stay
+    # text: a patch written as a git binary delta cannot be read or reviewed,
+    # and applies only to the very file it was made from.
     git(repo, "config", "core.autocrlf", "false")
     git(repo, "config", "user.name", "yacer")
     git(repo, "config", "user.email", "yacer@localhost")
     (repo / ".git" / "info").mkdir(exist_ok=True)
-    (repo / ".git" / "info" / "attributes").write_text("* -text -filter -ident -diff\n")
+    (repo / ".git" / "info" / "attributes").write_text("* -text -filter -ident\n")
     scratch = Path(tempfile.mkdtemp(prefix=f"reanchor-{name}-"))
     try:
         old_pin, ours = source_tree(name, old, scratch / "old", download)
@@ -308,7 +310,7 @@ def export(args):
                 if same:
                     kept += 1
                 else:
-                    diff = git_bytes(repo, "diff", "--no-color", "--no-renames", "--binary", "-U3",
+                    diff = git_bytes(repo, "diff", "--no-color", "--no-renames", "-U3",
                                      f"{sha}~1", sha)
                     path.write_bytes(header_of(path.read_bytes(), rel) + diff)
                     rewritten += 1

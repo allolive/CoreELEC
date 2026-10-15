@@ -37,7 +37,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/NextStreamDrain.h b/xbmc/cores/VideoPlayer/NextStreamDrain.h
 new file mode 100644
-index 0000000000..f8729f0003
+index 0000000..f8729f0
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/NextStreamDrain.h
 @@ -0,0 +1,71 @@
@@ -113,7 +113,7 @@ index 0000000000..f8729f0003
 +  Clock::time_point m_progress;
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index b6cb117663..41a5afd28d 100644
+index 1ce4c3b..cdbcbc8 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1570,6 +1570,7 @@ void CVideoPlayer::Prepare()
@@ -172,7 +172,7 @@ index b6cb117663..41a5afd28d 100644
      // should we open a new input stream?
      if (!m_pInputStream)
      {
-@@ -1913,13 +1948,7 @@ void CVideoPlayer::Process()
+@@ -1922,13 +1957,7 @@ void CVideoPlayer::Process()
  
          SetCaching(CACHESTATE_DONE);
          CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
@@ -187,7 +187,7 @@ index b6cb117663..41a5afd28d 100644
          continue;
        }
  
-@@ -3356,8 +3385,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3391,8 +3420,8 @@ void CVideoPlayer::HandleMessages()
          m_processInfo->SeekFinished(0);
        }
  
@@ -198,7 +198,7 @@ index b6cb117663..41a5afd28d 100644
          m_dvd.state = DVDSTATE_SEEK;
  
        m_processInfo->SetStateSeeking(false);
-@@ -5830,6 +5859,10 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
+@@ -5865,6 +5894,10 @@ int ToVisibleChapter(const std::vector<int>& rawChapters, int rawChapter)
  
  void CVideoPlayer::UpdatePlayState(double timeout)
  {
@@ -210,7 +210,7 @@ index b6cb117663..41a5afd28d 100644
        m_State.timestamp + DVD_MSEC_TO_TIME(timeout) > m_clock.GetAbsoluteClock())
      return;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 535d2cefb2..ec30f4de89 100644
+index 3328e68..f882093 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -13,6 +13,7 @@
@@ -221,11 +221,11 @@ index 535d2cefb2..ec30f4de89 100644
  #include "VideoPlayerAudioID3.h"
  #include "VideoPlayerRadioRDS.h"
  #include "VideoPlayerSubtitle.h"
-@@ -663,6 +664,7 @@ protected:
+@@ -664,6 +665,7 @@ protected:
    XbmcThreads::EndTime<> m_syncTimer;
  
    std::optional<std::chrono::steady_clock::time_point> m_syncStartPtsWait;
 +  CNextStreamDrain m_nextStream;
  
-   CEdl m_Edl;
-   bool m_SkipCommercials;
+   std::optional<std::chrono::steady_clock::time_point> m_syncWait;
+ 

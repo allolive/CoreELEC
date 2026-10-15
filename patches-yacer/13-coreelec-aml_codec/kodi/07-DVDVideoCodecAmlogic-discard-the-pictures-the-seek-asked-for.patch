@@ -18,7 +18,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
 new file mode 100644
-index 0000000000..b5c71512f1
+index 0000000..b5c7151
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSeekPreroll.h
 @@ -0,0 +1,65 @@
@@ -88,10 +88,10 @@ index 0000000000..b5c71512f1
 +  bool m_usePictureCount{false};
 +};
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index a0f29b6a19..a3d51174d7 100644
+index 68a10ca..2b22fe0 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -488,6 +488,7 @@ void CDVDVideoCodecAmlogic::Close(void)
+@@ -482,6 +482,7 @@ void CDVDVideoCodecAmlogic::Close(void)
      m_Codec->CloseDecoder(), m_Codec = nullptr;
  
    m_videobuffer.iFlags = 0;
@@ -99,19 +99,16 @@ index a0f29b6a19..a3d51174d7 100644
  
    if (m_mpeg2_sequence)
      delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
-@@ -505,6 +506,11 @@ void CDVDVideoCodecAmlogic::Close(void)
+@@ -499,6 +500,8 @@ void CDVDVideoCodecAmlogic::Close(void)
  
  bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  {
-+  // Enhancement-layer packets are sent with drop false, so taking the flag as it
-+  // stands would clear the request halfway through a dual layer run.
-+  if (!packet.isELPackage)
-+    m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
++  m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
 +
    // Handle Input, add demuxer packet to input queue, we must accept it or
    // it will be discarded as VideoPlayerVideo has no concept of "try again".
  
-@@ -700,6 +706,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -648,6 +651,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
    if (data_added && packet.pData)
    {
@@ -123,7 +120,7 @@ index a0f29b6a19..a3d51174d7 100644
      m_pendingMeta.Inherit(*m_lastMeta);
      // consecutive frames with equal values share one copy
      if (!(m_pendingMeta == *m_lastMeta))
-@@ -738,6 +749,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -669,6 +677,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
  
    m_mpeg2_sequence_pts = 0;
    m_has_keyframe = false;
@@ -131,7 +128,7 @@ index a0f29b6a19..a3d51174d7 100644
    m_metadataSequencer.Reset();
    m_pendingMeta = m_streamMeta;
    if (m_bitstream)
-@@ -771,6 +783,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+@@ -702,6 +711,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
      pVideoPicture->videoBuffer = nullptr;
      pVideoPicture->SetParams(m_videobuffer);
  
@@ -143,7 +140,7 @@ index a0f29b6a19..a3d51174d7 100644
      m_metadataSequencer.Consume(static_cast<double>(m_Codec->GetOMXPts()), m_frameMeta);
      pVideoPicture->videoBuffer = m_videoBufferPool->Get();
      static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
-@@ -808,10 +825,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+@@ -739,10 +753,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
      CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
      m_codecControlFlags = flags;
  
@@ -157,7 +154,7 @@ index a0f29b6a19..a3d51174d7 100644
      if (m_Codec)
        m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index b682d43ee7..e4f7b49b0c 100644
+index 796935b..89a7ad1 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 @@ -9,6 +9,7 @@
@@ -168,7 +165,7 @@ index b682d43ee7..e4f7b49b0c 100644
  #include "DVDVideoCodec.h"
  #include "DVDStreamInfo.h"
  #include "threads/CriticalSection.h"
-@@ -122,6 +123,8 @@ private:
+@@ -118,6 +119,8 @@ private:
    bool m_stripHdr10Plus{false};
    bool m_dualLayer{false};
    int m_nalLengthSize{0};

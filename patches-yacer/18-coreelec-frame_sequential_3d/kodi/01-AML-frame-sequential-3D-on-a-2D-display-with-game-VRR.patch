@@ -128,10 +128,10 @@ decoded in software at the 5 s bound.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 3f8796098e..63de17fed3 100644
+index 3ea53a5..911cd56 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -22671,6 +22671,12 @@ msgctxt "#36511"
+@@ -22683,6 +22683,12 @@ msgctxt "#36511"
  msgid "Checkerboard"
  msgstr ""
  
@@ -145,7 +145,7 @@ index 3f8796098e..63de17fed3 100644
  #end of reserved strings for 3d modes
  
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
-index 2cdd77a9e9..ab088ac9e2 100644
+index 2cdd77a..ab088ac 100644
 --- a/xbmc/application/Application.cpp
 +++ b/xbmc/application/Application.cpp
 @@ -915,7 +915,9 @@ void CApplication::Render()
@@ -160,7 +160,7 @@ index 2cdd77a9e9..ab088ac9e2 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index e800a5d4bf..0e4537280d 100644
+index e800a5d..0e45372 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -77,6 +77,23 @@ void RestoreDvdBlackout()
@@ -396,7 +396,7 @@ index e800a5d4bf..0e4537280d 100644
  
  void CAMLCodec::SetVideoRate(int videoRate)
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 38fb562be8..1dee5ec1bd 100644
+index 38fb562..1dee5ec 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -8,6 +8,7 @@
@@ -450,10 +450,10 @@ index 38fb562be8..1dee5ec1bd 100644
    static double m_ttd;
    CProcessInfo &m_processInfo;
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 2db7b1e2d8..aa68d2ef9e 100644
+index 816966e..df1768f 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-@@ -2359,7 +2359,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+@@ -2440,7 +2440,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
            st->m_description = av_dict_get(pStream->metadata, "title", NULL, 0)->value;
  
          if (pStream->codecpar->codec_id == AV_CODEC_ID_H264 &&
@@ -463,10 +463,10 @@ index 2db7b1e2d8..aa68d2ef9e 100644
            if (CDVDCodecUtils::IsH264AnnexB(m_pFormatContext->iformat->name, pStream))
            {
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 34b72cb841..1c8beb0cfc 100644
+index a84ee4c..8707799 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-@@ -338,7 +338,11 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+@@ -339,7 +339,11 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
          m_releasedMeta = amli->m_metadata;
        }
        if (setVideoRect)
@@ -475,10 +475,10 @@ index 34b72cb841..1c8beb0cfc 100644
 +        std::lock_guard<std::mutex> geometryLock(m_pendingGeometryLock);
 +        m_geometryCodec = amli->m_amlCodec;
 +      }
+       m_prevCodec = amli->m_amlCodec;
        // Refreshes what the decode thread and the debug overlay read.
        static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->SampleFrameLatency();
-       amli->m_amlCodec->LatencyTick(pts);
-@@ -355,12 +359,34 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -357,12 +361,34 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
  {
    ManageRenderArea();
  
@@ -514,10 +514,10 @@ index 34b72cb841..1c8beb0cfc 100644
      if (codec && codec->IsOpen())
        codec->SetVideoRect(m_sourceRect, m_destRect);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index 6ae5a42b36..a33849b34f 100644
+index 69b8aa3..d623507 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-@@ -87,6 +87,9 @@ private:
+@@ -88,6 +88,9 @@ private:
    //! Frame last released to amvideo, whose metadata goes out when the frame is shown
    uint32_t m_releasedToken{0};
    std::shared_ptr<const AMLFrameMetadata> m_releasedMeta;
@@ -528,7 +528,7 @@ index 6ae5a42b36..a33849b34f 100644
    uint64_t m_prerollGeneration{0};
    bool m_prerollHold{false};
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 913ef27033..47535fd33d 100644
+index 913ef27..47535fd 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -14,6 +14,7 @@
@@ -562,7 +562,7 @@ index 913ef27033..47535fd33d 100644
      // We always consider aligning 4/3 subtitles to the video,
      // for example SD DVB subtitles (4/3) must be stretched on fullhd video
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index 4359d7b46c..8d355c3e85 100644
+index 4359d7b..8d355c3 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -682,9 +682,10 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
@@ -579,7 +579,7 @@ index 4359d7b46c..8d355c3e85 100644
    }
  
 diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
-index 788e541256..1fc98f41e3 100644
+index 788e541..1fc98f4 100644
 --- a/xbmc/guilib/StereoscopicsManager.cpp
 +++ b/xbmc/guilib/StereoscopicsManager.cpp
 @@ -85,6 +85,7 @@ static const struct StereoModeMap StringToGuiModeMap[] = {
@@ -610,7 +610,7 @@ index 788e541256..1fc98f41e3 100644
  
    if (!CStereoscopicsManager::IsVideoStereoscopic())
 diff --git a/xbmc/interfaces/json-rpc/schema/methods.json b/xbmc/interfaces/json-rpc/schema/methods.json
-index 9bf0f92891..ebe0ea7981 100644
+index 9bf0f92..ebe0ea7 100644
 --- a/xbmc/interfaces/json-rpc/schema/methods.json
 +++ b/xbmc/interfaces/json-rpc/schema/methods.json
 @@ -5572,7 +5572,8 @@
@@ -624,7 +624,7 @@ index 9bf0f92891..ebe0ea7981 100644
          "required": true
        }
 diff --git a/xbmc/interfaces/json-rpc/schema/types.json b/xbmc/interfaces/json-rpc/schema/types.json
-index 9d495ab339..07c04ea636 100644
+index 9d495ab..07c04ea 100644
 --- a/xbmc/interfaces/json-rpc/schema/types.json
 +++ b/xbmc/interfaces/json-rpc/schema/types.json
 @@ -4312,7 +4312,8 @@
@@ -638,14 +638,14 @@ index 9d495ab339..07c04ea636 100644
        },
        "label": {
 diff --git a/xbmc/interfaces/json-rpc/schema/version.txt b/xbmc/interfaces/json-rpc/schema/version.txt
-index cf2784fd93..0cc5c4c6b0 100644
+index cf2784f..0cc5c4c 100644
 --- a/xbmc/interfaces/json-rpc/schema/version.txt
 +++ b/xbmc/interfaces/json-rpc/schema/version.txt
 @@ -1 +1 @@
 -JSONRPC_VERSION 13.1000.0
 +JSONRPC_VERSION 13.1001.0
 diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
-index 38fce27490..d2d0f40bc1 100644
+index 38fce27..d2d0f40 100644
 --- a/xbmc/rendering/RenderSystemTypes.h
 +++ b/xbmc/rendering/RenderSystemTypes.h
 @@ -27,6 +27,8 @@ enum class RenderStereoMode
@@ -658,7 +658,7 @@ index 38fce27490..d2d0f40bc1 100644
  
    // Pseudo modes
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 72f3168782..5ad96c144b 100644
+index 72f3168..5ad96c1 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -5,11 +5,17 @@
@@ -944,7 +944,7 @@ index 72f3168782..5ad96c144b 100644
  {
    if (m_stereo_mode == RenderStereoMode::UNDEFINED)
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index ec554af789..234557a21c 100644
+index ec554af..234557a 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -204,12 +204,55 @@ public:
@@ -1005,7 +1005,7 @@ index ec554af789..234557a21c 100644
 +  int m_fs3d_vrr_rate = 0;
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index ea2c6106d6..77c95b8e93 100644
+index ea2c610..77c95b8 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -17,6 +17,8 @@
@@ -1148,7 +1148,7 @@ index ea2c6106d6..77c95b8e93 100644
                                      bool fullScreen,
                                      RESOLUTION_INFO& res)
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 44f8355712..e2bc91361a 100644
+index 44f8355..e2bc913 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -6,6 +6,7 @@
@@ -1205,7 +1205,7 @@ index 44f8355712..e2bc91361a 100644
    std::atomic<float> m_frameLatencyMs{0.0f};
    std::atomic<float> m_vblankPhaseMs{0.0f};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-index 3c4c05ad58..27a726cae9 100644
+index 3c4c05a..27a726c 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 @@ -124,9 +124,17 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,

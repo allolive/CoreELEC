@@ -25,7 +25,7 @@ a live stream (upstream); the resume exception applies on top of that.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-index 1237f29b4a..d4b6247174 100644
+index 1237f29..d4b6247 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 @@ -416,12 +416,21 @@ void CAudioSinkAE::DiscardSyncErrorWindow()
@@ -51,7 +51,7 @@ index 1237f29b4a..d4b6247174 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index f7cd8469cd..4338cb56d6 100644
+index f7cd846..4338cb5 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2774,7 +2774,11 @@ void CAMLCodec::CloseDecoder()
@@ -119,7 +119,7 @@ index f7cd8469cd..4338cb56d6 100644
    if (drop)
      vbuf.flags |= V4L2_BUF_FLAG_DONE;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index ba6b37d59d..16afe2cb70 100644
+index ba6b37d..16afe2c 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 @@ -87,7 +87,8 @@ public:
@@ -142,7 +142,7 @@ index ba6b37d59d..16afe2cb70 100644
    CRect            m_dst_rect;
    CRect            m_display_rect;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index c8b2df3837..fb11925940 100644
+index 7a73f31..ac40659 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -61,7 +61,8 @@ void CAMLVideoBufferPool::Return(int id)
@@ -155,7 +155,7 @@ index c8b2df3837..fb11925940 100644
      m_videoBuffers[id]->m_amlCodec = nullptr;
    }
    m_freeBuffers.push_back(id);
-@@ -764,7 +765,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+@@ -695,7 +696,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
      pVideoPicture->videoBuffer = m_videoBufferPool->Get();
      static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
       m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex(), m_metadataToken,
@@ -165,10 +165,10 @@ index c8b2df3837..fb11925940 100644
  
    // check for mpeg2 aspect ratio changes
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-index a157bc2ee9..b682d43ee7 100644
+index fc4750d..796935b 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
-@@ -33,7 +33,7 @@ class CAMLVideoBuffer : public CVideoBuffer
+@@ -31,7 +31,7 @@ class CAMLVideoBuffer : public CVideoBuffer
  public:
    CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
    void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, uint64_t omxPts, int amlDuration, uint32_t bufferIndex,
@@ -177,7 +177,7 @@ index a157bc2ee9..b682d43ee7 100644
    {
      m_codec = codec;
      m_amlCodec = amlcodec;
-@@ -42,6 +42,7 @@ public:
+@@ -40,6 +40,7 @@ public:
      m_bufferIndex = bufferIndex;
      m_metadataToken = metadataToken;
      m_metadata = std::move(metadata);
@@ -185,7 +185,7 @@ index a157bc2ee9..b682d43ee7 100644
    }
  
    CDVDVideoCodecAmlogic* m_codec;
-@@ -51,6 +52,7 @@ public:
+@@ -49,6 +50,7 @@ public:
    uint32_t m_bufferIndex;
    uint32_t m_metadataToken{0};
    AMLFrameMetadataPtr m_metadata;
@@ -194,7 +194,7 @@ index a157bc2ee9..b682d43ee7 100644
  
  class CAMLVideoBufferPool : public IVideoBufferPool
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 572fa9ce06..a5b71bb02d 100644
+index 572fa9c..a5b71bb 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -239,6 +239,11 @@ void CVideoPlayerAudio::ResetPrerollCorrections()
@@ -224,7 +224,7 @@ index 572fa9ce06..a5b71bb02d 100644
      double syncerror = m_audioSink.GetSyncError();
  
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
-index 198f665786..34b72cb841 100644
+index ec0824b..a84ee4c 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
 @@ -161,6 +161,7 @@ void CRendererAML::AddVideoPicture(const VideoPicture &picture, int index)
@@ -244,7 +244,7 @@ index 198f665786..34b72cb841 100644
          amli->m_amlCodec = nullptr; // Released
        }
        amli->Release();
-@@ -245,21 +246,93 @@ bool CRendererAML::Flush(bool saveBuffers)
+@@ -245,22 +246,94 @@ bool CRendererAML::Flush(bool saveBuffers)
    return saveBuffers;
  };
  
@@ -314,9 +314,10 @@ index 198f665786..34b72cb841 100644
    if(amli && amli->m_amlCodec)
    {
      uint64_t pts = amli->m_omxPts;
--    if (pts != m_prevVPts)
 +    const bool firstPreroll = generation != 0 && m_prerollFirst;
-+    if (pts != m_prevVPts || firstPreroll)
+     // a new decoder can start at the pts the previous one ended on
+-    if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec)
++    if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec || firstPreroll)
      {
 -      const bool dropFrame =
 -          m_prevVPts == DVD_NOPTS_VALUE && amli->m_amlCodec->IsRealtimeStream();
@@ -347,7 +348,7 @@ index 198f665786..34b72cb841 100644
        {
          m_releasedToken = amli->m_metadataToken;
          m_releasedMeta = amli->m_metadata;
-@@ -295,7 +368,8 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+@@ -297,7 +370,8 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
    }
  
    ObserveRefresh();
@@ -357,9 +358,9 @@ index 198f665786..34b72cb841 100644
    PublishReleasedFrame();
    CAMLCodec::PollFrame();
  }
-@@ -379,9 +453,10 @@ void CRendererAML::WakeVsyncPresent()
+@@ -381,9 +455,10 @@ void CRendererAML::WakeVsyncPresent()
  
- void CRendererAML::PresentFrame(int index)
+ bool CRendererAML::PresentFrame(int index)
  {
 -  // the first frame after a reset is queued as a drop on live stream and never shows
 +  // the first frame after a reset is queued as a drop on a live stream and never
@@ -368,10 +369,10 @@ index 198f665786..34b72cb841 100644
 -  std::shared_ptr<CAMLCodec> codec = QueueFrame(index, false, &drop);
 +  std::shared_ptr<CAMLCodec> codec = QueueFrame(index, false, drop);
    if (!codec)
-     return;
+     return false;
  
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
-index a3d9164cd0..6ae5a42b36 100644
+index 7034907..69b8aa3 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
 @@ -38,6 +38,12 @@ public:
@@ -404,7 +405,7 @@ index a3d9164cd0..6ae5a42b36 100644
      int duration;
    } m_buffers[m_numRenderBuffers];
  
-@@ -80,4 +87,10 @@ private:
+@@ -81,4 +88,10 @@ private:
    //! Frame last released to amvideo, whose metadata goes out when the frame is shown
    uint32_t m_releasedToken{0};
    std::shared_ptr<const AMLFrameMetadata> m_releasedMeta;
@@ -416,7 +417,7 @@ index a3d9164cd0..6ae5a42b36 100644
 +  bool m_prerollSubmitted{false};
  };
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index 7412a44d8d..38e10c4fc2 100644
+index abd3020..2290a56 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 @@ -122,7 +122,7 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
@@ -443,7 +444,7 @@ index 7412a44d8d..38e10c4fc2 100644
  {
    std::unique_lock lock(m_presentlock);
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-index 4a36a12acf..062aad09c5 100644
+index 446d4da..4ea46d9 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 @@ -113,7 +113,7 @@ public:
