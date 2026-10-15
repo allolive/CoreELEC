@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 22:30:00 -0400
+Subject: [PATCH] AML: consume an empty packet
+
+The Blu-ray 3D demuxer (CDemuxStreamSSIF) hands the player an empty packet,
+no data and no timestamp, whenever it has no base/MVC pair to give: while it
+waits for one, and for every base picture it drops because the second view
+starts later. A resume of a 3D Blu-ray sends dozens before the first pair.
+
+CAMLCodec::AddData refuses a packet without data, so the wrapper returned
+false; the video thread then puts the packet back at the head of its queue
+and retries it, about every millisecond, with every real packet behind it.
+The decoder never opened: no picture, audio on its own, "video decoder
+returned error" without end. Mid-film the same packet would freeze the
+picture.
+
+An empty packet is now consumed, as the FFmpeg codec does
+(CDVDVideoCodecFFmpeg::AddData). Since 18_01 every 3D Blu-ray goes through
+the MVC demuxer on a display that can show it, 2D playback included.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 0bab531..6f60cd8 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -620,6 +620,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
+   m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
+ 
++  // an empty packet (the Blu-ray 3D demuxer's while it waits for a view pair)
++  // carries nothing: refused, it would be retried ahead of every later packet
++  if (!packet.pData || packet.iSize <= 0)
++    return true;
++
+   // Handle Input, add demuxer packet to input queue, we must accept it or
+   // it will be discarded as VideoPlayerVideo has no concept of "try again".
+ 
