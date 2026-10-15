@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 22:30:00 -0400
+Subject: [PATCH] Blu-ray 3D: start the second view where the first starts
+
+A seek in a 3D Blu-ray (a resume, a chapter, the OSD) moved the MVC
+extension stream to the requested time, counted from the first timestamp
+ffmpeg found in its file, forwards. libbluray puts the base view at the
+entry point before the requested time, and a clip's first timestamp is not
+its in time: on a resume the second view started about 1.5 s after the
+first. CDemuxStreamSSIF pairs the two by timestamp and drops every base
+picture older than the first second-view picture, the key picture included,
+so video restarted on a picture that is not one, after dozens of empty
+packets.
+
+The second view now seeks to where libbluray put the first, as a timestamp
+of its clip (in time plus the title time since the clip's start), backwards
+and less the existing window, so it starts at or before the first view; the
+pairing already drops the second-view pictures that are older.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in CoreELEC's
+Kodi (DVDInputStreamBluray, CDemuxMVC) and has no AML counterpart. Since
+18_01 every 3D Blu-ray goes through it on a display that can show 3D.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+index 9adc4cb..3699b5a 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+@@ -223,6 +223,27 @@ bool CDemuxMVC::SeekTime(double time, bool backwards, double* startpts)
+   return true;
+ }
+ 
++// ts: a timestamp of the clip, 90 kHz. Lands at or before it, by at least the window.
++bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
++{
++  if (!m_pInput || !m_pFormatContext || m_nStreamIndex < 0)
++    return false;
++
++  const AVRational clipTimeBase = {1, 90000};
++  const AVStream* stream = m_pFormatContext->streams[m_nStreamIndex];
++  int64_t seek_pts = av_rescale_q(ts, clipTimeBase, stream->time_base) -
++                     av_rescale_q(MVC_SEEK_TIME_WINDOW, clipTimeBase, stream->time_base);
++  if (seek_pts < 0)
++    seek_pts = 0;
++
++  if (av_seek_frame(m_pFormatContext, m_nStreamIndex, seek_pts, AVSEEK_FLAG_BACKWARD) < 0)
++  {
++    CLog::Log(LOGDEBUG, "CDemuxMVC::{} - seek to {} failed", __FUNCTION__, seek_pts);
++    return false;
++  }
++  return true;
++}
++
+ std::string CDemuxMVC::GetFileName()
+ {
+   return m_pInput->GetFileName();
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+index aa1081f..0a20113 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+@@ -39,6 +39,7 @@ public:
+   virtual void Flush();
+   virtual DemuxPacket* Read();
+   virtual bool SeekTime(double time, bool backwords = false, double* startpts = nullptr);
++  bool SeekClipTimestamp(int64_t ts);
+   virtual void SetSpeed(int iSpeed) { };
+   virtual int GetStreamLength() { return 0; };
+   virtual CDemuxStream* GetStream(int iStreamId) const override { return nullptr; };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index d59e732..d94e7ed 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1153,7 +1153,7 @@ bool CDVDInputStreamBluray::PosTime(int ms)
+   if (m_bMVCPlayback)
+   {
+     OpenNextStream();
+-    SeekMVCDemux(ms - m_clipStartTime);
++    SeekMVCDemux();
+   }
+   return true;
+ }
+@@ -1203,7 +1203,7 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
+   if (m_bMVCPlayback)
+   {
+     OpenNextStream();
+-    SeekMVCDemux((GetChapterPos(ch) - std::chrono::milliseconds(m_clipStartTime)).count());
++    SeekMVCDemux();
+   }
+   return true;
+ }
+@@ -1679,10 +1679,20 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+   return true;
+ }
+ 
+-void CDVDInputStreamBluray::SeekMVCDemux(int64_t time)
++// The extension view starts where libbluray put the base view: the entry point at or
++// before the requested time, as a timestamp of the clip (its in time, not the first
++// timestamp ffmpeg found in the file). It must not start after the base view, whose
++// pictures before the first extension picture are then dropped, key picture included.
++void CDVDInputStreamBluray::SeekMVCDemux()
+ {
+-  if (m_bMVCPlayback && m_pMVCDemux)
+-    m_pMVCDemux->SeekTime(time, time < GetTime());
++  CDemuxMVC* demux = dynamic_cast<CDemuxMVC*>(m_pMVCDemux);
++  if (!m_bMVCPlayback || !demux || !m_nMVCClip)
++    return;
++
++  const int64_t titleTime = static_cast<int64_t>(bd_tell_time(m_bd));
++  const int64_t clipTime =
++      std::max<int64_t>(0, titleTime - static_cast<int64_t>(m_nMVCClip->start_time));
++  demux->SeekClipTimestamp(static_cast<int64_t>(m_nMVCClip->in_time) + clipTime);
+ }
+ 
+ void CDVDInputStreamBluray::SetupPlayerSettings()
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index e633dee..97c0360 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -198,7 +198,7 @@ protected:
+ 
+   bool OpenMVCDemux(int playItem);
+   bool CloseMVCDemux();
+-  void SeekMVCDemux(int64_t time);
++  void SeekMVCDemux();
+ 
+   IVideoPlayer* m_player = nullptr;
+   BLURAY* m_bd = nullptr;
