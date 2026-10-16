@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:46:00 -0400
+Subject: [PATCH] Blu-ray 3D: set the MVC tag and header on the player's stream
+ only
+
+When the base view's stream is set up for MVC, the MVC codec tag and the
+extension's header were written into ffmpeg's own stream: its header was
+replaced by the base view's with the extension's appended. Setting the
+stream up again, on a change of picture size for one, started from that
+header and appended the extension's a second time, and every further
+setup added another copy. The decoder was then opened with a header
+holding the extension's parameter sets more than once.
+
+The tag and the appended header are now set on the player's stream only,
+after its header is copied from ffmpeg's, which keeps the base view's
+own tag and header: each setup appends the extension's header once. The
+checks that compare the player's header with ffmpeg's to find a changed
+stream take the appended header into account: an MVC stream's header has
+changed when it no longer starts with ffmpeg's.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            | 52 +++++++++++--------
+ 1 file changed, 31 insertions(+), 21 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 6d6bb34..80d5b40 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -139,6 +139,18 @@ bool AttachmentIsFont(const AVDictionaryEntry* dict)
+   }
+   return false;
+ }
++
++constexpr unsigned int FOURCC_AMVC = MKTAG('A', 'M', 'V', 'C');
++
++// whether ffmpeg's header changed; an MVC stream's own has the second view's after it
++bool ExtraDataChanged(const CDemuxStream* stream, const AVCodecParameters* codecpar)
++{
++  const size_t size = std::max(codecpar->extradata_size, 0);
++  if (stream->codec_fourcc != FOURCC_AMVC)
++    return stream->extraData.GetSize() != size;
++  return stream->extraData.GetSize() < size ||
++         (size > 0 && memcmp(stream->extraData.GetData(), codecpar->extradata, size) != 0);
++}
+ } // namespace
+ 
+ std::string CDemuxStreamAudioFFmpeg::GetStreamName()
+@@ -1448,8 +1460,8 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+     {
+       if (static_cast<CDemuxStreamVideo*>(stream)->iWidth != m_pFormatContext->streams[pPacket->iStreamId]->codecpar->width ||
+           static_cast<CDemuxStreamVideo*>(stream)->iHeight != m_pFormatContext->streams[pPacket->iStreamId]->codecpar->height ||
+-         (stream->disabled && stream->extraData.GetSize() !=
+-          static_cast<unsigned int>(m_pFormatContext->streams[pPacket->iStreamId]->codecpar->extradata_size)))
++         (stream->disabled &&
++          ExtraDataChanged(stream, m_pFormatContext->streams[pPacket->iStreamId]->codecpar)))
+       {
+         // content has changed
+         stream = AddStream(pPacket->iStreamId);
+@@ -2056,6 +2068,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+     }
+ 
+     CDemuxStream* stream = nullptr;
++    const AVStream* mvcStream = nullptr;
+ 
+     switch (pStream->codecpar->codec_type)
+     {
+@@ -2453,7 +2466,6 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+           if (CDVDCodecUtils::IsH264AnnexB(m_pFormatContext->iformat->name, pStream))
+           {
+             int mvcIndex;
+-            AVStream *mvcStream = nullptr;
+             // the second view goes with the stream it was set up for or the base view's PID,
+             // not with a picture in picture
+             const bool baseView =
+@@ -2495,22 +2507,6 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+               st->stereo_mode = stereoMode.empty() ? "block_lr" : stereoMode;
+               mvcStream = m_pFormatContext->streams[m_pSSIF->GetMVCStreamId()];
+             }
+-
+-            if (mvcStream)
+-            {
+-              pStream->codecpar->codec_tag = MKTAG('A', 'M', 'V', 'C');
+-
+-              if (pStream->codecpar->extradata_size > 0 && mvcStream->codecpar->extradata_size > 0)
+-              {
+-                uint8_t* extr = pStream->codecpar->extradata;
+-
+-                pStream->codecpar->extradata = (uint8_t*)av_mallocz(pStream->codecpar->extradata_size + mvcStream->codecpar->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+-                memcpy(pStream->codecpar->extradata, extr, pStream->codecpar->extradata_size);
+-                memcpy(pStream->codecpar->extradata + pStream->codecpar->extradata_size, mvcStream->codecpar->extradata, mvcStream->codecpar->extradata_size);
+-                pStream->codecpar->extradata_size += mvcStream->codecpar->extradata_size;
+-                av_free(extr);
+-              }
+-            }
+           }
+           else if (CDVDCodecUtils::ProcessH264MVCExtradata(pStream->codecpar->extradata, pStream->codecpar->extradata_size))
+           {
+@@ -2697,6 +2693,21 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+           FFmpegExtraData(pStream->codecpar->extradata, pStream->codecpar->extradata_size);
+     }
+ 
++    // ffmpeg's stream keeps the base view's tag and header, which a setup for it alone starts from
++    if (mvcStream)
++    {
++      stream->codec_fourcc = FOURCC_AMVC;
++      const size_t size = stream->extraData.GetSize();
++      if (size > 0 && mvcStream->codecpar->extradata_size > 0)
++      {
++        FFmpegExtraData extraData(size + mvcStream->codecpar->extradata_size);
++        memcpy(extraData.GetData(), stream->extraData.GetData(), size);
++        memcpy(extraData.GetData() + size, mvcStream->codecpar->extradata,
++               mvcStream->codecpar->extradata_size);
++        stream->extraData = std::move(extraData);
++      }
++    }
++
+ #ifdef HAVE_LIBBLURAY
+     if (m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+     {
+@@ -2975,8 +2986,7 @@ bool CDVDDemuxFFmpeg::IsProgramChange()
+         return true;
+       }
+     }
+-    if (m_pFormatContext->streams[idx]->codecpar->extradata_size !=
+-        static_cast<int>(stream->extraData.GetSize()))
++    if (ExtraDataChanged(stream, m_pFormatContext->streams[idx]->codecpar))
+       return true;
+   }
+   return false;

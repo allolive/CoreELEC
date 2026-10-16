@@ -1,0 +1,872 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 09:00:00 -0400
+Subject: [PATCH] h264_mvc: hand slots out and take them back in any order
+
+vf_put() ignored which vframe came back and only moved putting_ptr on;
+the recycle timer then returned the buffers of the slot at put_ptr, the
+oldest one handed out. Receivers put frames back out of get order:
+amlvideo puts a frame it drops (QBUF with V4L2_BUF_FLAG_DONE) while
+amvideo still shows an older one, and amvideo puts the frames it skips
+before the one in RDMA. The frame on screen, both views, was then
+returned to the firmware and decoded into.
+
+Retiring the ring in order instead is no fix: the frame on screen pins
+every slot after it, a burst of drops fills the ring, the ISR then has
+nowhere to publish, amvideo never toggles, never puts the frame it
+holds, and playback freezes for good. So the ring goes, and slots are
+used out of order, the way the other decoders' pools work:
+
+- Each slot has one state: FREE, FILL (the ISR collects a picture's
+  views in it), READY (published), GOT (handed out) or STALE.
+- The ISR takes any FREE slot as the fill slot for a new picture. Views
+  only pair there, so check_in_list()'s scan of the pool for a POC
+  becomes a look at the fill slot, with a one-time warning should it be
+  in any other state. Published slots go into a kfifo of slot indices;
+  vf_peek() and vf_get() read its head, so frames still go out in
+  decode order.
+- vf_put() checks the vframe is from the pool and its slot GOT; a double
+  put is ignored with a ratelimited warning. The slot drops its hold on
+  both views' buffers and is FREE again at once.
+- A buffer's use count, kept per view as before, decides when it is
+  free: at zero it is queued in a per-view bitmap, and the recycle timer
+  drains the bitmaps into BUFFER_RECYCLE, one buffer per write, only
+  while the firmware has cleared the register, the views taking turns so
+  a backlog in one does not hold the other back. A buffer the firmware
+  hands out again before it went back is taken off the queue.
+- A new picture releases whatever the fill slot still held of an older,
+  unpaired one, and a view arriving again for the fill slot's picture
+  releases the buffer it replaces. Both used to be overwritten, their
+  use counts never dropped, and the buffers were lost to the firmware
+  until the next restart.
+
+The pool grows from 20 slots to one per buffer id (64). Every slot held
+pins a buffer the firmware has not got back, and it has up to 24 per
+view (16 for level 5.x plus the default margin of 8). With that margin a
+free slot exists while the firmware still has a buffer to decode into;
+a dynamic_buf_num_margin above 16 can run the pool out. If it does, the
+view is dropped with a ratelimited warning, its buffer goes back through
+the queue, and it is counted in view_dropped, once, as the ISR already
+counts a view the firmware flagged. A view id other than 0 or 1, or a
+buffer id beyond what was allocated for the view, is dropped the same
+way instead of indexing the counts; a view 2 or 3 is only counted, as
+there is no buffer of ours to return. do_alloc_work() caps view 0's
+buffer count at buffer_spec_num, the size of buffer_spec0/1 fixed at
+probe, before init_canvas() and the firmware see it, and gives view 1
+the same count, as the box is laid out for two equal halves; the bmmu
+box is sized from the same number, so a dynamic_buf_num_margin changed
+after probe cannot index past buffer_spec0/1 or the box.
+
+A restart re-initialises the pool, but the vframes are static: a frame a
+receiver got before it still has the same address and slot. Its put
+used to land on whatever the new session had in that slot. A stamp in
+the vframe cannot tell the two apart, as the new session's get rewrites
+the same vframe. Instead local_init marks the slots still handed out
+STALE: their put frees them, and the ISR fills them when no slot is
+FREE. amvideo keeps a copy of the frame it shows on unregister and never
+puts it, so in practice a STALE slot is only reclaimed that way. The
+same pass initialised display_pos to -1 and view0's buffer id to
+DISPLAY_INVALID_POS, the wrong way round; a FREE slot no longer takes
+part in pairing either way.
+
+All state changes run under the lock the ISR and the timer already take:
+put comes from the vsync interrupt and from process context. vf_peek()
+takes it to read the kfifo head and a count of the clean pictures ready,
+kept at publish and get, which send_drop_cmd() used to recount by
+walking the ring; send_drop_cmd() becomes static, nothing else calls it.
+set_frame_info() runs before the slot is published instead of after,
+when a receiver could get the frame with the previous one's duration
+and aspect. vf_states() reports the slots a picture can take (FREE or
+STALE), the queued buffers and the kfifo length. The dbg_mode bit 4
+path, which recycles every view without display, busy-waited on
+BUFFER_RECYCLE and wrote it behind the timer's back; it goes through
+the queue too, without counting the view as dropped.
+
+A dirty frame (one the firmware flagged as dropped) is released like any
+other once put; it was held until the next clean put. A picture
+published without one of its views is marked dirty as well, matching
+the count of clean pictures send_drop_cmd() reads. putting_ptr,
+dirty_frame_num, enable_recycle, the timer's dead branch on the latter
+and the #if 0 get_valid_frame() go, and the per-view fields become
+arrays indexed by the view.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -37,6 +37,7 @@
+ #include <linux/slab.h>
+ #include <linux/delay.h>
+ #include <linux/jiffies.h>
++#include <linux/kfifo.h>
+ #include "../../../stream_input/amports/amports_priv.h"
+ #include "../utils/vdec.h"
+ #include "../utils/amvdec.h"
+@@ -201,7 +202,7 @@
+ 
+ #define DECODE_BUFFER_NUM_MAX    16
+ #define MAX_BMMU_BUFFER_NUM	(DECODE_BUFFER_NUM_MAX + dynamic_buf_num_margin)
+-#define TOTAL_BMMU_BUFF_NUM     (MAX_BMMU_BUFFER_NUM * 2 + 3)
++#define TOTAL_BMMU_BUFF_NUM     (buffer_spec_num * 2 + 3)
+ #define VF_BUFFER_IDX(n) (2  + n)
+ 
+ #define DECODER_WORK_SPACE_SIZE 0xa0000
+@@ -241,6 +242,8 @@
+ */
+ static struct buffer_spec_s *buffer_spec0;
+ static struct buffer_spec_s *buffer_spec1;
++/* entries in each of buffer_spec0/1, fixed at probe */
++static unsigned int buffer_spec_num;
+ static void *mm_blk_handle;
+ 
+ /*
+@@ -294,44 +297,132 @@
+ 
+ /* #define QUEUE_SUPPORT */
+ 
++/* FREE -> FILL (ISR) -> READY (published) -> GOT (vf_get) -> FREE (vf_put) */
++enum {
++	VF_SLOT_FREE,
++	VF_SLOT_FILL,
++	VF_SLOT_READY,
++	VF_SLOT_GOT,
++	VF_SLOT_STALE,	/* got before a restart: freed by its put, filled last */
++};
++
+ struct mvc_info_s {
+-	int view0_buf_id;
+-	int view1_buf_id;
+-	int view0_drop;
+-	int view1_drop;
++	int buf_id[2];
++	int drop[2];
+ 	int display_pos;
+-	int used;
+-	int slot;
++	int state;
+ 	unsigned int stream_offset;
+ };
+ 
+-#define VF_POOL_SIZE        20
+-static struct vframe_s vfpool[VF_POOL_SIZE];
+-static struct mvc_info_s vfpool_idx[VF_POOL_SIZE];
+ /*
+  * Indexed by the firmware's 6-bit buffer id. Up to 16 + the buffer margin
+  * buffers are allocated, more than DECODE_BUFFER_NUM_MAX.
+  */
+ #define VFBUF_USE_NUM 64
+-static s32 view0_vfbuf_use[VFBUF_USE_NUM];
+-static s32 view1_vfbuf_use[VFBUF_USE_NUM];
+-
+-static s32 fill_ptr, get_ptr, putting_ptr, put_ptr;
+-static s32 dirty_frame_num;
+-static s32 enable_recycle;
++/* a slot per buffer id: more than both views can pin at the default margin */
++#define VF_POOL_SIZE        VFBUF_USE_NUM
++static struct vframe_s vfpool[VF_POOL_SIZE];
++static struct mvc_info_s vfpool_idx[VF_POOL_SIZE];
++static s32 vfbuf_use[2][VFBUF_USE_NUM];
++/* buffers no slot holds any more, for the recycle timer to return */
++static DECLARE_BITMAP(vfbuf_return[2], VFBUF_USE_NUM);
++
++/* published slots in publication order, for vf_get() */
++static DEFINE_KFIFO(ready_q, u8, VF_POOL_SIZE);
++/* how many of them are clean, for send_drop_cmd() */
++static int ready_clean;
++/* the slot the ISR collects the current picture's views in, or -1 */
++static int fill_slot;
+ 
+ static s32 init_drop_frame_id[INIT_DROP_FRAME_CNT];
+-#define INCPTR(p) ptr_atomic_wrap_inc(&p)
+-static inline void ptr_atomic_wrap_inc(u32 *ptr)
++
++/* the helpers below run with lock held */
++static void vfbuf_ref(int view, int id)
++{
++	vfbuf_use[view][id]++;
++	__clear_bit(id, vfbuf_return[view]);
++}
++
++static void vfbuf_unref(int view, int id)
++{
++	if (vfbuf_use[view][id] <= 0) {
++		pr_warn_ratelimited("vh264mvc: view %d buffer %d released while unused\n",
++			view, id);
++		return;
++	}
++	if (--vfbuf_use[view][id] == 0)
++		__set_bit(id, vfbuf_return[view]);
++}
++
++/* a view no slot takes: return its buffer unless a slot holds it */
++static void vfbuf_queue_return(int view, int id)
++{
++	if (view <= 1 && !vfbuf_use[view][id])
++		__set_bit(id, vfbuf_return[view]);
++}
++
++/* the same, counted as dropped */
++static void vfbuf_drop(int view, int id, int drop)
++{
++#ifdef DEBUG_SKIP
++	/* the ISR counted the views the firmware flagged */
++	if (!drop)
++		view_dropped++;
++#endif
++	vfbuf_queue_return(view, id);
++}
++
++/* an empty slot, part of no picture */
++static void vf_slot_reset(struct mvc_info_s *idx)
+ {
+-	u32 i = *ptr;
++	idx->buf_id[0] = idx->buf_id[1] = -1;
++	idx->drop[0] = idx->drop[1] = 0;
++	idx->display_pos = DISPLAY_INVALID_POS;
++}
+ 
+-	i++;
++/* drop the slot's hold on its views' buffers */
++static void vf_slot_release(struct mvc_info_s *idx)
++{
++	int view;
+ 
+-	if (i >= VF_POOL_SIZE)
+-		i = 0;
++	for (view = 0; view < 2; view++)
++		if (idx->buf_id[view] >= 0)
++			vfbuf_unref(view, idx->buf_id[view]);
++	vf_slot_reset(idx);
++}
+ 
+-	*ptr = i;
++/* a view that arrives again for the slot's picture replaces its buffer */
++static void vf_slot_set_view(struct mvc_info_s *idx, int view, int id,
++			     int drop, int offset)
++{
++	if (idx->buf_id[view] >= 0)
++		vfbuf_unref(view, idx->buf_id[view]);
++	idx->buf_id[view] = id;
++	idx->drop[view] = drop;
++	if (view == 0)
++		idx->stream_offset = offset;
++	vfbuf_ref(view, id);
++}
++
++/* a free slot, else a STALE one, else -1 */
++static int vf_slot_take(void)
++{
++	int i, stale = -1;
++
++	for (i = 0; i < VF_POOL_SIZE; i++) {
++		if (vfpool_idx[i].state == VF_SLOT_FREE)
++			return i;
++		if (stale < 0 && vfpool_idx[i].state == VF_SLOT_STALE)
++			stale = i;
++	}
++	return stale;
++}
++
++/* both views there and neither dropped by the firmware */
++static bool vf_slot_clean(struct mvc_info_s *idx)
++{
++	return (idx->buf_id[0] >= 0) && (idx->buf_id[1] >= 0) &&
++		!idx->drop[0] && !idx->drop[1];
+ }
+ 
+ static void set_frame_info(struct vframe_s *vf)
+@@ -453,40 +544,23 @@
+ 
+ 	spin_lock_irqsave(&lock, flags);
+ 	states->vf_pool_size = VF_POOL_SIZE;
+-
+-	i = put_ptr - fill_ptr;
+-	if (i < 0)
+-		i += VF_POOL_SIZE;
+-	states->buf_free_num = i;
+-
+-	i = putting_ptr - put_ptr;
+-	if (i < 0)
+-		i += VF_POOL_SIZE;
+-	states->buf_recycle_num = i;
+-
+-	i = fill_ptr - get_ptr;
+-	if (i < 0)
+-		i += VF_POOL_SIZE;
+-	states->buf_avail_num = i;
++	states->buf_free_num = 0;
++	/* what vf_slot_take() can take */
++	for (i = 0; i < VF_POOL_SIZE; i++)
++		if (vfpool_idx[i].state == VF_SLOT_FREE ||
++		    vfpool_idx[i].state == VF_SLOT_STALE)
++			states->buf_free_num++;
++	states->buf_recycle_num =
++		bitmap_weight(vfbuf_return[0], VFBUF_USE_NUM) +
++		bitmap_weight(vfbuf_return[1], VFBUF_USE_NUM);
++	states->buf_avail_num = kfifo_len(&ready_q);
+ 
+ 	spin_unlock_irqrestore(&lock, flags);
+ 	return 0;
+ }
+ 
+-void send_drop_cmd(void)
++static void send_drop_cmd(int ready_cnt)
+ {
+-	int ready_cnt = 0;
+-	int temp_get_ptr = get_ptr;
+-	int temp_fill_ptr = fill_ptr;
+-
+-	while (temp_get_ptr != temp_fill_ptr) {
+-		if ((vfpool_idx[temp_get_ptr].view0_buf_id >= 0)
+-			&& (vfpool_idx[temp_get_ptr].view1_buf_id >= 0)
+-			&& (vfpool_idx[temp_get_ptr].view0_drop == 0)
+-			&& (vfpool_idx[temp_get_ptr].view1_drop == 0))
+-			ready_cnt++;
+-		INCPTR(temp_get_ptr);
+-	}
+ 	if (dbg_mode & 0x40) {
+ 		pr_info("ready_cnt is %d ; no_dropping_cnt is %d\n", ready_cnt,
+ 			   no_dropping_cnt);
+@@ -498,32 +572,22 @@
+ 		WRITE_VREG(DROP_CONTROL, 0);
+ }
+ 
+-#if 0
+-int get_valid_frame(void)
++static struct vframe_s *vh264mvc_vf_peek(void *op_arg)
+ {
++	struct vframe_s *vf = NULL;
++	unsigned long flags;
+ 	int ready_cnt = 0;
+-	int temp_get_ptr = get_ptr;
+-	int temp_fill_ptr = fill_ptr;
++	u8 slot;
+ 
+-	while (temp_get_ptr != temp_fill_ptr) {
+-		if ((vfpool_idx[temp_get_ptr].view0_buf_id >= 0)
+-			&& (vfpool_idx[temp_get_ptr].view1_buf_id >= 0)
+-			&& (vfpool_idx[temp_get_ptr].view0_drop == 0)
+-			&& (vfpool_idx[temp_get_ptr].view1_drop == 0))
+-			ready_cnt++;
+-		INCPTR(temp_get_ptr);
++	spin_lock_irqsave(&lock, flags);
++	if (kfifo_peek(&ready_q, &slot)) {
++		vf = &vfpool[slot];
++		ready_cnt = ready_clean;
+ 	}
+-	return ready_cnt;
+-}
+-#endif
+-static struct vframe_s *vh264mvc_vf_peek(void *op_arg)
+-{
+-
+-	if (get_ptr == fill_ptr)
+-		return NULL;
+-	send_drop_cmd();
+-	return &vfpool[get_ptr];
+-
++	spin_unlock_irqrestore(&lock, flags);
++	if (vf)
++		send_drop_cmd(ready_cnt);
++	return vf;
+ }
+ 
+ static struct vframe_s *vh264mvc_vf_get(void *op_arg)
+@@ -532,13 +596,25 @@
+ 	int view0_buf_id;
+ 	int view1_buf_id;
+ 	struct buffer_spec_s *buf_spec_0, *buf_spec_1;
++	struct mvc_info_s *idx;
++	unsigned long flags;
++	bool clean;
++	u8 slot;
+ 
+-	if (get_ptr == fill_ptr)
++	spin_lock_irqsave(&lock, flags);
++	if (!kfifo_get(&ready_q, &slot)) {
++		spin_unlock_irqrestore(&lock, flags);
+ 		return NULL;
+-
+-	view0_buf_id = vfpool_idx[get_ptr].view0_buf_id;
+-	view1_buf_id = vfpool_idx[get_ptr].view1_buf_id;
+-	vf = &vfpool[get_ptr];
++	}
++	idx = &vfpool_idx[slot];
++	clean = vf_slot_clean(idx);
++	if (clean)
++		ready_clean--;
++	idx->state = VF_SLOT_GOT;
++	view0_buf_id = idx->buf_id[0];
++	view1_buf_id = idx->buf_id[1];
++	spin_unlock_irqrestore(&lock, flags);
++	vf = &vfpool[slot];
+ 
+ 	if ((view0_buf_id >= 0) && (view1_buf_id >= 0)) {
+ 		if (view_mode == 0 || view_mode == 1) {
+@@ -620,15 +696,11 @@
+ 	}
+ 
+ 	vf->type_original = vf->type;
+-	if (((vfpool_idx[get_ptr].view0_drop != 0)
+-		 || (vfpool_idx[get_ptr].view1_drop != 0))
+-		&& ((no_dropping_cnt >= DROPPING_FIRST_WAIT)))
++	if (!clean && (no_dropping_cnt >= DROPPING_FIRST_WAIT))
+ 		vf->frame_dirty = 1;
+ 	else
+ 		vf->frame_dirty = 0;
+ 
+-	INCPTR(get_ptr);
+-
+ 	if (frame_width == 0)
+ 		frame_width = vh264mvc_amstream_dec_info.width;
+ 	if (frame_height == 0)
+@@ -643,34 +715,38 @@
+ 
+ }
+ 
++/* from vsync interrupts and from process context, in any order */
+ static void vh264mvc_vf_put(struct vframe_s *vf, void *op_arg)
+ {
++	unsigned long flags;
++	int slot, state;
+ 
+ 	if (vf_buf_init_flag == 0)
+ 		return;
+-	if (vf->frame_dirty) {
++	if (vf < vfpool || vf >= vfpool + VF_POOL_SIZE) {
++		pr_warn_ratelimited("vh264mvc: put of a vframe not from the pool, ignored\n");
++		return;
++	}
++	slot = vf - vfpool;
+ 
+-		vf->frame_dirty = 0;
+-		dirty_frame_num++;
+-		enable_recycle = 0;
+-		if (dbg_mode & PUT_PRINT_ENABLE) {
+-			pr_info("invalid: dirty_frame_num is !!! %d\n",
+-				   dirty_frame_num);
+-		}
+-	} else {
+-		INCPTR(putting_ptr);
+-		while (dirty_frame_num > 0) {
+-			INCPTR(putting_ptr);
+-			dirty_frame_num--;
+-		}
+-		enable_recycle = 1;
+-		if (dbg_mode & PUT_PRINT_ENABLE) {
+-			pr_info("valid: dirty_frame_num is @@@ %d\n",
+-				   dirty_frame_num);
+-		}
+-		/* send_drop_cmd(); */
++	spin_lock_irqsave(&lock, flags);
++	state = vfpool_idx[slot].state;
++	switch (state) {
++	case VF_SLOT_GOT:
++		vf_slot_release(&vfpool_idx[slot]);
++		fallthrough;
++	case VF_SLOT_STALE:
++		vfpool_idx[slot].state = VF_SLOT_FREE;
++		break;
++	default:
++		pr_warn_ratelimited("vh264mvc: put of slot %d not handed out (state %d), ignored\n",
++			slot, state);
++		break;
+ 	}
++	spin_unlock_irqrestore(&lock, flags);
+ 
++	if (dbg_mode & PUT_PRINT_ENABLE)
++		pr_info("put slot %d (state %d)\n", slot, state);
+ }
+ 
+ static int vh264mvc_event_cb(int type, void *data, void *private_data)
+@@ -845,22 +921,6 @@
+ 	return size;
+ }
+ 
+-int check_in_list(int pos, int *slot)
+-{
+-	int i;
+-	int ret = 0;
+-
+-	for (i = 0; i < VF_POOL_SIZE; i++) {
+-		if ((vfpool_idx[i].display_pos == pos)
+-			&& (vfpool_idx[i].used == 0)) {
+-			ret = 1;
+-			*slot = vfpool_idx[i].slot;
+-			break;
+-		}
+-	}
+-	return ret;
+-}
+-
+ static void do_alloc_work(struct work_struct *work)
+ {
+ 	int level_idc, max_reference_frame_num, mb_width, mb_height;
+@@ -884,8 +944,10 @@
+ 					max_reference_frame_num,
+ 					mb_width, mb_height);
+ 
++		/* no more than buffer_spec0/1 and the box were sized for */
+ 		total_dec_frame_buffering[0] =
+-			max_dec_frame_buffering[0] + dynamic_buf_num_margin;
++			min(max_dec_frame_buffering[0] + dynamic_buf_num_margin,
++			    buffer_spec_num);
+ 
+ 		mb_width = (mb_width + 3) & 0xfffffffc;
+ 		mb_height = (mb_height + 3) & 0xfffffffc;
+@@ -967,8 +1029,8 @@
+ 			max_dec_frame_buffering[1] = max_dec_frame_buffering[0];
+ 		}
+ 
+-		total_dec_frame_buffering[1] =
+-			max_dec_frame_buffering[1] + dynamic_buf_num_margin;
++		/* the box is laid out for two equal halves: view 0's count */
++		total_dec_frame_buffering[1] = total_dec_frame_buffering[0];
+ 
+ 		mb_width = (mb_width + 3) & 0xfffffffc;
+ 		mb_height = (mb_height + 3) & 0xfffffffc;
+@@ -1048,14 +1110,14 @@
+ {
+ 	vf->mem_head_handle = NULL;
+ 	vf->mem_handle = NULL;
+-	if (idx->view0_buf_id >= 0)
++	if (idx->buf_id[0] >= 0)
+ 		vf->mem_head_handle =
+ 			decoder_bmmu_box_get_mem_handle(mm_blk_handle,
+-				VF_BUFFER_IDX(idx->view0_buf_id));
+-	if (idx->view1_buf_id >= 0)
++				VF_BUFFER_IDX(idx->buf_id[0]));
++	if (idx->buf_id[1] >= 0)
+ 		vf->mem_handle =
+ 			decoder_bmmu_box_get_mem_handle(mm_blk_handle,
+-				VF_BUFFER_IDX(idx->view1_buf_id) +
++				VF_BUFFER_IDX(idx->buf_id[1]) +
+ 				total_dec_frame_buffering[1] + 1);
+ }
+ 
+@@ -1070,6 +1132,7 @@
+ 	unsigned int pts, pts_valid = 0;
+ 	u64 pts_us64;
+ 	u32 frame_size;
++	unsigned long flags;
+ 	int ret = READ_VREG(MAILBOX_COMMAND);
+ 
+ 	mvc_set_rp();
+@@ -1106,32 +1169,44 @@
+ 		}
+ 		if (dbg_mode & 0x10) {
+ 			if ((dbg_mode & 0x20) == 0) {
+-				while (READ_VREG(BUFFER_RECYCLE) != 0)
+-					;
+-				WRITE_VREG(BUFFER_RECYCLE,
+-						   (display_view_id << 8) |
+-						   (display_buff_id + 1));
++				/* via the queue, as the timer writes it too */
++				spin_lock_irqsave(&lock, flags);
++				vfbuf_queue_return(display_view_id,
++					display_buff_id);
++				spin_unlock_irqrestore(&lock, flags);
+ 				display_buff_id = -1;
+ 				display_view_id = -1;
+ 				display_POC = -1;
+ 			}
+ 		} else {
+-			unsigned char in_list_flag = 0;
+-			unsigned long flags;
+-
+-			int slot = 0;
++			bool in_list_flag, complete;
++			int slot;
+ 
+-			/* the recycle timer updates the same slots and counts */
++			/* vf_put() and the recycle timer share the slots and counts */
+ 			spin_lock_irqsave(&lock, flags);
+-			in_list_flag = check_in_list(display_POC, &slot);
++			if ((display_view_id > 1) || (display_buff_id >=
++				total_dec_frame_buffering[display_view_id])) {
++				vfbuf_drop(display_view_id, display_buff_id,
++					drop_status);
++				spin_unlock_irqrestore(&lock, flags);
++				pr_warn_ratelimited("vh264mvc: view %d buffer %d was never allocated, dropped\n",
++					display_view_id, display_buff_id);
++				break;
++			}
++			/* views pair only in the fill slot */
++			slot = fill_slot;
++			WARN_ON_ONCE(slot >= 0 &&
++				vfpool_idx[slot].state != VF_SLOT_FILL);
++			in_list_flag = (slot >= 0) &&
++				(vfpool_idx[slot].display_pos == display_POC);
+ 
+ 			if ((dbg_mode & 0x40) && (drop_status)) {
+ 				pr_info
+ 				("drop_status:%dview_id=%d,buff_id=%d,",
+ 				 drop_status, display_view_id, display_buff_id);
+ 				 pr_info
+-				("offset=%d, display_POC = %d,fill_ptr=0x%x\n",
+-				 stream_offset, display_POC, fill_ptr);
++				("offset=%d, display_POC = %d,fill_slot=%d\n",
++				 stream_offset, display_POC, fill_slot);
+ 			}
+ 
+ 			if ((in_list_flag) && (stream_offset != 0)) {
+@@ -1141,45 +1216,31 @@
+ 				in_list_flag = 0;
+ 			}
+ 			if (!in_list_flag) {
+-				if (display_view_id == 0) {
+-					vfpool_idx[fill_ptr].view0_buf_id =
+-						display_buff_id;
+-					view0_vfbuf_use[display_buff_id]++;
+-					vfpool_idx[fill_ptr].stream_offset =
+-						stream_offset;
+-					vfpool_idx[fill_ptr].view0_drop =
+-						drop_status;
++				/* a new picture: drop what the fill slot held */
++				if (fill_slot < 0)
++					fill_slot = vf_slot_take();
++				if (fill_slot < 0) {
++					vfbuf_drop(display_view_id,
++						display_buff_id, drop_status);
++					spin_unlock_irqrestore(&lock, flags);
++					pr_warn_ratelimited("vh264mvc: all %d slots held, dropping view %d of POC %d\n",
++						VF_POOL_SIZE, display_view_id,
++						display_POC);
++					break;
+ 				}
+-				if (display_view_id == 1) {
+-					vfpool_idx[fill_ptr].view1_buf_id =
+-						display_buff_id;
+-					vfpool_idx[fill_ptr].view1_drop =
+-						drop_status;
+-					view1_vfbuf_use[display_buff_id]++;
+-				}
+-				vfpool_idx[fill_ptr].slot = fill_ptr;
+-				vfpool_idx[fill_ptr].display_pos = display_POC;
+-				spin_unlock_irqrestore(&lock, flags);
+-
+-			} else {
+-				if (display_view_id == 0) {
+-					vfpool_idx[slot].view0_buf_id =
+-						display_buff_id;
+-					view0_vfbuf_use[display_buff_id]++;
+-					vfpool_idx[slot].stream_offset =
+-						stream_offset;
+-					vfpool_idx[slot].view0_drop =
+-						drop_status;
+-
+-				}
+-				if (display_view_id == 1) {
+-					vfpool_idx[slot].view1_buf_id =
+-						display_buff_id;
+-					view1_vfbuf_use[display_buff_id]++;
+-					vfpool_idx[slot].view1_drop =
+-						drop_status;
+-				}
+-				spin_unlock_irqrestore(&lock, flags);
++				slot = fill_slot;
++				vf_slot_release(&vfpool_idx[slot]);
++				vfpool_idx[slot].state = VF_SLOT_FILL;
++				vfpool_idx[slot].display_pos = display_POC;
++			}
++			vf_slot_set_view(&vfpool_idx[slot], display_view_id,
++				display_buff_id, drop_status, stream_offset);
++			/* a POC match completes the picture */
++			complete = in_list_flag;
++			if (complete)
++				fill_slot = -1;
++			spin_unlock_irqrestore(&lock, flags);
++			if (complete) {
+ 				vf = &vfpool[slot];
+ 				set_vf_mem_handles(vf, &vfpool_idx[slot]);
+ 
+@@ -1205,11 +1266,13 @@
+ 				/* vf->pts =  vf->pts_us64; */
+ 				if (dbg_mode & 0x80)
+ 					pr_info("vf->pts:%d\n", vf->pts);
++				set_frame_info(vf);
+ 				spin_lock_irqsave(&lock, flags);
+-				vfpool_idx[slot].used = 1;
+-				INCPTR(fill_ptr);
++				vfpool_idx[slot].state = VF_SLOT_READY;
++				kfifo_put(&ready_q, (u8)slot);
++				if (vf_slot_clean(&vfpool_idx[slot]))
++					ready_clean++;
+ 				spin_unlock_irqrestore(&lock, flags);
+-				set_frame_info(vf);
+ 
+ 				gvs->frame_dur = frame_dur;
+ 				vdec_count_info(gvs, 0,
+@@ -1365,81 +1428,30 @@
+ 
+ static void vh264mvc_put_timer_func(struct timer_list *timer)
+ {
+-	int valid_frame = 0;
+-	unsigned long flags;
++	static int next_view;
++	unsigned long flags, id;
++	int view;
+ 
+ 	mvc_set_rp();
+ 	start_wd_check();
+ 
+-	if (enable_recycle == 0) {
+-		if (dbg_mode & TIME_TASK_PRINT_ENABLE) {
+-			/* valid_frame = get_valid_frame(); */
+-			pr_info("dirty_frame_num is %d , valid frame is %d\n",
+-				   dirty_frame_num, valid_frame);
+-
+-		}
+-		/* goto RESTART; */
+-	}
+-
+-	/* the ISR fills the same slots and counts */
++	/* the firmware takes one buffer at a time and clears the register */
+ 	spin_lock_irqsave(&lock, flags);
+-	while ((putting_ptr != put_ptr) && (READ_VREG(BUFFER_RECYCLE) == 0)) {
+-		int view0_buf_id = vfpool_idx[put_ptr].view0_buf_id;
+-		int view1_buf_id = vfpool_idx[put_ptr].view1_buf_id;
+-
+-		if ((view0_buf_id >= 0) &&
+-				(view0_vfbuf_use[view0_buf_id] == 1)) {
+-			if (dbg_mode & 0x100) {
+-				pr_info
+-				("round 0: put_ptr is %d ;view0_buf_id is %d\n",
+-				 put_ptr, view0_buf_id);
+-			}
+-			WRITE_VREG(BUFFER_RECYCLE,
+-					   (0 << 8) | (view0_buf_id + 1));
+-			view0_vfbuf_use[view0_buf_id] = 0;
+-			vfpool_idx[put_ptr].view0_buf_id = -1;
+-			vfpool_idx[put_ptr].view0_drop = 0;
+-		} else if ((view1_buf_id >= 0)
+-				   && (view1_vfbuf_use[view1_buf_id] == 1)) {
+-			if (dbg_mode & 0x100) {
+-				pr_info
+-				("round 1: put_ptr is %d ;view1_buf_id %d==\n",
+-				 put_ptr, view1_buf_id);
+-			}
+-			WRITE_VREG(BUFFER_RECYCLE,
+-					   (1 << 8) | (view1_buf_id + 1));
+-			view1_vfbuf_use[view1_buf_id] = 0;
+-			vfpool_idx[put_ptr].display_pos = DISPLAY_INVALID_POS;
+-			vfpool_idx[put_ptr].view1_buf_id = -1;
+-			vfpool_idx[put_ptr].view1_drop = 0;
+-			vfpool_idx[put_ptr].used = 0;
+-			INCPTR(put_ptr);
+-		} else if ((view0_buf_id >= 0) &&
+-				   (view0_vfbuf_use[view0_buf_id] > 1)) {
+-			/* another slot still holds this buffer: drop our use */
+-			view0_vfbuf_use[view0_buf_id]--;
+-			vfpool_idx[put_ptr].view0_buf_id = -1;
+-			vfpool_idx[put_ptr].view0_drop = 0;
+-		} else {
+-			/*
+-			 * Neither view can be returned now. Drop a use another
+-			 * slot still holds, or retire a slot with nothing left,
+-			 * so the loop moves on instead of spinning here.
+-			 */
+-			if ((view1_buf_id >= 0) &&
+-				(view1_vfbuf_use[view1_buf_id] > 1))
+-				view1_vfbuf_use[view1_buf_id]--;
+-			else
+-				pr_warn_ratelimited("vh264mvc: retiring put slot %d, view0 %d view1 %d\n",
+-					put_ptr, view0_buf_id, view1_buf_id);
+-			vfpool_idx[put_ptr].display_pos = DISPLAY_INVALID_POS;
+-			vfpool_idx[put_ptr].view0_buf_id = -1;
+-			vfpool_idx[put_ptr].view0_drop = 0;
+-			vfpool_idx[put_ptr].view1_buf_id = -1;
+-			vfpool_idx[put_ptr].view1_drop = 0;
+-			vfpool_idx[put_ptr].used = 0;
+-			INCPTR(put_ptr);
++	for (;;) {
++		/* views take turns so neither starves behind the other */
++		view = next_view;
++		id = find_first_bit(vfbuf_return[view], VFBUF_USE_NUM);
++		if (id >= VFBUF_USE_NUM) {
++			view ^= 1;
++			id = find_first_bit(vfbuf_return[view], VFBUF_USE_NUM);
+ 		}
++		if (id >= VFBUF_USE_NUM || READ_VREG(BUFFER_RECYCLE))
++			break;
++		__clear_bit(id, vfbuf_return[view]);
++		WRITE_VREG(BUFFER_RECYCLE, (view << 8) | (id + 1));
++		next_view = view ^ 1;
++		if (dbg_mode & TIME_TASK_PRINT_ENABLE)
++			pr_info("recycle view %d buffer %lu\n", view, id);
+ 	}
+ 	spin_unlock_irqrestore(&lock, flags);
+ 
+@@ -1678,6 +1690,7 @@
+ static int vh264mvc_local_init(void)
+ {
+ 	int i, size, ret;
++	unsigned long flags;
+ 	display_buff_id = -1;
+ 	display_view_id = -1;
+ 	display_POC = -1;
+@@ -1712,25 +1725,28 @@
+ 
+ 	max_dec_frame_buffering[0] = -1;
+ 	max_dec_frame_buffering[1] = -1;
+-	fill_ptr = get_ptr = put_ptr = putting_ptr = 0;
+-	dirty_frame_num = 0;
+-	for (i = 0; i < VFBUF_USE_NUM; i++) {
+-		view0_vfbuf_use[i] = 0;
+-		view1_vfbuf_use[i] = 0;
+-	}
+-
+-	for (i = 0; i < VF_POOL_SIZE; i++) {
+-		vfpool_idx[i].display_pos = -1;
+-		vfpool_idx[i].view0_buf_id = DISPLAY_INVALID_POS;
+-		vfpool_idx[i].view1_buf_id = -1;
+-		vfpool_idx[i].view0_drop = 0;
+-		vfpool_idx[i].view1_drop = 0;
+-		vfpool_idx[i].used = 0;
+-	}
++	/* a put that raced the stop may still be in vh264mvc_vf_put() */
++	spin_lock_irqsave(&lock, flags);
++	memset(vfbuf_use, 0, sizeof(vfbuf_use));
++	bitmap_zero(vfbuf_return[0], VFBUF_USE_NUM);
++	bitmap_zero(vfbuf_return[1], VFBUF_USE_NUM);
++	kfifo_reset(&ready_q);
++	ready_clean = 0;
++	fill_slot = -1;
+ 	for (i = 0; i < VF_POOL_SIZE; i++) {
+-		memset(&vfpool[i], 0, sizeof(struct vframe_s));
+-		vfpool[i].index = i;
++		struct mvc_info_s *idx = &vfpool_idx[i];
++
++		/* the same vframe a receiver still holds would come back as new */
++		if (idx->state == VF_SLOT_GOT || idx->state == VF_SLOT_STALE) {
++			idx->state = VF_SLOT_STALE;
++		} else {
++			idx->state = VF_SLOT_FREE;
++			memset(&vfpool[i], 0, sizeof(struct vframe_s));
++			vfpool[i].index = i;
++		}
++		vf_slot_reset(idx);
+ 	}
++	spin_unlock_irqrestore(&lock, flags);
+ 	init_vf_buf();
+ 
+ 	if (mm_blk_handle) {
+@@ -2261,13 +2277,15 @@
+ 	pdata->dec_status = vh264mvc_dec_status;
+ 	/* pdata->set_trickmode = vh264mvc_set_trickmode; */
+ 
++	/* the margin is writable: keep the size these were allocated with */
++	buffer_spec_num = MAX_BMMU_BUFFER_NUM;
+ 	buffer_spec0 = (struct buffer_spec_s *)vzalloc(
+-		sizeof(struct buffer_spec_s) * MAX_BMMU_BUFFER_NUM * 2);
++		sizeof(struct buffer_spec_s) * buffer_spec_num * 2);
+ 	if (NULL == buffer_spec0) {
+ 		mutex_unlock(&vh264_mvc_mutex);
+ 		return -ENOMEM;
+ 	}
+-	buffer_spec1 = &buffer_spec0[MAX_BMMU_BUFFER_NUM];
++	buffer_spec1 = &buffer_spec0[buffer_spec_num];
+ 
+ 	if ((stat & ~STAT_TIMER_INIT) || needs_drain)
+ 		pr_warn("amvdec_h264mvc: stale stat 0x%x drain %d at probe\n",

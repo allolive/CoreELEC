@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 09:01:00 -0400
+Subject: [PATCH] h264_mvc: report a 720p picture as 720 lines high
+
+The frame height was taken from the macroblock rows after they are
+rounded up to a multiple of 4 for the buffers, with only 1088 corrected
+to 1080. 1280x720 has 45 rows, rounded to 48: the vframes said 768 lines
+and the bottom 48 were shown.
+
+Take the size from the macroblocks the firmware reports, before the
+rounding, in one set_frame_size() both views' allocations call; the
+buffers keep the rounded size. The firmware gives no SPS cropping, so
+1088 is still corrected to 1080. The width, used only when amstream
+gives none, now comes from the columns before the rounding as well: 80
+and 120 (1280, 1920) are multiples of 4 already, so only an odd size
+changes.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -921,9 +921,23 @@
+ 	return size;
+ }
+ 
++/* from the picture's macroblocks, not the buffers' rounded ones */
++static void set_frame_size(int mb_width, int mb_height)
++{
++	if (frame_width == 0)
++		frame_width = vh264mvc_amstream_dec_info.width ?: mb_width << 4;
++	if (frame_height == 0) {
++		frame_height = mb_height << 4;
++		/* the firmware passes no SPS cropping */
++		if (frame_height == 1088)
++			frame_height = 1080;
++	}
++}
++
+ static void do_alloc_work(struct work_struct *work)
+ {
+ 	int level_idc, max_reference_frame_num, mb_width, mb_height;
++	int pic_mb_width, pic_mb_height;
+ 	int refbuf_size;
+ 	int ret = READ_VREG(MAILBOX_COMMAND);
+ 
+@@ -949,6 +963,8 @@
+ 			min(max_dec_frame_buffering[0] + dynamic_buf_num_margin,
+ 			    buffer_spec_num);
+ 
++		pic_mb_width = mb_width;
++		pic_mb_height = mb_height;
+ 		mb_width = (mb_width + 3) & 0xfffffffc;
+ 		mb_height = (mb_height + 3) & 0xfffffffc;
+ 
+@@ -993,17 +1009,7 @@
+ 			pr_info
+ 			("End H264 display buffer for view 0\n");
+ 		}
+-		if (frame_width == 0) {
+-			if (vh264mvc_amstream_dec_info.width)
+-				frame_width = vh264mvc_amstream_dec_info.width;
+-			else
+-				frame_width = mb_width << 4;
+-		}
+-		if (frame_height == 0) {
+-			frame_height = mb_height << 4;
+-			if (frame_height == 1088)
+-				frame_height = 1080;
+-		}
++		set_frame_size(pic_mb_width, pic_mb_height);
+ 		break;
+ 	case CMD_ALLOC_VIEW_1:
+ 		if (dbg_mode & 0x1) {
+@@ -1032,6 +1038,8 @@
+ 		/* the box is laid out for two equal halves: view 0's count */
+ 		total_dec_frame_buffering[1] = total_dec_frame_buffering[0];
+ 
++		pic_mb_width = mb_width;
++		pic_mb_height = mb_height;
+ 		mb_width = (mb_width + 3) & 0xfffffffc;
+ 		mb_height = (mb_height + 3) & 0xfffffffc;
+ 
+@@ -1074,17 +1082,7 @@
+ 			pr_info
+ 			("End H264 buffer allocation for view 1\n");
+ 		}
+-		if (frame_width == 0) {
+-			if (vh264mvc_amstream_dec_info.width)
+-				frame_width = vh264mvc_amstream_dec_info.width;
+-			else
+-				frame_width = mb_width << 4;
+-		}
+-		if (frame_height == 0) {
+-			frame_height = mb_height << 4;
+-			if (frame_height == 1088)
+-				frame_height = 1080;
+-		}
++		set_frame_size(pic_mb_width, pic_mb_height);
+ 	break;
+ 	}
+ 

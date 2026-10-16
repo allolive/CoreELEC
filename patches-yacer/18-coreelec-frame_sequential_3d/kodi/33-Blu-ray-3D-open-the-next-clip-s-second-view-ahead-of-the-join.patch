@@ -1,0 +1,678 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 23:00:00 -0400
+Subject: [PATCH] Blu-ray 3D: open the next clip's second view ahead of the join
+
+The base view's next play item is read ahead of the join, so a share
+that stops answering near a join is seen as a source running dry and
+the player buffers. The second view's file of the next play item was
+still opened, probed and sought at the join, on the player thread, and
+its demuxer found the play item's start by searching the file by
+timestamp, a read at a score of places. In an outage each of those
+blocked for as long as the share was gone: the player declared a still
+frame, the clock ran on, and playback jumped ahead by the length of the
+outage once the share answered.
+
+The second view of the next play item is now opened, probed and sought
+by the clip reader with the base view's next file, on the same thread of
+its own, from what is taken from libbluray on the player thread before.
+The reader opens it at the join too when it was not prepared, so the
+input stream only takes it.
+The join waits for both, and takes the second view if it is the one
+asked for; the current play item's is kept until its join, which comes
+after the base view's. Its demuxer seeks by the entry points of the
+clip's .clpi, a single seek that a play item's start, read ahead,
+already holds; the .clpi is read once per clip. Abort ends a stalled
+open or probe, ahead or at the join. A playlist change drops what was
+prepared ahead, and a disc opened as a disc, without the clip reader,
+opens the second view at the join as before. The second view's cache is
+throttled to the title's rate as the base view's clips are.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp    |  31 ++-
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h      |   8 +
+ .../DVDInputStreams/BlurayClipReader.cpp           | 225 ++++++++++++++++++++-
+ .../VideoPlayer/DVDInputStreams/BlurayClipReader.h |  66 +++++-
+ .../DVDInputStreams/DVDInputStreamBluray.cpp       |  66 +++---
+ .../DVDInputStreams/DVDInputStreamBluray.h         |   1 +
+ 6 files changed, 352 insertions(+), 45 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+index 6f64bc55..ac544f29 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+@@ -24,6 +24,8 @@
+ #include "cores/FFmpeg.h"
+ #include "utils/log.h"
+ 
++#include <algorithm>
++
+ extern "C" {
+ #include "libavutil/opt.h"
+ };
+@@ -247,19 +249,30 @@ bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
+   if (!m_pInput || !m_pFormatContext || m_nStreamIndex < 0)
+     return false;
+ 
+-  const AVRational clipTimeBase = {1, 90000};
+-  const AVStream* stream = m_pFormatContext->streams[m_nStreamIndex];
+-  int64_t seek_pts = av_rescale_q(ts, clipTimeBase, stream->time_base) -
+-                     av_rescale_q(MVC_SEEK_TIME_WINDOW, clipTimeBase, stream->time_base);
+-  if (seek_pts < 0)
+-    seek_pts = 0;
+-
+   m_clipEnded = false;
+   m_atClipStart = false;
+   ClearReadError();
+-  if (av_seek_frame(m_pFormatContext, m_nStreamIndex, seek_pts, AVSEEK_FLAG_BACKWARD) < 0)
++  // The entry point at or before it, a single seek: a search for the timestamp reads the file at
++  // a score of places, each a wait on a source that stalls
++  int64_t target;
++  int ret;
++  if (m_entryPointAt)
++  {
++    target = m_entryPointAt(ts);
++    ret = av_seek_frame(m_pFormatContext, -1, target, AVSEEK_FLAG_BYTE);
++  }
++  else
++  {
++    const AVRational clipTimeBase = {1, 90000};
++    const AVStream* stream = m_pFormatContext->streams[m_nStreamIndex];
++    target = std::max<int64_t>(
++        0, av_rescale_q(ts, clipTimeBase, stream->time_base) -
++               av_rescale_q(MVC_SEEK_TIME_WINDOW, clipTimeBase, stream->time_base));
++    ret = av_seek_frame(m_pFormatContext, m_nStreamIndex, target, AVSEEK_FLAG_BACKWARD);
++  }
++  if (ret < 0)
+   {
+-    CLog::Log(LOGDEBUG, "CDemuxMVC::{} - seek to {} failed", __FUNCTION__, seek_pts);
++    CLog::Log(LOGDEBUG, "CDemuxMVC::{} - seek to {} failed", __FUNCTION__, target);
+     return false;
+   }
+   return true;
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+index 7152afd7..ef624bcc 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+@@ -25,6 +25,8 @@
+ #include "cores/MenuType.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ 
++#include <functional>
++
+ extern "C" {
+ #include "libavformat/avformat.h"
+ }
+@@ -55,6 +57,11 @@ public:
+   void SetStartTime(int64_t start_time, MenuType menu_type);
+   //! the play item's in and out times (90 kHz) in a file that can hold more than the play item
+   void SetClip(int64_t inTime, int64_t outTime);
++  //! where in the file a timestamp's entry point is, to seek to without searching the file
++  void SetEntryPointLocator(std::function<int64_t(int64_t clipTimestamp)> locator)
++  {
++    m_entryPointAt = std::move(locator);
++  }
+   int64_t GetStartTime() const { return m_start_time; }
+ 
+   AVStream* GetAVStream();
+@@ -78,4 +85,5 @@ private:
+   int64_t m_clipEnd = 0;
+   bool m_clipEnded = false;
+   bool m_atClipStart = false;
++  std::function<int64_t(int64_t clipTimestamp)> m_entryPointAt;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+index 2615d45a..ff683cbe 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+@@ -8,7 +8,11 @@
+ 
+ #include "BlurayClipReader.h"
+ 
++#include "DVDDemuxers/DemuxMVC.h"
++#include "DVDInputStreamFile.h"
++#include "FileItem.h"
+ #include "URL.h"
++#include "filesystem/bluray/BitReader.h"
+ #include "filesystem/BlurayCallback.h"
+ #include "filesystem/File.h"
+ #include "filesystem/IFileTypes.h"
+@@ -19,6 +23,7 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <mutex>
++#include <span>
+ #include <thread>
+ 
+ #include <libbluray/clpi_data.h>
+@@ -88,6 +93,8 @@ void CBlurayClipReader::Open(std::string rootPath)
+ void CBlurayClipReader::Close()
+ {
+   DropPrefetchJob();
++  m_nextMVC = {};
++  m_mvcEntryPoints.clear();
+   m_bd = nullptr;
+   m_clips.clear();
+   m_playItem = 0;
+@@ -118,6 +125,7 @@ void CBlurayClipReader::SetPlayItem(BLURAY* bd, int playItem, unsigned int angle
+   if (clips != m_clips)
+   {
+     m_clips = std::move(clips);
++    m_nextMVC = {};
+     m_nextClipFailures = 0;
+     {
+       std::unique_lock lock(m_clipFilesLock);
+@@ -245,12 +253,32 @@ void CBlurayClipReader::PrefetchNextClip(const std::shared_ptr<XFILE::CFile>& pl
+     }
+   }
+ 
++  // The second view of a 3D clip is a file of its own, opened, probed and sought with the base
++  // view's. Its join comes after the base view's: the current play item's is kept until taken.
++  if (m_mvcClipAt && m_nextMVC.playItem != nextPlayItem && !CurrentMVCUntaken())
++  {
++    auto mvcClip{m_mvcClipAt(nextPlayItem)};
++    if (!mvcClip)
++      m_nextMVC = {nextPlayItem, {}};
++    else
++    {
++      if (!job)
++        job = std::make_shared<PrefetchJob>();
++      if (const auto points = m_mvcEntryPoints.find(mvcClip->clipId);
++          points != m_mvcEntryPoints.end())
++        job->mvcEntryPoints = points->second;
++      job->readRate = m_readRate;
++      job->mvcClip = std::move(mvcClip);
++    }
++  }
++
+   if (!job)
+     return;
+-  if (m_aborted)
+-    return;
+   {
++    // checked under the lock Abort takes after setting it, so a job is never missed
+     std::unique_lock lock(m_prefetchJobLock);
++    if (m_aborted)
++      return;
+     m_prefetchJob = job;
+   }
+   std::thread([job] { RunPrefetchJob(job); }).detach();
+@@ -287,6 +315,11 @@ bool CBlurayClipReader::TakePrefetchJob(int nextPlayItem)
+     std::unique_lock lock(m_clipFilesLock);
+     m_nextClip = std::move(job->next);
+   }
++  if (job->mvcDemux && job->mvcClip->playItem == nextPlayItem)
++  {
++    m_mvcEntryPoints[job->mvcClip->clipId] = job->mvcEntryPoints;
++    m_nextMVC = {nextPlayItem, {std::move(job->mvcInput), std::move(job->mvcDemux)}};
++  }
+   return true;
+ }
+ 
+@@ -305,6 +338,25 @@ void CBlurayClipReader::RunPrefetchJob(const std::shared_ptr<PrefetchJob>& job)
+       failed = true;
+   }
+ 
++  if (job->mvcClip)
++  {
++    // published before it is opened, so Abort can end a stalled open or probe
++    auto input{NewMVCInput(*job->mvcClip)};
++    CDVDInputStream* opening{input.get()};
++    bool aborted;
++    {
++      std::unique_lock lock(job->lock);
++      aborted = job->aborted;
++      job->mvcInput = std::move(input);
++    }
++    std::unique_ptr<CDemuxMVC> demux;
++    if (!aborted && opening->Open())
++      demux = NewMVCDemux(*job->mvcClip, job->mvcEntryPoints, job->readRate, *opening);
++    std::unique_lock lock(job->lock);
++    job->mvcDemux = std::move(demux);
++    failed = failed || !job->mvcDemux;
++  }
++
+   std::unique_lock lock(job->lock);
+   job->failed = failed;
+   job->done = true;
+@@ -315,6 +367,8 @@ void CBlurayClipReader::GiveUpNextClip(int playItem)
+ {
+   CLog::Log(LOGDEBUG, "CBlurayClipReader - play item {} could not be opened ahead", playItem);
+   m_nextClipFailures = 0;
++  if (m_mvcClipAt && m_nextMVC.playItem != playItem)
++    m_nextMVC = {playItem, {}};
+   std::unique_lock lock(m_clipFilesLock);
+   if (m_nextClip.playItem != playItem)
+     m_nextClip = {playItem, {}, nullptr};
+@@ -324,16 +378,90 @@ void CBlurayClipReader::GiveUpNextClip(int playItem)
+ bool CBlurayClipReader::NextClipReady() const
+ {
+   const int nextPlayItem{m_playItem + 1};
+-  return nextPlayItem >= static_cast<int>(m_clips.size()) || m_nextClip.playItem == nextPlayItem;
++  return nextPlayItem >= static_cast<int>(m_clips.size()) ||
++         (m_nextClip.playItem == nextPlayItem &&
++          (!m_mvcClipAt || m_nextMVC.playItem == nextPlayItem || CurrentMVCUntaken()));
+ }
+ 
+ // A job left running ends on its own, its files with it: a stalled open must not hold anything
+ void CBlurayClipReader::DropPrefetchJob()
+ {
+   std::unique_lock lock(m_prefetchJobLock);
++  if (m_prefetchJob)
++  {
++    std::unique_lock jobLock(m_prefetchJob->lock);
++    m_prefetchJob->aborted = true;
++    if (m_prefetchJob->mvcInput)
++      m_prefetchJob->mvcInput->Abort();
++  }
+   m_prefetchJob.reset();
+ }
+ 
++// A second view opened ahead, or now, may wait out a stalled source
++void CBlurayClipReader::Abort()
++{
++  std::unique_lock lock(m_prefetchJobLock);
++  AbortLocked();
++}
++
++void CBlurayClipReader::AbortLocked()
++{
++  if (m_openingMVC)
++    m_openingMVC->Abort();
++  if (!m_prefetchJob)
++    return;
++  std::unique_lock jobLock(m_prefetchJob->lock);
++  m_prefetchJob->aborted = true;
++  if (m_prefetchJob->mvcInput)
++    m_prefetchJob->mvcInput->Abort();
++}
++
++void CBlurayClipReader::SetSecondViewSource(MVCClipAt mvcClipAt)
++{
++  m_mvcClipAt = std::move(mvcClipAt);
++}
++
++std::optional<CBlurayClipReader::SecondView> CBlurayClipReader::OpenSecondView(int playItem,
++                                                                              bool& none)
++{
++  none = false;
++  if (m_nextMVC.playItem == playItem && m_nextMVC.view.demux)
++    return std::exchange(m_nextMVC, {}).view;
++
++  const auto clip{m_mvcClipAt ? m_mvcClipAt(playItem) : std::nullopt};
++  if (!clip)
++  {
++    none = true;
++    return {};
++  }
++
++  auto input{NewMVCInput(*clip)};
++  {
++    // checked under the lock Abort takes after setting it
++    std::unique_lock lock(m_prefetchJobLock);
++    if (m_aborted)
++      return {};
++    m_openingMVC = input.get();
++  }
++  auto& entryPoints{m_mvcEntryPoints[clip->clipId]};
++  std::unique_ptr<CDemuxMVC> demux;
++  if (input->Open())
++    demux = NewMVCDemux(*clip, entryPoints, m_readRate, *input);
++  {
++    std::unique_lock lock(m_prefetchJobLock);
++    m_openingMVC = nullptr;
++  }
++  if (!demux)
++    return {};
++  return SecondView{std::move(input), std::move(demux)};
++}
++
++// the second view of the play item being read, prepared and still to be taken at its join
++bool CBlurayClipReader::CurrentMVCUntaken() const
++{
++  return m_nextMVC.view.demux && m_nextMVC.playItem == m_playItem;
++}
++
+ std::pair<int64_t, int64_t> CBlurayClipReader::GetPlayItemSpan(int playItem) const
+ {
+   if (!m_bd || playItem < 0 || playItem >= static_cast<int>(m_clips.size()))
+@@ -375,3 +503,94 @@ void CBlurayClipReader::SetClipReadRate(XFILE::CFile& file) const
+   uint32_t maxrate{static_cast<uint32_t>(1.1 * m_readRate)};
+   file.IoControl(XFILE::IOControl::CACHE_SETRATE, &maxrate);
+ }
++
++// The video's entry point map of a .clpi (CPI, EP_map), read as libbluray reads it: libbluray
++// cannot read it itself from a disc image (bd_read_clpi opens local files only)
++CBlurayClipReader::EntryPoints CBlurayClipReader::ReadEntryPoints(const std::string& path)
++{
++  std::vector<uint8_t> data;
++  XFILE::CFile file;
++  if (file.LoadFile(path, data) <= 0)
++  {
++    CLog::Log(LOGDEBUG, "CBlurayClipReader - cannot read {}", CURL::GetRedacted(path));
++    return {};
++  }
++
++  const std::span<const std::byte> bytes{std::as_bytes(std::span{data})};
++  try
++  {
++    const unsigned int cpi{GetDWord(bytes, 16)};
++    if (GetString(bytes, 0, 4) != "HDMV" || GetDWord(bytes, cpi) == 0 ||
++        GetByte(bytes, cpi + 7) == 0)
++      return {};
++
++    // the first stream's counts, and where its coarse and fine entries start
++    const unsigned int epMap{cpi + 6};
++    const uint64_t stream{GetQWord(bytes, epMap + 2)};
++    const unsigned int start{epMap + GetDWord(bytes, epMap + 10)};
++    const unsigned int fineStart{start + GetDWord(bytes, start)};
++
++    std::vector<CLPI_EP_COARSE> coarse(GetBits64(stream, 34, 16));
++    for (size_t i = 0; i < coarse.size(); ++i)
++    {
++      const uint32_t word{GetDWord(bytes, start + 4 + 8 * i)};
++      coarse[i].ref_ep_fine_id = static_cast<int>(GetBits(word, 32, 18));
++      coarse[i].pts_ep = static_cast<int>(GetBits(word, 14, 14));
++      coarse[i].spn_ep = GetDWord(bytes, start + 8 + 8 * i);
++    }
++    std::vector<CLPI_EP_FINE> fine(GetBits64(stream, 18, 18));
++    for (size_t i = 0; i < fine.size(); ++i)
++    {
++      const uint32_t word{GetDWord(bytes, fineStart + 4 * i)};
++      fine[i].pts_ep = static_cast<int>(GetBits(word, 28, 11));
++      fine[i].spn_ep = static_cast<int>(GetBits(word, 17, 17));
++    }
++
++    CLPI_EP_MAP_ENTRY map{};
++    map.num_ep_coarse = static_cast<int>(coarse.size());
++    map.num_ep_fine = static_cast<int>(fine.size());
++    map.coarse = coarse.data();
++    map.fine = fine.data();
++    return EntryPointsOf(map);
++  }
++  catch (const std::out_of_range&)
++  {
++    CLog::Log(LOGDEBUG, "CBlurayClipReader - {} is too short", CURL::GetRedacted(path));
++    return {};
++  }
++}
++
++std::unique_ptr<CDVDInputStream> CBlurayClipReader::NewMVCInput(const MVCClip& clip)
++{
++  CLog::Log(LOGDEBUG, "CBlurayClipReader - opening the second view at {}",
++            CURL::GetRedacted(clip.path));
++
++  CFileItem fileitem(CURL(clip.path), false);
++  auto input{std::make_unique<CDVDInputStreamFile>(fileitem, 0)};
++  input->SetWaitsForUser(true);
++  return input;
++}
++
++// Off the player thread too: it uses nothing of the reader
++std::unique_ptr<CDemuxMVC> CBlurayClipReader::NewMVCDemux(
++    const MVCClip& clip,
++    std::shared_ptr<const EntryPoints>& entryPoints,
++    uint32_t readRate,
++    CDVDInputStream& input)
++{
++  if (readRate > 0)
++    input.SetReadRate(readRate);
++
++  if (!entryPoints)
++    entryPoints = std::make_shared<const EntryPoints>(ReadEntryPoints(clip.clipInfoPath));
++
++  auto demux{std::make_unique<CDemuxMVC>()};
++  if (!entryPoints->empty())
++    demux->SetEntryPointLocator([points = entryPoints](int64_t clipTimestamp)
++                                { return EntryPointAt(*points, clipTimestamp); });
++  if (!demux->Open(&input))
++    return nullptr;
++
++  demux->SetClip(clip.inTime, clip.outTime);
++  return demux;
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+index e1b6094e..03871c0b 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+@@ -14,7 +14,10 @@
+ #include <atomic>
+ #include <chrono>
+ #include <cstdint>
++#include <functional>
++#include <map>
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -22,6 +25,9 @@
+ #include <libbluray/bluray.h>
+ #include <libbluray/filesystem.h>
+ 
++class CDemuxMVC;
++class CDVDInputStream;
++
+ namespace XFILE
+ {
+ class CFile;
+@@ -57,6 +63,34 @@ public:
+   //! The title's average rate, in bytes per second
+   void SetReadRate(uint32_t rate);
+ 
++  //! Where a play item's second view (3D) is, taken from libbluray on the player thread
++  struct MVCClip
++  {
++    int playItem{-1};
++    std::string path;
++    std::string clipId;
++    std::string clipInfoPath;
++    int64_t inTime{0};
++    int64_t outTime{0};
++  };
++  //! A play item's second view: its input, open, and its demuxer, sought to the play item's start
++  struct SecondView
++  {
++    std::unique_ptr<CDVDInputStream> input;
++    std::unique_ptr<CDemuxMVC> demux;
++  };
++  //! Nothing for a play item without a second view
++  using MVCClipAt = std::function<std::optional<MVCClip>(int playItem)>;
++  void SetSecondViewSource(MVCClipAt mvcClipAt);
++  /*!
++   * \brief The second view of a play item: prepared ahead with the base view's, or opened now.
++   * \param none Set if the play item has no second view
++   * \return The second view, or nothing if it has none or cannot be opened now
++   */
++  std::optional<SecondView> OpenSecondView(int playItem, bool& none);
++  //! The player stops: from another thread
++  void Abort();
++
+ private:
+   struct ClipFile
+   {
+@@ -81,11 +115,23 @@ private:
+     CCriticalSection lock;
+     bool done{false};
+     bool failed{false};
++    bool aborted{false};
+     NextClip next;
+     std::string path;
+     int64_t start{0};
+     //! how long the player plays on before it waits for the job
+     XbmcThreads::EndTime<> grace{std::chrono::seconds(1)};
++    std::optional<MVCClip> mvcClip;
++    std::shared_ptr<const EntryPoints> mvcEntryPoints;
++    uint32_t readRate{0};
++    std::unique_ptr<CDVDInputStream> mvcInput;
++    std::unique_ptr<CDemuxMVC> mvcDemux;
++  };
++
++  struct NextMVC
++  {
++    int playItem{-1};
++    SecondView view;
+   };
+ 
+   struct Clip
+@@ -105,6 +151,16 @@ private:
+   void DropPrefetchJob();
+   //! where a play item starts and ends in its .m2ts, -1 where it is not known
+   std::pair<int64_t, int64_t> GetPlayItemSpan(int playItem) const;
++  bool CurrentMVCUntaken() const;
++  void AbortLocked();
++  static std::unique_ptr<CDVDInputStream> NewMVCInput(const MVCClip& clip);
++  //! entryPoints: the clip's, read from its .clpi if not known yet
++  static std::unique_ptr<CDemuxMVC> NewMVCDemux(const MVCClip& clip,
++                                                std::shared_ptr<const EntryPoints>& entryPoints,
++                                                uint32_t readRate,
++                                                CDVDInputStream& input);
++  //! the entry points of a .clpi libbluray did not read, as a second view's
++  static EntryPoints ReadEntryPoints(const std::string& path);
+ 
+   std::string m_rootPath;
+   const std::atomic<bool>& m_aborted;
+@@ -123,7 +179,15 @@ private:
+   XbmcThreads::EndTime<> m_nextClipRetry;
+   int m_nextClipFailures{0};
+ 
+-  //! guards m_prefetchJob against Abort
++  //! guards m_prefetchJob and m_openingMVC against Abort
+   CCriticalSection m_prefetchJobLock;
+   std::shared_ptr<PrefetchJob> m_prefetchJob;
++  CDVDInputStream* m_openingMVC{nullptr};
++
++  MVCClipAt m_mvcClipAt;
++  //! the second view of the play item after the base view's, prepared with it; its join comes
++  //! after the base view's
++  NextMVC m_nextMVC;
++  //! the entry points of the second view's clips, by clip
++  std::map<std::string, std::shared_ptr<const EntryPoints>> m_mvcEntryPoints;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index db634295..5ef83a6d 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -87,6 +87,7 @@ CDVDInputStreamBluray::CDVDInputStreamBluray(IVideoPlayer* player, const CFileIt
+ #ifdef HAVE_LIBBLURAY_BDJ
+   memset(&m_argb,  0, sizeof(m_argb));
+ #endif
++  m_clipReader.SetSecondViewSource([this](int playItem) { return GetMVCClip(playItem); });
+ }
+ 
+ CDVDInputStreamBluray::~CDVDInputStreamBluray()
+@@ -98,6 +99,7 @@ void CDVDInputStreamBluray::Abort()
+ {
+   m_hold = HOLD_EXIT;
+   m_aborted = true;
++  m_clipReader.Abort();
+ 
+   // the extension's file may be waiting out a stalled source on the player thread
+   std::unique_lock lock(m_mvcInputLock);
+@@ -462,6 +464,10 @@ bool CDVDInputStreamBluray::GetCacheStatus(XFILE::SCacheStatus* status)
+ void CDVDInputStreamBluray::SetReadRate(uint32_t rate)
+ {
+   m_clipReader.SetReadRate(rate);
++
++  std::unique_lock lock(m_mvcInputLock);
++  if (m_pMVCInput)
++    m_pMVCInput->SetReadRate(rate);
+ }
+ 
+ // close file and reset everything
+@@ -1661,54 +1667,50 @@ bool CDVDInputStreamBluray::OpenBaseClip()
+   return OpenMVCDemux(clip);
+ }
+ 
++// where the second view of a play item is, while the playlist is played in 3D
++std::optional<CBlurayClipReader::MVCClip> CDVDInputStreamBluray::GetMVCClip(int playItem)
++{
++  MPLS_PL *pl = bd_get_title_mpls(m_bd);
++  const BLURAY_CLIP_INFO* clip = ClipAt(playItem);
++  if (!m_bMVCPlayback || !pl || !clip || m_nMVCSubPathIndex >= pl->ext_sub_count ||
++      playItem >= pl->ext_sub_path[m_nMVCSubPathIndex].sub_playitem_count)
++    return {};
++
++  CBlurayClipReader::MVCClip mvcClip;
++  mvcClip.playItem = playItem;
++  mvcClip.clipId = pl->ext_sub_path[m_nMVCSubPathIndex].sub_play_item[playItem].clip->clip_id;
++  mvcClip.path = URIUtils::AddFileToFolder(m_root, "BDMV", "STREAM", mvcClip.clipId + ".m2ts");
++  mvcClip.clipInfoPath =
++      URIUtils::AddFileToFolder(m_root, "BDMV", "CLIPINF", mvcClip.clipId + ".clpi");
++  mvcClip.inTime = static_cast<int64_t>(clip->in_time);
++  mvcClip.outTime = static_cast<int64_t>(clip->out_time);
++  return mvcClip;
++}
++
+ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+ {
+   CloseMVCDemux();
+ 
+-  MPLS_PL *pl = bd_get_title_mpls(m_bd);
+-  if (!pl || !ClipAt(playItem) || m_nMVCSubPathIndex >= pl->ext_sub_count ||
+-      playItem >= pl->ext_sub_path[m_nMVCSubPathIndex].sub_playitem_count)
++  bool none{false};
++  auto view{m_clipReader.OpenSecondView(playItem, none)};
++  if (none)
+   {
+     EndExtention();
+     return false;
+   }
++  // a file that cannot be opened is tried again as the base view reads on (CDemuxStreamSSIF)
++  if (!view)
++    return false;
+ 
+-  std::string strFileName;
+-  strFileName.append(m_root);
+-  strFileName.append("/BDMV/STREAM/");
+-  strFileName.append(pl->ext_sub_path[m_nMVCSubPathIndex].sub_play_item[playItem].clip->clip_id);
+-  strFileName.append(".m2ts");
+-
+-  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OpenMVCDemuxer(): Opening MVC extension stream at {}", strFileName);
+-
+-  CFileItem fileitem(CURL(strFileName), false);
+   {
+     std::unique_lock lock(m_mvcInputLock);
+     if (m_mvcAborted)
+       return false;
+-    auto* input = new CDVDInputStreamFile(fileitem, 0);
+-    input->SetWaitsForUser(true);
+-    m_pMVCInput = input;
+-  }
+-
+-  // a file that cannot be opened is tried again as the base view reads on (CDemuxStreamSSIF)
+-  if (!m_pMVCInput->Open())
+-  {
+-    CloseMVCDemux();
+-    return false;
++    m_pMVCInput = view->input.release();
+   }
+-
+-  m_pMVCDemux = new CDemuxMVC;
++  m_pMVCDemux = view->demux.release();
+   m_pMVCDemux->SetStartTime(m_mvcStartTime, GetSupportedMenuType());
+-  if (!m_pMVCDemux->Open(m_pMVCInput))
+-  {
+-    CloseMVCDemux();
+-    return false;
+-  }
+-
+   m_nMVCClip = playItem;
+-  const BLURAY_CLIP_INFO* clip = ClipAt(playItem);
+-  m_pMVCDemux->SetClip(static_cast<int64_t>(clip->in_time), static_cast<int64_t>(clip->out_time));
+   return true;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 4ec8588a..820185f5 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -215,6 +215,7 @@ protected:
+ 
+   bool OpenBaseClip();
+   bool OpenMVCDemux(int playItem);
++  std::optional<CBlurayClipReader::MVCClip> GetMVCClip(int playItem);
+   bool CloseMVCDemux();
+   void SeekMVCDemux();
+   void RestartExtention();

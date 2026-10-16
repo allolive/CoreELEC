@@ -1,0 +1,273 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:09:32 -0400
+Subject: [PATCH] Blu-ray 3D: a failed read of the second view is not its end
+
+The MVC extension stream is read from its own m2ts through a file input.
+CDemuxMVC::Read retried a read that failed with EAGAIN or EINTR in a
+loop. ffmpeg latches a failed read in its I/O context and hands it back
+on every later read, so once the extension's source had stalled the loop
+could never end: the player thread spun on the demuxer lock, the picture
+froze and stop hung, even after the share came back. Any other error
+ended the read as if the file had ended.
+
+CDemuxMVC::Read no longer loops on an error. ffmpeg latches any failed
+read, not only a stall (a read error, a cache timeout, a reset
+connection the input reports as -1), and then reports the end of the
+file on every later read. Short of the input's real end, the latch is
+cleared and the extension is read again once the base view has moved on
+by half a second.
+
+Only the end of the extension's play item moves it to the next one: a
+failed read did too, which jumped a multi-clip title's second view to
+the next clip. That end is the input's end of file, or the first picture
+at or after the play item's out time, for a play item that ends before
+its file. A play item can also start after its file does, in a file it
+shares with an earlier play item: the extension's file is then read from
+the play item's in time, not from its start. The in and out times are
+compared with the file's timestamps as they are, so a clip whose
+timestamps wrap, or that holds more than one STC sequence, can end early
+or only at its file's end.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoPlayer/DVDDemuxers/DemuxMVC.cpp      | 55 ++++++++++++++++++-
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h |  6 ++
+ .../DVDDemuxers/DemuxStreamSSIF.cpp           | 21 ++++++-
+ .../VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h |  3 +
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  |  2 +
+ 5 files changed, 83 insertions(+), 4 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+index 3699b5a..8708418 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+@@ -157,6 +157,9 @@ DemuxPacket* CDemuxMVC::Read()
+ {
+   int ret;
+   DemuxPacket* newPkt = NULL;
++  if (!m_pFormatContext || m_clipEnded)
++    return newPkt;
++
+   AVPacket* pkt = av_packet_alloc();
+   if (!pkt)
+   {
+@@ -165,13 +168,13 @@ DemuxPacket* CDemuxMVC::Read()
+     return newPkt;
+   }
+ 
++  ClearReadError();
++
+   while (true)
+   {
+     ret = av_read_frame(m_pFormatContext, pkt);
+ 
+-    if (ret == AVERROR(EINTR) || ret == AVERROR(EAGAIN))
+-      continue;
+-    else if (ret == AVERROR_EOF)
++    if (ret < 0)
+       break;
+     else if (pkt->size <= 0 || pkt->stream_index != m_nStreamIndex)
+     {
+@@ -192,6 +195,18 @@ DemuxPacket* CDemuxMVC::Read()
+         ConvertTimestamp(pkt->pts, stream->time_base.den, stream->time_base.num);
+       newPkt->duration = DVD_SEC_TO_TIME((double)pkt->duration * stream->time_base.num /
+                                           stream->time_base.den);
++      if (newPkt->dts != DVD_NOPTS_VALUE)
++      {
++        const int64_t clipDts = av_rescale_q(pkt->dts, stream->time_base, AVRational{1, 90000});
++        // the play item can end before its file
++        if (m_clipEnd > 0 && clipDts >= m_clipEnd)
++        {
++          m_clipEnded = true;
++          CDVDDemuxUtils::FreeDemuxPacket(newPkt);
++          newPkt = nullptr;
++          break;
++        }
++      }
+       break;
+     }
+   }
+@@ -236,6 +251,8 @@ bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
+   if (seek_pts < 0)
+     seek_pts = 0;
+ 
++  m_clipEnded = false;
++  ClearReadError();
+   if (av_seek_frame(m_pFormatContext, m_nStreamIndex, seek_pts, AVSEEK_FLAG_BACKWARD) < 0)
+   {
+     CLog::Log(LOGDEBUG, "CDemuxMVC::{} - seek to {} failed", __FUNCTION__, seek_pts);
+@@ -244,6 +261,37 @@ bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
+   return true;
+ }
+ 
++// The play item ends at its out time, and starts at its in time: a file shared with an earlier
++// play item is read from there.
++void CDemuxMVC::SetClip(int64_t inTime, int64_t outTime)
++{
++  m_clipEnd = outTime;
++  if (!m_pFormatContext || m_nStreamIndex < 0)
++    return;
++
++  const AVStream* stream = m_pFormatContext->streams[m_nStreamIndex];
++  if (stream->start_time != static_cast<int64_t>(AV_NOPTS_VALUE) &&
++      inTime - MVC_SEEK_TIME_WINDOW >
++          av_rescale_q(stream->start_time, stream->time_base, AVRational{1, 90000}))
++    SeekClipTimestamp(inTime);
++}
++
++// ffmpeg latches a failed read and hands it back on every later read; short of the end of the
++// file, the next read tries again
++void CDemuxMVC::ClearReadError()
++{
++  if (m_pFormatContext && m_pFormatContext->pb && !IsEOF())
++  {
++    m_pFormatContext->pb->error = 0;
++    m_pFormatContext->pb->eof_reached = 0;
++  }
++}
++
++bool CDemuxMVC::IsEOF()
++{
++  return m_clipEnded || !m_pInput || m_pInput->IsEOF();
++}
++
+ std::string CDemuxMVC::GetFileName()
+ {
+   return m_pInput->GetFileName();
+@@ -269,6 +317,7 @@ void CDemuxMVC::Dispose()
+   m_pFormatContext = nullptr;
+   m_pInput = nullptr;
+   m_nStreamIndex = -1;
++  m_clipEnded = false;
+ }
+ 
+ double CDemuxMVC::ConvertTimestamp(int64_t pts, int den, int num)
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+index 0a20113..c6aa4ce 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+@@ -40,6 +40,7 @@ public:
+   virtual DemuxPacket* Read();
+   virtual bool SeekTime(double time, bool backwords = false, double* startpts = nullptr);
+   bool SeekClipTimestamp(int64_t ts);
++  bool IsEOF();
+   virtual void SetSpeed(int iSpeed) { };
+   virtual int GetStreamLength() { return 0; };
+   virtual CDemuxStream* GetStream(int iStreamId) const override { return nullptr; };
+@@ -48,6 +49,8 @@ public:
+   virtual std::string GetFileName();
+ 
+   void SetStartTime(int64_t start_time, MenuType menu_type) { m_start_time = start_time; m_menu_type = menu_type; }
++  //! the play item's in and out times (90 kHz) in a file that can hold more than the play item
++  void SetClip(int64_t inTime, int64_t outTime);
+   int64_t GetStartTime() const { return m_start_time; }
+ 
+   AVStream* GetAVStream();
+@@ -55,6 +58,7 @@ public:
+ 
+ private:
+   void Dispose();
++  void ClearReadError();
+   double ConvertTimestamp(int64_t pts, int den, int num);
+ 
+   AVIOContext        *m_ioContext = nullptr;
+@@ -62,4 +66,6 @@ private:
+   int                 m_nStreamIndex = -1;
+   int64_t			  m_start_time = 0;
+   MenuType		  m_menu_type = MenuType::NONE;
++  int64_t m_clipEnd = 0;
++  bool m_clipEnded = false;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index 5cf495a..56ff484 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -25,8 +25,16 @@
+ #include "DVDDemuxUtils.h"
+ #include "utils/log.h"
+ 
++#include <cmath>
++
+ //#define DEBUG_VERBOSE
+ #define MVC_QUEUE_SIZE 100
++#define MVC_RETRY_SPAN (DVD_TIME_BASE / 2)
++
++static double Timestamp(const DemuxPacket* pkt)
++{
++  return pkt->dts != DVD_NOPTS_VALUE ? pkt->dts : pkt->pts;
++}
+ 
+ DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket* &srcPkt)
+ {
+@@ -63,6 +71,7 @@ void CDemuxStreamSSIF::Flush()
+     CDVDDemuxUtils::FreeDemuxPacket(m_MVCqueue.front());
+     m_MVCqueue.pop_front();
+   }
++  m_retryTime = DVD_NOPTS_VALUE;
+ }
+ 
+ DemuxPacket* CDemuxStreamSSIF::MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &appendPkt)
+@@ -198,6 +207,13 @@ bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
+   if (!m_bluRay)
+     return false;
+ 
++  // after a failed read the extension is read again once the base view has moved on a little
++  const double newest = Timestamp(m_H264queue.back());
++  if (m_retryTime != DVD_NOPTS_VALUE && newest != DVD_NOPTS_VALUE &&
++      std::abs(newest - m_retryTime) < MVC_RETRY_SPAN)
++    return false;
++  m_retryTime = DVD_NOPTS_VALUE;
++
+   CDemuxMVC* demux = m_bluRay->GetExtentionDemux();
+   if (!demux)
+     return false;
+@@ -219,8 +235,11 @@ bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
+     }
+     AddMVCExtPacket(mvc);
+   };
+-  if (m_MVCqueue.size() != MVC_QUEUE_SIZE)
++  // only the end of the file moves the extension to the next clip
++  if (m_MVCqueue.size() != MVC_QUEUE_SIZE && demux->IsEOF())
+     m_bluRay->OpenNextStream();
++  else if (m_MVCqueue.empty())
++    m_retryTime = newest;
+ 
+   return true;
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+index a2b03f1..f6b2aa9 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+@@ -24,6 +24,7 @@
+ #include "DVDInputStreams/DVDInputStreamBluray.h"
+ #endif
+ #include "DVDInputStreams/DVDInputStream.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include <deque>
+ #include <queue>
+ 
+@@ -59,4 +60,6 @@ private:
+   std::deque<DemuxPacket*> m_MVCqueue;
+   int m_h264StreamId = -1;
+   int m_mvcStreamId = -1;
++  //! the base view's newest picture when the extension last failed to read
++  double m_retryTime = DVD_NOPTS_VALUE;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 7dea94d..4c1423f 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1637,6 +1637,8 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+   }
+ 
+   m_nMVCClip = playItem;
++  const BLURAY_CLIP_INFO* clip = ClipAt(playItem);
++  m_pMVCDemux->SetClip(static_cast<int64_t>(clip->in_time), static_cast<int64_t>(clip->out_time));
+   return true;
+ }
+ 

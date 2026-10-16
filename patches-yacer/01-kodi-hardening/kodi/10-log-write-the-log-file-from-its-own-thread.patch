@@ -1,0 +1,227 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 23:49:22 -0400
+Subject: [PATCH] log: write the log file from its own thread
+
+Every thread that logs wrote its line to the log file itself, under the
+lock of the sink all loggers share, and flushed it: flush_on(debug) makes
+each line a write() into the file. A write normally only copies into the
+page cache, but on a filesystem whose journal is committing to storage
+that is slow to answer it waits, and every thread that logs waits behind
+it on the shared lock.
+
+With debug logging on, the decoder, the renderer and the audio thread of
+a playing video log several lines per frame. On a box whose storage is a
+USB stick, one such write took 140 ms: all of them stopped for that long
+together, two late frames were dropped and the picture was 126 ms off the
+audio until the clock caught up.
+
+The file sink now only formats the line on the thread that logs and
+queues it; a writer thread of its own appends and flushes what is queued.
+Lines keep the time and thread they were logged with and their order.
+Nothing is dropped: past 8 MiB queued (about a minute of debug logging)
+the thread that logs waits for the writer. Destroying the sink, as
+Deinitialize does, writes out the queue before it returns.
+
+What is still queued when Kodi crashes is lost; the writer takes the
+queue as soon as a line arrives, so that is the last few milliseconds.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/utils/AsyncFileSink.cpp b/xbmc/utils/AsyncFileSink.cpp
+new file mode 100644
+index 0000000..9238759
+--- /dev/null
++++ b/xbmc/utils/AsyncFileSink.cpp
+@@ -0,0 +1,82 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "AsyncFileSink.h"
++
++#include <cstddef>
++#include <utility>
++
++namespace
++{
++//! about a minute of debug logging
++constexpr std::size_t MaxQueued = 8 * 1024 * 1024;
++constexpr std::size_t InitialQueue = 64 * 1024;
++} // unnamed namespace
++
++CAsyncFileSink::CAsyncFileSink(const spdlog::filename_t& filename)
++{
++  m_file.open(filename, false);
++  m_queue.reserve(InitialQueue);
++  m_writer = std::thread(&CAsyncFileSink::Process, this);
++}
++
++CAsyncFileSink::~CAsyncFileSink()
++{
++  {
++    std::lock_guard lock(m_lock);
++    m_stop = true;
++  }
++  m_queued.notify_one();
++  m_writer.join();
++}
++
++void CAsyncFileSink::sink_it_(const spdlog::details::log_msg& msg)
++{
++  std::unique_lock lock(m_lock);
++  m_taken.wait(lock, [this] { return m_queue.size() < MaxQueued; });
++  const bool wasEmpty = m_queue.size() == 0;
++  formatter_->format(msg, m_queue);
++  lock.unlock();
++
++  // the writer only waits on an empty queue
++  if (wasEmpty)
++    m_queued.notify_one();
++}
++
++void CAsyncFileSink::Process()
++{
++  spdlog::memory_buf_t lines;
++  lines.reserve(InitialQueue);
++
++  std::unique_lock lock(m_lock);
++  while (true)
++  {
++    m_queued.wait(lock, [this] { return m_stop || m_queue.size() > 0; });
++    if (m_queue.size() == 0)
++      break;
++
++    const bool wasFull = m_queue.size() >= MaxQueued;
++    std::swap(lines, m_queue);
++    lock.unlock();
++    if (wasFull)
++      m_taken.notify_one();
++
++    try
++    {
++      m_file.write(lines);
++      m_file.flush();
++    }
++    catch (const spdlog::spdlog_ex&)
++    {
++      // there is nowhere to report it: the lines are lost
++    }
++    lines.clear();
++
++    lock.lock();
++  }
++}
+diff --git a/xbmc/utils/AsyncFileSink.h b/xbmc/utils/AsyncFileSink.h
+new file mode 100644
+index 0000000..6322982
+--- /dev/null
++++ b/xbmc/utils/AsyncFileSink.h
+@@ -0,0 +1,49 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <condition_variable>
++#include <mutex>
++#include <thread>
++
++#include <spdlog/details/file_helper.h>
++#include <spdlog/details/null_mutex.h>
++#include <spdlog/sinks/base_sink.h>
++
++/*!
++ * \brief A log file written from its own thread.
++ *
++ * The thread that logs only formats its line, so a log file on storage that stops answering for a
++ * moment holds up the writer, not every thread that logs. Nothing is dropped: once the queue is
++ * full, the thread that logs waits.
++ */
++class CAsyncFileSink : public spdlog::sinks::base_sink<spdlog::details::null_mutex>
++{
++public:
++  explicit CAsyncFileSink(const spdlog::filename_t& filename);
++  ~CAsyncFileSink() override;
++
++protected:
++  void sink_it_(const spdlog::details::log_msg& msg) override;
++  //! the writer flushes everything it writes
++  void flush_() override {}
++
++private:
++  void Process();
++
++  spdlog::details::file_helper m_file;
++
++  std::mutex m_lock;
++  std::condition_variable m_queued;
++  std::condition_variable m_taken;
++  spdlog::memory_buf_t m_queue;
++  bool m_stop{false};
++
++  std::thread m_writer;
++};
+diff --git a/xbmc/utils/CMakeLists.txt b/xbmc/utils/CMakeLists.txt
+index 10e93c0..eeed669 100644
+--- a/xbmc/utils/CMakeLists.txt
++++ b/xbmc/utils/CMakeLists.txt
+@@ -3,6 +3,7 @@ set(SOURCES ActorProtocol.cpp
+             AliasShortcutUtils.cpp
+             Archive.cpp
+             ArtUtils.cpp
++            AsyncFileSink.cpp
+             Base64.cpp
+             BitstreamConverter.cpp
+             BitstreamReader.cpp
+@@ -89,6 +90,7 @@ set(HEADERS ActorProtocol.h
+             Archive.h
+             ArtUtils.h
+             Artwork.h
++            AsyncFileSink.h
+             Base64.h
+             BitstreamConverter.h
+             BitstreamReader.h
+diff --git a/xbmc/utils/log.cpp b/xbmc/utils/log.cpp
+index 14e75b8..1e94a00 100644
+--- a/xbmc/utils/log.cpp
++++ b/xbmc/utils/log.cpp
+@@ -19,6 +19,7 @@
+ #include "settings/SettingsContainer.h"
+ #include "settings/lib/Setting.h"
+ #include "settings/lib/SettingsManager.h"
++#include "utils/AsyncFileSink.h"
+ #include "utils/Map.h"
+ #include "utils/StringUtils.h"
+ #include "utils/URIUtils.h"
+@@ -26,7 +27,6 @@
+ #include <cstring>
+ #include <set>
+ 
+-#include <spdlog/sinks/basic_file_sink.h>
+ #include <spdlog/sinks/dist_sink.h>
+ #include <spdlog/sinks/dup_filter_sink.h>
+ 
+@@ -168,10 +168,9 @@ void CLog::Initialize(const std::string& path)
+   // create the file sink within a duplicate filter sink
+   auto duplicateFilterSink =
+       std::make_shared<spdlog::sinks::dup_filter_sink_st>(std::chrono::seconds(10));
+-  auto basicFileSink = std::make_shared<spdlog::sinks::basic_file_sink_st>(
+-      m_platform->GetLogFilename(filePath), false);
+-  basicFileSink->set_pattern(LogPattern);
+-  duplicateFilterSink->add_sink(basicFileSink);
++  auto fileSink = std::make_shared<CAsyncFileSink>(m_platform->GetLogFilename(filePath));
++  fileSink->set_pattern(LogPattern);
++  duplicateFilterSink->add_sink(fileSink);
+   m_fileSink = duplicateFilterSink;
+ 
+   // add it to the existing sinks

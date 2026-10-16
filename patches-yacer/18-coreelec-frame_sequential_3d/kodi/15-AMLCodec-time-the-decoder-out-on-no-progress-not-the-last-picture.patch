@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:20:00 -0400
+Subject: [PATCH] AMLCodec: time the decoder out on no progress, not the last
+ picture
+
+In frame mode GetPicture reported no picture without looking at the
+decoder timeout while the input buffer was above 10%, so a decoder that
+hung with input queued was fed and asked forever. The timeout also ran
+from the last picture, so it kept running while the player asked for
+none, as during the pause around a display mode change, and could flush
+the decoder the moment the player asked again.
+
+GetPicture now keeps two windows, at any buffer level and in frame and
+stream mode alike. One is the time the decoder makes no progress: it
+takes no packet, its input level does not drop and it gives no picture.
+The other is the time it gives no picture while it plays forward, at any
+speed, which catches a decoder that keeps consuming input without giving
+one. At fast forward nothing else would: the player seeks to catch up
+only once the picture on screen changes. Rewind is left out, as the
+player seeks back there whether or not a picture came. Once the first
+passes the decoder timeout (five seconds unless set otherwise), or the
+second three times that, GetPicture reports the decoder flushed and the
+player resets it, as on the timeout before.
+
+Both start again on a picture, a decoder open or reset, a speed change,
+or a second in which the player neither fed nor asked. While paused
+nothing counts, and a drain keeps its own bound from the last picture.
+The picture window also starts again when a drain ends with nothing left
+to give, so the first packet after a drain that ran dry, as at a still
+frame, is not flushed for the wait before it.
+
+A failed read of the input buffer state now reads as a full buffer with
+no progress, rather than as whatever the uninitialised status held.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index c7ba4c0..c53dacc 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2350,7 +2350,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+   m_hints = hints;
+   m_state = 0;
+   m_hints.pClock = hints.pClock;
+-  m_tp_last_frame = std::chrono::steady_clock::now();
++  RestartDecoderTimeout();
+   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
+   m_buffer_level_ready = false;
+ 
+@@ -3078,6 +3078,7 @@ void CAMLCodec::Reset()
+   m_last_pts = DVD_NOPTS_VALUE;
+   m_state = 0;
+   m_buffer_level_ready = false;
++  RestartDecoderTimeout();
+ 
+   SetSpeed(m_speed);
+   frameLock.unlock();
+@@ -3087,6 +3088,7 @@ void CAMLCodec::Reset()
+ 
+ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+ {
++  NoteCall(std::chrono::steady_clock::now());
+   int data_len, free_len, size;
+   int chunk_size = calc_chunk_size(iSize);
+   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len, size);
+@@ -3225,6 +3227,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+     Reset();
+     return false;
+   }
++  m_tp_no_progress = std::chrono::steady_clock::now();
+   if (iSize > 50000)
+     usleep(2000); // wait 2ms to process larger packets
+ 
+@@ -3645,9 +3648,15 @@ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+ 
+ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len, int &size)
+ {
+-  struct buf_status bs;
++  struct buf_status bs = {};
+   float level = 0.0f;
+-  m_dll->codec_get_vbuf_state(&am_private->vcodec, &bs);
++  if (m_dll->codec_get_vbuf_state(&am_private->vcodec, &bs) != 0)
++  {
++    data_len = -1;
++    free_len = 0;
++    size = 0;
++    return 100.0f;
++  }
+ 
+   data_len = bs.data_len;
+   free_len = bs.free_len;
+@@ -3706,13 +3715,21 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+   int queued_frames = 0;
+   int data_len, free_len, size;
+   float buffer_level = GetBufferLevel(0, data_len, free_len, size);
+-  std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()
+-    - m_tp_last_frame).count());
+   bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
+ 
+   if (!m_opened)
+     return CDVDVideoCodec::VC_ERROR;
+ 
++  const auto now = std::chrono::steady_clock::now();
++  NoteCall(now);
++  if (m_speed == DVD_PLAYSPEED_PAUSE || (m_drain && m_buffer_level_ready) ||
++      (data_len >= 0 && data_len < m_last_data_len))
++    m_tp_no_progress = now;
++  if (data_len >= 0)
++    m_last_data_len = data_len;
++  const auto elapsed_since_last_frame =
++      std::chrono::duration_cast<std::chrono::milliseconds>(now - m_tp_last_frame);
++
+   if (m_drain)
+   {
+     PosixFilePtr amlVideoFile;
+@@ -3732,7 +3749,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+ 
+     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
+ 
+-    m_tp_last_frame = std::chrono::steady_clock::now();
++    m_tp_last_frame = now;
++    m_tp_no_progress = now;
+ 
+     if (m_last_pts == DVD_NOPTS_VALUE)
+       pVideoPicture->iDuration = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
+@@ -3766,22 +3784,48 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+     if (queued_frames)
+       CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} frames left after {:d}ms",
+         queued_frames, elapsed_since_last_frame.count());
++    else
++      m_tp_last_frame = now; // the decoder owes nothing
+ 
+     return CDVDVideoCodec::VC_EOF;
+   }
+-  else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
++  else if (m_drain && m_buffer_level_ready)
++    return CDVDVideoCodec::VC_NONE;
++
++  const auto no_progress = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_tp_no_progress);
++  const bool hung = no_progress > std::chrono::seconds(m_decoder_timeout) ||
++                    (m_speed > DVD_PLAYSPEED_PAUSE &&
++                     elapsed_since_last_frame > 3 * std::chrono::seconds(m_decoder_timeout));
++
++  if (!hung && buffer_level > (streambuffer ? 100.0f : 10.0f))
+     return CDVDVideoCodec::VC_NONE;
+-  else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
++  else if (ret != EAGAIN || hung)
+   {
+-    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
+-      elapsed_since_last_frame.count(), ret, strerror(ret));
+-    m_tp_last_frame = std::chrono::steady_clock::now();
++    CLog::Log(LOGERROR,
++              "CAMLCodec::GetPicture: no progress for {:d}ms, no picture for {:d}ms, buffer at "
++              "{:.1f}% ({:d}:{})",
++              no_progress.count(), elapsed_since_last_frame.count(), buffer_level, ret,
++              strerror(ret));
++    RestartDecoderTimeout();
+     return CDVDVideoCodec::VC_FLUSHED;
+   }
+ 
+   return CDVDVideoCodec::VC_BUFFER;
+ }
+ 
++void CAMLCodec::RestartDecoderTimeout()
++{
++  m_tp_last_frame = m_tp_no_progress = std::chrono::steady_clock::now();
++}
++
++// a second without a call is a break in playback, not a decoder that hangs
++void CAMLCodec::NoteCall(std::chrono::steady_clock::time_point now)
++{
++  if (now - m_tp_last_call > std::chrono::seconds(1))
++    RestartDecoderTimeout();
++  m_tp_last_call = now;
++}
++
+ void CAMLCodec::SetSpeed(int speed)
+ {
+   if (m_speed == speed)
+@@ -3799,6 +3843,7 @@ void CAMLCodec::SetSpeed(int speed)
+   // update internal vars regardless
+   // of if we are open or not.
+   m_speed = speed;
++  RestartDecoderTimeout();
+ 
+   if (!m_opened)
+     return;
+@@ -3812,7 +3857,6 @@ void CAMLCodec::SetSpeed(int speed)
+     case DVD_PLAYSPEED_NORMAL:
+       //m_dll->codec_resume(&am_private->vcodec);
+       m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
+-      m_tp_last_frame = std::chrono::steady_clock::now();
+       break;
+     default:
+       //m_dll->codec_resume(&am_private->vcodec);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 1dee5ec..fa99cc6 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -216,8 +216,15 @@ private:
+   CProcessInfo &m_processInfo;
+   CAMLGenlock      m_genlock;
+   int m_decoder_timeout{0};
+-  //! Steady: this bounds the drain, and the wall clock can step under it.
++  //! Steady: these bound the drain and a decoder that hangs, and the wall clock can step under
++  //! them. The decoder makes progress when it takes a packet, its input level drops or it gives
++  //! a picture.
+   std::chrono::steady_clock::time_point m_tp_last_frame;
++  std::chrono::steady_clock::time_point m_tp_no_progress;
++  std::chrono::steady_clock::time_point m_tp_last_call;
++  int m_last_data_len{0};
++  void RestartDecoderTimeout();
++  void NoteCall(std::chrono::steady_clock::time_point now);
+ 
+   bool            m_buffer_level_ready{false};
+   float           m_minimum_buffer_level{0.0f};

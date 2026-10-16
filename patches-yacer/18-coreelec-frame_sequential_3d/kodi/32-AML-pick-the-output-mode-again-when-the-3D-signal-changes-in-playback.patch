@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:40:07 -0400
+Subject: [PATCH] AML: pick the output mode again when the 3D signal changes in
+ playback
+
+When a playing video stops being stereoscopic, as a 3D Blu-ray does when
+its second view cannot be read and the stream is set up again for the
+base view alone, the stereoscopics manager turns the stereo mode off
+from the player thread. While a video plays the output mode is picked
+again only when the renderer asks for it, as the new decoder configures
+it, and the two race. When the render loop handles the renderer's
+request before the stereo mode is off, it picks the mode for the old
+stereo mode, frame packing on an HDMI 3D output, and nothing asks again:
+the 2D picture goes on in a frame-packed signal until playback stops.
+
+The window system already watches the stereo mode from its message pump
+on the render loop. When the stereo mode changes while a video plays on
+an output with HDMI 3D, and needs another HDMI 3D signal (frame packing,
+side by side, top and bottom, or none) than the stereo mode the output
+mode was last set with, it now asks the player for an update of the
+output mode, which picks the mode for the stereo mode it then finds.
+
+Visible change: a stereo mode the user picks during playback that needs
+another HDMI 3D signal now also asks for the update, and so switches the
+output mode, with the blank screen a mode switch brings. A stereo mode
+that keeps the signal, such as an anaglyph or interlaced mode against
+2D, asks for nothing.
+
+A request is a flag the next update clears, so one made while another is
+pending costs no second mode switch, and the start of 3D playback, which
+asks for the update itself, costs none either. With the setting that
+disables the stereo mode when playback ends turned off, the
+stereoscopics manager keeps the stereo mode when the stream turns 2D,
+and the output stays frame-packed: that setting asks to keep the TV in
+3D.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/windowing/amlogic/WinSystemAmlogic.cpp | 25 +++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index fca8389..c623b7f 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -199,6 +199,23 @@ void CWinSystemAmlogic::MonitorStop()
+   }
+ }
+ 
++namespace
++{
++// the HDMI 3D signal a stereo mode is sent as; the other modes are sent as 2D
++RenderStereoMode Hdmi3dSignal(RenderStereoMode mode)
++{
++  switch (mode)
++  {
++    case RenderStereoMode::HARDWAREBASED:
++    case RenderStereoMode::SPLIT_VERTICAL:
++    case RenderStereoMode::SPLIT_HORIZONTAL:
++      return mode;
++    default:
++      return RenderStereoMode::OFF;
++  }
++}
++} // namespace
++
+ bool CWinSystemAmlogic::MessagePump()
+ {
+   if (m_hotplugPending.exchange(false))
+@@ -213,6 +230,14 @@ bool CWinSystemAmlogic::MessagePump()
+     if (m_amlDisplay->aml_display_fs3d_wanted(stereoMode) !=
+         m_amlDisplay->aml_display_fs3d_active())
+       RequestFs3dCheck();
++
++    // while a video plays the output mode is picked again only on request, and one handled
++    // before this change picked it for the old stereo mode; a request still pending covers this
++    const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++    if (m_amlDisplay->aml_display_support_3d() &&
++        Hdmi3dSignal(stereoMode) != Hdmi3dSignal(m_stereo_mode) && appPlayer &&
++        appPlayer->IsPlayingVideo())
++      appPlayer->TriggerUpdateResolution();
+   }
+   if (m_fs3dCheckRetry && std::chrono::steady_clock::now() >= *m_fs3dCheckRetry)
+   {

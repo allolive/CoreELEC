@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:08:21 -0400
+Subject: [PATCH] DVDInputStreamBluray: find the play item's clip after an
+ angle change
+
+An angle change frees the playlist's title info and reads the new
+angle's. It also dropped the clip of the play item being read, which the
+stream lookups (language, default stream, the stream a menu selects) and
+the clip times of the bytes read next use: they found nothing until the
+next play item started.
+
+Playback stays in its play item across an angle change, so the clip and
+its clip information are now found again by that play item in the new
+angle's title info.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp            | 17 +++++++++++++++++
+ .../VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h  |  3 +++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index fa5ce237..23b5bdd9 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -600,8 +600,13 @@ void CDVDInputStreamBluray::ProcessEvent() {
+ 
+     if (m_playlist <= MAX_PLAYLIST_ID)
+     {
++      // playback stays in its play item, which the new angle's title info has too
++      const int clip = BaseClip();
+       FreeTitleInfo();
+       m_titleInfo = bd_get_playlist_info(m_bd, m_playlist, m_angle);
++      m_clip = ClipAt(clip);
++      if (m_clip)
++        UpdateClipInfo(clip);
+     }
+     break;
+ 
+@@ -1732,6 +1737,18 @@ void CDVDInputStreamBluray::SeekMVCDemux()
+   demux->SeekClipTimestamp(static_cast<int64_t>(m_nMVCClip->in_time) + clipTime);
+ }
+ 
++BLURAY_CLIP_INFO* CDVDInputStreamBluray::ClipAt(int playItem) const
++{
++  if (!m_titleInfo || playItem < 0 || static_cast<uint32_t>(playItem) >= m_titleInfo->clip_count)
++    return nullptr;
++  return m_titleInfo->clips + playItem;
++}
++
++int CDVDInputStreamBluray::BaseClip() const
++{
++  return m_clip && m_titleInfo ? static_cast<int>(m_clip - m_titleInfo->clips) : -1;
++}
++
+ void CDVDInputStreamBluray::SetupPlayerSettings()
+ {
+   int region = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 49951df3..8cbaf027 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -209,6 +209,9 @@ protected:
+   bool OpenMVCDemux(int playItem);
+   bool CloseMVCDemux();
+   void SeekMVCDemux();
++  BLURAY_CLIP_INFO* ClipAt(int playItem) const;
++  //! the play item being read, -1 for none
++  int BaseClip() const;
+ 
+   IVideoPlayer* m_player = nullptr;
+   BLURAY* m_bd = nullptr;

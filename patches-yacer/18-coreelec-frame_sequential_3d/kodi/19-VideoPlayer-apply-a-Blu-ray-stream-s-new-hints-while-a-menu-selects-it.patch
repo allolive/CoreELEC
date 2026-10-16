@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:30:25 -0400
+Subject: [PATCH] VideoPlayer: apply a Blu-ray stream's new hints while a menu
+ selects it
+
+When the demuxer sets a stream up again with new hints, a new codec or
+header, picture size or audio channels, CheckStreamChanges opens the
+default streams again, and so the decoders with the new hints. With
+Blu-ray menus, OpenDefaultStreams returns at once when an audio or
+subtitle stream is selected, which libbluray always reports: the menu
+chooses the streams. The stream that changed then kept its old decoder
+and hints until the next play item opened the streams again: a picture
+size change went on through the decoder set up for the old size, and a
+change of codec left the decoder with packets it cannot decode.
+
+After OpenDefaultStreams, a Blu-ray stream still selected whose demuxer
+hints differ from those it was opened with is opened again with the new
+ones. The demuxer's hints are kept as the stream is opened, before
+OpenStream adjusts them (stills in a menu, the frame rate clamp, the
+stereo mode from the file name, the HDR type and subtitle colours): the
+adjusted hints never compare equal to the demuxer's, and would open the
+stream again at every play item, and its decoder again whenever the menu
+state changed. Without a menu, OpenDefaultStreams has already opened the
+stream and nothing more is done. DVDs are left as they are: their
+navigator reports its own stream changes.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/VideoPlayer.cpp | 11 +++++++++++
+ xbmc/cores/VideoPlayer/VideoPlayer.h   |  2 ++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 8b9a601..cd2dea9 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2145,6 +2145,14 @@ void CVideoPlayer::CheckStreamChanges(CCurrentStream& current, CDemuxStream* str
+       m_SelectionStreams.Update(m_pInputStream, m_pDemuxer.get());
+       UpdateContent();
+       OpenDefaultStreams(false);
++
++      // in a disc menu OpenDefaultStreams leaves the streams the menu selected as they are
++      if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
++          m_State.menuType != MenuType::NONE &&
++          STREAM_SOURCE_MASK(stream->source) == STREAM_SOURCE_DEMUX &&
++          current.source == stream->source && current.demuxerId == stream->demuxerId &&
++          current.id == stream->uniqueId && current.demuxHint != *stream)
++        OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source, false);
+     }
+ 
+     current.stream = (void*)stream;
+@@ -5476,7 +5484,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+     if (oldId >= 0 && current.avsync != CCurrentStream::AV_SYNC_FORCE)
+       current.avsync = CCurrentStream::AV_SYNC_CHECK;
+     if(stream)
++    {
+       current.changes = stream->changes;
++      current.demuxHint = *stream;
++    }
+   }
+   else
+   {
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 9db22a2..ca3418d 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -134,6 +134,7 @@ public:
+   double dur;    // last frame expected duration
+   int dispTime; // display time from input stream
+   CDVDStreamInfo hint;   // stream hints, used to notice stream changes
++  CDVDStreamInfo demuxHint; // the demuxer's hints the stream was opened with, before adjusting
+   void* stream; // pointer or integer, identifying stream playing. if it changes stream changed
+   int changes; // remembered counter from stream to track codec changes
+   bool inited;
+@@ -172,6 +173,7 @@ public:
+     dts = DVD_NOPTS_VALUE;
+     dur = DVD_NOPTS_VALUE;
+     hint.Clear();
++    demuxHint.Clear();
+     stream = NULL;
+     changes = 0;
+     inited = false;

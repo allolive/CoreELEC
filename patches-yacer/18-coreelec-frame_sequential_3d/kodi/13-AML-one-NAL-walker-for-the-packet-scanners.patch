@@ -1,0 +1,575 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:00:00 -0400
+Subject: [PATCH] AML: one NAL walker for the packet scanners
+
+Four places walked a demux packet NAL by NAL, each with its own loop:
+the Dolby Vision RPU and HEVC SEI latches and the Blu-ray 3D subtitle
+depth parser, over length-prefixed or Annex-B input, and the MVC
+parameter set scan; the SEI latch and the depth parser each also had
+their own SEI message loop.
+They now share AMLForEachNal and AMLForEachSeiMessage, and the NAL and
+SEI payload types they test have names. An SEI NAL without emulation
+prevention bytes is read in place rather than copied.
+Both live in AMLNalWalker.h, which depends on nothing, so the subtitle
+depth parser keeps its stand-alone test.
+
+The MVC scan takes the stream's length size as it is: it only runs
+behind the bitstream converter, which only opens on avcC extradata, the
+same extradata the length size is read from. Its fallback to four bytes
+could not be reached.
+
+One behaviour changes: on Annex-B input the last NAL of a packet now
+loses its trailing zero bytes before its SEI messages are read, as every
+other NAL already did. A NAL never ends in 0x00, so this only affects an
+SEI message whose declared size reaches into those zeros: it is now
+ignored, as one cut short anywhere else is.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
+index 63c0d84..fb24594 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
+@@ -7,10 +7,12 @@
+ 
+ #pragma once
+ 
++#include "AMLNalWalker.h"
+ #include "guilib/guiinfo/CEGUIInfoRegistry.h"
+ #include "utils/Base64.h"
+ #include "utils/TimeUtils.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdint>
+ #include <iterator>
+@@ -250,19 +252,6 @@ inline bool AMLFrameMetadataGetLabel(std::string& value, int info)
+   return true;
+ }
+ 
+-enum
+-{
+-  HEVC_NAL_SEI_PREFIX = 39,
+-  HEVC_NAL_UNSPEC62 = 62 // Dolby Vision RPU
+-};
+-
+-enum
+-{
+-  SEI_PAYLOAD_REGISTERED_ITU_T_T35 = 4,
+-  SEI_PAYLOAD_MASTERING_DISPLAY_COLOUR_VOLUME = 137,
+-  SEI_PAYLOAD_CONTENT_LIGHT_LEVEL_INFO = 144
+-};
+-
+ // the T.35 header every HDR10+ payload starts with: country 0xB5,
+ // provider 0x003C, provider oriented code 0x0001, application identifier 4
+ inline bool AMLIsHdr10PlusT35(const uint8_t* data, size_t size)
+@@ -291,55 +280,15 @@ inline void AMLLatchHevcDoviRpu(const uint8_t* data,
+   if (!data || size < 4)
+     return;
+ 
+-  if (nalLengthSize >= 1 && nalLengthSize <= 4)
+-  {
+-    size_t pos = 0;
+-    while (pos + nalLengthSize <= size)
+-    {
+-      uint32_t len = 0;
+-      for (int i = 0; i < nalLengthSize; ++i)
+-        len = (len << 8) | data[pos + i];
+-      pos += nalLengthSize;
+-      if (len == 0 || len > size - pos)
+-        return;
+-      if (((data[pos] >> 1) & 0x3f) == HEVC_NAL_UNSPEC62)
+-      {
+-        meta.doviRpu = Base64::Encode(reinterpret_cast<const char*>(data + pos), len);
+-        return;
+-      }
+-      pos += len;
+-    }
+-    return;
+-  }
+-
+-  // Annex-B with mixed 3- and 4-byte start codes
+-  size_t nal = SIZE_MAX;
+-  for (size_t i = 0; i + 2 < size; ++i)
+-  {
+-    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
+-      continue;
+-    if (nal != SIZE_MAX && ((data[nal] >> 1) & 0x3f) == HEVC_NAL_UNSPEC62)
+-    {
+-      // a 4-byte start code owns the zero before this prefix, and an RPU never
+-      // ends in 0x00 (rbsp_trailing_bits), so trailing zeros are not payload
+-      size_t end = i;
+-      while (end > nal && data[end - 1] == 0)
+-        end--;
+-      meta.doviRpu = Base64::Encode(reinterpret_cast<const char*>(data + nal),
+-                                    static_cast<unsigned int>(end - nal));
+-      return;
+-    }
+-    nal = i + 3;
+-    i += 2;
+-  }
+-  if (nal != SIZE_MAX && nal < size && ((data[nal] >> 1) & 0x3f) == HEVC_NAL_UNSPEC62)
+-  {
+-    size_t end = size;
+-    while (end > nal && data[end - 1] == 0)
+-      end--;
+-    meta.doviRpu = Base64::Encode(reinterpret_cast<const char*>(data + nal),
+-                                  static_cast<unsigned int>(end - nal));
+-  }
++  AMLForEachNal(data, size, nalLengthSize,
++                [&meta](const uint8_t* nal, size_t len)
++                {
++                  if (((nal[0] >> 1) & 0x3f) != HEVC_NAL_UNSPEC62)
++                    return true;
++                  meta.doviRpu = Base64::Encode(reinterpret_cast<const char*>(nal),
++                                                static_cast<unsigned int>(len));
++                  return false;
++                });
+ }
+ 
+ // Walks one demux packet for the prefix SEI payloads worth publishing: the
+@@ -353,96 +302,25 @@ inline void AMLLatchHevcSei(const uint8_t* data,
+   if (!data || size < 4)
+     return;
+ 
+-  const auto parseSeiNal = [&meta](const uint8_t* nal, size_t len)
++  const auto latch = [&meta](uint32_t type, const uint8_t* payload, size_t len)
+   {
+-    if (len < 3 || ((nal[0] >> 1) & 0x3f) != HEVC_NAL_SEI_PREFIX)
+-      return;
+-
+-    std::vector<uint8_t> rbsp;
+-    rbsp.reserve(len);
+-    for (size_t i = 2; i < len; ++i)
+-    {
+-      if (i + 2 < len && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3)
+-      {
+-        rbsp.push_back(0);
+-        rbsp.push_back(0);
+-        i += 2;
+-      }
+-      else
+-        rbsp.push_back(nal[i]);
+-    }
+-
+-    size_t p = 0;
+-    const size_t end = rbsp.size();
+-    while (p + 2 < end)
+-    {
+-      uint32_t type = 0;
+-      while (p < end && rbsp[p] == 0xFF)
+-      {
+-        type += 255;
+-        ++p;
+-      }
+-      if (p >= end)
+-        break;
+-      type += rbsp[p++];
+-
+-      uint32_t payload = 0;
+-      while (p < end && rbsp[p] == 0xFF)
+-      {
+-        payload += 255;
+-        ++p;
+-      }
+-      if (p >= end)
+-        break;
+-      payload += rbsp[p++];
+-      if (payload > end - p)
+-        break;
+-
+-      if (type == SEI_PAYLOAD_REGISTERED_ITU_T_T35)
+-        AMLLatchHdr10PlusT35(rbsp.data() + p, payload, meta);
+-      else if (type == SEI_PAYLOAD_MASTERING_DISPLAY_COLOUR_VOLUME && payload >= 24)
+-        meta.hdrMdcv = Base64::Encode(reinterpret_cast<const char*>(rbsp.data() + p), payload);
+-      else if (type == SEI_PAYLOAD_CONTENT_LIGHT_LEVEL_INFO && payload >= 4)
+-        meta.hdrCll = Base64::Encode(reinterpret_cast<const char*>(rbsp.data() + p), payload);
+-      p += payload;
+-    }
++    if (type == SEI_PAYLOAD_REGISTERED_ITU_T_T35)
++      AMLLatchHdr10PlusT35(payload, len, meta);
++    else if (type == SEI_PAYLOAD_MASTERING_DISPLAY_COLOUR_VOLUME && len >= 24)
++      meta.hdrMdcv = Base64::Encode(reinterpret_cast<const char*>(payload),
++                                    static_cast<unsigned int>(len));
++    else if (type == SEI_PAYLOAD_CONTENT_LIGHT_LEVEL_INFO && len >= 4)
++      meta.hdrCll = Base64::Encode(reinterpret_cast<const char*>(payload),
++                                   static_cast<unsigned int>(len));
++    return true;
+   };
+-
+-  if (nalLengthSize >= 1 && nalLengthSize <= 4)
+-  {
+-    size_t pos = 0;
+-    while (pos + nalLengthSize <= size)
+-    {
+-      uint32_t len = 0;
+-      for (int i = 0; i < nalLengthSize; ++i)
+-        len = (len << 8) | data[pos + i];
+-      pos += nalLengthSize;
+-      if (len == 0 || len > size - pos)
+-        break;
+-      parseSeiNal(data + pos, len);
+-      pos += len;
+-    }
+-  }
+-  else
+-  {
+-    size_t nal = SIZE_MAX;
+-    for (size_t i = 0; i + 2 < size; ++i)
+-    {
+-      if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
+-        continue;
+-      if (nal != SIZE_MAX)
+-      {
+-        size_t end = i;
+-        while (end > nal && data[end - 1] == 0)
+-          end--;
+-        parseSeiNal(data + nal, end - nal);
+-      }
+-      nal = i + 3;
+-      i += 2;
+-    }
+-    if (nal != SIZE_MAX && nal < size)
+-      parseSeiNal(data + nal, size - nal);
+-  }
++  AMLForEachNal(data, size, nalLengthSize,
++                [&latch](const uint8_t* nal, size_t len)
++                {
++                  if (len >= 3 && ((nal[0] >> 1) & 0x3f) == HEVC_NAL_SEI_PREFIX)
++                    AMLForEachSeiMessage(nal, len, 2, latch);
++                  return true;
++                });
+ }
+ 
+ inline bool AMLReadLeb128(const uint8_t* data, size_t end, size_t& pos, uint64_t& value)
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
+index 238ee9c..8a87cfd 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
+@@ -11,6 +11,8 @@
+ // sequence it follows (the STN-SS ss_offset_sequence_id, or a remux's 3d-plane
+ // tag). The OFMD layout follows cinemaONE's CoreELEC/xbmc#77.
+ 
++#include "AMLNalWalker.h"
++
+ #include <algorithm>
+ #include <cmath>
+ #include <cstddef>
+@@ -62,96 +64,43 @@ inline bool ParseOfmdPayload(const uint8_t* p, size_t avail, Offsets& offsets)
+ //! so any message's payload is searched for it, within that payload's bounds.
+ inline bool ParseOfmdSei(const uint8_t* nal, size_t len, Offsets& offsets)
+ {
+-  if (len < 2 || (nal[0] & 0x1f) != 6)
++  if (len < 2 || (nal[0] & 0x1f) != AVC_NAL_SEI)
+     return false;
+ 
+-  std::vector<uint8_t> rbsp;
+-  rbsp.reserve(len);
+-  for (size_t i = 1; i < len; i++)
+-  {
+-    if (i + 2 < len && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3)
+-    {
+-      rbsp.push_back(0);
+-      rbsp.push_back(0);
+-      i += 2;
+-    }
+-    else
+-      rbsp.push_back(nal[i]);
+-  }
+-
+-  size_t pos = 0;
+-  while (pos < rbsp.size() && rbsp[pos] != 0x80)
+-  {
+-    size_t type = 0;
+-    while (pos < rbsp.size() && rbsp[pos] == 0xff)
+-      type += rbsp[pos++];
+-    if (pos >= rbsp.size())
+-      return false;
+-    type += rbsp[pos++];
+-    size_t size = 0;
+-    while (pos < rbsp.size() && rbsp[pos] == 0xff)
+-      size += rbsp[pos++];
+-    if (pos >= rbsp.size())
+-      return false;
+-    size += rbsp[pos++];
+-    if (size > rbsp.size() - pos)
+-      return false;
+-
+-    const uint8_t* p = rbsp.data() + pos;
+-    const uint8_t* end = p + size;
+-    // user_data_unregistered at the top level, or nested in another message
+-    if (type == 5 && ParseOfmdPayload(p, size, offsets))
+-      return true;
+-    for (const uint8_t* q = p; q + sizeof(OFMD_UUID) + 4 <= end; q++)
+-    {
+-      q = std::search(q, end, std::begin(OFMD_UUID), std::end(OFMD_UUID));
+-      if (q == end)
+-        break;
+-      if (ParseOfmdPayload(q, static_cast<size_t>(end - q), offsets))
+-        return true;
+-    }
+-    pos += size;
+-  }
+-  return false;
++  bool found = false;
++  AMLForEachSeiMessage(
++      nal, len, 1,
++      [&](uint32_t type, const uint8_t* p, size_t size)
++      {
++        if (type == 0x80) // rbsp_trailing_bits
++          return false;
++        const uint8_t* end = p + size;
++        // user_data_unregistered at the top level, or nested in another message
++        if (type == SEI_PAYLOAD_USER_DATA_UNREGISTERED && ParseOfmdPayload(p, size, offsets))
++          found = true;
++        for (const uint8_t* q = p; !found && q + sizeof(OFMD_UUID) + 4 <= end; q++)
++        {
++          q = std::search(q, end, std::begin(OFMD_UUID), std::end(OFMD_UUID));
++          if (q == end)
++            break;
++          found = ParseOfmdPayload(q, static_cast<size_t>(end - q), offsets);
++        }
++        return !found;
++      });
++  return found;
+ }
+ 
+ //! The OFMD table of an access unit: length-prefixed NALs (avcC), or Annex B when lengthSize is 0
+ inline bool ParseOfmd(const uint8_t* data, size_t size, int lengthSize, Offsets& offsets)
+ {
+-  if (!data)
+-    return false;
+-  if (lengthSize >= 1 && lengthSize <= 4)
+-  {
+-    for (size_t pos = 0; pos + lengthSize <= size;)
+-    {
+-      size_t len = 0;
+-      for (int i = 0; i < lengthSize; i++)
+-        len = (len << 8) | data[pos + i];
+-      pos += lengthSize;
+-      if (len == 0 || len > size - pos)
+-        return false;
+-      if (ParseOfmdSei(data + pos, len, offsets))
+-        return true;
+-      pos += len;
+-    }
+-    return false;
+-  }
+-  size_t start = SIZE_MAX;
+-  for (size_t i = 0; i + 2 < size; i++)
+-  {
+-    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
+-      continue;
+-    if (start != SIZE_MAX)
+-    {
+-      size_t end = i;
+-      while (end > start && data[end - 1] == 0)
+-        end--;
+-      if (ParseOfmdSei(data + start, end - start, offsets))
+-        return true;
+-    }
+-    start = i + 3;
+-  }
+-  return start != SIZE_MAX && start < size && ParseOfmdSei(data + start, size - start, offsets);
++  bool found = false;
++  AMLForEachNal(data, size, lengthSize,
++                [&](const uint8_t* nal, size_t len)
++                {
++                  found = ParseOfmdSei(nal, len, offsets);
++                  return !found;
++                });
++  return found;
+ }
+ 
+ /*!
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h
+new file mode 100644
+index 0000000..4b416ae
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h
+@@ -0,0 +1,141 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++// Walks the NAL units of an H.264/HEVC access unit and the messages of an SEI
++// NAL; depends on nothing, so a parser built on it can be tested on its own.
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <iterator>
++#include <vector>
++
++enum
++{
++  HEVC_NAL_SEI_PREFIX = 39,
++  HEVC_NAL_UNSPEC62 = 62 // Dolby Vision RPU
++};
++
++enum
++{
++  AVC_NAL_SEI = 6,
++  AVC_NAL_SPS = 7,
++  AVC_NAL_PPS = 8,
++  AVC_NAL_SUBSET_SPS = 15 // the MVC second view's SPS
++};
++
++enum
++{
++  SEI_PAYLOAD_REGISTERED_ITU_T_T35 = 4,
++  SEI_PAYLOAD_USER_DATA_UNREGISTERED = 5,
++  SEI_PAYLOAD_MASTERING_DISPLAY_COLOUR_VOLUME = 137,
++  SEI_PAYLOAD_CONTENT_LIGHT_LEVEL_INFO = 144
++};
++
++// fn(nal, len) per NAL unit of an access unit until it returns false; nalLengthSize 0 means Annex-B
++template<typename Fn>
++inline void AMLForEachNal(const uint8_t* data, size_t size, int nalLengthSize, Fn&& fn)
++{
++  if (!data)
++    return;
++
++  if (nalLengthSize >= 1 && nalLengthSize <= 4)
++  {
++    size_t pos = 0;
++    while (pos + nalLengthSize <= size)
++    {
++      uint32_t len = 0;
++      for (int i = 0; i < nalLengthSize; ++i)
++        len = (len << 8) | data[pos + i];
++      pos += nalLengthSize;
++      if (len == 0 || len > size - pos || !fn(data + pos, static_cast<size_t>(len)))
++        return;
++      pos += len;
++    }
++    return;
++  }
++
++  // a 4-byte start code owns the zero before its prefix, and a NAL never ends in 0x00
++  size_t nal = SIZE_MAX;
++  const auto emit = [&](size_t end)
++  {
++    while (end > nal && data[end - 1] == 0)
++      end--;
++    return end == nal || fn(data + nal, end - nal);
++  };
++  for (size_t i = 0; i + 2 < size; ++i)
++  {
++    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
++      continue;
++    if (nal != SIZE_MAX && !emit(i))
++      return;
++    nal = i + 3;
++    i += 2;
++  }
++  if (nal != SIZE_MAX && nal < size)
++    emit(size);
++}
++
++// fn(type, payload, size) per unescaped message of an SEI NAL until it returns false
++template<typename Fn>
++inline void AMLForEachSeiMessage(const uint8_t* nal, size_t len, size_t headerSize, Fn&& fn)
++{
++  if (len <= headerSize)
++    return;
++
++  static constexpr uint8_t escape[3] = {0, 0, 3};
++  const uint8_t* rbsp = nal + headerSize;
++  size_t end = len - headerSize;
++  std::vector<uint8_t> unescaped;
++  if (std::search(rbsp, rbsp + end, std::begin(escape), std::end(escape)) != rbsp + end)
++  {
++    unescaped.reserve(len);
++    for (size_t i = headerSize; i < len; ++i)
++    {
++      if (i + 2 < len && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3)
++      {
++        unescaped.push_back(0);
++        unescaped.push_back(0);
++        i += 2;
++      }
++      else
++        unescaped.push_back(nal[i]);
++    }
++    rbsp = unescaped.data();
++    end = unescaped.size();
++  }
++
++  size_t p = 0;
++  while (p + 2 < end)
++  {
++    uint32_t type = 0;
++    while (p < end && rbsp[p] == 0xFF)
++    {
++      type += 255;
++      ++p;
++    }
++    if (p >= end)
++      break;
++    type += rbsp[p++];
++
++    uint32_t payload = 0;
++    while (p < end && rbsp[p] == 0xFF)
++    {
++      payload += 255;
++      ++p;
++    }
++    if (p >= end)
++      break;
++    payload += rbsp[p++];
++    if (payload > end - p)
++      break;
++
++    if (!fn(type, rbsp + p, static_cast<size_t>(payload)))
++      return;
++    p += payload;
++  }
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 6f60cd8..8321ee4 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -561,25 +561,19 @@ bool CDVDVideoCodecAmlogic::MvcParamsScan(const uint8_t* data, uint32_t size)
+   bool own = false;
+   const uint8_t* header = m_mvcHeader.data();
+   const size_t headerSize = m_mvcHeader.size();
+-  const int lengthSize = m_nalLengthSize > 0 ? m_nalLengthSize : 4;
+-  for (uint32_t i = 0; i + lengthSize < size;)
+-  {
+-    uint32_t nalSize = 0;
+-    for (int b = 0; b < lengthSize; b++)
+-      nalSize = (nalSize << 8) | data[i + b];
+-    i += lengthSize;
+-    if (nalSize == 0 || nalSize > size - i)
+-      break;
+-    const uint8_t type = data[i] & 0x1f;
+-    sps |= type == 7; // SPS
+-    subsetSps |= type == 15; // the second view's SPS
+-    pps |= type == 8; // PPS
+-    if ((type == 7 || type == 15 || type == 8) &&
+-        std::search(header, header + headerSize, data + i, data + i + nalSize) ==
+-            header + headerSize)
+-      own = true;
+-    i += nalSize;
+-  }
++  AMLForEachNal(data, size, m_nalLengthSize,
++                [&](const uint8_t* nal, size_t len)
++                {
++                  const int type = nal[0] & 0x1f;
++                  sps |= type == AVC_NAL_SPS;
++                  subsetSps |= type == AVC_NAL_SUBSET_SPS;
++                  pps |= type == AVC_NAL_PPS;
++                  if ((type == AVC_NAL_SPS || type == AVC_NAL_SUBSET_SPS || type == AVC_NAL_PPS) &&
++                      std::search(header, header + headerSize, nal, nal + len) ==
++                          header + headerSize)
++                    own = true;
++                  return true;
++                });
+   if (own && m_mvcParams != MvcParams::OWN)
+   {
+     CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: MVC stream carries parameter sets that "

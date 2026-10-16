@@ -1,0 +1,401 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:47:37 -0400
+Subject: [PATCH] Blu-ray 3D: play the base view alone when its second view
+ cannot be read
+
+An extension file that could not be opened turned 3D off at once, but
+the video stream stayed set up for MVC, with the MVC codec tag and the
+extension's header appended to its own. The base view then went to an
+MVC decoder alone, and the AML MVC decoder outputs a picture only when
+both views arrive: the picture froze for the rest of the playlist.
+
+A failed open, whatever the reason (an I/O error, a file the share does
+not show during an outage, a file without an MVC stream), is now tried
+again as the base view reads on, every half second of it, opening the
+extension at the oldest base picture still waiting. Every wait is
+measured on the base view's newest picture, which does not move on while
+its share is away, so an outage costs nothing. A failed open more than
+five seconds of the base view past the last pair ends the extension for
+the playlist; so does a move of the extension more than 16 s past it,
+which ends an extension that opens and reads but never pairs after three
+moves or so. An open at the end of the extension's play item that fails
+is tried again the same way. A play item the playlist's sub-path does
+not have still ends the extension at once.
+
+Ending the extension for the playlist leaves the playlist's timestamps
+and clip joins as for 3D, since switching them in the middle of the
+playlist would step every stream's clock; disabling it for the disc,
+when the video decoder cannot decode MVC, stays as it was. The base
+pictures waiting for their second view are dropped, rather than handed
+to a decoder that could start from few of them, and the video stream is
+set up again for the base view alone, with the codec tag and header
+ffmpeg's stream still has. Its change count moves on, so the player
+opens the decoder again as plain H.264, which starts at the next
+sequence header, key picture or recovery point: the picture stays frozen
+from the last pair through the 5 s of retries and up to a GOP more. The
+stream stays 2D until the next playlist.
+
+When a demuxer first sets the video stream up and the extension cannot
+be opened for it, the extension ends for the playlist at once, whatever
+the reason, even an outage that would have passed: the stream cannot be
+set up for MVC without the extension's header, and is not set up again
+from 2D to 3D in the middle of a playlist. A later setup, on a change of
+picture size while the extension is being tried again, keeps the stream
+set up for MVC with the header of the extension last opened, stale
+should a later clip's second view carry another one, and leaves the
+extension to those tries.
+
+Once a Blu-ray's video stream has been set up with its second view from
+the extension's file, a later setup no longer looks for an MVC stream in
+the base view's own transport stream: with the extension ended, a base
+view file that also carries one would have set the stream up for MVC
+again, which the check for an ended extension then undid, on every
+packet. A Blu-ray without an extension file, with its second view in the
+base view's transport stream, is set up from that as before.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            | 56 +++++++++++++------
+ .../DVDDemuxers/DemuxStreamSSIF.cpp           | 44 +++++++++++++--
+ .../VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h | 11 ++++
+ .../DVDInputStreams/DVDInputStream.h          |  2 +
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 17 +++++-
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
+ 6 files changed, 107 insertions(+), 24 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 80d5b40..be90806 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -47,6 +47,7 @@
+ #include <map>
+ #include <memory>
+ #include <mutex>
++#include <span>
+ #include <sstream>
+ #include <tuple>
+ #include <utility>
+@@ -1466,6 +1467,10 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+         // content has changed
+         stream = AddStream(pPacket->iStreamId);
+       }
++      // a Blu-ray's second view was turned off: the stream is set up again for the base view alone
++      else if (stream->codec_fourcc == FOURCC_AMVC && m_pSSIF && m_pSSIF->IsBluRay() &&
++               !m_pSSIF->HasExtention())
++        stream = AddStream(pPacket->iStreamId);
+       if (stream && stream->codec == AV_CODEC_ID_H264)
+         pPacket->recoveryPoint = m_seekToKeyFrame;
+       m_seekToKeyFrame = false;
+@@ -2068,7 +2073,8 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+     }
+ 
+     CDemuxStream* stream = nullptr;
+-    const AVStream* mvcStream = nullptr;
++    bool mvc = false;
++    std::span<const uint8_t> mvcHeader;
+ 
+     switch (pStream->codecpar->codec_type)
+     {
+@@ -2474,11 +2480,15 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+                 baseView ? std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInput)
+                          : nullptr;
+ 
+-            // the extension is opened for the stream it goes with
+-            if (pExt && pExt->HasExtention() && !pExt->GetExtentionDemux())
+-              pExt->OpenNextStream();
++            // the extension is opened for the stream it goes with. Without it a first setup is 2D,
++            // and stays so until the next playlist; a later one keeps the header of the extension
++            // last opened, which the pairing tries to open again
++            const bool wasBlurayMvc = m_pSSIF && m_pSSIF->IsBluRay();
++            if (pExt && pExt->HasExtention() && !pExt->GetExtentionDemux() &&
++                !pExt->OpenNextStream() && !wasBlurayMvc)
++              pExt->EndExtention();
+ 
+-            if (pExt && pExt->HasExtention() && pExt->GetExtentionDemux())
++            if (pExt && pExt->HasExtention() && (pExt->GetExtentionDemux() || wasBlurayMvc))
+             {
+               // a stream change keeps the dependent view already read ahead for the base view
+               if (!m_pSSIF)
+@@ -2490,13 +2500,24 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+ 
+               st->stereo_mode = pExt && pExt->AreEyesFlipped() ? "block_rl" : "block_lr";
+ 
+-              const std::shared_ptr<CDVDInputStream::IMenus> menuInterface =
+-                  std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
+-              CDemuxMVC *extDemux = pExt->GetExtentionDemux();
+-              extDemux->SetStartTime(m_pFormatContext->start_time, menuInterface->GetSupportedMenuType());
+-              mvcStream = extDemux->GetAVStream();
++              CDemuxMVC* extDemux = pExt->GetExtentionDemux();
++              if (extDemux)
++              {
++                const std::shared_ptr<CDVDInputStream::IMenus> menuInterface =
++                    std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
++                extDemux->SetStartTime(m_pFormatContext->start_time,
++                                       menuInterface->GetSupportedMenuType());
++                const AVCodecParameters* codecpar = extDemux->GetAVStream()->codecpar;
++                mvcHeader = {codecpar->extradata, static_cast<size_t>(codecpar->extradata_size)};
++                m_pSSIF->SetMVCHeader(codecpar->extradata, codecpar->extradata_size);
++              }
++              else
++                mvcHeader = m_pSSIF->GetMVCHeader();
++              mvc = true;
+             }
+-            else if (CDVDCodecUtils::GetH264MvcStreamIndex(m_pFormatContext, &mvcIndex))
++            // a Blu-ray's second view set up from its own file is not looked for in the base view's
++            else if (!wasBlurayMvc &&
++                     CDVDCodecUtils::GetH264MvcStreamIndex(m_pFormatContext, &mvcIndex))
+             {
+               if (!m_pSSIF)
+                 m_pSSIF = new CDemuxStreamSSIF();
+@@ -2505,7 +2526,9 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+ 
+               // use lr if we don't know what the stereo mode is
+               st->stereo_mode = stereoMode.empty() ? "block_lr" : stereoMode;
+-              mvcStream = m_pFormatContext->streams[m_pSSIF->GetMVCStreamId()];
++              const AVCodecParameters* codecpar = m_pFormatContext->streams[mvcIndex]->codecpar;
++              mvcHeader = {codecpar->extradata, static_cast<size_t>(codecpar->extradata_size)};
++              mvc = true;
+             }
+           }
+           else if (CDVDCodecUtils::ProcessH264MVCExtradata(pStream->codecpar->extradata, pStream->codecpar->extradata_size))
+@@ -2694,16 +2717,15 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+     }
+ 
+     // ffmpeg's stream keeps the base view's tag and header, which a setup for it alone starts from
+-    if (mvcStream)
++    if (mvc)
+     {
+       stream->codec_fourcc = FOURCC_AMVC;
+       const size_t size = stream->extraData.GetSize();
+-      if (size > 0 && mvcStream->codecpar->extradata_size > 0)
++      if (size > 0 && !mvcHeader.empty())
+       {
+-        FFmpegExtraData extraData(size + mvcStream->codecpar->extradata_size);
++        FFmpegExtraData extraData(size + mvcHeader.size());
+         memcpy(extraData.GetData(), stream->extraData.GetData(), size);
+-        memcpy(extraData.GetData() + size, mvcStream->codecpar->extradata,
+-               mvcStream->codecpar->extradata_size);
++        memcpy(extraData.GetData() + size, mvcHeader.data(), mvcHeader.size());
+         stream->extraData = std::move(extraData);
+       }
+     }
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index b347746..52e8035 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -33,6 +33,8 @@
+ #define H264_QUEUE_MAX 512
+ #define MVC_RETRY_SPAN (DVD_TIME_BASE / 2)
+ #define MVC_DROP_MAX 512
++#define MVC_OPEN_MAX (5 * DVD_TIME_BASE)
++#define MVC_RESYNC_MAX (16 * DVD_TIME_BASE)
+ 
+ static double Timestamp(const DemuxPacket* pkt)
+ {
+@@ -48,7 +50,12 @@ DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket*& srcPkt, int playItem)
+   if (srcPkt->iStreamId == m_h264StreamId)
+   {
+     if (m_bluRay && !m_bluRay->HasExtention())
++    {
++      // the extension was turned off while base pictures waited for it
++      if (!m_H264queue.empty() || !m_MVCqueue.empty())
++        Flush();
+       return srcPkt;
++    }
+ #if defined(DEBUG_VERBOSE)
+     CLog::Log(LOGDEBUG, ">>> MVC add h264 packet: pts: {:.3f} dts: {:.3f}", srcPkt->pts*1e-6, srcPkt->dts*1e-6);
+ #endif
+@@ -163,11 +170,28 @@ void CDemuxStreamSSIF::Resync(double ts, int playItem, const char* reason)
+   if (m_resyncTime != DVD_NOPTS_VALUE && std::abs(newest - m_resyncTime) < MVC_WAIT_MAX)
+     return;
+ 
++  FlushMVC();
++  // moves that lead to no pair end the extension
++  if (std::abs(newest - m_pairTime) > MVC_RESYNC_MAX)
++  {
++    m_bluRay->EndExtention();
++    return;
++  }
+   CLog::Log(LOGWARNING, "CDemuxStreamSSIF - {}, moving the second view to {:.3f}", reason,
+             ts / DVD_TIME_BASE);
+-  FlushMVC();
+   m_resyncTime = newest;
+   m_bluRay->ResyncExtention(ts, playItem);
++  if (!m_bluRay->GetExtentionDemux())
++    OpenFailed(newest);
++}
++
++// A failed open is tried again as the base view reads on, which it does not while its source
++// stalls; for so long only past the last pair.
++void CDemuxStreamSSIF::OpenFailed(double newest)
++{
++  m_retryTime = newest;
++  if (std::abs(newest - m_pairTime) > MVC_OPEN_MAX)
++    m_bluRay->EndExtention();
+ }
+ 
+ DemuxPacket* CDemuxStreamSSIF::MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &appendPkt)
+@@ -319,7 +343,7 @@ bool CDemuxStreamSSIF::FillMVCQueue(double tsBase)
+   if (!m_bluRay)
+     return false;
+ 
+-  // after a failed read the extension is read again once the base view has moved on a little
++  // after a failed read or open the extension is tried again once the base view has moved on
+   const double newest = Timestamp(m_H264queue.back());
+   if (m_retryTime != DVD_NOPTS_VALUE && std::abs(newest - m_retryTime) < MVC_RETRY_SPAN)
+     return false;
+@@ -327,7 +351,16 @@ bool CDemuxStreamSSIF::FillMVCQueue(double tsBase)
+ 
+   CDemuxMVC* demux = m_bluRay->GetExtentionDemux();
+   if (!demux)
+-    return false;
++  {
++    // opened at the oldest base picture waiting for it
++    m_bluRay->ResyncExtention(tsBase, FrontPlayItem());
++    demux = m_bluRay->GetExtentionDemux();
++    if (!demux)
++    {
++      OpenFailed(newest);
++      return false;
++    }
++  }
+ 
+   DemuxPacket* mvc;
+   int dropped = 0;
+@@ -353,7 +386,10 @@ bool CDemuxStreamSSIF::FillMVCQueue(double tsBase)
+   };
+   // only the end of the file moves the extension to the next clip
+   if (m_MVCqueue.size() != MVC_QUEUE_SIZE && demux->IsEOF())
+-    m_bluRay->OpenNextStream();
++  {
++    if (!m_bluRay->OpenNextStream() && !m_bluRay->GetExtentionDemux())
++      OpenFailed(newest);
++  }
+   else if (m_MVCqueue.empty())
+     m_retryTime = newest;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+index 52b6bc3..e6a8fe4 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+@@ -25,8 +25,10 @@
+ #endif
+ #include "DVDInputStreams/DVDInputStream.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include <algorithm>
+ #include <deque>
+ #include <queue>
++#include <vector>
+ 
+ extern "C" {
+ #include "libavformat/avformat.h"
+@@ -48,6 +50,13 @@ public:
+   void AddMVCExtPacket(DemuxPacket* &scrPkt);
+   void SetBluRay(const std::shared_ptr<CDVDInputStream::IExtentionStream> &bluRay) { m_bluRay = bluRay; };
+   bool IsBluRay() { return m_bluRay != nullptr; };
++  bool HasExtention() const { return m_bluRay && m_bluRay->HasExtention(); }
++  //! the second view's header, kept for a setup while the extension is not open
++  void SetMVCHeader(const uint8_t* data, int size)
++  {
++    m_mvcHeader.assign(data, data + std::max(size, 0));
++  }
++  const std::vector<uint8_t>& GetMVCHeader() const { return m_mvcHeader; }
+ 
+ private:
+   DemuxPacket* GetMVCPacket();
+@@ -57,6 +66,7 @@ private:
+   void DropUnpairedBase();
+   void Resync(double ts, int playItem, const char* reason);
+   int FrontPlayItem();
++  void OpenFailed(double newest);
+ 
+   std::shared_ptr<CDVDInputStream::IExtentionStream> m_bluRay = nullptr;
+   std::queue<DemuxPacket*> m_H264queue;
+@@ -76,4 +86,5 @@ private:
+   //! the play item of the base pictures queued: the number of the first of each run, and the item
+   std::deque<std::pair<uint64_t, int>> m_playItems;
+   uint64_t m_basePushed = 0;
++  std::vector<uint8_t> m_mvcHeader;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+index 3ded7e4..ec1d04c 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+@@ -167,6 +167,8 @@ public:
+     virtual bool AreEyesFlipped() = 0;
+     virtual CDemuxMVC* GetExtentionDemux() = 0;
+     virtual void DisableExtention() = 0;
++    //! turn the extension off until the next playlist; the base view keeps its timestamps
++    virtual void EndExtention() = 0;
+     virtual bool OpenNextStream() = 0;
+     //! move the extension to the base view's picture at ts, as the extension demuxer converts it,
+     //! read in playItem (-1 if unknown)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 0154e3c..582aa1d 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -721,6 +721,18 @@ void CDVDInputStreamBluray::DisableExtention()
+   m_hasMVCExtension = false;
+ }
+ 
++// m_hasMVCExtension stays: the timestamps of the playlist and its clip joins go on as for 3D
++void CDVDInputStreamBluray::EndExtention()
++{
++  if (!m_bMVCPlayback)
++    return;
++
++  CLog::Log(LOGWARNING, "CDVDInputStreamBluray - the MVC extension cannot be read, playing the "
++                        "base view only until the next playlist");
++  CloseMVCDemux();
++  m_bMVCPlayback = false;
++}
++
+ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+ {
+   int result = 0;
+@@ -1620,7 +1632,7 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+   if (!pl || !ClipAt(playItem) || m_nMVCSubPathIndex >= pl->ext_sub_count ||
+       playItem >= pl->ext_sub_path[m_nMVCSubPathIndex].sub_playitem_count)
+   {
+-    m_bMVCPlayback = false;
++    EndExtention();
+     return false;
+   }
+ 
+@@ -1642,10 +1654,10 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+     m_pMVCInput = input;
+   }
+ 
++  // a file that cannot be opened is tried again as the base view reads on (CDemuxStreamSSIF)
+   if (!m_pMVCInput->Open())
+   {
+     CloseMVCDemux();
+-    m_bMVCPlayback = false;
+     return false;
+   }
+ 
+@@ -1654,7 +1666,6 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+   if (!m_pMVCDemux->Open(m_pMVCInput))
+   {
+     CloseMVCDemux();
+-    m_bMVCPlayback = false;
+     return false;
+   }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index ecf7baa..d3189fa 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -185,6 +185,7 @@ public:
+   bool HasExtention() override { return m_bMVCPlayback; }
+   bool AreEyesFlipped() override { return m_bFlipEyes; }
+   void DisableExtention() override;
++  void EndExtention() override;
+   bool OpenNextStream() override;
+   void ResyncExtention(double ts, int playItem) override;
+   bool IsExtentionAtStart(int playItem) override;

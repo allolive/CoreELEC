@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:10:00 -0400
+Subject: [PATCH] AML: read the hvcC length size as the converter does
+
+The HEVC latches walk the demux payload as length-prefixed NALs when the
+stream's extradata is an hvcC record, and as Annex-B otherwise. The
+length size was read only for a version 1 record, while
+CBitstreamConverter takes as hvcC any extradata of 23 bytes or more that
+does not start with 00 00 00 or 00 00 01, version 0 included (the draft
+14496-15 layout some muxers still write). Such a stream was then
+scanned as Annex-B, where a start code pattern inside a length-prefixed
+NAL could pass for a NAL of its own, and its RPU and SEI were missed.
+
+The size is now read when the converter opens, which for HEVC into
+Annex-B it does on exactly that test.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 8321ee4..e951c46 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -359,11 +359,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+       }
+       m_pFormatName = "am-h265";
+       m_bitstream = new CBitstreamConverter();
+-      m_bitstream->Open(m_hints.codec, m_hints.extradata.GetData(), m_hints.extradata.GetSize(), true);
+-
+-      // length-prefix size from the original hvcC, read before the extradata
+-      // below becomes Annex-B. Stays 0 for Annex-B input
+-      if (m_hints.extradata.GetSize() > 21 && m_hints.extradata.GetData()[0] == 1)
++      // it opens on hvcC extradata only; the length-prefix size is read before the extradata
++      // below becomes Annex-B, and stays 0 for Annex-B input
++      if (m_bitstream->Open(m_hints.codec, m_hints.extradata.GetData(),
++                            m_hints.extradata.GetSize(), true))
+         m_nalLengthSize = (m_hints.extradata.GetData()[21] & 0x3) + 1;
+ 
+       // check for hevc-hvcC and convert to h265-annex-b

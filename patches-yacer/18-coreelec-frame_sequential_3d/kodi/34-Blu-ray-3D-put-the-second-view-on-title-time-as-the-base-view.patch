@@ -1,0 +1,265 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 20:30:00 -0400
+Subject: [PATCH] Blu-ray 3D: put the second view on title time, as the base
+ view
+
+The demuxer puts a Blu-ray's packets on title time from the clip they
+were read in, so a seamless join does not step the timestamps back.
+Playlists with a 3D second view were left out, as the second view's
+demuxer converted its timestamps on its own. Their joins still stepped
+back and were corrected in the player by dts. A clip whose first
+picture carries no DTS of its own has its dts a frame late, so the next
+clip landed a frame early, its first picture on the last one's pts: a
+picture dropped at each join, and at some the decoder's output held.
+
+The second view's demuxer now converts its timestamps as the base
+view's are, from its play item's in time and start in the title, so the
+two views stay paired and the joins of a 3D playlist go on as a 2D
+one's. Both views take the conversion from one function, so they cannot
+drift apart. In navigation mode, where the base view is not on title time,
+the second view is not either.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp     | 17 +++-----------
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp    | 24 ++++++++++++++++----
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h      |  5 +++++
+ .../DVDInputStreams/BlurayClipReader.cpp           |  2 ++
+ .../VideoPlayer/DVDInputStreams/BlurayClipReader.h |  2 ++
+ .../DVDInputStreams/DVDInputStreamBluray.cpp       | 26 +++++++++++++++++++---
+ .../DVDInputStreams/DVDInputStreamBluray.h         | 11 +++++++--
+ 7 files changed, 64 insertions(+), 23 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index be90806f..19eaf8ea 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -1194,7 +1194,6 @@ void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet,
+                                               const AVStream* stream,
+                                               int& playItem)
+ {
+-  constexpr AVRational CLIP_TIME_BASE = {1, 90000};
+   const auto bluray = static_cast<CDVDInputStreamBluray*>(m_pInput.get());
+ 
+   // a packet without position stays in the clip of its stream's last packet
+@@ -1210,23 +1209,13 @@ void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet,
+   if (!clip)
+     return;
+ 
+-  const int64_t inTime =
+-      av_rescale_q(static_cast<int64_t>(clip->inTime), CLIP_TIME_BASE, stream->time_base);
+-  const int64_t startTime =
+-      av_rescale_q(static_cast<int64_t>(clip->startTime), CLIP_TIME_BASE, stream->time_base);
+-  const int64_t wrap = INT64_C(1) << stream->pts_wrap_bits;
+-
+   const auto toTitleTime = [&](int64_t ts) -> double
+   {
+-    if (ts == AV_NOPTS_VALUE)
++    const auto titleTime = CDVDInputStreamBluray::TitleTime(ts, *clip, *stream);
++    if (!titleTime)
+       return DVD_NOPTS_VALUE;
+ 
+-    int64_t clipTime = (ts - inTime) & (wrap - 1);
+-    if (clipTime >= wrap / 2)
+-      clipTime -= wrap;
+-
+-    double timestamp =
+-        static_cast<double>(clipTime + startTime) * stream->time_base.num / stream->time_base.den;
++    double timestamp = *titleTime;
+     // the preroll clamp of ConvertTimestamp, not on the transport stream path
+     if (!m_checkTransportStream && timestamp < 0 && timestamp + 0.5 > 0)
+       timestamp = 0;
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+index ac544f29..82911196 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include "DemuxMVC.h"
+ #include "DVDDemuxUtils.h"
++#include "DVDInputStreams/DVDInputStreamBluray.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "cores/FFmpeg.h"
+ #include "utils/log.h"
+@@ -191,10 +192,12 @@ DemuxPacket* CDemuxMVC::Read()
+         memcpy(newPkt->pData, pkt->data, pkt->size);
+       newPkt->iSize = pkt->size;
+       newPkt->iStreamId = stream->id;
+-      newPkt->dts =
+-        ConvertTimestamp(pkt->dts, stream->time_base.den, stream->time_base.num);
+-      newPkt->pts =
+-        ConvertTimestamp(pkt->pts, stream->time_base.den, stream->time_base.num);
++      newPkt->dts = m_titleStart
++                        ? TitleTime(pkt->dts, stream)
++                        : ConvertTimestamp(pkt->dts, stream->time_base.den, stream->time_base.num);
++      newPkt->pts = m_titleStart
++                        ? TitleTime(pkt->pts, stream)
++                        : ConvertTimestamp(pkt->pts, stream->time_base.den, stream->time_base.num);
+       newPkt->duration = DVD_SEC_TO_TIME((double)pkt->duration * stream->time_base.num /
+                                           stream->time_base.den);
+       if (newPkt->dts != DVD_NOPTS_VALUE)
+@@ -295,9 +298,22 @@ void CDemuxMVC::SetClip(int64_t inTime, int64_t outTime)
+   m_atClipStart = true;
+ }
+ 
++// A timestamp of the file on title time, as the base view's packets are
++double CDemuxMVC::TitleTime(int64_t ts, const AVStream* stream) const
++{
++  const CDVDInputStreamBluray::ClipTime clip{static_cast<uint64_t>(m_clipIn),
++                                             static_cast<uint64_t>(*m_titleStart)};
++  const auto titleTime = CDVDInputStreamBluray::TitleTime(ts, clip, *stream);
++  return titleTime ? *titleTime * DVD_TIME_BASE : DVD_NOPTS_VALUE;
++}
++
+ // ts: a timestamp Read returned; the timestamp of the file (90 kHz) it was converted from
+ int64_t CDemuxMVC::ClipTimestamp(double ts) const
+ {
++  // back into the file's timestamps, which wrap
++  if (m_titleStart && m_pFormatContext && m_nStreamIndex >= 0)
++    return (static_cast<int64_t>(ts * 90000 / DVD_TIME_BASE) - *m_titleStart + m_clipIn) &
++           ((INT64_C(1) << m_pFormatContext->streams[m_nStreamIndex]->pts_wrap_bits) - 1);
+   if (m_lastDts != DVD_NOPTS_VALUE)
+     return m_lastClipDts + static_cast<int64_t>((ts - m_lastDts) * 90000 / DVD_TIME_BASE);
+   // Read keeps a timestamp below the start time as it is
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+index ef624bcc..407e96dd 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+@@ -26,6 +26,7 @@
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ 
+ #include <functional>
++#include <optional>
+ 
+ extern "C" {
+ #include "libavformat/avformat.h"
+@@ -57,6 +58,8 @@ public:
+   void SetStartTime(int64_t start_time, MenuType menu_type);
+   //! the play item's in and out times (90 kHz) in a file that can hold more than the play item
+   void SetClip(int64_t inTime, int64_t outTime);
++  //! put the timestamps on title time, as the base view's: the play item starts at startTime
++  void SetTitleStart(int64_t startTime) { m_titleStart = startTime; }
+   //! where in the file a timestamp's entry point is, to seek to without searching the file
+   void SetEntryPointLocator(std::function<int64_t(int64_t clipTimestamp)> locator)
+   {
+@@ -72,6 +75,7 @@ private:
+   void ClearReadError();
+   double StartTimeSeconds() const;
+   double ConvertTimestamp(int64_t pts, int den, int num);
++  double TitleTime(int64_t ts, const AVStream* stream) const;
+ 
+   AVIOContext        *m_ioContext = nullptr;
+   AVFormatContext    *m_pFormatContext = nullptr;
+@@ -82,6 +86,7 @@ private:
+   int64_t m_lastClipDts = 0;
+   double m_lastDts = DVD_NOPTS_VALUE;
+   int64_t m_clipIn = 0;
++  std::optional<int64_t> m_titleStart;
+   int64_t m_clipEnd = 0;
+   bool m_clipEnded = false;
+   bool m_atClipStart = false;
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+index ff683cbe..65f68e31 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+@@ -591,6 +591,8 @@ std::unique_ptr<CDemuxMVC> CBlurayClipReader::NewMVCDemux(
+   if (!demux->Open(&input))
+     return nullptr;
+ 
++  if (clip.titleStart)
++    demux->SetTitleStart(*clip.titleStart);
+   demux->SetClip(clip.inTime, clip.outTime);
+   return demux;
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+index 03871c0b..c2361721 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+@@ -72,6 +72,8 @@ public:
+     std::string clipInfoPath;
+     int64_t inTime{0};
+     int64_t outTime{0};
++    //! the play item's start in the title, when the base view is on title time
++    std::optional<int64_t> titleStart;
+   };
+   //! A play item's second view: its input, open, and its demuxer, sought to the play item's start
+   struct SecondView
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 5ef83a6d..78262357 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1401,12 +1401,29 @@ bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
+   return false;
+ }
+ 
+-std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTime(
+-    uint64_t readPos) const
++std::optional<double> CDVDInputStreamBluray::TitleTime(int64_t ts,
++                                                      const ClipTime& clip,
++                                                      const AVStream& stream)
+ {
+-  if (m_hasMVCExtension)
++  if (ts == AV_NOPTS_VALUE)
+     return {};
+ 
++  constexpr AVRational CLIP_TIME_BASE = {1, 90000};
++  const int64_t inTime =
++      av_rescale_q(static_cast<int64_t>(clip.inTime), CLIP_TIME_BASE, stream.time_base);
++  const int64_t startTime =
++      av_rescale_q(static_cast<int64_t>(clip.startTime), CLIP_TIME_BASE, stream.time_base);
++  const int64_t wrap = INT64_C(1) << stream.pts_wrap_bits;
++
++  int64_t clipTime = (ts - inTime) & (wrap - 1);
++  if (clipTime >= wrap / 2)
++    clipTime -= wrap;
++  return static_cast<double>(clipTime + startTime) * stream.time_base.num / stream.time_base.den;
++}
++
++std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTime(
++    uint64_t readPos) const
++{
+   const ClipSpan* span = SpanAt(readPos);
+   return span ? span->time : std::nullopt;
+ }
+@@ -1684,6 +1701,9 @@ std::optional<CBlurayClipReader::MVCClip> CDVDInputStreamBluray::GetMVCClip(int
+       URIUtils::AddFileToFolder(m_root, "BDMV", "CLIPINF", mvcClip.clipId + ".clpi");
+   mvcClip.inTime = static_cast<int64_t>(clip->in_time);
+   mvcClip.outTime = static_cast<int64_t>(clip->out_time);
++  // as the base view, which is on title time but in navigation mode (GetClipTime)
++  if (!m_navmode)
++    mvcClip.titleStart = static_cast<int64_t>(clip->start_time);
+   return mvcClip;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 820185f5..b100f9ad 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -52,6 +52,7 @@ extern "C"
+ #define HDMV_PID_IG_LAST          0x141f
+ 
+ class CDVDOverlayImage;
++struct AVStream;
+ class IVideoPlayer;
+ class CDVDDemux;
+ 
+@@ -167,10 +168,16 @@ public:
+   /*!
+    * \brief Get the in time and start time (90 kHz) of the clip a byte was read from.
+    * \param readPos The position of the byte in the bytes Read returned since Open
+-   * \return The clip time, or nothing without a clip, in navigation mode and on a playlist with
+-   *         an MVC extension
++   * \return The clip time, or nothing without a clip and in navigation mode
+    */
+   std::optional<ClipTime> GetClipTime(uint64_t readPos) const;
++
++  /*!
++   * \brief Put a timestamp of a clip's stream on title time.
++   * \param ts The timestamp, in the stream's time base
++   * \return The title time in seconds, or nothing without a timestamp
++   */
++  static std::optional<double> TitleTime(int64_t ts, const ClipTime& clip, const AVStream& stream);
+   //! the play item a byte was read in, -1 if unknown, as in navigation mode
+   int GetPlayItem(uint64_t readPos) const;
+ 

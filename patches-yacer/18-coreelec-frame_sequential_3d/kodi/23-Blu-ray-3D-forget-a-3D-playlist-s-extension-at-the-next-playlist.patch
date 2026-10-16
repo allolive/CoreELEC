@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 04:09:24 -0400
+Subject: [PATCH] Blu-ray 3D: forget a 3D playlist's extension at the next
+ playlist
+
+The 3D flags were set when a playlist has an MVC extension and never
+cleared, so a menu moving from a 3D playlist to a 2D one went on opening
+an extension, with a play item the 2D playlist's sub-path does not have.
+They are now cleared for each playlist, and also when the extension is
+disabled, and the open checks the sub-path and the play item. Disabling
+the extension clears the flag that keeps the clip start of a 3D playlist
+unheld, so a 3D playlist played in 2D holds it as a 2D one does.
+
+An open that failed before the file kept the 3D flag set with no
+extension demuxer, which the stream setup then used. It clears the flag,
+and the stream setup and the pairing now check that the demuxer exists.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp           | 2 +-
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp          | 3 +++
+ xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp | 9 ++++++++-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 57fe8341..ff3d3574 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2448,7 +2448,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+             AVStream *mvcStream = nullptr;
+             const std::shared_ptr<CDVDInputStream::IExtentionStream> pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInput);
+ 
+-            if (pExt && pExt->HasExtention())
++            if (pExt && pExt->HasExtention() && pExt->GetExtentionDemux())
+             {
+               delete m_pSSIF;
+               m_pSSIF = new CDemuxStreamSSIF();
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index da8de522..5cf495a6 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -199,6 +199,9 @@ bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
+     return false;
+ 
+   CDemuxMVC* demux = m_bluRay->GetExtentionDemux();
++  if (!demux)
++    return false;
++
+   DemuxPacket* mvc;
+   while ((m_MVCqueue.size() < MVC_QUEUE_SIZE) && (mvc = demux->Read()))
+   {
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index e591af33..6e456117 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -758,6 +758,7 @@ void CDVDInputStreamBluray::DisableExtention()
+   CloseMVCDemux();
+   m_bMVCDisabled = true;
+   m_bMVCPlayback = false;
++  m_hasMVCExtension = false;
+ }
+ 
+ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -1583,6 +1584,8 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
+ 
+   m_titleInfo = bd_get_playlist_info(m_bd, playitem, m_angle);
+ 
++  m_bMVCPlayback = false;
++  m_hasMVCExtension = false;
+   if (!m_bMVCDisabled)
+   {
+     MPLS_PL * mpls = bd_get_title_mpls(m_bd);
+@@ -1658,8 +1661,12 @@ bool CDVDInputStreamBluray::OpenNextStream()
+ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+ {
+   MPLS_PL *pl = bd_get_title_mpls(m_bd);
+-  if (!pl)
++  if (!pl || !ClipAt(playItem) || m_nMVCSubPathIndex >= pl->ext_sub_count ||
++      playItem >= pl->ext_sub_path[m_nMVCSubPathIndex].sub_playitem_count)
++  {
++    m_bMVCPlayback = false;
+     return false;
++  }
+ 
+   std::string strFileName;
+   strFileName.append(m_root);

@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:32:34 -0400
+Subject: [PATCH] Blu-ray 3D: keep the extension's clip as a play item number
+
+The MVC extension's clip was kept as a pointer into the playlist's title
+info. An angle change frees that title info and reads a new one, so the
+pointer was left dangling: a seek after an angle change read the freed
+clip to position the extension. It is now kept as a play item number and
+looked up in the title info when it is used. Compared as a number, the
+extension's play item is also still taken for the one the base view
+reads after an angle change, where the two pointers differ, rather than
+queued again for the extension.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 24 +++++++++----------
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  2 +-
+ 2 files changed, 12 insertions(+), 14 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 95acab7..4d41748 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -706,14 +706,11 @@ void CDVDInputStreamBluray::ProcessEvent() {
+   /* event has been consumed */
+   m_event.event = BD_EVENT_NONE;
+ 
+-  if ( m_bMVCPlayback && m_clip
+-    && m_titleInfo
+-    && m_clip < m_titleInfo->clips + m_titleInfo->clip_count
+-    && m_nMVCClip != m_clip
+-    && (m_clipQueue.empty()
+-      || m_clip != m_titleInfo->clips + m_clipQueue.front()))
+-  {
+-    m_clipQueue.push(m_clip - m_titleInfo->clips);
++  const int clip = BaseClip();
++  if (m_bMVCPlayback && clip >= 0 && m_nMVCClip != clip &&
++      (m_clipQueue.empty() || clip != m_clipQueue.front()))
++  {
++    m_clipQueue.push(clip);
+     if (m_pMVCDemux == NULL)
+       OpenNextStream();
+   }
+@@ -1656,7 +1653,7 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+     return false;
+   }
+ 
+-  m_nMVCClip = m_titleInfo->clips + playItem;
++  m_nMVCClip = playItem;
+   return true;
+ }
+ 
+@@ -1670,7 +1667,7 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+ 
+   delete m_pMVCInput;
+   m_pMVCInput = nullptr;
+-  m_nMVCClip = nullptr;
++  m_nMVCClip = -1;
+   return true;
+ }
+ 
+@@ -1680,13 +1677,14 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+ // pictures before the first extension picture are then dropped, key picture included.
+ void CDVDInputStreamBluray::SeekMVCDemux()
+ {
+-  if (!m_bMVCPlayback || !m_pMVCDemux || !m_nMVCClip)
++  const BLURAY_CLIP_INFO* clip = ClipAt(m_nMVCClip);
++  if (!m_bMVCPlayback || !m_pMVCDemux || !clip)
+     return;
+ 
+   const int64_t titleTime = static_cast<int64_t>(bd_tell_time(m_bd));
+   const int64_t clipTime =
+-      std::max<int64_t>(0, titleTime - static_cast<int64_t>(m_nMVCClip->start_time));
+-  m_pMVCDemux->SeekClipTimestamp(static_cast<int64_t>(m_nMVCClip->in_time) + clipTime);
++      std::max<int64_t>(0, titleTime - static_cast<int64_t>(clip->start_time));
++  m_pMVCDemux->SeekClipTimestamp(static_cast<int64_t>(clip->in_time) + clipTime);
+ }
+ 
+ BLURAY_CLIP_INFO* CDVDInputStreamBluray::ClipAt(int playItem) const
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index a0f17a7..0300d40 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -227,7 +227,7 @@ protected:
+   CDVDInputStream    *m_pMVCInput = nullptr;
+   bool                m_bMVCPlayback = false;
+   int                 m_nMVCSubPathIndex = 0;
+-  BLURAY_CLIP_INFO*   m_nMVCClip = nullptr;
++  int                 m_nMVCClip = -1;
+   bool                m_bFlipEyes = false;
+   bool                m_bMVCDisabled = false;
+   uint64_t            m_clipStartTime = 0;

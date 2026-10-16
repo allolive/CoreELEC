@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 20:30:00 -0400
+Subject: [PATCH] RendererAML: drop a picture that repeats the pts just queued
+
+QueueFrame skips a picture whose pts equals the last one queued, from
+the same decoder. Skipped, the picture is neither queued nor released:
+it stays in its render buffer until the render manager recycles it, and
+the decoder waits for that buffer. On a 3D Blu-ray whose seamless clip
+joins put the next clip's first picture on the last one's pts, the
+decoder then handed over five pictures at once, stalled a quarter of a
+second, and amvideo ran some 0.6 s off Kodi's clock, audio early and the
+picture stuttering, until the next seek.
+
+Such a picture now goes back to the decoder at once, as a drop: it does
+not show, as before, and it does not hold the decoder's output.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoRenderers/HwDecRender/RendererAML.cpp     | 28 +++++++++++++++-------
+ 1 file changed, 20 insertions(+), 8 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+index a84ee4cc..6ec2d8a1 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -312,6 +312,16 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+   {
+     uint64_t pts = amli->m_omxPts;
+     const bool firstPreroll = generation != 0 && m_prerollFirst;
++    const auto release = [&](bool asDrop)
++    {
++      if (amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, asDrop,
++                                         amli->m_frameGeneration) == 0)
++        return true;
++      if (generation != 0)
++        m_prerollFailed = true;
++      amli->m_amlCodec = nullptr;
++      return false;
++    };
+     // a new decoder can start at the pts the previous one ended on
+     if (pts != m_prevVPts || m_prevCodec.lock() != amli->m_amlCodec || firstPreroll)
+     {
+@@ -319,15 +329,8 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+       // never when it is the picture a resume was prepared on
+       drop = !firstPreroll && m_prevVPts == DVD_NOPTS_VALUE &&
+              amli->m_amlCodec->IsRealtimeStream();
+-      const int result = amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, drop,
+-                                                        amli->m_frameGeneration);
+-      if (result != 0)
+-      {
+-        if (generation != 0)
+-          m_prerollFailed = true;
+-        amli->m_amlCodec = nullptr;
++      if (!release(drop))
+         return nullptr;
+-      }
+       if (firstPreroll)
+       {
+         m_prerollFirst = false;
+@@ -349,6 +352,15 @@ std::shared_ptr<CAMLCodec> CRendererAML::QueueFrame(int index, bool setVideoRect
+       m_prevVPts = pts;
+       return codec;
+     }
++
++    // Another picture at the pts just queued goes back to the decoder at once, as a drop: left in
++    // its buffer it held the decoder's output, and amvideo ran off Kodi's clock until a seek
++    CLog::Log(LOGDEBUG, "CRendererAML::QueueFrame - dropping a picture at the repeated pts {}",
++              pts);
++    if (!release(true))
++      return nullptr;
++    drop = true;
++    return std::move(amli->m_amlCodec);
+   }
+   return nullptr;
+ }

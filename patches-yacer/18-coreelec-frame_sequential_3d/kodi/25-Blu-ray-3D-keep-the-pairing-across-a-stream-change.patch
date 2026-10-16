@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:34:28 -0400
+Subject: [PATCH] Blu-ray 3D: keep the pairing across a stream change
+
+When the demuxer sets the base view's stream up again, on a change of
+picture size for one, the pairing of the two views was created anew: the
+base pictures waiting in it and the dependent view it had read ahead of
+the base view were dropped. The dependent pictures are read from the
+extension's file once only, so the base pictures they belonged to were
+then dropped too, one by one, until the base view passed the last of
+them.
+
+The pairing is now kept, and emptied only if the base view moved to
+another stream. Only the stream the pairing was set up for, or the one
+on the base view's PID 0x1011, is set up with the second view: a second
+H.264 stream, a picture in picture, no longer takes the pairing over.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp    | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 58da580..26d8bf5 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2448,7 +2448,13 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+           {
+             int mvcIndex;
+             AVStream *mvcStream = nullptr;
+-            const std::shared_ptr<CDVDInputStream::IExtentionStream> pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInput);
++            // the second view goes with the stream it was set up for or the base view's PID,
++            // not with a picture in picture
++            const bool baseView =
++                (m_pSSIF && m_pSSIF->GetH264StreamId() == streamIdx) || pStream->id == 0x1011;
++            const std::shared_ptr<CDVDInputStream::IExtentionStream> pExt =
++                baseView ? std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInput)
++                         : nullptr;
+ 
+             // the extension is opened for the stream it goes with
+             if (pExt && pExt->HasExtention() && !pExt->GetExtentionDemux())
+@@ -2456,8 +2462,11 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+ 
+             if (pExt && pExt->HasExtention() && pExt->GetExtentionDemux())
+             {
+-              delete m_pSSIF;
+-              m_pSSIF = new CDemuxStreamSSIF();
++              // a stream change keeps the dependent view already read ahead for the base view
++              if (!m_pSSIF)
++                m_pSSIF = new CDemuxStreamSSIF();
++              else if (m_pSSIF->GetH264StreamId() != streamIdx)
++                m_pSSIF->Flush();
+               m_pSSIF->SetH264StreamId(streamIdx);
+               m_pSSIF->SetBluRay(pExt);
+ 

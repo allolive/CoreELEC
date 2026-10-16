@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:31:28 -0400
+Subject: [PATCH] Blu-ray 3D: the extension demuxer is a CDemuxMVC
+
+The 3D Blu-ray input only ever opens its MVC extension as a CDemuxMVC,
+and the code that needs one cast the extension demuxer back to it. The
+interface now returns a CDemuxMVC and the input keeps one. No change in
+behaviour.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            |  2 +-
+ .../DVDDemuxers/DemuxStreamSSIF.cpp           |  3 +-
+ .../DVDInputStreams/DVDInputStream.h          |  3 +-
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 31 ++++++-------------
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  4 +--
+ 5 files changed, 17 insertions(+), 26 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index d523125..57fe834 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2459,7 +2459,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+ 
+               const std::shared_ptr<CDVDInputStream::IMenus> menuInterface =
+                   std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
+-              CDemuxMVC *extDemux = static_cast<CDemuxMVC*>(pExt->GetExtentionDemux());
++              CDemuxMVC *extDemux = pExt->GetExtentionDemux();
+               extDemux->SetStartTime(m_pFormatContext->start_time, menuInterface->GetSupportedMenuType());
+               mvcStream = extDemux->GetAVStream();
+             }
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index 175f8ae..da8de52 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -19,6 +19,7 @@
+ */
+ 
+ #include "DemuxStreamSSIF.h"
++#include "DemuxMVC.h"
+ #include "cores/VideoPlayer/DVDDemuxers/DVDDemux.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "DVDDemuxUtils.h"
+@@ -197,7 +198,7 @@ bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
+   if (!m_bluRay)
+     return false;
+ 
+-  CDVDDemux* demux = m_bluRay->GetExtentionDemux();
++  CDemuxMVC* demux = m_bluRay->GetExtentionDemux();
+   DemuxPacket* mvc;
+   while ((m_MVCqueue.size() < MVC_QUEUE_SIZE) && (mvc = demux->Read()))
+   {
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+index 1b9db24..6c230f5 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+@@ -52,6 +52,7 @@ class CDemuxStream;
+ class CStreamDetails;
+ struct SPlayerState;
+ class CDVDDemux;
++class CDemuxMVC;
+ 
+ class CDVDInputStream
+ {
+@@ -164,7 +165,7 @@ public:
+     virtual ~IExtentionStream() {}
+     virtual bool HasExtention() = 0;
+     virtual bool AreEyesFlipped() = 0;
+-    virtual CDVDDemux* GetExtentionDemux() = 0;
++    virtual CDemuxMVC* GetExtentionDemux() = 0;
+     virtual void DisableExtention() = 0;
+     virtual bool OpenNextStream() = 0;
+   };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 380cf81..95acab7 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1603,27 +1603,20 @@ bool CDVDInputStreamBluray::OpenNextStream()
+   int clip = m_clipQueue.front();
+   m_clipQueue.pop();
+ 
+-  CDemuxMVC *pMVCDemux = dynamic_cast<CDemuxMVC*>(m_pMVCDemux);
+-  if (!pMVCDemux) {
+-    // either it's not a CDemuxMVC or it's 2D playback
++  if (!m_pMVCDemux) {
++    // nothing open yet
+     CloseMVCDemux();
+     return OpenMVCDemux(clip);
+   }
+ 
+   // save start time for the next clip
+-  int64_t start_time = pMVCDemux->GetStartTime();
++  int64_t start_time = m_pMVCDemux->GetStartTime();
+ 
+   CloseMVCDemux();
+ 
+   bool res = OpenMVCDemux(clip);
+-  if (res) {
+-    CDemuxMVC *nextDemux = dynamic_cast<CDemuxMVC*>(m_pMVCDemux);
+-    if (nextDemux) {
+-      // set start time for next clip
+-      CDVDInputStream::IMenus *menu = dynamic_cast<CDVDInputStream::IMenus*>(this);
+-      nextDemux->SetStartTime(start_time, menu->GetSupportedMenuType());
+-    }
+-  }
++  if (res)
++    m_pMVCDemux->SetStartTime(start_time, GetSupportedMenuType());
+ 
+   return res;
+ }
+@@ -1653,13 +1646,10 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+     return false;
+   }
+ 
+-  if (m_pMVCDemux)
+-    delete m_pMVCDemux;
+-
+-  CDemuxMVC* pMVCDemux = new CDemuxMVC;
+-  m_pMVCDemux = pMVCDemux;
++  delete m_pMVCDemux;
++  m_pMVCDemux = new CDemuxMVC;
+ 
+-  if (!pMVCDemux->Open(m_pMVCInput))
++  if (!m_pMVCDemux->Open(m_pMVCInput))
+   {
+     CloseMVCDemux();
+     m_bMVCPlayback = false;
+@@ -1690,14 +1680,13 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+ // pictures before the first extension picture are then dropped, key picture included.
+ void CDVDInputStreamBluray::SeekMVCDemux()
+ {
+-  CDemuxMVC* demux = dynamic_cast<CDemuxMVC*>(m_pMVCDemux);
+-  if (!m_bMVCPlayback || !demux || !m_nMVCClip)
++  if (!m_bMVCPlayback || !m_pMVCDemux || !m_nMVCClip)
+     return;
+ 
+   const int64_t titleTime = static_cast<int64_t>(bd_tell_time(m_bd));
+   const int64_t clipTime =
+       std::max<int64_t>(0, titleTime - static_cast<int64_t>(m_nMVCClip->start_time));
+-  demux->SeekClipTimestamp(static_cast<int64_t>(m_nMVCClip->in_time) + clipTime);
++  m_pMVCDemux->SeekClipTimestamp(static_cast<int64_t>(m_nMVCClip->in_time) + clipTime);
+ }
+ 
+ BLURAY_CLIP_INFO* CDVDInputStreamBluray::ClipAt(int playItem) const
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 9ac8e0e..a0f17a7 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -177,7 +177,7 @@ public:
+   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
+ 
+   void ProcessEvent();
+-  CDVDDemux* GetExtentionDemux() override { return m_pMVCDemux; };
++  CDemuxMVC* GetExtentionDemux() override { return m_pMVCDemux; };
+   bool HasExtention() override { return m_bMVCPlayback; }
+   bool AreEyesFlipped() override { return m_bFlipEyes; }
+   void DisableExtention() override;
+@@ -223,7 +223,7 @@ protected:
+   std::string         m_root;
+ 
+   // MVC related members
+-  CDVDDemux*          m_pMVCDemux = nullptr;
++  CDemuxMVC*          m_pMVCDemux = nullptr;
+   CDVDInputStream    *m_pMVCInput = nullptr;
+   bool                m_bMVCPlayback = false;
+   int                 m_nMVCSubPathIndex = 0;

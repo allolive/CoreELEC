@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:09:32 -0400
+Subject: [PATCH] Blu-ray 3D: the second view's file waits out a stalled source
+
+The extension's file input handed a stalled source back to ffmpeg as a
+failed read, unlike the input of the file being played, which waits for
+the source until playback is stopped: for as long as the stall lasted
+the extension failed its reads and tried again every half second.
+
+The extension's input now waits out a stall the same way. Abort reaches
+it from another thread and ends the wait. The input is swapped under a
+lock and deleted outside it, since Abort is called with the GUI locked,
+and no extension file is opened once Abort has been called. This does
+not make a stop during an outage of the share immediate: closing the
+stalled file joins its cache thread, and an open or a seek of the file
+can still wait on the share.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp       | 26 ++++++++++++++++++----
+ .../DVDInputStreams/DVDInputStreamBluray.h         |  3 +++
+ 2 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 95add7d5..aacc0c39 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -98,6 +98,12 @@ void CDVDInputStreamBluray::Abort()
+ {
+   m_hold = HOLD_EXIT;
+   m_aborted = true;
++
++  // the extension's file may be waiting out a stalled source on the player thread
++  std::unique_lock lock(m_mvcInputLock);
++  m_mvcAborted = true;
++  if (m_pMVCInput)
++    m_pMVCInput->Abort();
+ }
+ 
+ bool CDVDInputStreamBluray::IsEOF()
+@@ -1654,9 +1660,15 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OpenMVCDemuxer(): Opening MVC extension stream at {}", strFileName);
+ 
+   CFileItem fileitem(CURL(strFileName), false);
+-  m_pMVCInput = new CDVDInputStreamFile(fileitem, 0);
++  {
++    std::unique_lock lock(m_mvcInputLock);
++    if (m_mvcAborted)
++      return false;
++    auto* input = new CDVDInputStreamFile(fileitem, 0);
++    input->SetWaitsForUser(true);
++    m_pMVCInput = input;
++  }
+ 
+-  // Try to open the MVC stream
+   if (!m_pMVCInput->Open())
+   {
+     CloseMVCDemux();
+@@ -1688,8 +1700,14 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+     m_pMVCDemux = nullptr;
+   }
+ 
+-  delete m_pMVCInput;
+-  m_pMVCInput = nullptr;
++  CDVDInputStream* input;
++  {
++    std::unique_lock lock(m_mvcInputLock);
++    input = m_pMVCInput;
++    m_pMVCInput = nullptr;
++  }
++  // a stalled file can take a while to close; Abort must not wait for it
++  delete input;
+   m_nMVCClip = -1;
+   return true;
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index b9e6e1fd..8fad6b20 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -239,6 +239,9 @@ protected:
+   // MVC related members
+   CDemuxMVC*          m_pMVCDemux = nullptr;
+   CDVDInputStream    *m_pMVCInput = nullptr;
++  //! guards m_pMVCInput against Abort, which comes from another thread
++  CCriticalSection    m_mvcInputLock;
++  bool                m_mvcAborted = false;
+   bool                m_bMVCPlayback = false;
+   int                 m_nMVCSubPathIndex = 0;
+   int                 m_nMVCClip = -1;

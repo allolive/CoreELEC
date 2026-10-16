@@ -1,0 +1,995 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 23:00:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: read a clip ahead, so a stalled source buffers
+
+A Blu-ray played from a folder or an image through Kodi's filesystem has
+libbluray open its clips with plain CFile reads, on the player thread and
+with no cache. When the share stops answering, the player thread blocks in
+one read for as long as the outage lasts. Nothing that would buffer can
+run: the video player declares a still frame, the clock runs on, and when
+the share answers again playback jumps ahead by the length of the outage.
+A share that resets the connection instead fails the read, and libbluray
+takes a failed read for a damaged unit: it skips it, and after enough of
+them the title ends.
+
+A clip (.m2ts) is now opened as any video file is, with READ_AUDIO_VIDEO,
+so it is read ahead into a file cache as the cache settings say, and the
+input stream reports that cache's status to the player. The player then
+sees the source run dry and buffers, as it does for other files. The
+other files of the disc are opened as before.
+
+The player measures the cache in seconds and sets its throttle from the
+length of the stream, which it took from the demuxer alone. A Blu-ray's
+demuxer reads a stream of unknown size and reports no length, so the
+cache read as -1 s and was never throttled; the input stream's own
+length is used where the demuxer has none.
+
+The cache is throttled to the title's bitrate, as CDVDInputStreamFile's
+is: without it every clip cache read ahead at its 1 MiB/s default, below
+a second of video at Blu-ray rates. A clip opened at a join starts empty
+while the one before it still plays from the player's queues, so it
+reports nothing until it has held a second of video once. libbluray
+sizes a clip by seeking to its end and back; on a cache that would drop
+it and wait on the source twice per clip, so the seek to the end is only
+noted and answered with the length.
+
+Once the rest of a play item is cached, its end is no longer a stall,
+so a share lost in a play item's last stretch would only show when
+libbluray opened the next one, through an uncached open and an empty
+cache. The next play item's file is therefore opened and read ahead
+then, from where that play item starts: play items need not start at the
+start of their file, and a disc that branches between scenes plays many
+out of one file. Where each starts and ends is taken from the entry
+points of its clip, from the copy of the .clpi that libbluray read when
+it opened the title, which costs no disc access. libbluray closes the
+file it reads at every join and opens the next play item's again; it is
+handed the file opened ahead, or the cache it read the last play item
+from if that already holds the next. One it does not ask for is dropped.
+
+That open runs on a thread of its own: a short play item is cached to
+its end as soon as it is reached, and the share can have stopped
+answering by then. Until it is done the play item being played reports
+only what is left of it, and no end of input, so the player buffers
+before the join rather than block in libbluray there; a job is given a
+second first. A stalled open does not fail: one that fails five times is
+a file that cannot be opened on a share that answers, and the join opens
+it as it did before. A job left running when the disc closes or the
+playlist changes ends on its own.
+
+A read that still meets a stall, with nothing left in the cache, is
+retried until the source answers or the player stops, a second at a time
+as the cache waits. libbluray never sees it. Directory listings and the
+library scan read as before and fail fast.
+
+The read ahead is a class of its own, CBlurayClipReader: the input
+stream hands it libbluray's clip opens and the play item being read, at
+whose event it takes the playlist's play items from libbluray.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/BlurayClipReader.cpp           | 377 +++++++++++++++++++++
+ .../VideoPlayer/DVDInputStreams/BlurayClipReader.h | 129 +++++++
+ .../VideoPlayer/DVDInputStreams/CMakeLists.txt     |   6 +-
+ .../DVDInputStreams/DVDInputStreamBluray.cpp       |  39 ++-
+ .../DVDInputStreams/DVDInputStreamBluray.h         |  13 +
+ xbmc/cores/VideoPlayer/VideoPlayer.cpp             |   4 +-
+ xbmc/filesystem/BlurayCallback.cpp                 | 108 ++++--
+ xbmc/filesystem/BlurayCallback.h                   |  23 ++
+ 8 files changed, 675 insertions(+), 24 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+new file mode 100644
+index 00000000..2615d45a
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
+@@ -0,0 +1,377 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "BlurayClipReader.h"
++
++#include "URL.h"
++#include "filesystem/BlurayCallback.h"
++#include "filesystem/File.h"
++#include "filesystem/IFileTypes.h"
++#include "utils/StringUtils.h"
++#include "utils/URIUtils.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <cstring>
++#include <mutex>
++#include <thread>
++
++#include <libbluray/clpi_data.h>
++#include <libbluray/mpls_data.h>
++
++using namespace std::chrono_literals;
++
++namespace
++{
++// A play item's file is read ahead from a little before its entry point: libbluray seeks to the
++// start of the aligned unit before it
++constexpr int64_t NEXT_CLIP_MARGIN{1024 * 1024};
++// opens of the next play item that fail before the join opens it as it can
++constexpr int NEXT_CLIP_ATTEMPTS{5};
++
++// An entry point map's entry points: the time of each (90 kHz) and its offset in the .m2ts
++CBlurayClipReader::EntryPoints EntryPointsOf(const CLPI_EP_MAP_ENTRY& map)
++{
++  CBlurayClipReader::EntryPoints entryPoints;
++  entryPoints.reserve(map.num_ep_fine);
++  for (int coarse = 0; coarse < map.num_ep_coarse; ++coarse)
++  {
++    const int end{coarse + 1 < map.num_ep_coarse ? map.coarse[coarse + 1].ref_ep_fine_id
++                                                 : map.num_ep_fine};
++    for (int fine = map.coarse[coarse].ref_ep_fine_id; fine < end && fine < map.num_ep_fine;
++         ++fine)
++    {
++      // 45 kHz, and 192 byte source packets
++      const uint32_t pts{(static_cast<uint32_t>(map.coarse[coarse].pts_ep & ~0x01) << 18) +
++                         (static_cast<uint32_t>(map.fine[fine].pts_ep) << 8)};
++      const uint32_t spn{(map.coarse[coarse].spn_ep & ~0x1FFFFu) +
++                         static_cast<uint32_t>(map.fine[fine].spn_ep)};
++      entryPoints.emplace_back(int64_t{pts} * 2, int64_t{spn} * 192);
++    }
++  }
++  return entryPoints;
++}
++
++// the offset of the last entry point at or before time, 0 if there is none
++int64_t EntryPointAt(const CBlurayClipReader::EntryPoints& entryPoints, int64_t time)
++{
++  int64_t offset{0};
++  for (const auto& [pointTime, pointOffset] : entryPoints)
++  {
++    if (pointTime > time)
++      break;
++    offset = pointOffset;
++  }
++  return offset;
++}
++} // namespace
++
++CBlurayClipReader::CBlurayClipReader(const std::atomic<bool>& aborted) : m_aborted(aborted)
++{
++}
++
++CBlurayClipReader::~CBlurayClipReader()
++{
++  DropPrefetchJob();
++}
++
++void CBlurayClipReader::Open(std::string rootPath)
++{
++  m_rootPath = std::move(rootPath);
++}
++
++void CBlurayClipReader::Close()
++{
++  DropPrefetchJob();
++  m_bd = nullptr;
++  m_clips.clear();
++  m_playItem = 0;
++  m_playItemEnd = -1;
++  m_nextClipFailures = 0;
++  std::unique_lock lock(m_clipFilesLock);
++  m_clipFiles.clear();
++  m_nextClip = {};
++}
++
++// The playlist's play items are taken from libbluray at every one, so a new playlist or angle
++// is seen at its first
++void CBlurayClipReader::SetPlayItem(BLURAY* bd, int playItem, unsigned int angle)
++{
++  std::vector<Clip> clips;
++  if (const MPLS_PL* pl = bd_get_title_mpls(bd))
++  {
++    for (int i = 0; i < pl->list_count; ++i)
++    {
++      const MPLS_PI& item{pl->play_item[i]};
++      const MPLS_CLIP& clip{item.clip[angle < item.angle_count ? angle : 0]};
++      // 45 kHz
++      clips.push_back({std::string(clip.clip_id, strnlen(clip.clip_id, sizeof(clip.clip_id))),
++                       int64_t{item.in_time} * 2, int64_t{item.out_time} * 2});
++    }
++  }
++  m_bd = bd;
++  if (clips != m_clips)
++  {
++    m_clips = std::move(clips);
++    m_nextClipFailures = 0;
++    {
++      std::unique_lock lock(m_clipFilesLock);
++      m_nextClip = {};
++    }
++    DropPrefetchJob();
++  }
++  m_playItem = playItem;
++  m_playItemEnd = GetPlayItemSpan(playItem).second;
++}
++
++BD_FILE_H* CBlurayClipReader::OpenFile(const std::string& path)
++{
++  // a job done since the player last asked
++  TakePrefetchJob(m_playItem + 1);
++
++  std::unique_lock lock(m_clipFilesLock);
++  std::erase_if(m_clipFiles, [](const auto& clip) { return clip.file.expired(); });
++
++  // the clip opened ahead of the join, already filling; or not the one libbluray went to
++  std::shared_ptr<XFILE::CFile> file;
++  if (m_nextClip.file &&
++      StringUtils::EqualsNoCase(URIUtils::GetFileName(path), m_nextClip.name))
++    file = std::move(m_nextClip.file);
++  else
++    m_nextClip = {};
++
++  // A clip is read ahead as any video is, so the player sees a stalled source run dry and
++  // buffers, rather than block in libbluray with the clock running
++  if (!file)
++  {
++    file = std::make_shared<XFILE::CFile>();
++    if (!file->Open(path, XFILE::READ_AUDIO_VIDEO))
++    {
++      CLog::Log(LOGDEBUG, "CBlurayClipReader - cannot open {}", CURL::GetRedacted(path));
++      return nullptr;
++    }
++    SetClipReadRate(*file);
++  }
++  m_clipFiles.push_back({file});
++  return CBlurayCallback::OpenFile(std::move(file), &m_aborted);
++}
++
++bool CBlurayClipReader::GetCacheStatus(XFILE::SCacheStatus* status)
++{
++  std::shared_ptr<XFILE::CFile> playing;
++  bool filled{false};
++  {
++    // The clip being played: a clip preloaded for its menus or subtitles is closed at once
++    std::unique_lock lock(m_clipFilesLock);
++    for (auto clip = m_clipFiles.rbegin(); clip != m_clipFiles.rend() && !playing; ++clip)
++    {
++      playing = clip->file.lock();
++      if (!playing)
++        continue;
++      if (playing->IoControl(XFILE::IOControl::CACHE_STATUS, status) < 0)
++        return false;
++
++      // A clip opened at a join starts empty while the one before it still plays from the
++      // player's queues. Until it has filled once, an empty cache is no stall.
++      if (!clip->filled)
++        clip->filled = status->endOfInput || m_readRate == 0 || status->forward >= m_readRate;
++      filled = clip->filled;
++    }
++  }
++  if (!playing)
++    return false;
++
++  // The rest of the play item is cached, so the next one is read ahead from here, or a stall
++  // in the last of this one would only show at the join
++  const int64_t cached{playing->GetPosition() + static_cast<int64_t>(status->forward)};
++  if (status->endOfInput || (m_playItemEnd >= 0 && cached >= m_playItemEnd))
++  {
++    PrefetchNextClip(playing, cached);
++
++    // Not open yet, as on a share that stopped answering: the rest of this play item is all
++    // there is, so the player buffers before the join, where the open would block it. A job
++    // just started is given a second.
++    if (!NextClipReady() && (!m_prefetchJob || m_prefetchJob->grace.IsTimePast()))
++    {
++      status->endOfInput = false;
++      if (m_playItemEnd >= 0)
++        status->forward = static_cast<uint64_t>(std::clamp<int64_t>(
++            m_playItemEnd - playing->GetPosition(), 0, static_cast<int64_t>(status->forward)));
++    }
++  }
++
++  return filled;
++}
++
++void CBlurayClipReader::PrefetchNextClip(const std::shared_ptr<XFILE::CFile>& playing,
++                                         int64_t cached)
++{
++  const int nextPlayItem{m_playItem + 1};
++  if (nextPlayItem >= static_cast<int>(m_clips.size()))
++    return;
++
++  if (!TakePrefetchJob(nextPlayItem))
++    return;
++
++  // an open that failed, as it does on a share that stopped answering, is tried again
++  if (!m_nextClipRetry.IsTimePast())
++    return;
++
++  std::shared_ptr<PrefetchJob> job;
++  if (m_nextClip.playItem != nextPlayItem)
++  {
++    const std::string name{m_clips[nextPlayItem].id + ".m2ts"};
++    const int64_t start{
++        std::max<int64_t>(0, GetPlayItemSpan(nextPlayItem).first - NEXT_CLIP_MARGIN)};
++
++    // in the file being read, and cached already: that cache is kept for it
++    if (StringUtils::EqualsNoCase(m_clips[nextPlayItem].id, m_clips[m_playItem].id) &&
++        start >= playing->GetPosition() && start <= cached)
++    {
++      std::unique_lock lock(m_clipFilesLock);
++      m_nextClip = {nextPlayItem, name, playing};
++    }
++    else
++    {
++      job = std::make_shared<PrefetchJob>();
++      job->next = {nextPlayItem, name, nullptr};
++      job->path = URIUtils::AddFileToFolder(m_rootPath, "BDMV", "STREAM", name);
++      job->start = start;
++    }
++  }
++
++  if (!job)
++    return;
++  if (m_aborted)
++    return;
++  {
++    std::unique_lock lock(m_prefetchJobLock);
++    m_prefetchJob = job;
++  }
++  std::thread([job] { RunPrefetchJob(job); }).detach();
++}
++
++// The last job's files, once it is done: false while it runs
++bool CBlurayClipReader::TakePrefetchJob(int nextPlayItem)
++{
++  if (!m_prefetchJob)
++    return true;
++  {
++    std::unique_lock lock(m_prefetchJob->lock);
++    if (!m_prefetchJob->done)
++      return false;
++  }
++
++  std::shared_ptr<PrefetchJob> job;
++  {
++    std::unique_lock lock(m_prefetchJobLock);
++    job = std::exchange(m_prefetchJob, nullptr);
++  }
++  if (job->failed)
++  {
++    m_nextClipRetry.Set(1s);
++    // A share that answers, and a file that cannot be opened: a stalled open does not fail
++    if (++m_nextClipFailures >= NEXT_CLIP_ATTEMPTS)
++      GiveUpNextClip(nextPlayItem);
++  }
++  else
++    m_nextClipFailures = 0;
++  if (job->next.file && job->next.playItem == nextPlayItem)
++  {
++    SetClipReadRate(*job->next.file);
++    std::unique_lock lock(m_clipFilesLock);
++    m_nextClip = std::move(job->next);
++  }
++  return true;
++}
++
++void CBlurayClipReader::RunPrefetchJob(const std::shared_ptr<PrefetchJob>& job)
++{
++  bool failed{false};
++  if (!job->path.empty())
++  {
++    auto file{std::make_shared<XFILE::CFile>()};
++    if (file->Open(job->path, XFILE::READ_AUDIO_VIDEO) && file->Seek(job->start) == job->start)
++    {
++      std::unique_lock lock(job->lock);
++      job->next.file = std::move(file);
++    }
++    else
++      failed = true;
++  }
++
++  std::unique_lock lock(job->lock);
++  job->failed = failed;
++  job->done = true;
++}
++
++// the join opens the play item's files itself, as before they were opened ahead
++void CBlurayClipReader::GiveUpNextClip(int playItem)
++{
++  CLog::Log(LOGDEBUG, "CBlurayClipReader - play item {} could not be opened ahead", playItem);
++  m_nextClipFailures = 0;
++  std::unique_lock lock(m_clipFilesLock);
++  if (m_nextClip.playItem != playItem)
++    m_nextClip = {playItem, {}, nullptr};
++}
++
++// the next play item's files are open, or there is none
++bool CBlurayClipReader::NextClipReady() const
++{
++  const int nextPlayItem{m_playItem + 1};
++  return nextPlayItem >= static_cast<int>(m_clips.size()) || m_nextClip.playItem == nextPlayItem;
++}
++
++// A job left running ends on its own, its files with it: a stalled open must not hold anything
++void CBlurayClipReader::DropPrefetchJob()
++{
++  std::unique_lock lock(m_prefetchJobLock);
++  m_prefetchJob.reset();
++}
++
++std::pair<int64_t, int64_t> CBlurayClipReader::GetPlayItemSpan(int playItem) const
++{
++  if (!m_bd || playItem < 0 || playItem >= static_cast<int>(m_clips.size()))
++    return {-1, -1};
++
++  // a copy of what libbluray read when it opened the title, so this costs no disc access
++  clpi_cl* clipInfo{bd_get_clpi(m_bd, playItem)};
++  if (!clipInfo)
++    return {-1, -1};
++  // the video's, the first stream's
++  const CLPI_CPI& cpi{clipInfo->cpi};
++  const EntryPoints entryPoints{cpi.num_stream_pid > 0 && cpi.entry ? EntryPointsOf(cpi.entry[0])
++                                                                    : EntryPoints{}};
++  bd_free_clpi(clipInfo);
++  if (entryPoints.empty())
++    return {-1, -1};
++
++  return {EntryPointAt(entryPoints, m_clips[playItem].inTime),
++          EntryPointAt(entryPoints, m_clips[playItem].outTime)};
++}
++
++void CBlurayClipReader::SetReadRate(uint32_t rate)
++{
++  std::unique_lock lock(m_clipFilesLock);
++  m_readRate = rate;
++  for (const auto& clip : m_clipFiles)
++  {
++    if (const auto file{clip.file.lock()})
++      SetClipReadRate(*file);
++  }
++}
++
++void CBlurayClipReader::SetClipReadRate(XFILE::CFile& file) const
++{
++  if (m_readRate == 0)
++    return;
++
++  // as CDVDInputStreamFile does: the title's rate, and a tenth more
++  uint32_t maxrate{static_cast<uint32_t>(1.1 * m_readRate)};
++  file.IoControl(XFILE::IOControl::CACHE_SETRATE, &maxrate);
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+new file mode 100644
+index 00000000..e1b6094e
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
+@@ -0,0 +1,129 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "threads/CriticalSection.h"
++#include "threads/SystemClock.h"
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include <libbluray/bluray.h>
++#include <libbluray/filesystem.h>
++
++namespace XFILE
++{
++class CFile;
++struct SCacheStatus;
++} // namespace XFILE
++
++/*!
++ * \brief Reads the clips of a Blu-ray played from a folder or an image through the file cache.
++ *
++ * libbluray reads its clips on the player thread. Read ahead, a share that stops answering is a
++ * cache running dry, which the player buffers over, rather than a read that blocks with the clock
++ * running. The next play item's file is opened ahead of the join, off the player thread.
++ */
++class CBlurayClipReader
++{
++public:
++  //! A clip's entry points: the time of each (90 kHz) and its offset in the .m2ts, in order
++  using EntryPoints = std::vector<std::pair<int64_t, int64_t>>;
++
++  //! aborted: set when the player stops, a read waits out a stalled source until then
++  explicit CBlurayClipReader(const std::atomic<bool>& aborted);
++  ~CBlurayClipReader();
++
++  //! A disc read through Kodi's filesystem, at rootPath
++  void Open(std::string rootPath);
++  void Close();
++  //! The play item libbluray reads, in the playlist it plays
++  void SetPlayItem(BLURAY* bd, int playItem, unsigned int angle);
++  //! Open a clip (.m2ts) of the disc for libbluray
++  BD_FILE_H* OpenFile(const std::string& path);
++  //! The read ahead of the clip being played; false without one
++  bool GetCacheStatus(XFILE::SCacheStatus* status);
++  //! The title's average rate, in bytes per second
++  void SetReadRate(uint32_t rate);
++
++private:
++  struct ClipFile
++  {
++    //! libbluray closes its clips, so they are not kept open here
++    std::weak_ptr<XFILE::CFile> file;
++    bool filled{false};
++  };
++
++  //! The play item after the one read, opened before the join where it starts in its .m2ts:
++  //! libbluray closes the file it reads at every join, and opens the next play item's again
++  struct NextClip
++  {
++    int playItem{-1};
++    std::string name;
++    std::shared_ptr<XFILE::CFile> file;
++  };
++
++  //! The opens of the next play item's files, run off the player thread: on a share that
++  //! stopped answering they wait for as long as it is gone
++  struct PrefetchJob
++  {
++    CCriticalSection lock;
++    bool done{false};
++    bool failed{false};
++    NextClip next;
++    std::string path;
++    int64_t start{0};
++    //! how long the player plays on before it waits for the job
++    XbmcThreads::EndTime<> grace{std::chrono::seconds(1)};
++  };
++
++  struct Clip
++  {
++    std::string id;
++    int64_t inTime{0};
++    int64_t outTime{0};
++    bool operator==(const Clip&) const = default;
++  };
++
++  void SetClipReadRate(XFILE::CFile& file) const;
++  void PrefetchNextClip(const std::shared_ptr<XFILE::CFile>& playing, int64_t cached);
++  bool TakePrefetchJob(int nextPlayItem);
++  static void RunPrefetchJob(const std::shared_ptr<PrefetchJob>& job);
++  bool NextClipReady() const;
++  void GiveUpNextClip(int playItem);
++  void DropPrefetchJob();
++  //! where a play item starts and ends in its .m2ts, -1 where it is not known
++  std::pair<int64_t, int64_t> GetPlayItemSpan(int playItem) const;
++
++  std::string m_rootPath;
++  const std::atomic<bool>& m_aborted;
++
++  BLURAY* m_bd{nullptr};
++  std::vector<Clip> m_clips;
++  int m_playItem{0};
++  int64_t m_playItemEnd{-1};
++
++  //! The clips libbluray opened, latest last
++  std::vector<ClipFile> m_clipFiles;
++  uint32_t m_readRate{0};
++  CCriticalSection m_clipFilesLock;
++
++  NextClip m_nextClip;
++  XbmcThreads::EndTime<> m_nextClipRetry;
++  int m_nextClipFailures{0};
++
++  //! guards m_prefetchJob against Abort
++  CCriticalSection m_prefetchJobLock;
++  std::shared_ptr<PrefetchJob> m_prefetchJob;
++};
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDInputStreams/CMakeLists.txt
+index 1cb7b333..4c19d604 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/CMakeLists.txt
+@@ -29,8 +29,10 @@ set(HEADERS BlurayStateSerializer.h
+             InputStreamPVRRecording.h)
+ 
+ if(TARGET ${APP_NAME_LC}::Bluray)
+-  list(APPEND SOURCES DVDInputStreamBluray.cpp)
+-  list(APPEND HEADERS DVDInputStreamBluray.h)
++  list(APPEND SOURCES BlurayClipReader.cpp
++                      DVDInputStreamBluray.cpp)
++  list(APPEND HEADERS BlurayClipReader.h
++                      DVDInputStreamBluray.h)
+ endif()
+ 
+ core_add_library(dvdinputstreams)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index bb300331..905260fb 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -58,6 +58,16 @@ static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
+   return blurayStream->ReadBlocks(reinterpret_cast<uint8_t*>(buf), lba, num_blocks);
+ }
+ 
++static BD_DIR_H* dir_open(void* handle, const char* rel_path)
++{
++  return static_cast<CDVDInputStreamBluray*>(handle)->OpenDir(rel_path);
++}
++
++static BD_FILE_H* file_open(void* handle, const char* rel_path)
++{
++  return static_cast<CDVDInputStreamBluray*>(handle)->OpenFile(rel_path);
++}
++
+ static void bluray_overlay_cb(void *this_gen, const BD_OVERLAY * ov)
+ {
+   static_cast<CDVDInputStreamBluray*>(this_gen)->OverlayCallback(ov);
+@@ -88,6 +98,7 @@ CDVDInputStreamBluray::~CDVDInputStreamBluray()
+ void CDVDInputStreamBluray::Abort()
+ {
+   m_hold = HOLD_EXIT;
++  m_aborted = true;
+ }
+ 
+ bool CDVDInputStreamBluray::IsEOF()
+@@ -270,6 +281,7 @@ bool CDVDInputStreamBluray::Open()
+   else
+   {
+     m_rootPath = root;
++    m_clipReader.Open(root);
+ 
+ #if defined(HAS_UDFREAD)
+     // Only in files mode does libbluray reach the disc through Kodi's filesystem, opening a dozen
+@@ -279,7 +291,7 @@ bool CDVDInputStreamBluray::Open()
+     m_udfMount.emplace(root);
+ #endif
+ 
+-    if (!bd_open_files(m_bd, &m_rootPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
++    if (!bd_open_files(m_bd, this, dir_open, file_open))
+     {
+       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in files mode",
+                 CURL::GetRedacted(root));
+@@ -424,6 +436,29 @@ bool CDVDInputStreamBluray::Open()
+   return true;
+ }
+ 
++BD_DIR_H* CDVDInputStreamBluray::OpenDir(const char* relPath)
++{
++  return CBlurayCallback::dir_open(&m_rootPath, relPath);
++}
++
++BD_FILE_H* CDVDInputStreamBluray::OpenFile(const char* relPath)
++{
++  const std::string path{URIUtils::AddFileToFolder(m_rootPath, relPath)};
++  if (!URIUtils::HasExtension(path, ".m2ts"))
++    return CBlurayCallback::OpenFile(path, 0, nullptr);
++  return m_clipReader.OpenFile(path);
++}
++
++bool CDVDInputStreamBluray::GetCacheStatus(XFILE::SCacheStatus* status)
++{
++  return m_clipReader.GetCacheStatus(status);
++}
++
++void CDVDInputStreamBluray::SetReadRate(uint32_t rate)
++{
++  m_clipReader.SetReadRate(rate);
++}
++
+ // close file and reset everything
+ void CDVDInputStreamBluray::Close()
+ {
+@@ -439,6 +474,7 @@ void CDVDInputStreamBluray::Close()
+   m_bd = nullptr;
+   m_pstream.reset();
+   m_rootPath.clear();
++  m_clipReader.Close();
+   m_readPos = 0;
+   m_clipSpans.clear();
+   m_hasMVCExtension = false;
+@@ -609,6 +645,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
+     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
+     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
+     {
++      m_clipReader.SetPlayItem(m_bd, static_cast<int>(m_event.param), m_angle);
+       m_clip = &m_titleInfo->clips[m_event.param];
+       UpdateClipInfo(m_event.param);
+       OpenClipSpan();
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index e633deef..a5f1137c 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "BlurayStateSerializer.h"
++#include "BlurayClipReader.h"
+ #include "DVDInputStream.h"
+ #include "threads/CriticalSection.h"
+ #if defined(HAS_UDFREAD)
+@@ -17,6 +18,7 @@
+ 
+ #include <chrono>
+ #include <list>
++#include <atomic>
+ #include <memory>
+ #include <optional>
+ #include <string>
+@@ -26,6 +28,7 @@ extern "C"
+ {
+ #include <libbluray/bluray.h>
+ #include <libbluray/bluray-version.h>
++#include <libbluray/filesystem.h>
+ #include <libbluray/keys.h>
+ #include <libbluray/overlay.h>
+ #include <libbluray/player_settings.h>
+@@ -53,6 +56,7 @@ class CDVDOverlayImage;
+ class IVideoPlayer;
+ class CDVDDemux;
+ 
++
+ class CDVDInputStreamBluray
+   : public CDVDInputStream
+   , public CDVDInputStream::IDisplayTime
+@@ -75,6 +79,12 @@ public:
+   int64_t GetLength() override;
+   int GetBlockSize() override { return 6144; }
+   ENextStream NextStream() override;
++  bool GetCacheStatus(XFILE::SCacheStatus* status) override;
++  void SetReadRate(uint32_t rate) override;
++
++  //! libbluray's callbacks for a disc it reads through Kodi's filesystem
++  BD_DIR_H* OpenDir(const char* relPath);
++  BD_FILE_H* OpenFile(const char* relPath);
+ 
+ 
+   /* IMenus */
+@@ -287,6 +297,9 @@ protected:
+ 
+     std::unique_ptr<CDVDInputStreamFile> m_pstream;
+     std::string m_rootPath;
++    std::atomic<bool> m_aborted{false};
++    //! the clips of a disc read through Kodi's filesystem
++    CBlurayClipReader m_clipReader{m_aborted};
+ 
+ #if defined(HAS_UDFREAD)
+     // Keeps a disc image's UDF volume mounted for as long as the disc is open
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 8d053398..fd4da5e4 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1032,7 +1032,7 @@ bool CVideoPlayer::OpenDemuxStream()
+   m_processInfo->SetStateRealtime(false);
+ 
+   int64_t len = m_pInputStream->GetLength();
+-  int64_t tim = m_pDemuxer->GetStreamLength();
++  int64_t tim = GetSourceStreamLength().count();
+   if (len > 0 && tim > 0)
+     m_pInputStream->SetReadRate(static_cast<uint32_t>(len * 1000 / tim));
+ 
+@@ -2315,7 +2315,7 @@ CacheInfo CVideoPlayer::GetCachingTimes()
+     return info;
+ 
+   double queueTime = GetQueueTime();
+-  double play_sbp = DVD_MSEC_TO_TIME(m_pDemuxer->GetStreamLength()) / length;
++  double play_sbp = DVD_MSEC_TO_TIME(GetSourceStreamLength().count()) / length;
+   double queued = 1000.0 * queueTime / play_sbp;
+ 
+   info.level = 0.0;
+diff --git a/xbmc/filesystem/BlurayCallback.cpp b/xbmc/filesystem/BlurayCallback.cpp
+index 1aa683eb..0b3913f5 100644
+--- a/xbmc/filesystem/BlurayCallback.cpp
++++ b/xbmc/filesystem/BlurayCallback.cpp
+@@ -15,8 +15,26 @@
+ #include "utils/URIUtils.h"
+ #include "utils/log.h"
+ 
++#include <cerrno>
++
+ using namespace XFILE;
+ 
++namespace
++{
++struct SFile
++{
++  std::shared_ptr<CFile> file;
++  const std::atomic<bool>* aborted{nullptr};
++  //! At the end, which is only noted: the file itself is not moved there
++  bool atEnd{false};
++};
++
++CFile& GetCFile(BD_FILE_H* file)
++{
++  return *static_cast<SFile*>(file->internal)->file;
++}
++} // namespace
++
+ struct SDirState
+ {
+   CFileItemList list;
+@@ -95,14 +113,15 @@ void CBlurayCallback::file_close(BD_FILE_H *file)
+ {
+   if (file)
+   {
+-    delete static_cast<CFile*>(file->internal);
++    delete static_cast<SFile*>(file->internal);
+     delete file;
+   }
+ }
+ 
+ int CBlurayCallback::file_eof(BD_FILE_H *file)
+ {
+-  if (static_cast<CFile*>(file->internal)->GetPosition() == static_cast<CFile*>(file->internal)->GetLength())
++  if (static_cast<SFile*>(file->internal)->atEnd ||
++      GetCFile(file).GetPosition() == GetCFile(file).GetLength())
+     return 1;
+   else
+     return 0;
+@@ -118,8 +137,25 @@ BD_FILE_H * CBlurayCallback::file_open(void *handle, const char *rel_path)
+     return nullptr;
+   }
+ 
+-  std::string strFilename = URIUtils::AddFileToFolder(*strBasePath, strRelPath);
++  return OpenFile(URIUtils::AddFileToFolder(*strBasePath, strRelPath), 0, nullptr);
++}
++
++BD_FILE_H* CBlurayCallback::OpenFile(const std::string& path,
++                                     unsigned int flags,
++                                     const std::atomic<bool>* aborted)
++{
++  auto fp{std::make_shared<CFile>()};
++  if (!fp->Open(path, flags))
++  {
++    CLog::Log(LOGDEBUG, "CBlurayCallback - Error opening file! ({})", CURL::GetRedacted(path));
++    return nullptr;
++  }
++
++  return OpenFile(std::move(fp), aborted);
++}
+ 
++BD_FILE_H* CBlurayCallback::OpenFile(std::shared_ptr<CFile> fp, const std::atomic<bool>* aborted)
++{
+   BD_FILE_H *file = new BD_FILE_H;
+ 
+   file->close = file_close;
+@@ -129,37 +165,71 @@ BD_FILE_H * CBlurayCallback::file_open(void *handle, const char *rel_path)
+   file->tell = file_tell;
+   file->eof = file_eof;
+ 
+-  CFile* fp = new CFile();
+-  if (fp->Open(strFilename))
+-  {
+-    file->internal = (void*)fp;
+-    return file;
+-  }
+-
+-  CLog::Log(LOGDEBUG, "CBlurayCallback - Error opening file! ({})", CURL::GetRedacted(strFilename));
+-
+-  delete fp;
+-  delete file;
++  file->internal = new SFile{std::move(fp), aborted};
++  return file;
++}
+ 
+-  return nullptr;
++std::shared_ptr<CFile> CBlurayCallback::GetFile(BD_FILE_H* file)
++{
++  return static_cast<SFile*>(file->internal)->file;
+ }
+ 
+ int64_t CBlurayCallback::file_seek(BD_FILE_H *file, int64_t offset, int32_t origin)
+ {
+-  return static_cast<CFile*>(file->internal)->Seek(offset, origin);
++  SFile& state = *static_cast<SFile*>(file->internal);
++  if (state.atEnd && origin == SEEK_CUR)
++    origin = SEEK_END;
++
++  // libbluray sizes a file by seeking to its end and back. A read-ahead file would drop its
++  // cache and wait on the source for each, so the end is only noted.
++  if (origin == SEEK_END && offset == 0)
++  {
++    if (const int64_t length = state.file->GetLength(); length >= 0)
++    {
++      state.atEnd = true;
++      return length;
++    }
++  }
++
++  state.atEnd = false;
++  return state.file->Seek(offset, origin);
+ }
+ 
+ int64_t CBlurayCallback::file_tell(BD_FILE_H *file)
+ {
+-  return static_cast<CFile*>(file->internal)->GetPosition();
++  if (static_cast<SFile*>(file->internal)->atEnd)
++    return GetCFile(file).GetLength();
++  return GetCFile(file).GetPosition();
+ }
+ 
+ int64_t CBlurayCallback::file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
+ {
+-  return static_cast<int64_t>(static_cast<CFile*>(file->internal)->Read(buf, static_cast<size_t>(size)));
++  const SFile& state = *static_cast<SFile*>(file->internal);
++  if (state.atEnd)
++    return 0;
++
++  // libbluray takes a short read for a damaged unit and skips it, so a stalled source is
++  // waited out here, a second at a time, for as long as the player keeps playing
++  int64_t done = 0;
++  while (done < size)
++  {
++    errno = 0;
++    const ssize_t ret = state.file->Read(buf + done, static_cast<size_t>(size - done));
++    if (ret > 0)
++    {
++      done += ret;
++      continue;
++    }
++    if (ret < 0 && errno == EAGAIN && state.aborted && !*state.aborted)
++      continue;
++    if (done == 0)
++      return ret;
++    break;
++  }
++  return done;
+ }
+ 
+ int64_t CBlurayCallback::file_write(BD_FILE_H *file, const uint8_t *buf, int64_t size)
+ {
+-  return static_cast<int64_t>(static_cast<CFile*>(file->internal)->Write(buf, static_cast<size_t>(size)));
++  return static_cast<int64_t>(GetCFile(file).Write(buf, static_cast<size_t>(size)));
+ }
+diff --git a/xbmc/filesystem/BlurayCallback.h b/xbmc/filesystem/BlurayCallback.h
+index 181b0566..320700d9 100644
+--- a/xbmc/filesystem/BlurayCallback.h
++++ b/xbmc/filesystem/BlurayCallback.h
+@@ -8,8 +8,17 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <memory>
++#include <string>
++
+ #include <libbluray/filesystem.h>
+ 
++namespace XFILE
++{
++class CFile;
++}
++
+ class CBlurayCallback
+ {
+ public:
+@@ -25,6 +34,20 @@ public:
+   static int64_t file_tell(BD_FILE_H* file);
+   static int64_t file_write(BD_FILE_H* file, const uint8_t* buf, int64_t size);
+ 
++  /*!
++   * \brief Open a file of the disc for libbluray.
++   * \param path The path of the file
++   * \param flags The flags to open it with, as CFile::Open takes them
++   * \param aborted If set, a read waits out a stalled source until this says the player stopped
++   * \return The file, or nullptr if it cannot be opened
++   */
++  static BD_FILE_H* OpenFile(const std::string& path,
++                             unsigned int flags,
++                             const std::atomic<bool>* aborted);
++  //! Hand libbluray a file already open
++  static BD_FILE_H* OpenFile(std::shared_ptr<XFILE::CFile> file, const std::atomic<bool>* aborted);
++  static std::shared_ptr<XFILE::CFile> GetFile(BD_FILE_H* file);
++
+ private:
+   CBlurayCallback() = default;
+   ~CBlurayCallback() = default;

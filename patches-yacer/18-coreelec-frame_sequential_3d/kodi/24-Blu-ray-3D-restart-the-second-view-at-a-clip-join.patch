@@ -1,0 +1,316 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:34:07 -0400
+Subject: [PATCH] Blu-ray 3D: restart the second view at a clip join
+
+At a join that is not seamless libbluray reports a discontinuity and the
+player resets the demuxer: what the old demuxer had read of both views
+is dropped, and the new one reads the base view on from where libbluray
+is in the new clip. For 3D the first bytes of that clip are not held
+back for it (the hold at a join is for 2D only): the old demuxer
+consumed them, and the new one starts a little into the clip. The MVC
+extension stream was left where the old demuxer had taken it. Still in
+the previous clip, its pictures were paired with the new clip's by
+timestamp, which mean nothing across clips: a dependent picture newer
+than the base view's held back pairing and every base picture was
+dropped until the base view passed it. Already in the new clip (the old
+demuxer switched it at its end of file before the reset was handled), up
+to 100 dependent pictures read for the new clip went with the old
+demuxer, and the base pictures they belonged to were dropped.
+
+The demuxer opened after the reset now tells the input so
+(OnDemuxerReset), and the extension restarts in the clip the base view
+is in, seeked as at the start of playback, at or before the base view,
+so every base picture the new demuxer reads has its second view. An
+extension already in that clip is only seeked, not reopened and probed
+again. The pictures the old demuxer consumed are not recovered. A seek
+and a chapter jump position the extension the same way. In menu mode a
+play item, playlist or angle change also opens the demuxer again,
+without a discontinuity: the extension restarts there too, where it lost
+about 4 s of 3D before.
+
+The extension no longer works through a queue of the play items the base
+view entered, which could hold play items of another playlist, or the
+clip the restart had just opened, read again from its start at the next
+end of file. At its end of file it goes on to the next play item once
+the base view has moved past the one it was in, so a short play item is
+still played in 3D; after a reset or a seek it opens the clip the base
+view is in. The stream setup opens a closed extension, rather than every
+play item event of the base view, and the open at the end of opening the
+input stays: the demuxer's probe can read the base view past a short
+first play item, and the extension must start in that one.
+
+The start time the extension's timestamps are converted with is carried
+from one clip's demuxer to the next. It is now set before the demuxer is
+opened, so an open that fails does not lose it.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp     | 10 ++-
+ .../DVDInputStreams/DVDInputStreamBluray.cpp       | 89 +++++++++++-----------
+ .../DVDInputStreams/DVDInputStreamBluray.h         |  9 ++-
+ 3 files changed, 59 insertions(+), 49 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index ff3d3574..58da5805 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -445,8 +445,10 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool
+ #ifdef HAVE_LIBBLURAY
+     if (m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+     {
+-      std::static_pointer_cast<CDVDInputStreamBluray>(m_pInput)->ReleaseClipStart();
+-      m_blurayReadBase = std::static_pointer_cast<CDVDInputStreamBluray>(m_pInput)->GetReadPos();
++      const auto bluray = std::static_pointer_cast<CDVDInputStreamBluray>(m_pInput);
++      bluray->ReleaseClipStart();
++      bluray->OnDemuxerReset();
++      m_blurayReadBase = bluray->GetReadPos();
+       m_blurayReadPos.clear();
+     }
+ #endif
+@@ -2448,6 +2450,10 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+             AVStream *mvcStream = nullptr;
+             const std::shared_ptr<CDVDInputStream::IExtentionStream> pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInput);
+ 
++            // the extension is opened for the stream it goes with
++            if (pExt && pExt->HasExtention() && !pExt->GetExtentionDemux())
++              pExt->OpenNextStream();
++
+             if (pExt && pExt->HasExtention() && pExt->GetExtentionDemux())
+             {
+               delete m_pSSIF;
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 6e456117..2632a8fd 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -45,7 +45,6 @@
+ #include <libbluray/log_control.h>
+ 
+ #define LIBBLURAY_BYTESEEK 0
+-#define EMPTY_QUEUE(x) { while(!x.empty()) x.pop(); }
+ 
+ using namespace KODI;
+ using namespace std::chrono_literals;
+@@ -588,6 +587,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
+ 
+   case BD_EVENT_DISCONTINUITY:
+     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
++    m_restartExtention = true;
+     m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
+     m_hold = HOLD_NONE;
+     break;
+@@ -742,15 +742,6 @@ void CDVDInputStreamBluray::ProcessEvent() {
+ 
+   /* event has been consumed */
+   m_event.event = BD_EVENT_NONE;
+-
+-  const int clip = BaseClip();
+-  if (m_bMVCPlayback && clip >= 0 && m_nMVCClip != clip &&
+-      (m_clipQueue.empty() || clip != m_clipQueue.front()))
+-  {
+-    m_clipQueue.push(clip);
+-    if (m_pMVCDemux == NULL)
+-      OpenNextStream();
+-  }
+ }
+ 
+ void CDVDInputStreamBluray::DisableExtention()
+@@ -1185,16 +1176,10 @@ bool CDVDInputStreamBluray::PosTime(int ms)
+     return false;
+ 
+   m_clipStart.clear();
+-  EMPTY_QUEUE(m_clipQueue);
+   while (bd_get_event(m_bd, &m_event))
+     ProcessEvent();
+   OpenClipSpan();
+-
+-  if (m_bMVCPlayback)
+-  {
+-    OpenNextStream();
+-    SeekMVCDemux();
+-  }
++  RestartExtention();
+   return true;
+ }
+ 
+@@ -1235,16 +1220,10 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
+     return false;
+ 
+   m_clipStart.clear();
+-  EMPTY_QUEUE(m_clipQueue);
+   while (bd_get_event(m_bd, &m_event))
+     ProcessEvent();
+   OpenClipSpan();
+-
+-  if (m_bMVCPlayback)
+-  {
+-    OpenNextStream();
+-    SeekMVCDemux();
+-  }
++  RestartExtention();
+   return true;
+ }
+ 
+@@ -1439,6 +1418,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
+     return NEXTSTREAM_RETRY;
+ 
+   m_hold = HOLD_DATA;
++  m_restartExtention = true;
+   return NEXTSTREAM_OPEN;
+ }
+ 
+@@ -1608,6 +1588,7 @@ bool CDVDInputStreamBluray::ProcessItem(int playitem)
+     }
+   }
+   CloseMVCDemux();
++  m_mvcStartTime = 0;
+   return true;
+ }
+ 
+@@ -1632,34 +1613,30 @@ int CDVDInputStreamBluray::Get3dSubtitlePlane(uint16_t pid)
+   return 0;
+ }
+ 
++// At the end of its file the extension goes on to the next play item, if the base view has moved
++// past the one it was in; without a file it joins the base view.
+ bool CDVDInputStreamBluray::OpenNextStream()
+ {
+-  if (m_clipQueue.empty())
+-    return false;
+-
+-  int clip = m_clipQueue.front();
+-  m_clipQueue.pop();
+-
+-  if (!m_pMVCDemux) {
+-    // nothing open yet
+-    CloseMVCDemux();
+-    return OpenMVCDemux(clip);
+-  }
++  if (m_bMVCPlayback && m_nMVCClip >= 0 && BaseClip() > m_nMVCClip)
++    return OpenMVCDemux(m_nMVCClip + 1);
+ 
+-  // save start time for the next clip
+-  int64_t start_time = m_pMVCDemux->GetStartTime();
+-
+-  CloseMVCDemux();
++  return OpenBaseClip();
++}
+ 
+-  bool res = OpenMVCDemux(clip);
+-  if (res)
+-    m_pMVCDemux->SetStartTime(start_time, GetSupportedMenuType());
++// the extension joins the base view in the clip it reads
++bool CDVDInputStreamBluray::OpenBaseClip()
++{
++  const int clip = BaseClip();
++  if (!m_bMVCPlayback || clip < 0 || clip == m_nMVCClip)
++    return false;
+ 
+-  return res;
++  return OpenMVCDemux(clip);
+ }
+ 
+ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+ {
++  CloseMVCDemux();
++
+   MPLS_PL *pl = bd_get_title_mpls(m_bd);
+   if (!pl || !ClipAt(playItem) || m_nMVCSubPathIndex >= pl->ext_sub_count ||
+       playItem >= pl->ext_sub_path[m_nMVCSubPathIndex].sub_playitem_count)
+@@ -1687,9 +1664,8 @@ bool CDVDInputStreamBluray::OpenMVCDemux(int playItem)
+     return false;
+   }
+ 
+-  delete m_pMVCDemux;
+   m_pMVCDemux = new CDemuxMVC;
+-
++  m_pMVCDemux->SetStartTime(m_mvcStartTime, GetSupportedMenuType());
+   if (!m_pMVCDemux->Open(m_pMVCInput))
+   {
+     CloseMVCDemux();
+@@ -1705,6 +1681,7 @@ bool CDVDInputStreamBluray::CloseMVCDemux()
+ {
+   if (m_pMVCDemux)
+   {
++    m_mvcStartTime = m_pMVCDemux->GetStartTime();
+     delete m_pMVCDemux;
+     m_pMVCDemux = nullptr;
+   }
+@@ -1731,6 +1708,28 @@ void CDVDInputStreamBluray::SeekMVCDemux()
+   m_pMVCDemux->SeekClipTimestamp(static_cast<int64_t>(clip->in_time) + clipTime);
+ }
+ 
++// The extension view restarts where the base view is read on: in libbluray's clip, at its time.
++void CDVDInputStreamBluray::RestartExtention()
++{
++  m_restartExtention = false;
++  if (!m_bMVCPlayback)
++    return;
++
++  // already in that clip, a seek is enough
++  OpenBaseClip();
++  SeekMVCDemux();
++}
++
++void CDVDInputStreamBluray::OnDemuxerReset()
++{
++  if (!m_restartExtention)
++    return;
++
++  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - restarting the MVC extension after a discontinuity "
++                      "or a new stream");
++  RestartExtention();
++}
++
+ BLURAY_CLIP_INFO* CDVDInputStreamBluray::ClipAt(int playItem) const
+ {
+   if (!m_titleInfo || playItem < 0 || static_cast<uint32_t>(playItem) >= m_titleInfo->clip_count)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 2dd179a1..b9e6e1fd 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -22,7 +22,6 @@
+ #include <memory>
+ #include <optional>
+ #include <string>
+-#include <queue>
+ 
+ extern "C"
+ {
+@@ -175,6 +174,9 @@ public:
+ 
+   //! hand the clip start held at a join to the demuxer opened after it
+   void ReleaseClipStart() { m_clipStartHeld = false; }
++  //! after a discontinuity or a new stream the demuxer is opened again; the extension restarts
++  //! where the base view reads on
++  void OnDemuxerReset();
+   bool IsClipStartHeld() const { return !m_navmode && m_clipStartHeld && !m_clipStart.empty(); }
+ 
+   void OverlayCallback(const BD_OVERLAY * const);
+@@ -206,9 +208,11 @@ protected:
+   static void OverlayInit (SPlane& plane, int w, int h);
+   bool ProcessItem(int playitem);
+ 
++  bool OpenBaseClip();
+   bool OpenMVCDemux(int playItem);
+   bool CloseMVCDemux();
+   void SeekMVCDemux();
++  void RestartExtention();
+   BLURAY_CLIP_INFO* ClipAt(int playItem) const;
+   //! the play item being read, -1 for none
+   int BaseClip() const;
+@@ -240,8 +244,9 @@ protected:
+   int                 m_nMVCClip = -1;
+   bool                m_bFlipEyes = false;
+   bool                m_bMVCDisabled = false;
++  int64_t             m_mvcStartTime = 0;
+   uint64_t            m_clipStartTime = 0;
+-  std::queue<int>     m_clipQueue;
++  bool                m_restartExtention = false;
+ 
+   typedef std::shared_ptr<CDVDOverlayImage> SOverlay;
+   typedef std::list<SOverlay> SOverlays;

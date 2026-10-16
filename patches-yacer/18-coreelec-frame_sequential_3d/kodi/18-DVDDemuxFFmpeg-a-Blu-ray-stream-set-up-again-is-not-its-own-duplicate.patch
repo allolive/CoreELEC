@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:09:31 -0400
+Subject: [PATCH] DVDDemuxFFmpeg: a Blu-ray stream set up again is not its own
+ duplicate
+
+A Blu-ray carries some streams twice under one PID, a TrueHD stream and
+its AC-3 core for one, and AddStream discards a stream whose PID and
+type it already has. When a stream is set up again, on a change of
+picture size or of audio channels, the stream it replaces is still in
+the map under the same index, so the new one was taken for a duplicate
+of it and discarded: ffmpeg stopped returning its packets, and the
+stream was lost until the demuxer next created its streams.
+
+The stream under the index being set up is no longer compared.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index df1768f..d523125 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2690,9 +2690,11 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
+       }
+       stream->dvdNavId = pStream->id;
+ 
++      // the stream this one replaces is no duplicate
+       auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-        [&stream](const std::pair<int, CDemuxStream*>& v)
+-        {return (v.second->dvdNavId == stream->dvdNavId) && (v.second->type == stream->type); });
++        [&stream, streamIdx](const std::pair<int, CDemuxStream*>& v)
++        {return v.first != streamIdx && (v.second->dvdNavId == stream->dvdNavId) &&
++                (v.second->type == stream->type); });
+ 
+       if (it != m_streams.end())
+       {

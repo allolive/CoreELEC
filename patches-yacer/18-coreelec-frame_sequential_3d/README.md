@@ -25,6 +25,11 @@ The kernel patches:
 The decoder patch (media_modules-aml):
 - 01 pins both MVC views' buffers for a frame kept on screen (pause, seek), so
   the paused 3D picture is not overwritten.
+- 02 hands MVC frame slots out and takes them back in any order, with a slot
+  pool, a ready queue and buffers returned by reference, so a picture held by
+  the display no longer blocks the next one or leaks a buffer after a restart.
+- 03 reports a 720p picture as 720 lines high, not 736.
+- 04 publishes a picture only once both its views are decoded.
 
 The Kodi patches:
 - Adds the stereoscopic mode HFR VRR, offered where the platform supports it
@@ -61,3 +66,22 @@ The Kodi patches:
 - 10 does not prepare a resume behind a pause on MVC: the AML codec says a
   flush of it is costly (each one re-creates the MVC decoder), so the add-on's
   pause and resume are plain speed changes.
+- 11 consumes an empty packet instead of handing it back forever.
+- 12 starts the Blu-ray second view where the first starts, after a seek too.
+- 13-17 make the AML decoder recover on its own: one NAL walker for the
+  packet scanners (in its own header, so the depth parser stays testable); the
+  hvcC length size read as the converter reads it; a decoder timed out on no
+  progress or no picture rather than on the last picture; each packet's header
+  and pts written once, with its outcome reported (added, dropped, retry,
+  reset), a refused packet fed again unchanged; and after a reset, decoding
+  resumes at a keyframe instead of on macroblocks.
+- 18-20 are plain Kodi fixes the Blu-ray 3D work needs: a Blu-ray stream set
+  up again is not its own duplicate, a menu-selected stream takes its new
+  hints, and the play item's clip is found again after an angle change.
+- 21-31 make the Blu-ray 3D second view follow the first: restarted at a clip
+  join or seek, kept across a stream change, read on through a failed read or
+  a stalled source, the base view's wait for it bounded (resynced by the play
+  item each picture came from), and, when it cannot be read, the base view
+  played alone as 2D for the rest of the playlist.
+- 32 picks the output mode again when the HDMI 3D signal changes in playback,
+  so a 2D fallback leaves frame packing.

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 11:30:00 -0400
+Subject: [PATCH] ApplicationPlay: play a Blu-ray's menu when it is asked for
+
+A Blu-ray's listing offers a Menu entry, a bluray:// path ending in
+"menu", and libbluray plays that path in navigation mode. Before playing
+any bluray:// path, GetMenuDecisions() applies the disc playback setting
+to it. With "play main title" it finds the main title and plays that
+playlist instead, and with "show simplified menu" it shows the playlist
+selection again, so the disc menu can only be reached by setting the
+whole player to "show disc menu". Playing the main title out of
+navigation mode also leaves the menu key without anything to open:
+CDVDInputStreamBluray::OnMenu() logs "navigation mode not enabled".
+
+A menu path is now played as it comes. "Choose playlist" from the
+context menu still shows the selection.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/application/ApplicationPlay.cpp b/xbmc/application/ApplicationPlay.cpp
+index 3ffbab621d..4b11cf82ef 100644
+--- a/xbmc/application/ApplicationPlay.cpp
++++ b/xbmc/application/ApplicationPlay.cpp
+@@ -210,6 +210,10 @@ MenuDecision GetMenuDecisions(const CFileItem& item,
+   if (forceSelectionAlways && isBlurayPath)
+     return SHOW_SIMPLE_MENU;
+ 
++  // The disc menu was asked for, so it is what plays, whatever the setting would pick
++  if (URIUtils::IsBlurayMenuPath(item.GetDynPath()))
++    return NO_ACTION;
++
+   // Show Disc menu
+   // This takes priority over the simple menu
+   const bool useDiscMenuSetting{playbackSetting == BD_PLAYBACK_DISC_MENU};

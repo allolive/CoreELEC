@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:35:20 -0400
+Subject: [PATCH] Blu-ray 3D: a packet without a timestamp continues the
+ picture before it
+
+The pairing of a 3D Blu-ray's two views compares their timestamps, and a
+packet without one was compared as a timestamp too: DVD_NOPTS_VALUE,
+larger than any real one. A base view fragment without a timestamp that
+reached the front of its queue (its picture had already gone, with or
+without its second view) threw away every dependent picture read, one by
+one, until the dependent queue was empty; a dependent packet without one
+threw away every base picture.
+
+Such a packet is the rest of the picture read before it, split off by
+the transport stream. It is now merged into that picture while the
+picture still waits in its queue: on the base view at once, rather than
+only when the picture was paired, and on the dependent view whatever its
+first bytes are, not only when it does not start with a start code. A
+packet whose picture has already gone, which has nothing left to be
+merged into, is dropped. The queues then hold only pictures with a
+timestamp, and the code that measures them needs no case for a missing
+one. The extension is read up to the oldest base picture by the
+timestamps of both, the pts where there is no dts, as the pairing
+compares them, rather than by their dts alone.
+
+This is for Blu-ray only; the MVC pairing of other sources is unchanged.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDDemuxers/DemuxStreamSSIF.cpp           | 45 ++++++++++++-------
+ .../VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h |  2 +-
+ 2 files changed, 30 insertions(+), 17 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index 56ff484..f980836 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -49,7 +49,16 @@ DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket* &srcPkt)
+ #if defined(DEBUG_VERBOSE)
+     CLog::Log(LOGDEBUG, ">>> MVC add h264 packet: pts: {:.3f} dts: {:.3f}", srcPkt->pts*1e-6, srcPkt->dts*1e-6);
+ #endif
+-    m_H264queue.push(srcPkt);
++    // without a timestamp a packet continues the picture before it, if that still waits
++    if (m_bluRay && Timestamp(srcPkt) == DVD_NOPTS_VALUE)
++    {
++      if (m_H264queue.empty())
++        CDVDDemuxUtils::FreeDemuxPacket(srcPkt);
++      else
++        m_H264queue.back() = MergePacket(m_H264queue.back(), srcPkt);
++    }
++    else
++      m_H264queue.push(srcPkt);
+   }
+   else if (srcPkt->iStreamId == m_mvcStreamId)
+   {
+@@ -100,15 +109,15 @@ DemuxPacket* CDemuxStreamSSIF::GetMVCPacket()
+ {
+   // if input is a bluray fill mvc queue before processing
+   if (m_bluRay && m_MVCqueue.empty() && !m_H264queue.empty())
+-    FillMVCQueue(m_H264queue.front()->dts);
++    FillMVCQueue(Timestamp(m_H264queue.front()));
+ 
+   // Here, we recreate a h264 MVC packet from the base one + buffered MVC NALU's
+   while (!m_H264queue.empty() && !m_MVCqueue.empty())
+   {
+     DemuxPacket* h264pkt = m_H264queue.front();
+-    double tsH264 = (h264pkt->dts != DVD_NOPTS_VALUE ? h264pkt->dts : h264pkt->pts);
++    double tsH264 = Timestamp(h264pkt);
+     DemuxPacket* mvcpkt = m_MVCqueue.front();
+-    double tsMVC = (mvcpkt->dts != DVD_NOPTS_VALUE ? mvcpkt->dts : mvcpkt->pts);
++    double tsMVC = Timestamp(mvcpkt);
+ 
+     if (tsH264 == tsMVC)
+     {
+@@ -118,8 +127,7 @@ DemuxPacket* CDemuxStreamSSIF::GetMVCPacket()
+       while (!m_H264queue.empty())
+       {
+         DemuxPacket* pkt = m_H264queue.front();
+-        double ts = (pkt->dts != DVD_NOPTS_VALUE ? pkt->dts : pkt->pts);
+-        if (ts == DVD_NOPTS_VALUE)
++        if (Timestamp(pkt) == DVD_NOPTS_VALUE)
+         {
+ #if defined(DEBUG_VERBOSE)
+           CLog::Log(LOGDEBUG, ">>> MVC merge h264 fragment: {:6}+{:6}, pts({:.3f}/{:.3f}) dts({:.3f}/{:.3f})", h264pkt->iSize, pkt->iSize, h264pkt->pts*1e-6, pkt->pts*1e-6, h264pkt->dts*1e-6, pkt->dts*1e-6);
+@@ -175,6 +183,7 @@ void CDemuxStreamSSIF::AddMVCExtPacket(DemuxPacket* &mvcExtPkt)
+   // a NAL unit, does NOT start with a start code.  This is a reliable, disc-independent
+   // signal that doesn't depend on fragile size thresholds.
+ 
++  const bool noTimestamp = m_bluRay && Timestamp(mvcExtPkt) == DVD_NOPTS_VALUE;
+   if (!m_MVCqueue.empty() && mvcExtPkt->iSize > 0)
+   {
+     bool startsWithStartCode = (mvcExtPkt->iSize >= 4 &&
+@@ -182,12 +191,14 @@ void CDemuxStreamSSIF::AddMVCExtPacket(DemuxPacket* &mvcExtPkt)
+       (mvcExtPkt->pData[2] == 0x01 ||
+        (mvcExtPkt->pData[2] == 0x00 && mvcExtPkt->pData[3] == 0x01)));
+ 
+-    if (!startsWithStartCode)
++    // a packet without a timestamp cannot be paired either
++    if (!startsWithStartCode || noTimestamp)
+     {
+       DemuxPacket* prevPkt = m_MVCqueue.back();
+       m_MVCqueue.pop_back();
+ #if defined(DEBUG_VERBOSE)
+-      CLog::Log(LOGDEBUG, ">>> MVC pre-merge continuation (no startcode): {:6}+{:6}, prev_pts({:.3f}) cont_pts({:.3f})",
++      CLog::Log(LOGDEBUG,
++                ">>> MVC pre-merge continuation: {:6}+{:6}, prev_pts({:.3f}) cont_pts({:.3f})",
+                 prevPkt->iSize, mvcExtPkt->iSize, prevPkt->pts*1e-6, mvcExtPkt->pts*1e-6);
+ #endif
+       DemuxPacket* merged = MergePacket(prevPkt, mvcExtPkt);
+@@ -196,21 +207,27 @@ void CDemuxStreamSSIF::AddMVCExtPacket(DemuxPacket* &mvcExtPkt)
+     }
+   }
+ 
++  // the picture it continued went already
++  if (noTimestamp)
++  {
++    CDVDDemuxUtils::FreeDemuxPacket(mvcExtPkt);
++    return;
++  }
++
+ #if defined(DEBUG_VERBOSE)
+     CLog::Log(LOGDEBUG, ">>> MVC add mvc  packet: pts: {:.3f} dts: {:.3f}", mvcExtPkt->pts*1e-6, mvcExtPkt->dts*1e-6);
+ #endif
+   m_MVCqueue.push_back(mvcExtPkt);
+ }
+ 
+-bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
++bool CDemuxStreamSSIF::FillMVCQueue(double tsBase)
+ {
+   if (!m_bluRay)
+     return false;
+ 
+   // after a failed read the extension is read again once the base view has moved on a little
+   const double newest = Timestamp(m_H264queue.back());
+-  if (m_retryTime != DVD_NOPTS_VALUE && newest != DVD_NOPTS_VALUE &&
+-      std::abs(newest - m_retryTime) < MVC_RETRY_SPAN)
++  if (m_retryTime != DVD_NOPTS_VALUE && std::abs(newest - m_retryTime) < MVC_RETRY_SPAN)
+     return false;
+   m_retryTime = DVD_NOPTS_VALUE;
+ 
+@@ -221,11 +238,7 @@ bool CDemuxStreamSSIF::FillMVCQueue(double dtsBase)
+   DemuxPacket* mvc;
+   while ((m_MVCqueue.size() < MVC_QUEUE_SIZE) && (mvc = demux->Read()))
+   {
+-    if (dtsBase == DVD_NOPTS_VALUE || mvc->dts == DVD_NOPTS_VALUE)
+-    {
+-      // do nothing, can't compare timestamps when they are not set
+-    }
+-    else if (mvc->dts < dtsBase)
++    if (Timestamp(mvc) < tsBase)
+     {
+ #if defined(DEBUG_VERBOSE)
+       CLog::Log(LOGDEBUG, ">>> MVC drop mvc: {:6}, pts({:.3f}) dts({:.3f})", mvc->iSize, mvc->pts*1e-6, mvc->dts*1e-6);
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+index f6b2aa9..9bcfbf0 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+@@ -51,7 +51,7 @@ public:
+ private:
+   DemuxPacket* GetMVCPacket();
+   DemuxPacket* MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &appendPkt);
+-  bool FillMVCQueue(double dtsBase);
++  bool FillMVCQueue(double tsBase);
+ 
+   std::shared_ptr<CDVDInputStream::IExtentionStream> m_bluRay = nullptr;
+   std::queue<DemuxPacket*> m_H264queue;

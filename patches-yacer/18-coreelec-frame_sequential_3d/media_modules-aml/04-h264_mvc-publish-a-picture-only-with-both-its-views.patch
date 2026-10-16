@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 09:02:00 -0400
+Subject: [PATCH] h264_mvc: publish a picture only with both its views
+
+The ISR pairs the two views of a picture by POC in the fill slot and
+publishes the slot on a match. It never looked at which view arrived,
+so the same view twice for one POC published the slot with the other
+view's buffer id still -1. vf_get() then set no canvases, and the
+vframe went out with those of the frame the slot carried before,
+buffers the firmware may be decoding into again.
+
+Publish the slot once it holds both views instead: a new picture starts
+with one, so two means the second matched its POC. A view arriving again
+for the picture replaces its buffer, as before, and the picture waits
+for the other one.
+
+The read-side check in vf_get() can no longer fail; it stays as a
+one-time warning rather than going out silently with stale canvases.
+The clean test, behind send_drop_cmd()'s count and the dirty flag, no
+longer needs to test for both views.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -418,11 +418,10 @@
+ 	return stale;
+ }
+ 
+-/* both views there and neither dropped by the firmware */
++/* neither view dropped by the firmware */
+ static bool vf_slot_clean(struct mvc_info_s *idx)
+ {
+-	return (idx->buf_id[0] >= 0) && (idx->buf_id[1] >= 0) &&
+-		!idx->drop[0] && !idx->drop[1];
++	return !idx->drop[0] && !idx->drop[1];
+ }
+ 
+ static void set_frame_info(struct vframe_s *vf)
+@@ -616,7 +615,7 @@
+ 	spin_unlock_irqrestore(&lock, flags);
+ 	vf = &vfpool[slot];
+ 
+-	if ((view0_buf_id >= 0) && (view1_buf_id >= 0)) {
++	if (!WARN_ON_ONCE((view0_buf_id < 0) || (view1_buf_id < 0))) {
+ 		if (view_mode == 0 || view_mode == 1) {
+ 			vf->type = VIDTYPE_PROGRESSIVE | VIDTYPE_VIU_FIELD;
+ 
+@@ -1233,8 +1232,9 @@
+ 			}
+ 			vf_slot_set_view(&vfpool_idx[slot], display_view_id,
+ 				display_buff_id, drop_status, stream_offset);
+-			/* a POC match completes the picture */
+-			complete = in_list_flag;
++			/* a new picture holds one view: both is a POC match */
++			complete = (vfpool_idx[slot].buf_id[0] >= 0) &&
++				(vfpool_idx[slot].buf_id[1] >= 0);
+ 			if (complete)
+ 				fill_slot = -1;
+ 			spin_unlock_irqrestore(&lock, flags);

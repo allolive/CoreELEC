@@ -1,0 +1,374 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:40:00 -0400
+Subject: [PATCH] AML: start on a keyframe after the decoder resets itself
+
+When a packet is cut short in the decoder, the decoder is reset and the
+packet fed again. Only the decoder was reset:
+CDVDVideoCodecAmlogic::Reset runs on a seek alone, so the bitstream
+converter's keyframe wait, the bit parser's m_has_keyframe, the
+frame_num rewriter, the MVC parameter wait and the seek preroll all
+carried on as if the stream were continuous. The reset decoder then
+started on whatever picture came next, usually not a keyframe, and
+showed broken pictures until the next one (on MVC, in both views).
+
+The wrapper now runs ResetStream(), the part of Reset() that is about
+the decoder and the stream, the seek preroll included; the player's drop
+request is set again at the start of the next AddData. The packet is
+then fed again from the demuxer payload, through the gate below and the
+reset converter. The decoder timeout is the same case: CAMLCodec's
+GetPicture returns VC_FLUSHED, the player resets the codec and feeds
+nothing again, so the stream goes on mid-GOP. A Reset() that follows a
+VC_FLUSHED is handled like a self-reset; a seek is not.
+
+H.264 and HEVC then drop packets up to one decoding can start on, read
+from the demuxer payload before anything else runs on it: on HEVC an
+IRAP picture (NAL types 16 to 21); on H.264 an IDR picture, a recovery
+point SEI, or an I slice first in an access unit that carries an SPS,
+for streams that have neither. The converter's and the bit parser's own
+waits also open on a lone SPS, which is enough after a seek, which
+lands on a keyframe, but not here. The gate opens on such a packet, or
+after ten seconds of pictures without one, so a stream without
+keyframes still plays. On MVC the parameter set wait follows the gate,
+so the two hold a restart for at most about twelve seconds. A packet
+the gate drops also ends the count of resets for the packet before it.
+
+The gate comes before the full buffer check, so while it is closed
+nothing has gone into the reset decoder and nothing can be refused.
+Until a packet passes it GetPicture reports that it needs data without
+asking the decoder: the decoder timeout would otherwise flush the codec
+on a stream whose keyframes are farther apart than the timeout. From
+the packet that opens it on, the decoder is asked, so one that refuses
+or stalls on it is still reset by the timeout, which restarts when the
+gate opens. Before then GetPicture reports the end of a drain only when
+the player asked for the drain after the gate closed; a drain flag left
+over from before, as after a timeout during a still frame drain, would
+otherwise end the drain at once and let the player start early. Other
+codecs keep what a seek gives them, as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index ac61f88..f2a98d4 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -91,6 +91,7 @@ public:
+ 
+   void          SetSpeed(int speed);
+   void          SetDrain(bool drain){m_drain = drain;};
++  void          RestartDecoderTimeout();
+   void          SetDoviZeroLevel5(bool value);
+   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
+   void          SetVideoRate(int videoRate);
+@@ -234,7 +235,6 @@ private:
+   std::chrono::steady_clock::time_point m_tp_no_progress;
+   std::chrono::steady_clock::time_point m_tp_last_call;
+   int m_last_data_len{0};
+-  void RestartDecoderTimeout();
+   void NoteCall(std::chrono::steady_clock::time_point now);
+ 
+   bool            m_buffer_level_ready{false};
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
+index fb24594..3805101 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLFrameMetadata.h
+@@ -323,6 +323,102 @@ inline void AMLLatchHevcSei(const uint8_t* data,
+                 });
+ }
+ 
++// whether decoding can start on this HEVC access unit: its first picture is IRAP
++inline bool AMLHevcCanStart(const uint8_t* data, size_t size, int nalLengthSize)
++{
++  bool irap = false;
++  AMLForEachNal(data, size, nalLengthSize,
++                [&irap](const uint8_t* nal, size_t)
++                {
++                  const int type = (nal[0] >> 1) & 0x3f;
++                  if (type >= HEVC_NAL_VPS)
++                    return true;
++                  irap = type >= HEVC_NAL_BLA_W_LP && type <= HEVC_NAL_CRA_NUT;
++                  return false;
++                });
++  return irap;
++}
++
++// whether an H.264 slice NAL holds an I or SI slice: first_mb_in_slice, then slice_type
++inline bool AMLAvcIsISlice(const uint8_t* nal, size_t len)
++{
++  size_t pos = 1;
++  int zeros = 0;
++  int bit = 8;
++  uint8_t byte = 0;
++  const auto readBit = [&]() -> int
++  {
++    if (bit == 8)
++    {
++      if (pos < len && zeros >= 2 && nal[pos] == 3) // emulation prevention
++      {
++        pos++;
++        zeros = 0;
++      }
++      if (pos >= len)
++        return -1;
++      byte = nal[pos++];
++      zeros = byte ? 0 : zeros + 1;
++      bit = 0;
++    }
++    return (byte >> (7 - bit++)) & 1;
++  };
++  const auto readUe = [&](uint32_t& value)
++  {
++    int leadingZeros = 0;
++    int b;
++    while ((b = readBit()) == 0)
++      if (++leadingZeros > 31)
++        return false;
++    if (b < 0)
++      return false;
++    value = 0;
++    for (int i = 0; i < leadingZeros; ++i)
++    {
++      if ((b = readBit()) < 0)
++        return false;
++      value = (value << 1) | static_cast<uint32_t>(b);
++    }
++    value += (1u << leadingZeros) - 1;
++    return true;
++  };
++  uint32_t firstMb = 0;
++  uint32_t sliceType = 0;
++  return readUe(firstMb) && readUe(sliceType) &&
++         (sliceType == 2 || sliceType == 4 || sliceType == 7 || sliceType == 9);
++}
++
++// on H.264: an IDR picture, a recovery point SEI ahead of the first slice, or an I first slice
++// after an SPS; not a lone SPS
++inline bool AMLAvcCanStart(const uint8_t* data, size_t size, int nalLengthSize)
++{
++  bool start = false;
++  bool sps = false;
++  AMLForEachNal(data, size, nalLengthSize,
++                [&start, &sps](const uint8_t* nal, size_t len)
++                {
++                  const int type = nal[0] & 0x1f;
++                  if (type == AVC_NAL_SPS)
++                    sps = true;
++                  else if (type == AVC_NAL_SEI)
++                    AMLForEachSeiMessage(nal, len, 1,
++                                         [&start](uint32_t payloadType, const uint8_t*, size_t)
++                                         {
++                                           if (payloadType == SEI_PAYLOAD_RECOVERY_POINT)
++                                             start = true;
++                                           return !start;
++                                         });
++                  else if (type >= AVC_NAL_SLICE && type <= AVC_NAL_IDR_SLICE)
++                  {
++                    start = type == AVC_NAL_IDR_SLICE ||
++                            (sps && type <= AVC_NAL_SLICE_DPA && AMLAvcIsISlice(nal, len));
++                    return false;
++                  }
++                  return !start;
++                });
++  return start;
++}
++
+ inline bool AMLReadLeb128(const uint8_t* data, size_t end, size_t& pos, uint64_t& value)
+ {
+   value = 0;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h
+index 4b416ae..0b50b1d 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLNalWalker.h
+@@ -16,12 +16,18 @@
+ 
+ enum
+ {
++  HEVC_NAL_BLA_W_LP = 16, // first IRAP type
++  HEVC_NAL_CRA_NUT = 21, // last IRAP type
++  HEVC_NAL_VPS = 32, // first non-VCL type
+   HEVC_NAL_SEI_PREFIX = 39,
+   HEVC_NAL_UNSPEC62 = 62 // Dolby Vision RPU
+ };
+ 
+ enum
+ {
++  AVC_NAL_SLICE = 1,
++  AVC_NAL_SLICE_DPA = 2, // data partition A, which holds the slice header
++  AVC_NAL_IDR_SLICE = 5,
+   AVC_NAL_SEI = 6,
+   AVC_NAL_SPS = 7,
+   AVC_NAL_PPS = 8,
+@@ -32,6 +38,7 @@ enum
+ {
+   SEI_PAYLOAD_REGISTERED_ITU_T_T35 = 4,
+   SEI_PAYLOAD_USER_DATA_UNREGISTERED = 5,
++  SEI_PAYLOAD_RECOVERY_POINT = 6,
+   SEI_PAYLOAD_MASTERING_DISPLAY_COLOUR_VOLUME = 137,
+   SEI_PAYLOAD_CONTENT_LIGHT_LEVEL_INFO = 144
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 772a721..d522dd3 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -123,6 +123,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+   m_mvcParamsSkipped = 0;
+   m_refedAfterReset = false;
+   m_retrySource = nullptr;
++  m_keyframeWait = 0;
++  m_timedOut = false;
+   m_nalLengthSize = 0;
+   m_streamMeta = {};
+   m_stripHdr10Plus = false;
+@@ -546,11 +548,16 @@ void CDVDVideoCodecAmlogic::Close(void)
+  * file whose sets match the header, or that has none, loses nothing on a seek.
+  */
+ int CDVDVideoCodecAmlogic::MvcParamsWaitLimit(const CDVDStreamInfo& hints)
++{
++  return PicturesIn(hints, 2.0);
++}
++
++int CDVDVideoCodecAmlogic::PicturesIn(const CDVDStreamInfo& hints, double seconds)
+ {
+   const double fps = hints.fpsrate > 0 && hints.fpsscale > 0
+                          ? static_cast<double>(hints.fpsrate) / hints.fpsscale
+                          : 24.0;
+-  return std::max(1, static_cast<int>(fps * 2.0 + 0.5));
++  return std::max(1, static_cast<int>(fps * seconds + 0.5));
+ }
+ 
+ // Whether the picture carries SPS, subset SPS and PPS; notes whether they are
+@@ -613,6 +620,30 @@ bool CDVDVideoCodecAmlogic::MvcParamsReady(const uint8_t* data, uint32_t size)
+   return false;
+ }
+ 
++void CDVDVideoCodecAmlogic::ArmKeyframeGate()
++{
++  // other codecs keep what a seek gives them
++  if (m_hints.codec != AV_CODEC_ID_HEVC && m_hints.codec != AV_CODEC_ID_H264)
++    return;
++  m_keyframeWait = PicturesIn(m_hints, 10.0);
++  m_keyframeSkipped = 0;
++  m_keyframeWaitDrain = false;
++}
++
++bool CDVDVideoCodecAmlogic::KeyframeGateOpens(const uint8_t* data, uint32_t size)
++{
++  const bool keyframe = m_hints.codec == AV_CODEC_ID_HEVC
++                            ? AMLHevcCanStart(data, size, m_nalLengthSize)
++                            : AMLAvcCanStart(data, size, m_nalLengthSize);
++  if (!keyframe && ++m_keyframeSkipped < m_keyframeWait)
++    return false;
++  CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: decoding restarts {} after {} packets",
++            __FUNCTION__, keyframe ? "on a keyframe" : "without a keyframe", m_keyframeSkipped);
++  m_keyframeWait = 0;
++  m_Codec->RestartDecoderTimeout();
++  return true;
++}
++
+ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
+   m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
+@@ -622,6 +653,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+   if (!packet.pData || packet.iSize <= 0)
+     return true;
+ 
++  if (m_keyframeWait > 0 && !KeyframeGateOpens(packet.pData, packet.iSize))
++  {
++    m_refedAfterReset = false;
++    m_pendingMeta = m_streamMeta;
++    return true;
++  }
++
+   // a full decoder: refused before anything runs on the packet
+   if (m_opened && m_Codec && !m_Codec->AcceptsInput(packet.iSize + packet.elSize))
+     return false;
+@@ -873,14 +911,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+       m_retryPts = packet.pts;
+       return false;
+     case CAMLCodec::AddResult::RESET_NEEDED:
+-      m_Codec->Reset();
++      ResetStream();
++      ArmKeyframeGate();
+       // fed again once; one that fails on the reset decoder too is dropped
+       if (!refedAfterReset)
+       {
+         m_refedAfterReset = true;
+         return false;
+       }
+-      m_pendingMeta = m_streamMeta;
+       return true;
+   }
+ 
+@@ -906,6 +944,16 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ }
+ 
+ void CDVDVideoCodecAmlogic::Reset(void)
++{
++  ResetStream();
++  m_refedAfterReset = false;
++  m_keyframeWait = 0;
++  // a decoder timeout flushed it mid-stream, and the player feeds nothing again
++  if (std::exchange(m_timedOut, false))
++    ArmKeyframeGate();
++}
++
++void CDVDVideoCodecAmlogic::ResetStream()
+ {
+   if (m_Codec)
+     m_Codec->Reset();
+@@ -921,7 +969,6 @@ void CDVDVideoCodecAmlogic::Reset(void)
+     m_mvcParamsSkipped = 0;
+   }
+   m_seekPreroll.Reset();
+-  m_refedAfterReset = false;
+   m_retrySource = nullptr;
+   std::vector<uint8_t>().swap(m_retryData);
+   m_metadataSequencer.Reset();
+@@ -948,7 +995,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+   if (!m_Codec)
+     return VC_ERROR;
+ 
++  // the decoder holds nothing until a packet passes the gate, so no timeout can apply
++  if (m_keyframeWait > 0)
++    return m_keyframeWaitDrain && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) ? VC_EOF
++                                                                              : VC_BUFFER;
++
+   VCReturn retVal = m_Codec->GetPicture(&m_videobuffer);
++  if (retVal == VC_FLUSHED)
++    m_timedOut = true;
+ 
+   if (retVal == VC_PICTURE)
+   {
+@@ -1004,6 +1058,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+ 
+ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+ {
++  if (flags & DVD_CODEC_CTRL_DRAIN)
++    m_keyframeWaitDrain = true;
+   if (m_codecControlFlags != flags)
+   {
+     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 5c5fa1f..0d93656 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -158,6 +158,19 @@ private:
+   bool m_mvcDepthRangeLogged{false};
+   double m_mvcDepthFirstPts{DVD_NOPTS_VALUE};
+   static int MvcParamsWaitLimit(const CDVDStreamInfo& hints);
++  static int PicturesIn(const CDVDStreamInfo& hints, double seconds);
++  //! what Reset() does to the decoder and the stream state, the keyframe gate aside
++  void ResetStream();
++  //! H.264/HEVC after the decoder restarts mid-stream: at most this many packets dropped up to a
++  //! keyframe
++  int m_keyframeWait{0};
++  int m_keyframeSkipped{0};
++  //! the player asked for a drain since the gate closed
++  bool m_keyframeWaitDrain{false};
++  //! the decoder timed out: the next Reset() restarts mid-stream
++  bool m_timedOut{false};
++  void ArmKeyframeGate();
++  bool KeyframeGateOpens(const uint8_t* data, uint32_t size);
+   bool MvcParamsScan(const uint8_t* data, uint32_t size);
+   bool MvcParamsReady(const uint8_t* data, uint32_t size);
+   //! Which decoded pictures still answer the player's drop request.

@@ -1,0 +1,645 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 03:36:54 -0400
+Subject: [PATCH] Blu-ray 3D: bound the base view's wait for its second view
+
+While the MVC extension could not be read, the base view waited for it
+in an unbounded queue: the picture froze and memory grew with the
+bitrate. The base view now waits 4 s at most, measured as the distance
+between its oldest and newest timestamps, since they can step back at a
+join, and 512 packets in any case. Past that its oldest pictures are
+dropped and the extension is moved to the oldest one left. The extension
+goes to the play item the picture was read in, found by the position of
+its bytes in what libbluray returned: it is seeked there if it is in
+that play item already, else opened in it. In menu mode, where those
+positions are not kept, the play item is the extension's if only its
+clip holds the picture's timestamp, else the one the base view reads.
+The picture's timestamp is mapped back to one of the extension's file
+through the last picture read from it, which also takes the extension
+past a part of its file it cannot read. With nothing read yet, the start
+time the extension's timestamps are converted with is added back, unless
+only the timestamp as it is falls within the play item: the conversion
+leaves a timestamp below the start time as it is. The picture stays
+frozen until the extension reads again; pairing then resumes with the
+next base picture that has its second view. Nothing makes that a picture
+the decoder can start from, so the decoder can show errors until its
+next key picture, and a dependent picture cut short by a failed read can
+be merged with the next one once. Passing the base view on alone would
+feed the MVC decoder pictures without their second view.
+
+Two other ways the pairing could stall for good are bounded the same
+way. A dependent picture newer than every base picture threw away each
+base picture as it came, without the base queue ever growing; once that
+reaches a base picture 4 s past the last pair, the extension is moved to
+the base view. An extension behind the base view was read up to it
+whatever the distance, on the player thread, dropping each picture: past
+4 s behind, or 512 pictures dropped, it is moved instead.
+
+The pairing moves the extension at most once per 4 s of the base view,
+measured on its newest picture, and a pair resets that, so an extension
+that cannot be read at all is not sought on every picture. A new start
+time for the extension's timestamps forgets the mapping from its last
+picture to its file's timestamps, which was made with the old one.
+
+The distance past the last pair is measured from the base view's last
+pair, or from its first picture since a seek. A seamless join can move
+the base view's timestamps on by any amount, so a base picture more than
+4 s from the one before it starts that measure again and lifts the limit
+on moves: the first pictures of the new clip are not taken to be 4 s
+past a pair made in the old one. With no older base picture waiting, the
+extension is then moved to that picture at once if it has ended, holds
+no picture read, or holds only pictures after it, as a step back of the
+timestamps leaves it, rather than after 4 s more of the base view; one
+just opened in that picture's play item, with nothing read yet, is left
+where it is and the pictures it had queued, all of the clip before, are
+dropped. A stalled source does not move the timestamps, and starts
+nothing again.
+
+The mapping assumes one run of timestamps within a clip: in a clip with
+more than one STC sequence, or one whose timestamps wrap, it can place
+the extension at the wrong time, and in menu mode in the wrong clip, and
+pairing waits for the next move.
+
+Shared code, unavoidable: the 3D Blu-ray demuxer exists only in
+CoreELEC's Kodi (DVDInputStreamBluray, CDemuxMVC, CDemuxStreamSSIF and
+their use in DVDDemuxFFmpeg) and has no AML counterpart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDDemuxers/DVDDemuxFFmpeg.cpp            |  12 +-
+ .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h  |   3 +-
+ .../VideoPlayer/DVDDemuxers/DemuxMVC.cpp      |  46 ++++++--
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h |  12 +-
+ .../DVDDemuxers/DemuxStreamSSIF.cpp           | 107 +++++++++++++++++-
+ .../VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h |  16 ++-
+ .../DVDInputStreams/DVDInputStream.h          |   5 +
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  |  55 ++++++++-
+ .../DVDInputStreams/DVDInputStreamBluray.h    |   6 +
+ 9 files changed, 243 insertions(+), 19 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+index 26d8bf5..6d6bb34 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -1177,7 +1177,9 @@ double CDVDDemuxFFmpeg::ConvertTimestamp(int64_t pts, int den, int num)
+ #ifdef HAVE_LIBBLURAY
+ // Puts a packet on title time from the clip it was read in. This replaces the start term of
+ // ConvertTimestamp, which steps back at every seamless clip join.
+-void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet, const AVStream* stream)
++void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet,
++                                              const AVStream* stream,
++                                              int& playItem)
+ {
+   constexpr AVRational CLIP_TIME_BASE = {1, 90000};
+   const auto bluray = static_cast<CDVDInputStreamBluray*>(m_pInput.get());
+@@ -1188,6 +1190,9 @@ void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet, const AVStrea
+   if (m_pkt.pkt.pos >= 0)
+     readPos->second = m_blurayReadBase + m_pkt.pkt.pos;
+ 
++  // the second view is moved to the play item its base view picture was read in
++  playItem = bluray->GetPlayItem(readPos->second);
++
+   const auto clip = bluray->GetClipTime(readPos->second);
+   if (!clip)
+     return;
+@@ -1228,6 +1233,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+   // would consider this the end of stream and stop.
+   bool bReturnEmpty = false;
+   int64_t dualLayerKey = AV_NOPTS_VALUE;
++  int playItem = -1;
+   {
+     std::unique_lock lock(m_critSection); // open lock scope
+     if (m_pFormatContext)
+@@ -1361,7 +1367,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+           dualLayerKey = m_pkt.pkt.pts != AV_NOPTS_VALUE ? m_pkt.pkt.pts : m_pkt.pkt.dts;
+ #ifdef HAVE_LIBBLURAY
+           if (m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+-            ConvertBlurayTimestamps(pPacket, stream);
++            ConvertBlurayTimestamps(pPacket, stream, playItem);
+ #endif
+           pPacket->duration = DVD_SEC_TO_TIME((double)m_pkt.pkt.duration * stream->time_base.num /
+                                               stream->time_base.den);
+@@ -1454,7 +1460,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+     }
+     if (stream && m_pSSIF)
+     {
+-      pPacket = m_pSSIF->AddPacket(pPacket);
++      pPacket = m_pSSIF->AddPacket(pPacket, playItem);
+       if (stream->type == StreamType::DATA && stream->codec == AV_CODEC_ID_H264_MVC && pPacket->iSize)
+         stream = GetStream(pPacket->iStreamId);
+     }
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
+index 614a98d..3a4da91 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
+@@ -143,7 +143,8 @@ protected:
+   AVDictionary* GetFFMpegOptionsFromInput();
+   double ConvertTimestamp(int64_t pts, int den, int num);
+ #ifdef HAVE_LIBBLURAY
+-  void ConvertBlurayTimestamps(DemuxPacket* packet, const AVStream* stream);
++  //! playItem: set to the play item a 3D title's base view packet was read in
++  void ConvertBlurayTimestamps(DemuxPacket* packet, const AVStream* stream, int& playItem);
+ #endif
+   bool IsProgramChange();
+   unsigned int HLSSelectProgram();
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+index 8708418..6f64bc5 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
+@@ -206,7 +206,10 @@ DemuxPacket* CDemuxMVC::Read()
+           newPkt = nullptr;
+           break;
+         }
++        m_lastClipDts = clipDts;
++        m_lastDts = newPkt->dts;
+       }
++      m_atClipStart = false;
+       break;
+     }
+   }
+@@ -252,6 +255,7 @@ bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
+     seek_pts = 0;
+ 
+   m_clipEnded = false;
++  m_atClipStart = false;
+   ClearReadError();
+   if (av_seek_frame(m_pFormatContext, m_nStreamIndex, seek_pts, AVSEEK_FLAG_BACKWARD) < 0)
+   {
+@@ -265,6 +269,7 @@ bool CDemuxMVC::SeekClipTimestamp(int64_t ts)
+ // play item is read from there.
+ void CDemuxMVC::SetClip(int64_t inTime, int64_t outTime)
+ {
++  m_clipIn = inTime;
+   m_clipEnd = outTime;
+   if (!m_pFormatContext || m_nStreamIndex < 0)
+     return;
+@@ -274,6 +279,20 @@ void CDemuxMVC::SetClip(int64_t inTime, int64_t outTime)
+       inTime - MVC_SEEK_TIME_WINDOW >
+           av_rescale_q(stream->start_time, stream->time_base, AVRational{1, 90000}))
+     SeekClipTimestamp(inTime);
++  m_atClipStart = true;
++}
++
++// ts: a timestamp Read returned; the timestamp of the file (90 kHz) it was converted from
++int64_t CDemuxMVC::ClipTimestamp(double ts) const
++{
++  if (m_lastDts != DVD_NOPTS_VALUE)
++    return m_lastClipDts + static_cast<int64_t>((ts - m_lastDts) * 90000 / DVD_TIME_BASE);
++  // Read keeps a timestamp below the start time as it is
++  const int64_t shifted = static_cast<int64_t>((ts / DVD_TIME_BASE + StartTimeSeconds()) * 90000);
++  const int64_t kept = static_cast<int64_t>(ts / DVD_TIME_BASE * 90000);
++  const auto inClip = [this](int64_t clipTs)
++  { return m_clipEnd > 0 && clipTs >= m_clipIn && clipTs < m_clipEnd; };
++  return !inClip(shifted) && inClip(kept) ? kept : shifted;
+ }
+ 
+ // ffmpeg latches a failed read and hands it back on every later read; short of the end of the
+@@ -292,6 +311,15 @@ bool CDemuxMVC::IsEOF()
+   return m_clipEnded || !m_pInput || m_pInput->IsEOF();
+ }
+ 
++void CDemuxMVC::SetStartTime(int64_t start_time, MenuType menu_type)
++{
++  // the last read maps timestamps converted with the start time it was read with
++  if (start_time != m_start_time || menu_type != m_menu_type)
++    m_lastDts = DVD_NOPTS_VALUE;
++  m_start_time = start_time;
++  m_menu_type = menu_type;
++}
++
+ std::string CDemuxMVC::GetFileName()
+ {
+   return m_pInput->GetFileName();
+@@ -317,9 +345,19 @@ void CDemuxMVC::Dispose()
+   m_pFormatContext = nullptr;
+   m_pInput = nullptr;
+   m_nStreamIndex = -1;
++  m_lastDts = DVD_NOPTS_VALUE;
+   m_clipEnded = false;
+ }
+ 
++// the start time Read takes off the timestamps of the file, in seconds
++double CDemuxMVC::StartTimeSeconds() const
++{
++  if (m_menu_type == MenuType::NATIVE || !m_pFormatContext ||
++      m_pFormatContext->start_time == static_cast<int64_t>(AV_NOPTS_VALUE))
++    return 0.0;
++  return static_cast<double>(m_start_time) / AV_TIME_BASE;
++}
++
+ double CDemuxMVC::ConvertTimestamp(int64_t pts, int den, int num)
+ {
+   if (pts == (int64_t)AV_NOPTS_VALUE)
+@@ -328,13 +366,7 @@ double CDemuxMVC::ConvertTimestamp(int64_t pts, int den, int num)
+   // do calculations in floats as they can easily overflow otherwise
+   // we don't care for having a completly exact timestamp anyway
+   double timestamp = (double)pts * num / den;
+-  double starttime = 0.0;
+-
+-  if (m_menu_type != MenuType::NATIVE &&
+-      m_pFormatContext->start_time != static_cast<int64_t>(AV_NOPTS_VALUE))
+-  {
+-    starttime = static_cast<double>(m_start_time) / AV_TIME_BASE;
+-  }
++  const double starttime = StartTimeSeconds();
+ 
+   if (timestamp > starttime)
+     timestamp -= starttime;
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+index c6aa4ce..7152afd 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
+@@ -23,6 +23,7 @@
+ #include "DVDDemux.h"
+ #include "DVDInputStreams/DVDInputStream.h"
+ #include "cores/MenuType.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
+ 
+ extern "C" {
+ #include "libavformat/avformat.h"
+@@ -40,6 +41,9 @@ public:
+   virtual DemuxPacket* Read();
+   virtual bool SeekTime(double time, bool backwords = false, double* startpts = nullptr);
+   bool SeekClipTimestamp(int64_t ts);
++  int64_t ClipTimestamp(double ts) const;
++  //! nothing read or sought since SetClip: reads on from the play item's in time
++  bool IsAtClipStart() const { return m_atClipStart; }
+   bool IsEOF();
+   virtual void SetSpeed(int iSpeed) { };
+   virtual int GetStreamLength() { return 0; };
+@@ -48,7 +52,7 @@ public:
+   virtual int GetNrOfStreams() const override { return 1; };
+   virtual std::string GetFileName();
+ 
+-  void SetStartTime(int64_t start_time, MenuType menu_type) { m_start_time = start_time; m_menu_type = menu_type; }
++  void SetStartTime(int64_t start_time, MenuType menu_type);
+   //! the play item's in and out times (90 kHz) in a file that can hold more than the play item
+   void SetClip(int64_t inTime, int64_t outTime);
+   int64_t GetStartTime() const { return m_start_time; }
+@@ -59,6 +63,7 @@ public:
+ private:
+   void Dispose();
+   void ClearReadError();
++  double StartTimeSeconds() const;
+   double ConvertTimestamp(int64_t pts, int den, int num);
+ 
+   AVIOContext        *m_ioContext = nullptr;
+@@ -66,6 +71,11 @@ private:
+   int                 m_nStreamIndex = -1;
+   int64_t			  m_start_time = 0;
+   MenuType		  m_menu_type = MenuType::NONE;
++  //! the last dts read, in the file (90 kHz) and as Read returned it
++  int64_t m_lastClipDts = 0;
++  double m_lastDts = DVD_NOPTS_VALUE;
++  int64_t m_clipIn = 0;
+   int64_t m_clipEnd = 0;
+   bool m_clipEnded = false;
++  bool m_atClipStart = false;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index f980836..b347746 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -29,14 +29,17 @@
+ 
+ //#define DEBUG_VERBOSE
+ #define MVC_QUEUE_SIZE 100
++#define MVC_WAIT_MAX (4 * DVD_TIME_BASE)
++#define H264_QUEUE_MAX 512
+ #define MVC_RETRY_SPAN (DVD_TIME_BASE / 2)
++#define MVC_DROP_MAX 512
+ 
+ static double Timestamp(const DemuxPacket* pkt)
+ {
+   return pkt->dts != DVD_NOPTS_VALUE ? pkt->dts : pkt->pts;
+ }
+ 
+-DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket* &srcPkt)
++DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket*& srcPkt, int playItem)
+ {
+   if (srcPkt->iStreamId != m_h264StreamId &&
+       srcPkt->iStreamId != m_mvcStreamId)
+@@ -58,7 +61,35 @@ DemuxPacket* CDemuxStreamSSIF::AddPacket(DemuxPacket* &srcPkt)
+         m_H264queue.back() = MergePacket(m_H264queue.back(), srcPkt);
+     }
+     else
++    {
++      // a join can move the timestamps on: the waits for the second view are measured from there
++      const double ts = Timestamp(srcPkt);
++      const bool jump = m_lastBase != DVD_NOPTS_VALUE && std::abs(ts - m_lastBase) > MVC_WAIT_MAX;
++      if (m_bluRay && (m_lastBase == DVD_NOPTS_VALUE || jump))
++      {
++        m_pairTime = ts;
++        m_resyncTime = DVD_NOPTS_VALUE;
++      }
++      m_lastBase = ts;
+       m_H264queue.push(srcPkt);
++      ++m_basePushed;
++      if (m_bluRay && (m_playItems.empty() || m_playItems.back().second != playItem))
++        m_playItems.emplace_back(m_basePushed, playItem);
++
++      // with no older base picture waiting, a second view that cannot pair with it is moved now;
++      // one just opened in the picture's play item holds only pictures of the clip before
++      if (m_bluRay && jump && m_H264queue.size() == 1)
++      {
++        CDemuxMVC* demux = m_bluRay->GetExtentionDemux();
++        if (m_bluRay->IsExtentionAtStart(playItem))
++          FlushMVC();
++        else if (!demux || demux->IsEOF() || m_MVCqueue.empty() ||
++                 Timestamp(m_MVCqueue.front()) > ts)
++          Resync(ts, playItem, "the base view's timestamps jumped");
++      }
++    }
++    if (m_bluRay)
++      DropUnpairedBase();
+   }
+   else if (srcPkt->iStreamId == m_mvcStreamId)
+   {
+@@ -75,6 +106,24 @@ void CDemuxStreamSSIF::Flush()
+     CDVDDemuxUtils::FreeDemuxPacket(m_H264queue.front());
+     m_H264queue.pop();
+   }
++  FlushMVC();
++  m_resyncTime = DVD_NOPTS_VALUE;
++  m_pairTime = DVD_NOPTS_VALUE;
++  m_lastBase = DVD_NOPTS_VALUE;
++  m_playItems.clear();
++}
++
++// the play item the oldest base picture waiting was read in, -1 if unknown
++int CDemuxStreamSSIF::FrontPlayItem()
++{
++  const uint64_t front = m_basePushed + 1 - m_H264queue.size();
++  while (m_playItems.size() > 1 && m_playItems[1].first <= front)
++    m_playItems.pop_front();
++  return m_playItems.empty() ? -1 : m_playItems.front().second;
++}
++
++void CDemuxStreamSSIF::FlushMVC()
++{
+   while (!m_MVCqueue.empty())
+   {
+     CDVDDemuxUtils::FreeDemuxPacket(m_MVCqueue.front());
+@@ -83,6 +132,44 @@ void CDemuxStreamSSIF::Flush()
+   m_retryTime = DVD_NOPTS_VALUE;
+ }
+ 
++// The base view waits for its second view for so long only: past that, the oldest base pictures
++// go, and the second view is moved to the base view.
++void CDemuxStreamSSIF::DropUnpairedBase()
++{
++  bool dropped = false;
++  while (m_H264queue.size() > 1)
++  {
++    const double first = Timestamp(m_H264queue.front());
++    const double last = Timestamp(m_H264queue.back());
++    // timestamps can step back at a join: the span is a magnitude, the count a backstop
++    if (m_H264queue.size() <= H264_QUEUE_MAX && std::abs(last - first) <= MVC_WAIT_MAX)
++      break;
++
++    CDVDDemuxUtils::FreeDemuxPacket(m_H264queue.front());
++    m_H264queue.pop();
++    dropped = true;
++  }
++
++  if (dropped)
++    Resync(Timestamp(m_H264queue.front()), FrontPlayItem(), "no second view for the base view");
++}
++
++// Moves the second view to the base view's picture at ts, past whatever it cannot read; once per
++// MVC_WAIT_MAX of the base view's newest picture, so that a second view that cannot be read is
++// not sought on every picture.
++void CDemuxStreamSSIF::Resync(double ts, int playItem, const char* reason)
++{
++  const double newest = m_H264queue.empty() ? ts : Timestamp(m_H264queue.back());
++  if (m_resyncTime != DVD_NOPTS_VALUE && std::abs(newest - m_resyncTime) < MVC_WAIT_MAX)
++    return;
++
++  CLog::Log(LOGWARNING, "CDemuxStreamSSIF - {}, moving the second view to {:.3f}", reason,
++            ts / DVD_TIME_BASE);
++  FlushMVC();
++  m_resyncTime = newest;
++  m_bluRay->ResyncExtention(ts, playItem);
++}
++
+ DemuxPacket* CDemuxStreamSSIF::MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &appendPkt)
+ {
+   DemuxPacket* newpkt = NULL;
+@@ -141,6 +228,8 @@ DemuxPacket* CDemuxStreamSSIF::GetMVCPacket()
+ #if defined(DEBUG_VERBOSE)
+       CLog::Log(LOGDEBUG, ">>> MVC merge packet: {:6}+{:6}, pts({:.3f}/{:.3f}) dts({:.3f}/{:.3f})", h264pkt->iSize, mvcpkt->iSize, h264pkt->pts*1e-6, mvcpkt->pts*1e-6, h264pkt->dts*1e-6, mvcpkt->dts*1e-6);
+ #endif
++      m_resyncTime = DVD_NOPTS_VALUE;
++      m_pairTime = tsH264;
+       return MergePacket(h264pkt, mvcpkt);
+     }
+     else if (tsH264 > tsMVC)
+@@ -156,8 +245,13 @@ DemuxPacket* CDemuxStreamSSIF::GetMVCPacket()
+ #if defined(DEBUG_VERBOSE)
+       CLog::Log(LOGDEBUG, ">>> MVC discard h264: {:6}, pts({:.3f}) dts({:.3f})", h264pkt->iSize, h264pkt->pts*1e-6, h264pkt->dts*1e-6);
+ #endif
++      const int playItem = m_bluRay ? FrontPlayItem() : -1;
+       CDVDDemuxUtils::FreeDemuxPacket(h264pkt);
+       m_H264queue.pop();
++
++      // a second view ahead of every base picture would hold pairing back for good
++      if (m_bluRay && std::abs(tsH264 - m_pairTime) > MVC_WAIT_MAX)
++        Resync(tsH264, playItem, "the second view is ahead of the base view");
+     }
+   }
+ 
+@@ -236,14 +330,23 @@ bool CDemuxStreamSSIF::FillMVCQueue(double tsBase)
+     return false;
+ 
+   DemuxPacket* mvc;
++  int dropped = 0;
+   while ((m_MVCqueue.size() < MVC_QUEUE_SIZE) && (mvc = demux->Read()))
+   {
+-    if (Timestamp(mvc) < tsBase)
++    const double tsMVC = Timestamp(mvc);
++    if (tsMVC < tsBase)
+     {
+ #if defined(DEBUG_VERBOSE)
+       CLog::Log(LOGDEBUG, ">>> MVC drop mvc: {:6}, pts({:.3f}) dts({:.3f})", mvc->iSize, mvc->pts*1e-6, mvc->dts*1e-6);
+ #endif
++      // far behind, the second view is sought rather than read up to the base view
++      const bool far = tsBase - tsMVC > MVC_WAIT_MAX || ++dropped >= MVC_DROP_MAX;
+       CDVDDemuxUtils::FreeDemuxPacket(mvc);
++      if (far)
++      {
++        Resync(tsBase, FrontPlayItem(), "the second view is behind the base view");
++        return true;
++      }
+       continue;
+     }
+     AddMVCExtPacket(mvc);
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+index 9bcfbf0..52b6bc3 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.h
+@@ -38,7 +38,8 @@ public:
+   CDemuxStreamSSIF() {};
+   ~CDemuxStreamSSIF() { Flush(); }
+ 
+-  DemuxPacket* AddPacket(DemuxPacket* &scrPkt);
++  //! playItem: the Blu-ray play item a base view packet was read in, -1 if unknown
++  DemuxPacket* AddPacket(DemuxPacket*& scrPkt, int playItem = -1);
+   void Flush();
+   void SetH264StreamId(int id) { m_h264StreamId = id; };
+   void SetMVCStreamId(int id) { m_mvcStreamId = id; };
+@@ -52,6 +53,10 @@ private:
+   DemuxPacket* GetMVCPacket();
+   DemuxPacket* MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &appendPkt);
+   bool FillMVCQueue(double tsBase);
++  void FlushMVC();
++  void DropUnpairedBase();
++  void Resync(double ts, int playItem, const char* reason);
++  int FrontPlayItem();
+ 
+   std::shared_ptr<CDVDInputStream::IExtentionStream> m_bluRay = nullptr;
+   std::queue<DemuxPacket*> m_H264queue;
+@@ -60,6 +65,15 @@ private:
+   std::deque<DemuxPacket*> m_MVCqueue;
+   int m_h264StreamId = -1;
+   int m_mvcStreamId = -1;
++  //! the base view's newest picture when the extension was last moved
++  double m_resyncTime = DVD_NOPTS_VALUE;
+   //! the base view's newest picture when the extension last failed to read
+   double m_retryTime = DVD_NOPTS_VALUE;
++  //! the base view's picture last paired, or its first since a flush or a jump of its timestamps
++  double m_pairTime = DVD_NOPTS_VALUE;
++  //! the base view's newest picture
++  double m_lastBase = DVD_NOPTS_VALUE;
++  //! the play item of the base pictures queued: the number of the first of each run, and the item
++  std::deque<std::pair<uint64_t, int>> m_playItems;
++  uint64_t m_basePushed = 0;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+index 6c230f5..3ded7e4 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStream.h
+@@ -168,6 +168,11 @@ public:
+     virtual CDemuxMVC* GetExtentionDemux() = 0;
+     virtual void DisableExtention() = 0;
+     virtual bool OpenNextStream() = 0;
++    //! move the extension to the base view's picture at ts, as the extension demuxer converts it,
++    //! read in playItem (-1 if unknown)
++    virtual void ResyncExtention(double ts, int playItem) = 0;
++    //! whether the extension is open in playItem with nothing read of it yet
++    virtual bool IsExtentionAtStart(int playItem) = 0;
+   };
+ 
+   enum ENextStream
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 1bc9cd5..0154e3c 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1352,11 +1352,20 @@ std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTim
+   if (m_hasMVCExtension)
+     return {};
+ 
+-  const auto it = std::ranges::upper_bound(m_clipSpans, readPos, {}, &ClipSpan::readPos);
+-  if (it == m_clipSpans.begin())
+-    return {};
++  const ClipSpan* span = SpanAt(readPos);
++  return span ? span->time : std::nullopt;
++}
++
++int CDVDInputStreamBluray::GetPlayItem(uint64_t readPos) const
++{
++  const ClipSpan* span = SpanAt(readPos);
++  return span ? span->playItem : -1;
++}
+ 
+-  return std::prev(it)->time;
++const CDVDInputStreamBluray::ClipSpan* CDVDInputStreamBluray::SpanAt(uint64_t readPos) const
++{
++  const auto it = std::ranges::upper_bound(m_clipSpans, readPos, {}, &ClipSpan::readPos);
++  return it == m_clipSpans.begin() ? nullptr : &*std::prev(it);
+ }
+ 
+ // the bytes of the next Read come from m_clip, or carry no clip time without one
+@@ -1366,6 +1375,7 @@ void CDVDInputStreamBluray::OpenClipSpan()
+     return;
+ 
+   ClipSpan span{m_readPos};
++  span.playItem = BaseClip();
+   if (m_clip)
+     span.time = ClipTime{m_clip->in_time, m_clip->start_time};
+   m_clipSpans.push_back(span);
+@@ -1713,6 +1723,43 @@ void CDVDInputStreamBluray::OnDemuxerReset()
+   RestartExtention();
+ }
+ 
++// The base view's picture at ts was read in playItem. Unknown in menu mode, it is taken to be the
++// extension's clip if only that holds the picture's timestamp, else the base view's.
++void CDVDInputStreamBluray::ResyncExtention(double ts, int playItem)
++{
++  if (!m_bMVCPlayback || ts == DVD_NOPTS_VALUE)
++    return;
++
++  if (!ClipAt(playItem))
++  {
++    playItem = BaseClip();
++    if (m_pMVCDemux && playItem != m_nMVCClip)
++    {
++      const int64_t clipTs = m_pMVCDemux->ClipTimestamp(ts);
++      const auto holds = [this, clipTs](int item)
++      {
++        const BLURAY_CLIP_INFO* clip = ClipAt(item);
++        return clip && clipTs >= static_cast<int64_t>(clip->in_time) &&
++               clipTs < static_cast<int64_t>(clip->out_time);
++      };
++      if (holds(m_nMVCClip) && !holds(playItem))
++        playItem = m_nMVCClip;
++    }
++    if (!ClipAt(playItem))
++      return;
++  }
++
++  if ((playItem != m_nMVCClip || !m_pMVCDemux) && !OpenMVCDemux(playItem))
++    return;
++  m_pMVCDemux->SeekClipTimestamp(m_pMVCDemux->ClipTimestamp(ts));
++}
++
++bool CDVDInputStreamBluray::IsExtentionAtStart(int playItem)
++{
++  return m_pMVCDemux && playItem == m_nMVCClip && m_pMVCDemux->IsAtClipStart() &&
++         !m_pMVCDemux->IsEOF();
++}
++
+ BLURAY_CLIP_INFO* CDVDInputStreamBluray::ClipAt(int playItem) const
+ {
+   if (!m_titleInfo || playItem < 0 || static_cast<uint32_t>(playItem) >= m_titleInfo->clip_count)
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 758f13b..ecf7baa 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -161,6 +161,8 @@ public:
+    *         an MVC extension
+    */
+   std::optional<ClipTime> GetClipTime(uint64_t readPos) const;
++  //! the play item a byte was read in, -1 if unknown, as in navigation mode
++  int GetPlayItem(uint64_t readPos) const;
+ 
+   //! hand the clip start held at a join to the demuxer opened after it
+   void ReleaseClipStart() { m_clipStartHeld = false; }
+@@ -184,6 +186,8 @@ public:
+   bool AreEyesFlipped() override { return m_bFlipEyes; }
+   void DisableExtention() override;
+   bool OpenNextStream() override;
++  void ResyncExtention(double ts, int playItem) override;
++  bool IsExtentionAtStart(int playItem) override;
+ 
+   void SaveCurrentState(const CStreamDetails& details) override;
+   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
+@@ -318,7 +322,9 @@ protected:
+     {
+       uint64_t readPos{0};
+       std::optional<ClipTime> time{};
++      int playItem{-1};
+     };
++    const ClipSpan* SpanAt(uint64_t readPos) const;
+ 
+     uint64_t m_readPos{0};
+     std::vector<ClipSpan> m_clipSpans;
