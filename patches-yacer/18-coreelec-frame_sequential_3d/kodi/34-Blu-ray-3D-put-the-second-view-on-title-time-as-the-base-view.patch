@@ -22,17 +22,8 @@ the second view is not either.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- .../VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp     | 17 +++-----------
- xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp    | 24 ++++++++++++++++----
- xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h      |  5 +++++
- .../DVDInputStreams/BlurayClipReader.cpp           |  2 ++
- .../VideoPlayer/DVDInputStreams/BlurayClipReader.h |  2 ++
- .../DVDInputStreams/DVDInputStreamBluray.cpp       | 26 +++++++++++++++++++---
- .../DVDInputStreams/DVDInputStreamBluray.h         | 11 +++++++--
- 7 files changed, 64 insertions(+), 23 deletions(-)
-
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index be90806f..19eaf8ea 100644
+index be90806..19eaf8e 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -1194,7 +1194,6 @@ void CDVDDemuxFFmpeg::ConvertBlurayTimestamps(DemuxPacket* packet,
@@ -71,7 +62,7 @@ index be90806f..19eaf8ea 100644
      if (!m_checkTransportStream && timestamp < 0 && timestamp + 0.5 > 0)
        timestamp = 0;
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
-index ac544f29..82911196 100644
+index ac544f2..8291119 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.cpp
 @@ -20,6 +20,7 @@
@@ -123,7 +114,7 @@ index ac544f29..82911196 100644
      return m_lastClipDts + static_cast<int64_t>((ts - m_lastDts) * 90000 / DVD_TIME_BASE);
    // Read keeps a timestamp below the start time as it is
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
-index ef624bcc..407e96dd 100644
+index ef624bc..407e96d 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxMVC.h
 @@ -26,6 +26,7 @@
@@ -160,7 +151,7 @@ index ef624bcc..407e96dd 100644
    bool m_clipEnded = false;
    bool m_atClipStart = false;
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
-index ff683cbe..65f68e31 100644
+index ff683cb..65f68e3 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.cpp
 @@ -591,6 +591,8 @@ std::unique_ptr<CDemuxMVC> CBlurayClipReader::NewMVCDemux(
@@ -173,7 +164,7 @@ index ff683cbe..65f68e31 100644
    return demux;
  }
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
-index 03871c0b..c2361721 100644
+index 03871c0..c236172 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/BlurayClipReader.h
 @@ -72,6 +72,8 @@ public:
@@ -186,11 +177,11 @@ index 03871c0b..c2361721 100644
    //! A play item's second view: its input, open, and its demuxer, sought to the play item's start
    struct SecondView
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-index 5ef83a6d..78262357 100644
+index a1f9424..988ba14 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-@@ -1401,12 +1401,29 @@ bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
-   return false;
+@@ -1456,12 +1456,29 @@ void CDVDInputStreamBluray::SetSubtitleVisible(bool visible)
+   bd_select_stream(m_bd, BLURAY_PG_TEXTST_STREAM, m_pgStreamNumber, visible);
  }
  
 -std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTime(
@@ -222,7 +213,7 @@ index 5ef83a6d..78262357 100644
    const ClipSpan* span = SpanAt(readPos);
    return span ? span->time : std::nullopt;
  }
-@@ -1684,6 +1701,9 @@ std::optional<CBlurayClipReader::MVCClip> CDVDInputStreamBluray::GetMVCClip(int
+@@ -1739,6 +1756,9 @@ std::optional<CBlurayClipReader::MVCClip> CDVDInputStreamBluray::GetMVCClip(int
        URIUtils::AddFileToFolder(m_root, "BDMV", "CLIPINF", mvcClip.clipId + ".clpi");
    mvcClip.inTime = static_cast<int64_t>(clip->in_time);
    mvcClip.outTime = static_cast<int64_t>(clip->out_time);
@@ -233,7 +224,7 @@ index 5ef83a6d..78262357 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
-index 820185f5..b100f9ad 100644
+index f77d807..bc69cea 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 @@ -52,6 +52,7 @@ extern "C"
@@ -244,7 +235,7 @@ index 820185f5..b100f9ad 100644
  class IVideoPlayer;
  class CDVDDemux;
  
-@@ -167,10 +168,16 @@ public:
+@@ -180,10 +181,16 @@ public:
    /*!
     * \brief Get the in time and start time (90 kHz) of the clip a byte was read from.
     * \param readPos The position of the byte in the bytes Read returned since Open
