@@ -6,7 +6,7 @@ Regular expressions use ASCII classes (re.ASCII) because std::wregex in the clas
 does: the two must mean the same thing by \\w, \\s, \\d, \\b and case folding."""
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import ocr_engine as ocr
 
@@ -356,6 +356,35 @@ def _c1_as_cp1252(m: "re.Match[str]") -> str:
         return m.group(0)
 
 
+# what else OCR draws as each glyph; same length as its expansion, so positions hold
+_LIGATURE_OTHERS = {"ﬁ": ["ti", "fl"], "ﬂ": ["tl", "ti", "fi"]}
+
+
+def read_ligatures(line: str) -> Dict[str, List[str]]:
+    """The words of a line, as it arrived, that hold a ligature glyph ("ﬂ"), each with the other
+    words the glyph may stand for: only OCR writes ligatures, and "exacﬂy" was "exactly"."""
+    expanded, glyphs = "", []
+    for c in line:
+        if c not in _LIGATURES:
+            expanded += c
+            continue
+        if c in _LIGATURE_OTHERS:
+            glyphs.append((len(expanded), c))
+        expanded += _LIGATURES[c]
+    out: Dict[str, List[str]] = {}
+    for a, n in ocr.words_in(expanded):
+        readings = [expanded[a:a + n]]
+        for at, glyph in glyphs:
+            if not a <= at < a + n:
+                continue
+            for k in range(len(readings)):
+                for other in _LIGATURE_OTHERS[glyph]:
+                    readings.append(readings[k][:at - a] + other + readings[k][at - a + 2:])
+        if len(readings) > 1:
+            out[readings[0]] = readings[1:]
+    return out
+
+
 def repair_chars(line: str, utf: bool) -> str:
     """Characters that were damaged on the way, put back; the words are not touched."""
     if utf:
@@ -492,7 +521,8 @@ def ocr_language(language: Optional[str], lines: List[str], packs: Dict[str, "oc
 
 def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
           packs: Optional[Dict[str, "ocr.Language"]] = None, fix_timing: bool = True,
-          detect: Optional[Callable[[str], Tuple[str, int, bool]]] = None) -> Tuple[str, Report]:
+          detect: Optional[Callable[[str], Tuple[str, int, bool]]] = None,
+          cast: Iterable[str] = ()) -> Tuple[str, Report]:
     """The repaired subtitle and what was done. OCR misreadings are undone only with the packs,
     in the pack's language: the one the subtitle's code names, or CLD2's reading of it."""
     report = Report()
@@ -507,11 +537,15 @@ def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
     edges = set(cue_indexes[:EDGE_CUES] + cue_indexes[-EDGE_CUES:])
 
     kept = []
+    ligatures: Dict[str, List[str]] = {}
     for i, block in enumerate(blocks):
         cue = block.cue
         if cue is None:
             kept.append(block)
             continue
+        for line in cue.lines:
+            for w, others in read_ligatures(line).items():
+                ligatures.setdefault(w, others)
         repaired = [repair_chars(line, utf) for line in cue.lines]
         report.repaired_lines += sum(a != b for a, b in zip(cue.lines, repaired, strict=True))
         ads = [remove_ads and _is_ad(line, i in edges) for line in repaired]
@@ -533,10 +567,11 @@ def clean(data: bytes, language: Optional[str] = None, remove_ads: bool = True,
     cues = [b.cue for b in kept if b.cue]
     pack = ocr_language(language, [line_ for c in cues for line_ in c.lines], packs or {}, detect) if packs else None
     if pack is not None:
-        engine = ocr.Engine(pack, packs.values())
+        engine = ocr.Engine(pack, packs.values(), cast)
         all_lines = [line_ for c in cues for line_ in c.lines]
         engine.note_names(all_lines)
         engine.learn(all_lines)
+        engine.note_ligatures(ligatures)
         fixes: list = []
         for c in cues:
             c.lines = [engine.fix_line(line_, fixes) for line_ in c.lines]
@@ -556,10 +591,10 @@ class CueCleaner:
     when the track names none - is learnt as the cues come. Timing is the player's."""
 
     def __init__(self, remove_ads: bool = True, packs: Optional[Dict[str, "ocr.Language"]] = None,
-                 language: Optional[str] = None, detect=None):
+                 language: Optional[str] = None, detect=None, cast: Iterable[str] = ()):
         self.remove_ads = remove_ads
         self.wrapped = self.opened = 0
-        self.stream = ocr.Stream(packs, language, detect) if packs else None
+        self.stream = ocr.Stream(packs, language, detect, cast) if packs else None
 
     def clean(self, text: str) -> Optional[str]:
         """The cue repaired, or None when nothing is left to show."""
@@ -580,5 +615,9 @@ class CueCleaner:
         if all(_ONLY_TAGS.match(line_) for line_ in lines):
             return None
         if self.stream is not None:
-            lines = self.stream.cue(lines)
+            ligatures: Dict[str, List[str]] = {}
+            for line in original:
+                for w, others in read_ligatures(line).items():
+                    ligatures.setdefault(w, others)
+            lines = self.stream.cue(lines, ligatures=ligatures)
         return "\n".join(lines)

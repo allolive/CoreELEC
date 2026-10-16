@@ -106,8 +106,9 @@ def ocr_edit(old, new):
                difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes())
 
 
-def _word_level(old, new):
-    """Word by word: the same words and separators, each changed word one the confusions reach."""
+def _word_level(old, new, ligatures=None):
+    """Word by word: the same words and separators, each changed word one the confusions reach,
+    or one of the readings of a ligature glyph the word held."""
     a, b = E.words_in(old), E.words_in(new)
     if len(a) != len(b):
         return False
@@ -117,14 +118,58 @@ def _word_level(old, new):
         return False
     for (x, n), (y, m) in zip(a, b, strict=True):
         w, v = old[x:x + n], new[y:y + m]
-        if w != v and v not in E.candidates(w, sorted(CONFUSIONS)) and not (w == "1" and v == "I"):
+        if (w != v and v not in E.candidates(w, sorted(CONFUSIONS)) and not (w == "1" and v == "I")
+                and v not in (ligatures or {}).get(w, [])):
             return False
     return True
 
 
-def allowed_edit(old, new):
-    """Whether new is old with only music-note glyphs changed and OCR misreadings undone."""
-    if _word_level(old, new):
+def _collapse_rejoins(old, new):
+    """old with each run of short pieces new writes as one word joined up ("R0 z e r" ->
+    "R0zer" where new has "Rozer"), for _word_level to judge the letters; old as it is when a
+    word of new is no such run."""
+    a, b = E.words_in(old), E.words_in(new)
+    reach = sorted(CONFUSIONS | set(E.REJOIN_CONFUSIONS))
+    out, last, i, j = [], 0, 0, 0
+    while i < len(a) and j < len(b):
+        w, v = old[a[i][0]:a[i][0] + a[i][1]], new[b[j][0]:b[j][0] + b[j][1]]
+        if w == v or v in E.candidates(w, reach):
+            i, j = i + 1, j + 1
+            continue
+        k, joined, matched = i, w, None
+        while (k + 1 < len(a) and a[k][1] <= 2 and a[k + 1][1] <= 2
+               and a[k + 1][0] == a[k][0] + a[k][1] + 1 and old[a[k][0] + a[k][1]] == " "):
+            k += 1
+            joined += old[a[k][0]:a[k][0] + a[k][1]]
+            if joined == v or v in E.candidates(joined, reach):
+                matched = k
+                break
+        if matched is None:
+            return old
+        out.append(old[last:a[i][0]] + joined)
+        last = a[matched][0] + a[matched][1]
+        i, j = matched + 1, j + 1
+    return "".join(out) + old[last:]
+
+
+def _ligatures_read(old, new, ligatures):
+    """old with each word that new replaced by one of its ligature readings already replaced: a glyph
+    read again is the OCR's own evidence, not a misreading undone without the file's pattern."""
+    a, b = E.words_in(old), E.words_in(new)
+    if not ligatures or len(a) != len(b):
+        return old
+    out, last = [], 0
+    for (x, n), (y, m) in zip(a, b, strict=True):
+        w, v = old[x:x + n], new[y:y + m]
+        out.append(old[last:x] + (v if v in ligatures.get(w, []) else w))
+        last = x + n
+    return "".join(out) + old[last:]
+
+
+def allowed_edit(old, new, ligatures=None):
+    """Whether new is old with only music-note glyphs changed, OCR misreadings undone and words
+    the OCR broke into letters joined up."""
+    if _word_level(old, new, ligatures) or _word_level(_collapse_rejoins(old, new), new, ligatures):
         return None
     for op, a1, a2, b1, b2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if op == "equal":
@@ -194,8 +239,8 @@ def check(path, packs, detect):
         for line in cue.lines:
             base = R.repair_chars(line, utf)
             if k < len(kept.lines):
-                why = allowed_edit(base, kept.lines[k])
-                if why is None and not report.ocr_pattern and ocr_edit(base, kept.lines[k]):
+                why = allowed_edit(base, kept.lines[k], R.read_ligatures(line))
+                if why is None and not report.ocr_pattern and ocr_edit(_ligatures_read(base, kept.lines[k], R.read_ligatures(line)), kept.lines[k]):
                     why = "a misreading undone in a file with no pattern of them"
                 if why is None and TAG.findall(base) == TAG.findall(kept.lines[k]):
                     k += 1

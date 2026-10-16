@@ -1,0 +1,2064 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:00:00 -0400
+Subject: [PATCH] Subtitles: realign a subtitle file on the video's speech
+
+A subtitle file beside the video is realigned on the video's own
+subtitle tracks. Most videos a file is found beside have none: a web
+release, a rip of the main film only. For those, the speech is the only
+reference there is.
+
+Where someone speaks is heard with Silero's voice activity model (v5, MIT
+licence): a short-time spectrum, four convolutions and a recurrent cell,
+run here without a runtime - three hundred thousand weights, a chance of
+speech every 32 ms. The weights come in an add-on,
+script.module.subtitlespeech.allolive, asked for the first time they are
+needed; until it is installed nothing is heard and nothing changes.
+
+The subtitle shows a line where someone speaks and nothing in the
+silences between, so each change to its times - an offset, under each
+frame-rate ratio a release can be off by - is scored by how much more
+speech than usual its lines then cover. The best one is taken only when
+it scores 1.2 times any other and stands five spreads above the scores
+of all offsets; a change of less than half a second is no change, as
+lines show a little before their speech. A line that translates writing
+on screen, which no one speaks, moves with the rest.
+
+A subtitle made for another cut of the film - an extended edition, a
+version with a scene trimmed - is right in places and a few seconds or
+minutes off in others. When runs of lines clearly ask for other offsets
+than the one change, the lines are laid in parts instead: each run of at
+least eight lines at the offset its speech asks for, a switch between
+two costing as much as four seconds of agreement, under the best ratio
+or under none when that is a near twin of it, as a few steps look like a
+slow drift. The parts are taken only when they agree better than any one
+offset, and a stretch of a part that clearly agrees with another offset
+is left where it was. Each line moves by the part it starts in. One
+change that a run of lines clearly contradicts is not taken.
+
+The sound is read a minute at a time across the film, in the background,
+from the stream playback starts with: its centre channel when the mix
+has one, where the dialogue is. A verdict is asked for after eight
+minutes, then sixteen, thirty-two, and so on until the film is heard
+whole, and the reading stops at the first clear single change - a file
+found right stops it too. A subtitle laid in parts, or not yet clear,
+is then read ahead of playback, five minutes at a time, and laid again
+every two minutes; lines still to come move when that changes them by
+half a second or more. A fit is withdrawn only after two unclear
+verdicts in a row. The video is read no faster than 25 MB/s per stretch
+and, before playback is followed, no more than 12 GB of it, without the
+file cache; closing the subtitle stops it. A DTS-HD stream is decoded to
+its core only.
+
+On 46 films of the library, the embedded text subtitle of each was laid
+on its own speech as it was, moved by known offsets, and cut to match a
+longer or shorter edit of the film - one to three stretches of a few
+seconds to four minutes added or removed. Heard whole: every subtitle
+as it was was left alone; 79% of the lines of moved subtitles were put
+back, none anywhere else; of 370,000 lines under a different cut, 82%
+were put right against 56% with one change, and 1.3% moved wrong against
+5.2%. Under a different cut and a PAL speed-up together, parts rarely
+hold: 19% were put right, 0.5% moved wrong, against 36% and 15% with one
+change. No other film's subtitle was accepted. Forced-only subtitles -
+the real forced tracks of four films, and 192 made of a few scenes and
+signs - were left alone or put right in all 200 trials. Three films the
+library has in two cuts were laid each on the other's speech: one
+release's lines went from 111 to 224 of 285 right, another's from 32 to
+292 of 782 with 9 moved wrong; the third, re-edited all through, was
+left alone. Steps of two seconds or less cannot be told apart, and a
+stretch re-edited every few lines takes the offset of the part around
+it. On the box, a minute of sound is decoded and heard in about three
+seconds of one core.
+
+The help of "Realign with the video" says so.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 93394fa..64b3bda 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25687,7 +25687,7 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> Realign with the video"
+ #: system/settings/settings.xml
+ msgctxt "#60101"
+-msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language, and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
++msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language - or, when the video has none, with where someone speaks in its sound - and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
+ msgstr ""
+ 
+ #empty strings from id 39218 to 39899
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+index ba4092e..7c4af3b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+@@ -14,8 +14,10 @@ set(SOURCES DVDFactorySubtitle.cpp
+             SubtitleCleanup.cpp
+             SubtitleCleanupSettings.cpp
+             SubtitleCueStage.cpp
++            SubtitleListener.cpp
+             SubtitleModel.cpp
+             SubtitleParserWebVTT.cpp
++            SubtitleSpeech.cpp
+             SubtitleTiming.cpp
+             SubtitleRevision.cpp
+             SubtitleTranslation.cpp
+@@ -38,8 +40,10 @@ set(HEADERS DVDFactorySubtitle.h
+             SubtitleCleanup.h
+             SubtitleCleanupSettings.h
+             SubtitleCueStage.h
++            SubtitleListener.h
+             SubtitleModel.h
+             SubtitleParserWebVTT.h
++            SubtitleSpeech.h
+             SubtitleTiming.h
+             SubtitleRevision.h
+             SubtitleTranslation.h
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index dbe1484..7eb6db3 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -9,9 +9,14 @@
+ #include "SubtitleCueStage.h"
+ 
+ #include "FileItem.h"
++#include "ServiceBroker.h"
+ #include "SubtitleAI.h"
+ #include "SubtitleCleanupSettings.h"
++#include "SubtitleListener.h"
+ #include "URL.h"
++#include "addons/AddonInstaller.h"
++#include "addons/AddonManager.h"
++#include "addons/IAddon.h"
+ #include "cores/VideoPlayer/DVDDemuxers/DVDDemux.h"
+ #include "cores/VideoPlayer/DVDDemuxers/DVDDemuxUtils.h"
+ #include "cores/VideoPlayer/DVDDemuxers/DVDFactoryDemuxer.h"
+@@ -20,10 +25,15 @@
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+ #include "cores/VideoPlayer/Interface/DemuxPacket.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "filesystem/File.h"
+ #include "filesystem/IFileTypes.h"
++#include "utils/StringUtils.h"
++#include "utils/URIUtils.h"
+ #include "utils/log.h"
+ 
+ #include <algorithm>
++#include <chrono>
++#include <cstring>
+ #include <map>
+ 
+ namespace KODI::SUBTITLES
+@@ -34,11 +44,69 @@ namespace
+ constexpr double WINDOW = 30;
+ constexpr double WINDOWS_AT[] = {0.1, 0.25, 0.4, 0.55, 0.7, 0.85};
+ 
++//! the speech: a minute at a time, spread across the film; the first verdict after this many,
++//! then after twice as many each time, until it is clear or the film is heard whole
++constexpr double STRETCH = 60;
++constexpr size_t FIRST_STRETCHES = 8;
++//! read no faster than this, and no more than this: playback reads the same file meanwhile
++constexpr double MAX_RATE = 25e6;
++constexpr double MAX_BYTES = 12e9;
++//! then the speech is heard this far ahead of playback, to the end of the film...
++constexpr double AHEAD = 300;
++//! ...and the lines still to come shown again when that moves one by more than this
++constexpr double CHANGE = 0.5;
++//! refitted after this many more minutes heard there
++constexpr size_t REFIT = 2;
++//! the voice activity model, from its add-on
++constexpr const char* SPEECH_ADDON = "script.module.subtitlespeech.allolive";
++constexpr const char* SPEECH_WEIGHTS = "silero_vad_16k.bin";
++
+ double Seconds(double time)
+ {
+   return time / DVD_TIME_BASE;
+ }
+ 
++//! The stretches of a film of so many, in the order they are read: each pass halfway between
++//! the ones before.
++std::vector<size_t> SpreadOrder(size_t stretches)
++{
++  std::vector<size_t> order;
++  std::vector<bool> taken(stretches, false);
++  for (size_t count = 1; order.size() < stretches; count *= 2)
++    for (size_t i = 0; i < count; ++i)
++    {
++      const size_t at = static_cast<size_t>((i + 0.5) / count * stretches);
++      if (at < stretches && !taken[at])
++      {
++        taken[at] = true;
++        order.push_back(at);
++      }
++    }
++  return order;
++}
++
++//! The model's weights, when its add-on is there; asks for the add-on once when it is not.
++bool LoadDetector(TIMING::CSpeechDetector& detector)
++{
++  static std::atomic<bool> asked{false};
++  ADDON::AddonPtr addon;
++  if (!CServiceBroker::GetAddonMgr().GetAddon(SPEECH_ADDON, addon, ADDON::OnlyEnabled::CHOICE_YES))
++  {
++    if (!asked.exchange(true))
++      ADDON::CAddonInstaller::GetInstance().InstallOrUpdate(
++          SPEECH_ADDON, ADDON::BackgroundJob::CHOICE_YES, ADDON::ModalJob::CHOICE_NO);
++    return false;
++  }
++  std::vector<uint8_t> data;
++  if (XFILE::CFile().LoadFile(
++          URIUtils::AddFileToFolder(addon->Path(), "resources", "subtitlespeech", SPEECH_WEIGHTS),
++          data) <= 0)
++    return false;
++  std::vector<float> weights(data.size() / sizeof(float));
++  std::memcpy(weights.data(), data.data(), weights.size() * sizeof(float));
++  return detector.Load(std::move(weights));
++}
++
+ //! What a video and a subtitle file were found to need, kept for the session: the subtitle is
+ //! opened again each time the viewer picks it, or seeks back past a title.
+ std::mutex g_fitsLock;
+@@ -149,43 +217,71 @@ void CCueStage::Realign()
+     if (const auto it = g_fits.find(key); it != g_fits.end())
+       known = it->second;
+   }
+-  std::optional<TIMING::Fit> fit;
+   if (known)
+-    fit = *known;
++    Show(*known, "what was found before");
+   else
+   {
+-    const auto reference = ReadReference();
+-    if (m_abort)
+-      return;
+-    if (reference)
++    std::optional<TIMING::Fit> fit;
++    if (const auto reference = ReadReference(); reference && !m_abort)
+     {
+       fit = TIMING::FitToReference(m_starts, reference->cues, reference->windows);
+       CLog::Log(LOGDEBUG, "Subtitle timing: {} lines of the video's own read in {} windows",
+                 reference->cues.size(), reference->windows.size());
+     }
+-    std::unique_lock lock(g_fitsLock);
+-    g_fits[key] = fit;
++    if (fit)
++    {
++      Keep(fit);
++      Show(fit, StringUtils::Format("the video's own subtitles, {} of {} lines lined up",
++                                    fit->matched, fit->reference));
++    }
++    // the video's own subtitles do not tell - too few, none, or made for another cut: its speech
++    else if (!m_abort)
++      Listen();
+   }
+-
+   std::unique_lock lock(m_outLock);
+   m_realigning = false;
++  m_delivered.clear();
++  m_delivered.shrink_to_fit();
++}
++
++void CCueStage::Keep(const std::optional<TIMING::Fit>& fit)
++{
++  if (m_abort)
++    return;
++  std::unique_lock lock(g_fitsLock);
++  g_fits[std::make_pair(m_video, m_file)] = fit && fit->Moves() ? fit : std::nullopt;
++}
++
++void CCueStage::Show(std::optional<TIMING::Fit> fit, const std::string& how)
++{
++  // times found right stay as they are
++  if (fit && !fit->Moves())
++    fit.reset();
++  std::unique_lock lock(m_outLock);
++  if (m_abort || (!fit && !m_fit))
++    return;
+   if (fit)
+   {
+-    CLog::Log(LOGINFO,
+-              "Subtitle timing: {} realigned on the video's own subtitles, x{:.5f} {:+.2f} s ({} "
+-              "of {} lines lined up)",
+-              CURL::GetRedacted(m_file), fit->scale, fit->offset, fit->matched, fit->reference);
+-    // what reached the screen goes, and comes again moved; what is still to come moves in Out
+-    m_fit = fit;
+-    m_clear();
+-    for (const Shown& cue : m_delivered)
+-      m_deliver(cue.text, Moved(cue.start), Moved(cue.stop));
++    std::string parts;
++    for (const auto& [from, offset] : fit->parts)
++      parts += StringUtils::Format(", {:+.2f} s from {:.0f} s", offset, from);
++    CLog::Log(LOGINFO, "Subtitle timing: {} realigned on {}, x{:.5f} {:+.2f} s{}",
++              CURL::GetRedacted(m_file), how, fit->scale, fit->offset, parts);
+   }
+-  m_delivered.clear();
+-  m_delivered.shrink_to_fit();
++  else
++    CLog::Log(LOGINFO, "Subtitle timing: {} shown as it is again, on {}", CURL::GetRedacted(m_file),
++              how);
++  // what reached the screen goes, and comes again moved; what is still to come moves in Out
++  m_fit = std::move(fit);
++  m_clear();
++  for (const Shown& cue : m_delivered)
++    if (m_fit)
++      m_deliver(cue.text, Moved(cue.start, cue.start), Moved(cue.stop, cue.start));
++    else
++      m_deliver(cue.text, cue.start, cue.stop);
+ }
+ 
+-std::optional<CCueStage::Reference> CCueStage::ReadReference()
++std::shared_ptr<CDVDDemux> CCueStage::OpenVideo()
+ {
+   // a file of streams: a disc's titles are read through its navigation, not by seeking
+   CFileItem item(m_video, false);
+@@ -201,20 +297,25 @@ std::optional<CCueStage::Reference> CCueStage::ReadReference()
+       return {};
+     m_input = input;
+   }
+-  const auto done = [this]
++  const auto done = [this](CDVDDemux* demux)
+   {
++    delete demux;
+     std::unique_lock lock(m_inputLock);
+     m_input.reset();
+   };
+   // opened as playback opens it, so that both count time from the same start
+-  std::unique_ptr<CDVDDemux> demux;
+-  if (input->Open())
+-    demux.reset(CDVDFactoryDemuxer::CreateDemuxer(input, false));
++  std::shared_ptr<CDVDDemux> demux(
++      input->Open() ? CDVDFactoryDemuxer::CreateDemuxer(input, false) : nullptr, done);
+   if (!demux || m_abort)
+-  {
+-    done();
+     return {};
+-  }
++  return demux;
++}
++
++std::optional<CCueStage::Reference> CCueStage::ReadReference()
++{
++  const auto demux = OpenVideo();
++  if (!demux)
++    return {};
+ 
+   // a text track, else a picture one; never a forced one, which covers too little
+   const CDemuxStream* track = nullptr;
+@@ -237,10 +338,7 @@ std::optional<CCueStage::Reference> CCueStage::ReadReference()
+   }
+   const double length = demux->GetStreamLength() / 1000.0;
+   if (!track || length < 20 * WINDOW)
+-  {
+-    done();
+     return {};
+-  }
+   const int64_t demuxerId = track->demuxerId;
+   const int id = track->uniqueId;
+   const bool picture = track->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+@@ -288,15 +386,168 @@ std::optional<CCueStage::Reference> CCueStage::ReadReference()
+     if (first >= 0 && last > first)
+       reference.windows.push_back({std::max(first, start), std::min(last, stop)});
+   }
+-  done();
+   if (m_abort)
+     return {};
+   return reference;
+ }
+ 
+-double CCueStage::Moved(double time) const
++void CCueStage::Listen()
++{
++  TIMING::CSpeechDetector detector;
++  if (!LoadDetector(detector))
++    return;
++  const auto demux = OpenVideo();
++  if (!demux)
++    return;
++
++  // the stream playback starts with
++  const CDemuxStreamAudio* audio = nullptr;
++  for (const CDemuxStream* stream : demux->GetStreams())
++    if (stream && stream->type == StreamType::AUDIO &&
++        (!audio || ((stream->flags & StreamFlags::FLAG_DEFAULT) &&
++                    !(audio->flags & StreamFlags::FLAG_DEFAULT))))
++      audio = static_cast<const CDemuxStreamAudio*>(stream);
++  TIMING::CListener listener(detector);
++  const double length = demux->GetStreamLength() / 1000.0;
++  if (!audio || length < 10 * STRETCH || !listener.Open(*audio))
++    return;
++  const int64_t demuxerId = audio->demuxerId;
++  const int id = audio->uniqueId;
++
++  const size_t stretches = static_cast<size_t>(length / STRETCH);
++  std::vector<bool> read(stretches, false);
++  std::vector<TIMING::Heard> heard;
++  double bytes = 0;
++  const auto hear = [&](size_t stretch)
++  {
++    // a stretch that cannot be reached is not tried again
++    read[stretch] = true;
++    const double start = stretch * STRETCH;
++    if (!demux->SeekTime(start * 1000, true))
++      return;
++    listener.Begin();
++    double taken = 0;
++    const auto began = std::chrono::steady_clock::now();
++    const auto elapsed = [began]
++    { return std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count(); };
++    while (!m_abort)
++    {
++      DemuxPacket* packet = demux->Read();
++      if (!packet)
++        break;
++      bytes += packet->iSize;
++      taken += packet->iSize;
++      const double pts = packet->pts == DVD_NOPTS_VALUE ? -1 : Seconds(packet->pts);
++      if (packet->demuxerId == demuxerId && packet->iStreamId == id)
++        listener.Hear(*packet);
++      CDVDDemuxUtils::FreeDemuxPacket(packet);
++      if (pts > start + STRETCH)
++        break;
++      // playback reads the same file: leave it the room
++      while (!m_abort && taken > MAX_RATE * elapsed())
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    }
++    if (TIMING::Heard h = listener.End(); !h.speech.empty())
++      heard.push_back(std::move(h));
++  };
++  // what the speech asks for, shown when it changes a line still to come; a change it no longer
++  // asks for is taken back
++  std::optional<TIMING::Fit> found;
++  std::optional<TIMING::Fit> shown;
++  size_t unsure = 0;
++  const auto judge = [&]
++  {
++    const auto fit = TIMING::FitToSpeech(m_starts, heard, &m_abort);
++    if (m_abort)
++      return;
++    // a change shown is taken back only when the speech twice running no longer tells
++    if (!fit && shown && ++unsure < 2)
++      return;
++    unsure = 0;
++    found = fit ? std::optional<TIMING::Fit>(fit->fit) : std::nullopt;
++    if (!Changes(shown, found.value_or(TIMING::Fit{})))
++      return;
++    shown = found;
++    std::string how = StringUtils::Format("the video's speech, {} minutes of it", heard.size());
++    if (!fit)
++      how += ", which no longer tells";
++    else if (fit->fit.parts.empty())
++      how += StringUtils::Format(", {:.2f} times the agreement of any other change", fit->ratio);
++    else
++      how += StringUtils::Format(", in {} parts for another cut", fit->fit.parts.size());
++    Show(shown, how);
++  };
++
++  // across the film until the speech is clear; a subtitle for another cut is heard further
++  const std::vector<size_t> order = SpreadOrder(stretches);
++  size_t verdict = FIRST_STRETCHES;
++  for (size_t i = 0; i < order.size() && !m_abort && bytes < MAX_BYTES; ++i)
++  {
++    hear(order[i]);
++    if (heard.size() >= verdict || i + 1 == order.size() || bytes >= MAX_BYTES)
++    {
++      verdict *= 2;
++      judge();
++      if (found && found->parts.empty())
++        break;
++    }
++  }
++  // then, for a subtitle for another cut or one the speech is not yet clear about, just ahead of
++  // playback until the film is heard whole: where the cuts differ, the lines after it are laid on
++  // what is heard there before they show
++  size_t fresh = 0;
++  bool kept = false;
++  while (!m_abort && (!found || !found->parts.empty()) &&
++         std::find(read.begin(), read.end(), false) != read.end())
++  {
++    const double now = std::max(AI::PlaybackTime() / DVD_TIME_BASE, 0.0);
++    const size_t first = std::min(stretches, static_cast<size_t>(now / STRETCH));
++    const size_t last = std::min(stretches, static_cast<size_t>((now + AHEAD) / STRETCH) + 1);
++    // all the rest of the film heard: what it asks for is kept, and what was skipped heard if
++    // playback goes back to it
++    if (!kept && std::find(read.begin() + first, read.end(), false) == read.end())
++    {
++      Keep(found);
++      kept = true;
++    }
++    if (const auto next = std::find(read.begin() + first, read.begin() + last, false);
++        next != read.begin() + last)
++    {
++      hear(next - read.begin());
++      if (++fresh >= REFIT || std::find(read.begin(), read.end(), false) == read.end())
++      {
++        fresh = 0;
++        judge();
++      }
++    }
++    else
++      std::this_thread::sleep_for(std::chrono::milliseconds(200));
++  }
++  CLog::Log(LOGDEBUG, "Subtitle timing: {} minutes of the video's speech heard", heard.size());
++  // what the whole film asks for is kept; a film left before the end is heard again next time
++  if (!m_abort)
++    Keep(found);
++}
++
++bool CCueStage::Changes(const std::optional<TIMING::Fit>& shown, const TIMING::Fit& fit) const
++{
++  if (!shown && !fit.Moves())
++    return false;
++  // a line still to come moves by more than the refinement of a change heard further
++  const double now = AI::PlaybackTime() / DVD_TIME_BASE;
++  for (const TIMING::Cue& cue : m_starts)
++  {
++    const double moved = TIMING::Apply(fit, cue.start);
++    const double before = shown ? TIMING::Apply(*shown, cue.start) : cue.start;
++    if (std::max(moved, before) >= now && std::abs(moved - before) > CHANGE)
++      return true;
++  }
++  return false;
++}
++
++double CCueStage::Moved(double time, double start) const
+ {
+-  return DVD_SEC_TO_TIME(TIMING::Apply(*m_fit, Seconds(time)));
++  return DVD_SEC_TO_TIME(TIMING::Apply(*m_fit, Seconds(time), Seconds(start)));
+ }
+ 
+ void CCueStage::Out(const std::string& text, double start, double stop)
+@@ -308,7 +559,7 @@ void CCueStage::Out(const std::string& text, double start, double stop)
+   if (m_realigning)
+     m_delivered.push_back({text, start, stop});
+   if (m_fit)
+-    m_deliver(text, Moved(start), Moved(stop));
++    m_deliver(text, Moved(start, start), Moved(stop, start));
+   else
+     m_deliver(text, start, stop);
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index 0b09794..689c9b9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "SubtitleCleanup.h"
++#include "SubtitleSpeech.h"
+ #include "SubtitleTiming.h"
+ 
+ #include <atomic>
+@@ -20,6 +21,7 @@
+ #include <thread>
+ #include <vector>
+ 
++class CDVDDemux;
+ class CDVDInputStream;
+ class CDVDStreamInfo;
+ 
+@@ -34,7 +36,8 @@ class CCueWorker;
+  * \brief What happens to the cues of a text subtitle stream between where they are read and the
+  * screen: the repair the settings ask for, the language model's work on them, and the times of
+  * the cues around one too short to be seen, and for a file, its times realigned on the video's
+- * own subtitles. The codec or parser hands each cue in, and shows what comes out.
++ * own subtitles, or on its speech when it has none. The codec or parser hands each cue in, and
++ * shows what comes out.
+  */
+ class CCueStage
+ {
+@@ -89,13 +92,25 @@ private:
+     std::vector<TIMING::Window> windows;
+   };
+   void Stop();
+-  //! Lay the file's cues on the playing video's own subtitles.
++  //! Lay the file's cues on the playing video's own subtitles, or its speech.
+   void Realign();
++  //! The playing video, opened as playback opens it, and abortable by Stop until it is let go.
++  std::shared_ptr<CDVDDemux> OpenVideo();
+   //! A subtitle track of the video, read in a few stretches.
+   std::optional<Reference> ReadReference();
++  //! Lay the file's cues on the video's speech: heard in stretches across the film until it is
++  //! clear, then ahead of playback to the end.
++  void Listen();
++  //! Whether a change moves a line still to come from where the one shown puts it.
++  bool Changes(const std::optional<TIMING::Fit>& shown, const TIMING::Fit& fit) const;
++  //! Keep what the file's times were found to need, for the session.
++  void Keep(const std::optional<TIMING::Fit>& fit);
++  //! Show the file's cues as a change lays them, or as they are for none.
++  void Show(std::optional<TIMING::Fit> fit, const std::string& how);
+   //! A file's cue reaching the screen, moved when its times were found off.
+   void Out(const std::string& text, double start, double stop);
+-  double Moved(double time) const;
++  //! A time of the line starting at start, moved.
++  double Moved(double time, double start) const;
+ 
+   Deliver m_deliver;
+   //! where a cue goes once worked on: deliver, or Out for a file
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.cpp
+new file mode 100644
+index 0000000..cbd19da
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.cpp
+@@ -0,0 +1,151 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleListener.h"
++
++#include "cores/VideoPlayer/DVDDemuxers/DVDDemux.h"
++#include "cores/VideoPlayer/DVDStreamInfo.h"
++#include "cores/VideoPlayer/Interface/DemuxPacket.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++
++#include <cstring>
++#include <utility>
++
++extern "C"
++{
++#include <libavcodec/avcodec.h>
++#include <libavutil/channel_layout.h>
++#include <libavutil/dict.h>
++#include <libswresample/swresample.h>
++}
++
++namespace KODI::SUBTITLES::TIMING
++{
++CListener::CListener(CSpeechDetector& detector) : m_detector(detector)
++{
++}
++
++CListener::~CListener()
++{
++  swr_free(&m_resample);
++  av_frame_free(&m_frame);
++  avcodec_free_context(&m_codec);
++  av_packet_free(&m_packet);
++}
++
++bool CListener::Open(const CDemuxStreamAudio& stream)
++{
++  const CDVDStreamInfo hints(stream);
++  const AVCodec* codec = avcodec_find_decoder(hints.codec);
++  if (!codec)
++    return false;
++  m_codec = avcodec_alloc_context3(codec);
++  m_frame = av_frame_alloc();
++  m_packet = av_packet_alloc();
++  if (!m_codec || !m_frame || !m_packet)
++    return false;
++  if (hints.channels > 0 && hints.channellayout > 0)
++    av_channel_layout_from_mask(&m_codec->ch_layout, hints.channellayout);
++  else if (hints.channels > 0)
++    av_channel_layout_default(&m_codec->ch_layout, hints.channels);
++  m_codec->sample_rate = hints.samplerate;
++  m_codec->block_align = hints.blockalign;
++  m_codec->bit_rate = hints.bitrate;
++  m_codec->bits_per_coded_sample = hints.bitspersample ? hints.bitspersample : 16;
++  m_codec->pkt_timebase = AVRational{1, static_cast<int>(DVD_TIME_BASE)};
++  if (hints.extradata)
++  {
++    m_codec->extradata =
++        static_cast<uint8_t*>(av_mallocz(hints.extradata.GetSize() + AV_INPUT_BUFFER_PADDING_SIZE));
++    if (m_codec->extradata)
++    {
++      m_codec->extradata_size = hints.extradata.GetSize();
++      std::memcpy(m_codec->extradata, hints.extradata.GetData(), hints.extradata.GetSize());
++    }
++  }
++  // a DTS-HD stream's lossless extension adds nothing a voice detector hears
++  AVDictionary* options = nullptr;
++  if (hints.codec == AV_CODEC_ID_DTS)
++    av_dict_set(&options, "core_only", "1", 0);
++  const bool opened = avcodec_open2(m_codec, codec, &options) >= 0;
++  av_dict_free(&options);
++  return opened;
++}
++
++void CListener::Begin()
++{
++  avcodec_flush_buffers(m_codec);
++  swr_free(&m_resample);
++  m_detector.Reset();
++  m_heard = {};
++  m_started = false;
++  m_pending.clear();
++}
++
++void CListener::Hear(const DemuxPacket& packet)
++{
++  m_packet->data = packet.pData;
++  m_packet->size = packet.iSize;
++  m_packet->pts = packet.pts == DVD_NOPTS_VALUE ? AV_NOPTS_VALUE : static_cast<int64_t>(packet.pts);
++  if (avcodec_send_packet(m_codec, m_packet) >= 0)
++    while (avcodec_receive_frame(m_codec, m_frame) >= 0)
++    {
++      Take(*m_frame);
++      av_frame_unref(m_frame);
++    }
++  m_packet->data = nullptr;
++  m_packet->size = 0;
++}
++
++void CListener::Take(const AVFrame& frame)
++{
++  if (!m_started)
++  {
++    if (frame.best_effort_timestamp == AV_NOPTS_VALUE)
++      return;
++    m_heard.start = static_cast<double>(frame.best_effort_timestamp) / DVD_TIME_BASE;
++    m_started = true;
++  }
++  if (!m_resample)
++  {
++    // the dialogue's channel when the mix has one, else every channel alike
++    const int channels = frame.ch_layout.nb_channels;
++    const int centre = av_channel_layout_index_from_channel(&frame.ch_layout, AV_CHAN_FRONT_CENTER);
++    std::vector<double> matrix(channels, centre >= 0 ? 0.0 : 1.0 / channels);
++    if (centre >= 0)
++      matrix[centre] = 1;
++    AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
++    if (swr_alloc_set_opts2(&m_resample, &mono, AV_SAMPLE_FMT_FLT, SPEECH_RATE, &frame.ch_layout,
++                            static_cast<AVSampleFormat>(frame.format), frame.sample_rate, 0,
++                            nullptr) < 0 ||
++        swr_set_matrix(m_resample, matrix.data(), channels) < 0 || swr_init(m_resample) < 0)
++    {
++      swr_free(&m_resample);
++      return;
++    }
++  }
++  const int room = swr_get_out_samples(m_resample, frame.nb_samples);
++  if (room <= 0)
++    return;
++  const size_t had = m_pending.size();
++  m_pending.resize(had + room);
++  uint8_t* out = reinterpret_cast<uint8_t*>(m_pending.data() + had);
++  const int got = swr_convert(m_resample, &out, room,
++                              const_cast<const uint8_t**>(frame.extended_data), frame.nb_samples);
++  m_pending.resize(had + std::max(got, 0));
++  size_t used = 0;
++  for (; used + SPEECH_CHUNK <= m_pending.size(); used += SPEECH_CHUNK)
++    m_heard.speech.push_back(m_detector.Process(m_pending.data() + used));
++  m_pending.erase(m_pending.begin(), m_pending.begin() + used);
++}
++
++Heard CListener::End()
++{
++  return std::exchange(m_heard, {});
++}
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.h
+new file mode 100644
+index 0000000..fd10b20
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleListener.h
+@@ -0,0 +1,60 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleSpeech.h"
++
++#include <vector>
++
++extern "C"
++{
++  struct AVCodecContext;
++  struct AVFrame;
++  struct AVPacket;
++  struct SwrContext;
++}
++
++class CDemuxStreamAudio;
++struct DemuxPacket;
++
++namespace KODI::SUBTITLES::TIMING
++{
++/*!
++ * \brief Hears where someone speaks in an audio stream of the video, stretch by stretch: decodes
++ * its packets, keeps the centre channel where dialogue sits (or all of them evenly when there is
++ * none) at the detector's rate, and has the detector read it.
++ */
++class CListener
++{
++public:
++  explicit CListener(CSpeechDetector& detector);
++  ~CListener();
++  CListener(const CListener&) = delete;
++  CListener& operator=(const CListener&) = delete;
++
++  bool Open(const CDemuxStreamAudio& stream);
++  //! A new stretch: nothing heard before it carries over.
++  void Begin();
++  void Hear(const DemuxPacket& packet);
++  //! The stretch heard since Begin.
++  Heard End();
++
++private:
++  void Take(const AVFrame& frame);
++
++  CSpeechDetector& m_detector;
++  AVCodecContext* m_codec{nullptr};
++  AVFrame* m_frame{nullptr};
++  AVPacket* m_packet{nullptr};
++  SwrContext* m_resample{nullptr};
++  Heard m_heard;
++  bool m_started{false};
++  std::vector<float> m_pending;
++};
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.cpp
+new file mode 100644
+index 0000000..b4e68b2
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.cpp
+@@ -0,0 +1,974 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleSpeech.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <cstdint>
++#include <limits>
++
++namespace KODI::SUBTITLES::TIMING
++{
++namespace
++{
++//! offsets are tried this far apart, then the best one this finely around it
++constexpr double COARSE = 0.1;
++constexpr double FINE = 0.01;
++//! another change within this of the best one is the same change
++constexpr double SAME = 2;
++//! the best change must agree this much better than any other...
++constexpr double MIN_RATIO = 1.2;
++//! ...and stand this far above the agreements of all offsets, in their spread
++constexpr double MIN_Z = 5;
++//! a change smaller than this is no change: lines are shown a little before their speech
++constexpr double LEAVE = 0.5;
++constexpr size_t MIN_LINES = 20;
++
++//! The speech heard, less its mean, as running totals: how much more speech than usual lies
++//! between two times is two lookups.
++class CRunning
++{
++public:
++  CRunning(const Heard& heard, double mean) : m_start(heard.start)
++  {
++    m_excess.reserve(heard.speech.size());
++    m_total.reserve(heard.speech.size() + 1);
++    m_total.push_back(0);
++    for (const float p : heard.speech)
++    {
++      m_excess.push_back(static_cast<double>(p) - mean);
++      m_total.push_back(m_total.back() + m_excess.back());
++    }
++  }
++  double Start() const { return m_start; }
++  double Stop() const { return m_start + m_excess.size() * SPEECH_FRAME; }
++  //! The total up to a time, in frames, between frames by the frame it falls in.
++  double At(double time) const
++  {
++    const double f =
++        std::clamp((time - m_start) / SPEECH_FRAME, 0.0, static_cast<double>(m_excess.size()));
++    const size_t i = std::min(static_cast<size_t>(f), m_excess.size() - 1);
++    return m_total[i] + (f - i) * m_excess[i];
++  }
++
++private:
++  double m_start;
++  std::vector<double> m_excess;
++  std::vector<double> m_total;
++};
++
++//! How much more speech than usual the lines, moved, cover.
++double Agreement(const std::vector<Cue>& cues,
++                 double longest,
++                 const std::vector<CRunning>& heard,
++                 double scale,
++                 double offset)
++{
++  double sum = 0;
++  for (const CRunning& h : heard)
++  {
++    // the lines whose moved times reach into the stretch; cues are sorted by start
++    const double from = (h.Start() - offset) / scale - longest;
++    const double to = (h.Stop() - offset) / scale;
++    auto it = std::lower_bound(cues.begin(), cues.end(), from,
++                               [](const Cue& c, double t) { return c.start < t; });
++    for (; it != cues.end() && it->start < to; ++it)
++      sum += h.At(scale * it->stop + offset) - h.At(scale * it->start + offset);
++  }
++  return sum;
++}
++
++//! A subtitle made for another cut of the film - a scene more or less, a shot trimmed - is right,
++//! or off by one offset, until the first difference, then off by another. It is laid on the
++//! speech in parts: in blocks of this many lines, two at a time, ...
++constexpr size_t BLOCK = 30;
++//! ...each line against the speech heard this far around it, which says what any line there would
++//! cover by chance: a scene of talk agrees with any line laid in it
++constexpr double AROUND = 30;
++//! offsets of blocks this close are one: nearer than SAME, no run of lines tells them apart
++constexpr double CLOSE = SAME;
++//! changing offset between two lines must gain this much speech, in seconds
++constexpr double SWITCH = 4;
++//! a part of fewer lines than this takes a neighbour's offset
++constexpr size_t MIN_PART = 8;
++constexpr int STEPS = static_cast<int>(MAX_OFFSET / COARSE + 0.5);
++
++double OffsetOf(size_t i)
++{
++  return (static_cast<int>(i) - STEPS) * COARSE;
++}
++
++//! Everything heard laid on the film's time, less the speech heard within AROUND of each moment:
++//! what a line covers more than any line there would by chance, and how much of it was heard at
++//! all, are two lookups each.
++class CTimeline
++{
++public:
++  explicit CTimeline(const std::vector<Heard>& heard)
++  {
++    size_t frames = 0;
++    for (const Heard& h : heard)
++      frames = std::max(frames, First(h) + h.speech.size());
++    std::vector<double> speech(frames, 0);
++    m_heard.assign(frames, 0);
++    for (const Heard& h : heard)
++      for (size_t i = 0; i < h.speech.size(); ++i)
++      {
++        speech[First(h) + i] = h.speech[i];
++        m_heard[First(h) + i] = 1;
++      }
++    const std::vector<double> speechTotal = Totals(speech);
++    m_heardTotal = Totals(m_heard);
++    const size_t around = static_cast<size_t>(AROUND / SPEECH_FRAME);
++    m_excess.assign(frames, 0);
++    for (size_t i = 0; i < frames; ++i)
++    {
++      const size_t from = i > around ? i - around : 0;
++      const size_t to = std::min(frames, i + around + 1);
++      const double heardAround = m_heardTotal[to] - m_heardTotal[from];
++      if (m_heard[i] > 0 && heardAround > 0)
++        m_excess[i] = speech[i] - (speechTotal[to] - speechTotal[from]) / heardAround;
++    }
++    m_excessTotal = Totals(m_excess);
++  }
++
++  //! The speech under a line beyond what is usual around it, in seconds.
++  double Excess(double start, double stop) const
++  {
++    return (At(m_excessTotal, m_excess, stop) - At(m_excessTotal, m_excess, start)) * SPEECH_FRAME;
++  }
++  //! How much of a line was heard, in seconds.
++  double Listened(double start, double stop) const
++  {
++    return (Both(stop).second - Both(start).second) * SPEECH_FRAME;
++  }
++  //! A line at every offset: adds the speech it covers beyond the usual, and how much of it is
++  //! heard, both in seconds.
++  void Sweep(double start,
++             double stop,
++             std::vector<double>& excess,
++             std::vector<double>& heard) const
++  {
++    for (size_t i = 0; i < excess.size(); ++i)
++    {
++      const auto [excessFrom, heardFrom] = Both(start + OffsetOf(i));
++      const auto [excessTo, heardTo] = Both(stop + OffsetOf(i));
++      excess[i] += (excessTo - excessFrom) * SPEECH_FRAME;
++      heard[i] += (heardTo - heardFrom) * SPEECH_FRAME;
++    }
++  }
++
++private:
++  static size_t First(const Heard& h)
++  {
++    return static_cast<size_t>(std::lround(std::max(h.start, 0.0) / SPEECH_FRAME));
++  }
++  static std::vector<double> Totals(const std::vector<double>& frames)
++  {
++    std::vector<double> totals(frames.size() + 1, 0);
++    for (size_t i = 0; i < frames.size(); ++i)
++      totals[i + 1] = totals[i] + frames[i];
++    return totals;
++  }
++  std::pair<double, double> Both(double t) const
++  {
++    if (m_excess.empty())
++      return {0, 0};
++    const double f = std::clamp(t / SPEECH_FRAME, 0.0, static_cast<double>(m_excess.size()));
++    const size_t i = std::min(static_cast<size_t>(f), m_excess.size() - 1);
++    return {m_excessTotal[i] + (f - i) * m_excess[i], m_heardTotal[i] + (f - i) * m_heard[i]};
++  }
++  //! The total up to a time, between frames by the frame it falls in.
++  static double At(const std::vector<double>& totals, const std::vector<double>& frames, double t)
++  {
++    if (frames.empty())
++      return 0;
++    const double f = std::clamp(t / SPEECH_FRAME, 0.0, static_cast<double>(frames.size()));
++    const size_t i = std::min(static_cast<size_t>(f), frames.size() - 1);
++    return totals[i] + (f - i) * frames[i];
++  }
++
++  std::vector<double> m_excess;
++  std::vector<double> m_heard;
++  std::vector<double> m_excessTotal;
++  std::vector<double> m_heardTotal;
++};
++
++//! How clearly some lines ask for an offset: their agreement there against every offset's, and
++//! against the best agreement away from it.
++struct Support
++{
++  bool clear{false};
++  double z{-1};
++};
++
++//! A run of lines [first, last) laid at the candidate offset `at`.
++struct Run
++{
++  size_t first;
++  size_t last;
++  size_t at;
++};
++
++//! Some lines at every offset: how much more speech than usual they cover, and how much of them
++//! is heard at all. Offsets are compared only where the lines are heard about as well as anywhere,
++//! at least half as much as at best: lines nothing was heard of at their own offset would agree
++//! by chance wherever some speech was.
++struct Curve
++{
++  std::vector<double> agreement = std::vector<double>(2 * STEPS + 1, 0);
++  std::vector<double> heard = std::vector<double>(2 * STEPS + 1, 0);
++  double length{0};
++
++  void Add(const Curve& other)
++  {
++    for (size_t i = 0; i < agreement.size(); ++i)
++    {
++      agreement[i] += other.agreement[i];
++      heard[i] += other.heard[i];
++    }
++    length += other.length;
++  }
++  //! The least of the lines heard at an offset that is compared.
++  double Enough() const
++  {
++    const double most = *std::max_element(heard.begin(), heard.end());
++    return most > 0 ? most / 2 : std::numeric_limits<double>::infinity();
++  }
++
++  //! The offset the lines agree with most where they are heard, if anywhere.
++  std::optional<double> Best() const
++  {
++    const double enough = Enough();
++    std::optional<size_t> best;
++    for (size_t i = 0; i < agreement.size(); ++i)
++      if (heard[i] >= enough && (!best || agreement[i] > agreement[*best]))
++        best = i;
++    if (!best)
++      return {};
++    return OffsetOf(*best);
++  }
++
++  Support Supports(double offset) const
++  {
++    const double enough = Enough();
++    const int k = static_cast<int>(std::lround(offset / COARSE)) + STEPS;
++    if (k < 0 || k > 2 * STEPS || heard[k] < enough)
++      return {};
++    double peak = -std::numeric_limits<double>::infinity();
++    for (int i = std::max(k - 3, 0); i <= std::min(k + 3, 2 * STEPS); ++i)
++      if (heard[i] >= enough)
++        peak = std::max(peak, agreement[i]);
++    double sum = 0;
++    double squares = 0;
++    size_t count = 0;
++    double highest = -std::numeric_limits<double>::infinity();
++    double rival = -std::numeric_limits<double>::infinity();
++    for (size_t i = 0; i < agreement.size(); ++i)
++    {
++      if (heard[i] < enough)
++        continue;
++      sum += agreement[i];
++      squares += agreement[i] * agreement[i];
++      ++count;
++      highest = std::max(highest, agreement[i]);
++      if (std::abs(OffsetOf(i) - offset) > SAME)
++        rival = std::max(rival, agreement[i]);
++    }
++    const double mean = sum / count;
++    const double spread = std::sqrt(std::max(squares / count - mean * mean, 0.0));
++    Support support;
++    support.z = spread > 0 ? (peak - mean) / spread : 0;
++    support.clear = peak > 0 && peak >= highest && support.z >= MIN_Z &&
++                    (rival <= 0 || peak / rival >= MIN_RATIO);
++    return support;
++  }
++};
++
++//! The lines of the subtitle under one frame-rate ratio, laid on the speech heard.
++class CLayout
++{
++public:
++  //! Gives up laying the lines when stop is set.
++  CLayout(const CTimeline& timeline,
++          const std::vector<Cue>& cues,
++          double scale,
++          const std::atomic<bool>* stop)
++    : m_timeline(timeline), m_cues(cues), m_scale(scale)
++  {
++    const size_t blocks = (cues.size() + BLOCK - 1) / BLOCK;
++    m_blocks.resize(blocks);
++    for (size_t k = 0; k < blocks && !(stop && *stop); ++k)
++      Add(k * BLOCK, std::min(cues.size(), (k + 1) * BLOCK), m_blocks[k]);
++  }
++
++  //! The most the lines agree with the speech at one offset.
++  double Single() const
++  {
++    Curve all;
++    for (const Curve& block : m_blocks)
++      all.Add(block);
++    return *std::max_element(all.agreement.begin(), all.agreement.end());
++  }
++
++  //! The offsets each two blocks clearly ask for, and `also`, those close together taken as one.
++  std::vector<double> Candidates(std::optional<double> also) const
++  {
++    std::vector<double> asked;
++    if (also)
++      asked.push_back(*also);
++    Pairs([&](const Curve&, double offset) { asked.push_back(offset); });
++    std::sort(asked.begin(), asked.end());
++    std::vector<double> candidates;
++    for (size_t a = 0; a < asked.size();)
++    {
++      size_t b = a + 1;
++      while (b < asked.size() && asked[b] - asked[a] <= CLOSE)
++        ++b;
++      candidates.push_back(asked[a + (b - a) / 2]);
++      a = b;
++    }
++    return candidates;
++  }
++
++  //! Whether two blocks, heard where this offset puts them, clearly ask for another.
++  bool Elsewhere(double offset) const
++  {
++    bool elsewhere = false;
++    Pairs([&](const Curve& curve, double asked)
++          { elsewhere |= std::abs(asked - offset) > SAME && curve.heard[At(offset)] >= curve.Enough(); });
++    return elsewhere;
++  }
++
++  //! Each line at one of the candidates, a change between two lines costing SWITCH.
++  std::vector<Run> Lay(const std::vector<double>& candidates) const
++  {
++    const size_t k = candidates.size();
++    const size_t n = m_cues.size();
++    std::vector<double> score(k);
++    std::vector<double> next(k);
++    std::vector<uint8_t> switched(n * k, 0);
++    std::vector<size_t> from(n, 0);
++    for (size_t c = 0; c < k; ++c)
++      score[c] = Agreement(0, candidates[c]);
++    for (size_t i = 1; i < n; ++i)
++    {
++      const size_t best = std::max_element(score.begin(), score.end()) - score.begin();
++      from[i] = best;
++      for (size_t c = 0; c < k; ++c)
++      {
++        const double change = score[best] - SWITCH;
++        switched[i * k + c] = change > score[c];
++        next[c] = std::max(score[c], change) + Agreement(i, candidates[c]);
++      }
++      std::swap(score, next);
++    }
++    std::vector<size_t> choice(n);
++    size_t c = std::max_element(score.begin(), score.end()) - score.begin();
++    for (size_t i = n; i-- > 0;)
++    {
++      choice[i] = c;
++      if (i > 0 && switched[i * k + c])
++        c = from[i];
++    }
++    std::vector<Run> runs;
++    for (size_t i = 0; i < n; ++i)
++      if (!runs.empty() && runs.back().at == choice[i])
++        runs.back().last = i + 1;
++      else
++        runs.push_back({i, i + 1, choice[i]});
++    return runs;
++  }
++
++  //! How clearly lines [first, last) alone ask for an offset.
++  Support Supports(size_t first, size_t last, double offset) const
++  {
++    return CurveOf(first, last).Supports(offset);
++  }
++
++  //! Lines [first, last) at every offset, from whole blocks where it can.
++  Curve CurveOf(size_t first, size_t last) const
++  {
++    Curve curve;
++    for (size_t i = first; i < last;)
++    {
++      const size_t end = std::min(m_cues.size(), i + BLOCK);
++      if (i % BLOCK == 0 && end <= last)
++      {
++        curve.Add(m_blocks[i / BLOCK]);
++        i = end;
++      }
++      else
++      {
++        Add(i, i + 1, curve);
++        ++i;
++      }
++    }
++    return curve;
++  }
++
++  //! How much more speech lines [first, last) cover at an offset than lines there would by chance.
++  double Agreement(size_t first, size_t last, double offset) const
++  {
++    double sum = 0;
++    for (size_t i = first; i < last; ++i)
++      sum += Agreement(i, offset);
++    return sum;
++  }
++
++  //! How much of lines [first, last) is heard at an offset, in seconds.
++  double Heard(size_t first, size_t last, double offset) const
++  {
++    double heard = 0;
++    for (size_t i = first; i < last; ++i)
++      heard += m_timeline.Listened(m_scale * m_cues[i].start + offset,
++                                   m_scale * m_cues[i].stop + offset);
++    return heard;
++  }
++
++  //! Whether lines [first, last), heard at this offset, agree with another at least twice as much:
++  //! a part that takes them is laid over lines it does not fit.
++  bool Contradicts(size_t first, size_t last, double offset) const
++  {
++    const Curve curve = CurveOf(first, last);
++    const auto best = curve.Best();
++    if (!best || std::abs(*best - offset) <= SAME || curve.heard[At(offset)] < curve.Enough())
++      return false;
++    return curve.agreement[At(offset)] < curve.agreement[At(*best)] / 2;
++  }
++
++  size_t Lines() const { return m_cues.size(); }
++  double Start(size_t line) const { return m_cues[line].start; }
++  double Scale() const { return m_scale; }
++
++private:
++  static size_t At(double offset)
++  {
++    return static_cast<size_t>(std::clamp(std::lround(offset / COARSE) + STEPS, 0L, 2L * STEPS));
++  }
++
++  //! Each two blocks in turn, with the offset they clearly ask for when they do.
++  template<typename F>
++  void Pairs(F asks) const
++  {
++    for (size_t k = 0; k < m_blocks.size(); ++k)
++    {
++      if (k + 1 == m_blocks.size() && k > 0)
++        break;
++      if (std::min(m_cues.size(), (k + 2) * BLOCK) - k * BLOCK < BLOCK)
++        continue;
++      Curve curve = m_blocks[k];
++      if (k + 1 < m_blocks.size())
++        curve.Add(m_blocks[k + 1]);
++      if (const auto offset = curve.Best(); offset && curve.Supports(*offset).clear)
++        asks(curve, *offset);
++    }
++  }
++
++  double Agreement(size_t line, double offset) const
++  {
++    return m_timeline.Excess(m_scale * m_cues[line].start + offset,
++                             m_scale * m_cues[line].stop + offset);
++  }
++
++  void Add(size_t first, size_t last, Curve& curve) const
++  {
++    for (size_t line = first; line < last; ++line)
++    {
++      const double start = m_scale * m_cues[line].start;
++      const double stop = m_scale * m_cues[line].stop;
++      curve.length += stop - start;
++      m_timeline.Sweep(start, stop, curve.agreement, curve.heard);
++    }
++  }
++
++  const CTimeline& m_timeline;
++  const std::vector<Cue>& m_cues;
++  double m_scale;
++  std::vector<Curve> m_blocks;
++};
++
++//! Neighbouring runs at one offset made one.
++std::vector<Run> Merged(const std::vector<Run>& runs)
++{
++  std::vector<Run> merged;
++  for (const Run& run : runs)
++    if (!merged.empty() && merged.back().at == run.at)
++      merged.back().last = run.last;
++    else
++      merged.push_back(run);
++  return merged;
++}
++
++//! Runs of fewer than MIN_PART lines take a neighbour's offset, whichever they agree with more.
++std::vector<Run> MergeShort(const CLayout& layout,
++                            const std::vector<double>& candidates,
++                            std::vector<Run> runs)
++{
++  for (size_t i = 0; i < runs.size() && runs.size() > 1;)
++  {
++    if (runs[i].last - runs[i].first >= MIN_PART)
++    {
++      ++i;
++      continue;
++    }
++    double best = -std::numeric_limits<double>::infinity();
++    for (const size_t side : {i - 1, i + 1})
++      if (side < runs.size())
++        if (const double a =
++                layout.Agreement(runs[i].first, runs[i].last, candidates[runs[side].at]);
++            a > best)
++        {
++          best = a;
++          runs[i].at = runs[side].at;
++        }
++    runs = Merged(runs);
++    i = 0;
++  }
++  return runs;
++}
++
++//! A run differs from a neighbour only where its lines are heard at the neighbour's offset too:
++//! nothing says they are not there. And a run unsure on its own goes with the neighbour it agrees
++//! with more.
++std::vector<Run> Settle(const CLayout& layout,
++                        const std::vector<double>& candidates,
++                        std::vector<Run> runs)
++{
++  for (size_t i = 0; i < runs.size() && runs.size() > 1;)
++  {
++    const bool first = i == 0;
++    const bool last = i + 1 == runs.size();
++    const double own = layout.Heard(runs[i].first, runs[i].last, candidates[runs[i].at]);
++    std::optional<size_t> unheard;
++    for (const size_t side : {i - 1, i + 1})
++      if (side < runs.size() && !unheard &&
++          layout.Heard(runs[i].first, runs[i].last, candidates[runs[side].at]) < own / 2)
++        unheard = runs[side].at;
++    if (unheard)
++    {
++      runs[i].at = *unheard;
++      runs = Merged(runs);
++      i = 0;
++      continue;
++    }
++    if (layout.Supports(runs[i].first, runs[i].last, candidates[runs[i].at]).clear)
++    {
++      ++i;
++      continue;
++    }
++    // to the neighbour it agrees with more
++    if (first || last)
++      runs[i].at = first ? runs[i + 1].at : runs[i - 1].at;
++    else
++      runs[i].at =
++          layout.Agreement(runs[i].first, runs[i].last, candidates[runs[i - 1].at]) >=
++                  layout.Agreement(runs[i].first, runs[i].last, candidates[runs[i + 1].at])
++              ? runs[i - 1].at
++              : runs[i + 1].at;
++    runs = Merged(runs);
++    i = 0;
++  }
++  return runs;
++}
++
++//! The subtitle laid on the speech in parts, each clearly asked for by some run of its lines.
++struct Parts
++{
++  double scale{1};
++  std::vector<std::pair<double, double>> parts;
++  double agreement{0};
++};
++
++//! `also`: the offset the whole subtitle clearly asks for under this ratio, if any; gives up when
++//! stop is set.
++std::optional<Parts> LayInParts(const CLayout& layout,
++                                std::optional<double> also,
++                                const std::atomic<bool>* stop)
++{
++  std::vector<double> candidates = layout.Candidates(also);
++  while (candidates.size() > 1 && !(stop && *stop))
++  {
++    std::vector<Run> runs = MergeShort(layout, candidates, layout.Lay(candidates));
++    std::vector<Support> support(candidates.size());
++    for (const Run& run : runs)
++    {
++      const Support s = layout.Supports(run.first, run.last, candidates[run.at]);
++      if (s.clear > support[run.at].clear ||
++          (s.clear == support[run.at].clear && s.z > support[run.at].z))
++        support[run.at] = s;
++    }
++    // the least supported candidate goes, and the lines are laid again
++    size_t worst = candidates.size();
++    for (size_t c = 0; c < candidates.size(); ++c)
++      if (!support[c].clear && (worst == candidates.size() || support[c].z < support[worst].z))
++        worst = c;
++    if (worst < candidates.size())
++    {
++      candidates.erase(candidates.begin() + worst);
++      continue;
++    }
++    runs = Settle(layout, candidates, std::move(runs));
++    if (runs.size() < 2)
++      return {};
++    Parts parts;
++    parts.scale = layout.Scale();
++    std::vector<double> offsets(layout.Lines());
++    std::vector<double> coarse(layout.Lines());
++    for (const Run& run : runs)
++    {
++      const double candidate = candidates[run.at];
++      // finely around the candidate
++      double offset = candidate;
++      double peak = -std::numeric_limits<double>::infinity();
++      for (double o = candidate - 3 * COARSE; o <= candidate + 3 * COARSE + FINE / 2; o += FINE)
++        if (const double a = layout.Agreement(run.first, run.last, o); a > peak)
++        {
++          peak = a;
++          offset = o;
++        }
++      if (parts.scale == 1 && std::abs(offset) < LEAVE)
++        offset = 0;
++      std::fill(offsets.begin() + run.first, offsets.begin() + run.last, offset);
++      std::fill(coarse.begin() + run.first, coarse.begin() + run.last, candidate);
++      // its lines a block at a time, the last short one with the one before: those that do not fit
++      // it stay as they are - a cut re-edited in more places than its parts tell; under another
++      // frame rate, as they are is no part at all
++      for (size_t first = run.first; first < run.last;)
++      {
++        size_t last = std::min(run.last, first + BLOCK);
++        if (run.last - last < BLOCK / 2)
++          last = run.last;
++        if (offset != 0 && layout.Contradicts(first, last, offset))
++        {
++          if (parts.scale != 1)
++            return {};
++          std::fill(offsets.begin() + first, offsets.begin() + last, 0.0);
++          std::fill(coarse.begin() + first, coarse.begin() + last, 0.0);
++        }
++        first = last;
++      }
++    }
++    if (stop && *stop)
++      return {};
++    for (size_t i = 0; i < offsets.size(); ++i)
++    {
++      parts.agreement += layout.Agreement(i, i + 1, coarse[i]);
++      if (parts.parts.empty() || offsets[i] != parts.parts.back().second)
++        parts.parts.emplace_back(layout.Start(i), offsets[i]);
++    }
++    if (parts.parts.size() < 2)
++      return {};
++    parts.agreement -= SWITCH * (parts.parts.size() - 1);
++    return parts;
++  }
++  return {};
++}
++} // namespace
++
++std::optional<SpeechFit> FitToSpeech(const std::vector<Cue>& unsorted,
++                                     const std::vector<Heard>& heard,
++                                     const std::atomic<bool>* stop)
++{
++  const auto stopped = [stop] { return stop && *stop; };
++  std::vector<Cue> cues;
++  double longest = 0;
++  for (const Cue& cue : unsorted)
++    if (cue.stop > cue.start)
++    {
++      cues.push_back(cue);
++      longest = std::max(longest, cue.stop - cue.start);
++    }
++  std::sort(cues.begin(), cues.end(), [](const Cue& a, const Cue& b) { return a.start < b.start; });
++  double sum = 0;
++  size_t frames = 0;
++  for (const Heard& h : heard)
++  {
++    for (const float p : h.speech)
++      sum += static_cast<double>(p);
++    frames += h.speech.size();
++  }
++  if (cues.size() < MIN_LINES || frames == 0)
++    return {};
++  std::vector<CRunning> running;
++  for (const Heard& h : heard)
++    if (!h.speech.empty())
++      running.emplace_back(h, sum / frames);
++
++  // every offset under every frame-rate ratio, coarsely
++  struct Curve
++  {
++    double scale;
++    std::vector<double> agreement;
++  };
++  std::vector<Curve> curves;
++  for (const double scale : Scales())
++  {
++    if (stopped())
++      return {};
++    Curve curve{scale, {}};
++    curve.agreement.reserve(2 * STEPS + 1);
++    for (int i = -STEPS; i <= STEPS; ++i)
++      curve.agreement.push_back(Agreement(cues, longest, running, scale, i * COARSE));
++    curves.push_back(std::move(curve));
++  }
++  const Curve* best = nullptr;
++  size_t at = 0;
++  for (const Curve& curve : curves)
++  {
++    const size_t i =
++        std::max_element(curve.agreement.begin(), curve.agreement.end()) - curve.agreement.begin();
++    if (!best || curve.agreement[i] > best->agreement[at])
++    {
++      best = &curve;
++      at = i;
++    }
++  }
++  const double coarse = (static_cast<int>(at) - STEPS) * COARSE;
++
++  // then finely around it
++  double offset = coarse;
++  double peak = best->agreement[at];
++  for (double o = coarse - COARSE; o <= coarse + COARSE + FINE / 2; o += FINE)
++    if (const double a = Agreement(cues, longest, running, best->scale, o); a > peak)
++    {
++      peak = a;
++      offset = o;
++    }
++
++  // the best of every other change: a twin ratio is the same change only where it puts the lines
++  // where the best one does, which over a few scenes of lines it may not
++  const double first = cues.front().start;
++  double last = first;
++  for (const Cue& cue : cues)
++    last = std::max(last, cue.stop);
++  double rival = -std::numeric_limits<double>::infinity();
++  for (const Curve& curve : curves)
++  {
++    const double drift = best->scale - curve.scale;
++    const bool twin = std::abs(curve.scale / best->scale - 1) < TWIN;
++    for (size_t i = 0; i < curve.agreement.size(); ++i)
++    {
++      const double o = (static_cast<int>(i) - STEPS) * COARSE;
++      const bool same = twin && std::abs(drift * first + offset - o) <= SAME &&
++                        std::abs(drift * last + offset - o) <= SAME;
++      if (!same)
++        rival = std::max(rival, curve.agreement[i]);
++    }
++  }
++  double mean = 0;
++  for (const double a : best->agreement)
++    mean += a;
++  mean /= best->agreement.size();
++  double spread = 0;
++  for (const double a : best->agreement)
++    spread += (a - mean) * (a - mean);
++  spread = std::sqrt(spread / best->agreement.size());
++
++  SpeechFit result;
++  // nothing else agrees at all: as clear as can be
++  result.ratio = rival > 0 ? peak / rival : std::numeric_limits<double>::infinity();
++  result.z = spread > 0 ? (peak - mean) / spread : 0;
++
++  // a subtitle for another cut: under the best ratio, or under none when that is a near twin of
++  // it, since a few steps a few seconds apart look like a slow drift; taken only when it agrees
++  // better than any one offset
++  const CTimeline timeline(heard);
++  std::optional<Parts> parts;
++  double single = -std::numeric_limits<double>::infinity();
++  bool elsewhere = false;
++  const bool sure = peak > 0 && result.ratio >= MIN_RATIO && result.z >= MIN_Z;
++  for (const double scale : Scales())
++  {
++    if (scale != best->scale && (scale != 1 || std::abs(scale / best->scale - 1) >= TWIN))
++      continue;
++    const CLayout layout(timeline, cues, scale, stop);
++    if (stopped())
++      return {};
++    single = std::max(single, layout.Single());
++    const auto also = sure && scale == best->scale ? std::optional<double>(offset) : std::nullopt;
++    auto laid = LayInParts(layout, also, stop);
++    // steps under no change at all can follow a sure drift: each costs a change more there
++    if (laid && sure && scale != best->scale)
++      laid->agreement -= SWITCH * laid->parts.size();
++    if (laid && (!parts || laid->agreement > parts->agreement))
++      parts = std::move(laid);
++    // lines somewhere, heard where the one change puts them, clearly asking for another offset
++    if (scale == best->scale)
++      elsewhere = layout.Elsewhere(offset);
++  }
++  if (parts && parts->agreement > single)
++  {
++    result.fit.scale = parts->scale;
++    result.fit.offset = parts->parts.front().second;
++    result.fit.parts = std::move(parts->parts);
++    return result;
++  }
++
++  // nor one change that some run of lines clearly says is wrong for it: a cut not yet heard enough
++  // to be laid in parts
++  if (!sure || elsewhere)
++    return {};
++  result.fit.scale = best->scale;
++  // lines are shown a little before their speech: a smaller change is none
++  result.fit.offset = best->scale == 1 && std::abs(offset) < LEAVE ? 0 : offset;
++  return result;
++}
++
++namespace
++{
++constexpr int BINS = 129;
++constexpr int WINDOW = 256;
++constexpr int HOP = 128;
++//! the encoder: input channels, output channels, stride; every kernel is three wide
++constexpr int LAYERS[4][3] = {{BINS, 128, 1}, {128, 64, 2}, {64, 64, 2}, {64, 128, 1}};
++
++//! y (out, frames) = ReLU(conv1d(x (in, frames), padding 1, stride))
++int Convolve(const float* x,
++             int in,
++             int frames,
++             const float* w,
++             const float* b,
++             int out,
++             int stride,
++             float* y)
++{
++  const int produced = (frames - 1) / stride + 1;
++  for (int o = 0; o < out; ++o)
++    for (int t = 0; t < produced; ++t)
++    {
++      float sum = b[o];
++      for (int k = 0; k < 3; ++k)
++      {
++        const int at = t * stride + k - 1;
++        if (at < 0 || at >= frames)
++          continue;
++        const float* wk = w + o * in * 3 + k;
++        for (int c = 0; c < in; ++c)
++          sum += wk[c * 3] * x[c * frames + at];
++      }
++      y[o * produced + t] = std::max(sum, 0.0f);
++    }
++  return produced;
++}
++
++float Sigmoid(float v)
++{
++  return 1.0f / (1.0f + std::exp(-v));
++}
++} // namespace
++
++size_t CSpeechDetector::WeightCount()
++{
++  size_t count = 2 * BINS * WINDOW;
++  for (const auto& layer : LAYERS)
++    count += layer[0] * layer[1] * 3 + layer[1];
++  return count + 2 * 4 * HIDDEN * HIDDEN + 2 * 4 * HIDDEN + HIDDEN + 1;
++}
++
++bool CSpeechDetector::Load(std::vector<float> weights)
++{
++  if (weights.size() != WeightCount())
++    return false;
++  m_weights = std::move(weights);
++  const float* p = m_weights.data();
++  const auto take = [&p](size_t count)
++  {
++    const float* at = p;
++    p += count;
++    return at;
++  };
++  m_basis = take(2 * BINS * WINDOW);
++  for (int i = 0; i < 4; ++i)
++  {
++    m_conv[i][0] = take(LAYERS[i][0] * LAYERS[i][1] * 3);
++    m_conv[i][1] = take(LAYERS[i][1]);
++  }
++  m_inputWeights = take(4 * HIDDEN * HIDDEN);
++  m_hiddenWeights = take(4 * HIDDEN * HIDDEN);
++  m_inputBias = take(4 * HIDDEN);
++  m_hiddenBias = take(4 * HIDDEN);
++  m_outWeights = take(HIDDEN);
++  m_outBias = *take(1);
++  Reset();
++  return true;
++}
++
++void CSpeechDetector::Reset()
++{
++  m_context.fill(0);
++  m_h.fill(0);
++  m_c.fill(0);
++}
++
++float CSpeechDetector::Process(const float* chunk)
++{
++  // the end of the chunk before, the chunk, and the chunk's end mirrored
++  constexpr int LENGTH = CONTEXT + SPEECH_CHUNK + CONTEXT;
++  float x[LENGTH];
++  std::copy(m_context.begin(), m_context.end(), x);
++  std::copy(chunk, chunk + SPEECH_CHUNK, x + CONTEXT);
++  for (int i = 0; i < CONTEXT; ++i)
++    x[CONTEXT + SPEECH_CHUNK + i] = x[CONTEXT + SPEECH_CHUNK - 2 - i];
++  std::copy(chunk + SPEECH_CHUNK - CONTEXT, chunk + SPEECH_CHUNK, m_context.begin());
++
++  // the spectrum's magnitude, by the basis' cosine and sine rows
++  constexpr int FRAMES = (LENGTH - WINDOW) / HOP + 1;
++  float magnitude[BINS * FRAMES];
++  for (int bin = 0; bin < BINS; ++bin)
++    for (int f = 0; f < FRAMES; ++f)
++    {
++      const float* frame = x + f * HOP;
++      const float* re = m_basis + bin * WINDOW;
++      const float* im = m_basis + (BINS + bin) * WINDOW;
++      float r = 0;
++      float i = 0;
++      for (int n = 0; n < WINDOW; ++n)
++      {
++        r += re[n] * frame[n];
++        i += im[n] * frame[n];
++      }
++      magnitude[bin * FRAMES + f] = std::sqrt(r * r + i * i);
++    }
++  float a[128 * FRAMES];
++  float b[128 * FRAMES];
++  const float* in = magnitude;
++  float* out = a;
++  int frames = FRAMES;
++  for (int i = 0; i < 4; ++i)
++  {
++    frames = Convolve(in, LAYERS[i][0], frames, m_conv[i][0], m_conv[i][1], LAYERS[i][1],
++                      LAYERS[i][2], out);
++    in = out;
++    out = out == a ? b : a;
++  }
++
++  // one step of the recurrent cell on the encoder's one frame: gates input, forget, cell, output
++  float gates[4 * HIDDEN];
++  for (int g = 0; g < 4 * HIDDEN; ++g)
++  {
++    float sum = m_inputBias[g] + m_hiddenBias[g];
++    const float* wi = m_inputWeights + g * HIDDEN;
++    const float* wh = m_hiddenWeights + g * HIDDEN;
++    for (int k = 0; k < HIDDEN; ++k)
++      sum += wi[k] * in[k] + wh[k] * m_h[k];
++    gates[g] = sum;
++  }
++  float speech = m_outBias;
++  for (int k = 0; k < HIDDEN; ++k)
++  {
++    m_c[k] =
++        Sigmoid(gates[HIDDEN + k]) * m_c[k] + Sigmoid(gates[k]) * std::tanh(gates[2 * HIDDEN + k]);
++    m_h[k] = Sigmoid(gates[3 * HIDDEN + k]) * std::tanh(m_c[k]);
++    speech += m_outWeights[k] * std::max(m_h[k], 0.0f);
++  }
++  return Sigmoid(speech);
++}
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.h
+new file mode 100644
+index 0000000..b459143
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.h
+@@ -0,0 +1,102 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleTiming.h"
++
++#include <array>
++#include <atomic>
++#include <optional>
++#include <vector>
++
++/*!
++ * \brief Realigning a subtitle on the video's speech, for a video whose own subtitles cannot tell
++ * how to lay it.
++ *
++ * Where someone speaks is read from the sound, a chance for every 32 ms, by Silero's voice
++ * activity model (MIT licence, its weights shipped in an add-on). The subtitle shows a line
++ * where someone speaks and nothing in the silences between, so the change to its times that
++ * best lays its lines on the speech - an offset, and a known frame-rate ratio - is the one that
++ * puts most speech under lines and least under nothing. A line that translates something written
++ * on screen moves with the rest.
++ *
++ * A subtitle made for another cut of the film - a scene more or less, a shot trimmed - is laid in
++ * parts: the offset changes where the cuts differ, when runs of lines on each side clearly ask
++ * for their own.
++ */
++namespace KODI::SUBTITLES::TIMING
++{
++//! What the detector reads at a time, in samples at its rate, and so how long a reading lasts.
++constexpr int SPEECH_RATE = 16000;
++constexpr int SPEECH_CHUNK = 512;
++constexpr double SPEECH_FRAME = static_cast<double>(SPEECH_CHUNK) / SPEECH_RATE;
++
++//! A stretch of the video listened to: where it starts, and the chance of speech in each frame.
++struct Heard
++{
++  double start{0};
++  std::vector<float> speech;
++};
++
++//! The change the speech clearly asks for - none, when it finds the times right - and how sure:
++//! the best one offset's agreement against the best other change's, and how far it stands above
++//! every offset's.
++struct SpeechFit
++{
++  Fit fit;
++  double ratio{0};
++  double z{0};
++};
++
++/*!
++ * \brief The change that lays the subtitle's lines on the speech heard, when the speech is clear
++ * about it; nothing when it is not. A subtitle made for another cut of the film is laid in parts,
++ * each at its own offset, when runs of its lines clearly ask for each.
++ */
++std::optional<SpeechFit> FitToSpeech(const std::vector<Cue>& cues,
++                                     const std::vector<Heard>& heard,
++                                     const std::atomic<bool>* stop = nullptr);
++
++/*!
++ * \brief Silero VAD v5 at 16 kHz, without a runtime: a short-time spectrum, four convolutions and
++ * a recurrent cell. Fed SPEECH_CHUNK samples at a time, in order.
++ */
++class CSpeechDetector
++{
++public:
++  //! The weights as the add-on ships them: float32, little endian, in the network's order.
++  bool Load(std::vector<float> weights);
++  bool Loaded() const { return !m_weights.empty(); }
++  //! Forgets what it heard: the next chunk does not follow the last.
++  void Reset();
++  //! The chance that someone speaks in the chunk.
++  float Process(const float* chunk);
++
++  //! How many floats the weights are.
++  static size_t WeightCount();
++
++private:
++  static constexpr int CONTEXT = 64;
++  static constexpr int HIDDEN = 128;
++
++  std::vector<float> m_weights;
++  const float* m_basis{nullptr};
++  std::array<std::array<const float*, 2>, 4> m_conv{};
++  const float* m_inputWeights{nullptr};
++  const float* m_hiddenWeights{nullptr};
++  const float* m_inputBias{nullptr};
++  const float* m_hiddenBias{nullptr};
++  const float* m_outWeights{nullptr};
++  float m_outBias{0};
++
++  std::array<float, CONTEXT> m_context{};
++  std::array<float, HIDDEN> m_h{};
++  std::array<float, HIDDEN> m_c{};
++};
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
+index b2c941a..45da65d 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <iterator>
+ #include <unordered_map>
+ 
+ namespace KODI::SUBTITLES::TIMING
+@@ -22,18 +23,14 @@ constexpr double FILM = 24000.0 / 1001;
+ constexpr double TOLERANCE = 0.3;
+ //! the bins starts vote for an offset in
+ constexpr double BIN = 0.1;
+-//! a release with another intro is late or early by a minute or two; more is another film
+-constexpr double MAX_OFFSET = 600;
+ //! a change is made only when it lines up this many of the reference's lines...
+ constexpr size_t MIN_MATCHED = 8;
+ //! ...and this share of them, since the reference's lines are not the subtitle's
+ constexpr double MIN_SHARE = 0.4;
+ //! and when no other change comes close
+ constexpr double MAX_RIVAL = 0.6;
+-//! a ratio a thousandth from the best one (24 against 23.976) is the same change drifting, and
+-//! lines up much of what it does: it need only clearly lose
++//! a twin of the best ratio lines up much of what it does: it need only clearly lose
+ constexpr double MAX_TWIN = 0.85;
+-constexpr double TWIN = 0.002;
+ //! and in every stretch read, it must line up this share of the reference's lines there - a
+ //! file for another cut fits one part of the film and not the rest
+ constexpr double MIN_WINDOW_SHARE = 0.25;
+@@ -83,7 +80,7 @@ Fit Refine(const std::vector<double>& starts,
+     offset = offsets[offsets.size() / 2];
+     matches = Matches(starts, reference, scale, offset);
+   }
+-  return {scale, offset, matches.size(), reference.size()};
++  return {scale, offset, matches.size(), reference.size(), {}};
+ }
+ } // namespace
+ 
+@@ -164,9 +161,8 @@ std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
+     if (rival.matched > (twin ? MAX_TWIN : MAX_RIVAL) * best.matched)
+       return {};
+   }
+-  // times that line up as they are stay as they are
+-  if ((best.scale == 1 && std::abs(best.offset) <= TOLERANCE) ||
+-      asIs > MAX_RIVAL * best.matched)
++  const bool right = best.scale == 1 && std::abs(best.offset) <= TOLERANCE;
++  if (!right && asIs > MAX_RIVAL * best.matched)
+     return {};
+   for (const Window& window : windows)
+   {
+@@ -174,7 +170,9 @@ std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
+     for (const double r : refs)
+       if (r >= window.start && r <= window.stop)
+         there.push_back(r);
+-    const size_t matched = Matches(starts, there, best.scale, best.offset).size();
++    // a change found right is no change at all
++    const size_t matched = right ? Matches(starts, there, 1, 0).size()
++                                 : Matches(starts, there, best.scale, best.offset).size();
+     const size_t matchedAsIs = Matches(starts, there, 1, 0).size();
+     // a stretch the times fit as they are, better than the change: the change breaks it
+     if (matchedAsIs >= 2 && matchedAsIs > matched)
+@@ -182,9 +180,29 @@ std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
+     if (there.size() >= WINDOW_LINES && matched < MIN_WINDOW_SHARE * there.size())
+       return {};
+   }
++  // times that line up as they are, in every stretch read, stay as they are
++  if (right)
++    return Fit{1, 0, best.matched, best.reference, {}};
+   return best;
+ }
+ 
++bool Fit::Moves() const
++{
++  return scale != 1 || offset != 0 ||
++         std::any_of(parts.begin(), parts.end(), [](const auto& part) { return part.second != 0; });
++}
++
++double Apply(const Fit& fit, double time, double start)
++{
++  double offset = fit.offset;
++  // the last part that starts at or before the line
++  const auto it = std::upper_bound(fit.parts.begin(), fit.parts.end(), start,
++                                   [](double t, const auto& part) { return t < part.first; });
++  if (it != fit.parts.begin())
++    offset = std::prev(it)->second;
++  return fit.scale * time + offset;
++}
++
+ std::optional<bool> PgsShows(const uint8_t* data, size_t size)
+ {
+   // segments: a type, a big-endian length, the data; a presentation composition segment (0x16)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h
+index 2b0eb67..7a80af7 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h
+@@ -12,6 +12,7 @@
+ #include <cstdint>
+ #include <optional>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ /*!
+@@ -24,7 +25,8 @@
+  * video's own. One change applies to every line alike - an offset, and a known frame-rate ratio -
+  * so a line that translates something written on screen, which no speech marks, moves with the
+  * rest. Nothing changes unless that one change lines most of the reference's lines up, and many
+- * more than any other would.
++ * more than any other would. (A subtitle for another cut, which no one change fits, is laid on the
++ * speech in parts: SubtitleSpeech.h.)
+  */
+ namespace KODI::SUBTITLES::TIMING
+ {
+@@ -49,14 +51,24 @@ struct Fit
+   double offset{0};
+   size_t matched{0}; //!< the reference's lines that a line of the subtitle then starts with
+   size_t reference{0}; //!< the reference's lines read
++  //! For a subtitle made for another cut of the film: from each of these subtitle times on, the
++  //! offset of that part, in place of the one offset.
++  std::vector<std::pair<double, double>> parts;
++
++  //! Whether it changes any time at all.
++  bool Moves() const;
+ };
+ 
+ //! The frame-rate ratios a subtitle made for another release can be off by.
+ const std::vector<double>& Scales();
++//! A release with another intro is late or early by a minute or two; more is another film.
++constexpr double MAX_OFFSET = 600;
++//! A ratio a thousandth from another (24 against 23.976) is the same change drifting.
++constexpr double TWIN = 0.002;
+ 
+ /*!
+- * \brief The change that lays the subtitle on the reference, when there is one, and it is not
+- * to leave the times as they are.
++ * \brief The change that lays the subtitle on the reference - none, when the times are right as
++ * they are - when the reference is clear about it; nothing when it is not.
+  * \param cues every line of the subtitle
+  * \param reference the reference's lines within windows
+  * \param windows the stretches the reference was read in
+@@ -65,10 +77,11 @@ std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
+                                   const std::vector<Cue>& reference,
+                                   const std::vector<Window>& windows);
+ 
+-//! A time of the subtitle, moved by a fit.
++//! A time of a line of the subtitle, moved by a fit as the part the line starts in is.
++double Apply(const Fit& fit, double time, double start);
+ inline double Apply(const Fit& fit, double time)
+ {
+-  return fit.scale * time + fit.offset;
++  return Apply(fit, time, time);
+ }
+ 
+ /*!

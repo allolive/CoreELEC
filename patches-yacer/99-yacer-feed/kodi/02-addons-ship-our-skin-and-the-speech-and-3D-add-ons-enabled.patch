@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 22:00:00 -0400
+Subject: [PATCH] addons: ship our skin and the speech and 3D add-ons enabled
+
+The image carries skin.estuary.allolive, script.module.subtitlespeech.allolive
+(the voice activity model the subtitle realignment listens with) and
+service.shutter3d.allolive (active 3D glasses) in Kodi's own add-ons, put
+there by their packages from the allolive repository's releases. Kodi adds
+an add-on it finds there disabled unless the manifest names it: listed as
+optional, they start enabled, can be disabled, and update from the
+repository like the others.
+
+Estuary stays Kodi's default skin, the one it falls back to when a skin
+fails to load; the build starts a new profile on ours.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/system/addon-manifest.xml b/system/addon-manifest.xml
+index 35b72b8..266cfa8 100644
+--- a/system/addon-manifest.xml
++++ b/system/addon-manifest.xml
+@@ -38,6 +38,9 @@
+   <addon>metadata.tvshows.themoviedb.org.python</addon>
+   <addon>repository.xbmc.org</addon>
+   <addon optional="true">repository.allolive</addon>
++  <addon optional="true">script.module.subtitlespeech.allolive</addon>
++  <addon optional="true">service.shutter3d.allolive</addon>
++  <addon optional="true">skin.estuary.allolive</addon>
+   <addon>resource.images.weathericons.default</addon>
+   <addon>resource.language.en_gb</addon>
+   <addon>resource.uisounds.kodi</addon>

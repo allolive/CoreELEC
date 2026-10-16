@@ -1,0 +1,332 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 18:00:00 -0400
+Subject: [PATCH] Subtitles: turn the realignment of a file on or off while it
+ plays
+
+Whether a subtitle file beside the video is realigned was a setting,
+read when the file opens. A viewer who sees it go wrong for one film, or
+wants it for one film only, had to leave playback to change it.
+
+PlayerControl(SubtitleRealign) now turns it the other way for the
+playing video, and VideoPlayer.SubtitleRealign tells a skin which way it
+is. Turned off, the file's lines go back to their own times at once and
+the video is no longer read; turned on, they are realigned - on what was
+found for this file before, if anything, else read again. The choice
+holds for the video while it plays, through picking another subtitle
+and back; another video starts again from the setting. A choice made
+before any file is open is the next file's.
+
+The info label takes the id 415 Kodi leaves unused, and the built-in is
+a PlayerControl parameter, so neither moves the numbering of Kodi's own.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
+index 953df32..7f1cc2e 100644
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -3183,6 +3183,13 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
+ ///     @return **True** if subtitles are turned on for video.
+ ///     <p>
+ ///   }
++///   \table_row3{   <b>`VideoPlayer.SubtitleRealign`</b>,
++///                  \anchor VideoPlayer_SubtitleRealign
++///                  _boolean_,
++///     @return **True** if a subtitle file beside the playing video is realigned on the
++///     video: as the setting says, until `PlayerControl(SubtitleRealign)` turns it the other way.
++///     <p>
++///   }
+ ///   \table_row3{   <b>`VideoPlayer.HasEpg`</b>,
+ ///                  \anchor VideoPlayer_HasEpg
+ ///                  _boolean_,
+@@ -4342,7 +4349,7 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
+ ///
+ /// -----------------------------------------------------------------------------
+ // clang-format off
+-constexpr std::array<InfoMap, 88> videoplayer = {{
++constexpr std::array<InfoMap, 89> videoplayer = {{
+     {"title",                 VIDEOPLAYER_TITLE},
+     {"genre",                 VIDEOPLAYER_GENRE},
+     {"country",               VIDEOPLAYER_COUNTRY},
+@@ -4391,6 +4398,7 @@ constexpr std::array<InfoMap, 88> videoplayer = {{
+     {"playcount",             VIDEOPLAYER_PLAYCOUNT},
+     {"hassubtitles",          VIDEOPLAYER_HASSUBTITLES},
+     {"subtitlesenabled",      VIDEOPLAYER_SUBTITLESENABLED},
++    {"subtitlerealign",       VIDEOPLAYER_SUBTITLE_REALIGN},
+     {"subtitleslanguage",     VIDEOPLAYER_SUBTITLES_LANG},
+     {"subtitlelanguageex",    VIDEOPLAYER_SUBTITLE_LANG_EX},
+     {"subtitlecodec",         VIDEOPLAYER_SUBTITLE_CODEC},
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 7eb6db3..af32c7a 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -111,6 +111,19 @@ bool LoadDetector(TIMING::CSpeechDetector& detector)
+ //! opened again each time the viewer picks it, or seeks back past a title.
+ std::mutex g_fitsLock;
+ std::map<std::pair<std::string, std::string>, std::optional<TIMING::Fit>> g_fits;
++
++//! The subtitle files open, and the viewer's choice for the video they play with: none, the
++//! setting decides. A choice made with no file open is the next video's.
++std::mutex g_filesLock;
++std::vector<CCueStage*> g_files;
++std::string g_choiceVideo;
++std::optional<bool> g_choice;
++
++bool OnLocked()
++{
++  return g_files.empty() && !g_choiceVideo.empty() ? CLEANUP::RealignWanted()
++                                                    : g_choice.value_or(CLEANUP::RealignWanted());
++}
+ } // namespace
+ 
+ CCueStage::CCueStage() = default;
+@@ -120,8 +133,64 @@ CCueStage::~CCueStage()
+   Stop();
+ }
+ 
++bool CCueStage::RealignOn()
++{
++  std::unique_lock lock(g_filesLock);
++  return OnLocked();
++}
++
++void CCueStage::ToggleRealign()
++{
++  std::unique_lock lock(g_filesLock);
++  const bool on = !OnLocked();
++  if (g_files.empty())
++    g_choiceVideo.clear();
++  g_choice = on;
++  CLog::Log(LOGINFO, "Subtitle timing: realignment turned {}", on ? "on" : "off");
++  for (CCueStage* file : g_files)
++    file->Turn(on);
++}
++
++void CCueStage::Turn(bool on)
++{
++  std::unique_lock lock(m_turnLock);
++  // the cues not all in yet: realigned or not once they are
++  if (!m_parsed)
++    return;
++  if (on)
++  {
++    {
++      std::unique_lock out(m_outLock);
++      if (m_realigning)
++        return;
++    }
++    if (m_realign.joinable())
++      m_realign.join();
++    std::unique_lock out(m_outLock);
++    m_realigning = true;
++    m_realign = std::thread(&CCueStage::Realign, this);
++    return;
++  }
++  m_abort = true;
++  {
++    std::unique_lock input(m_inputLock);
++    if (m_input)
++      m_input->Abort();
++  }
++  if (m_realign.joinable())
++    m_realign.join();
++  m_abort = false;
++  Show({}, "realignment turned off");
++}
++
+ void CCueStage::Stop()
+ {
++  {
++    std::unique_lock lock(g_filesLock);
++    std::erase(g_files, this);
++  }
++  std::unique_lock turn(m_turnLock);
++  m_parsed = false;
+   m_abort = true;
+   {
+     // a read stalled on the network gives up when its stream is aborted
+@@ -138,6 +207,7 @@ void CCueStage::Stop()
+   m_realigning = false;
+   m_delivered.clear();
+   m_fit.reset();
++  m_file.clear();
+ }
+ 
+ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+@@ -185,8 +255,7 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+   m_doubts = false;
+   m_timing = false;
+   m_file = file;
+-  m_video = CLEANUP::RealignWanted() ? hints.video : std::string();
+-  m_realigning = !m_video.empty();
++  m_video = hints.video;
+   // the whole file is known: it is worked on from where playback is, ahead of it
+   const std::string language = CLEANUP::LanguageOfPath(file);
+   m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_out, AI::PlaybackTime,
+@@ -203,9 +272,24 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+ 
+ void CCueStage::Parsed()
+ {
++  std::unique_lock lock(g_filesLock);
++  // another video: the setting decides again, unless the choice was made before a file opened
++  if (g_choiceVideo != m_video)
++  {
++    if (!g_choiceVideo.empty() || !g_files.empty())
++      g_choice.reset();
++    g_choiceVideo = m_video;
++  }
++  g_files.push_back(this);
++  std::unique_lock turn(m_turnLock);
++  m_parsed = true;
+   // read in the background: the cues are shown as they are meanwhile
+-  if (m_realigning)
++  if (!m_video.empty() && g_choice.value_or(CLEANUP::RealignWanted()))
++  {
++    std::unique_lock out(m_outLock);
++    m_realigning = true;
+     m_realign = std::thread(&CCueStage::Realign, this);
++  }
+ }
+ 
+ void CCueStage::Realign()
+@@ -240,8 +324,6 @@ void CCueStage::Realign()
+   }
+   std::unique_lock lock(m_outLock);
+   m_realigning = false;
+-  m_delivered.clear();
+-  m_delivered.shrink_to_fit();
+ }
+ 
+ void CCueStage::Keep(const std::optional<TIMING::Fit>& fit)
+@@ -556,8 +638,8 @@ void CCueStage::Out(const std::string& text, double start, double stop)
+   if (text.empty())
+     return;
+   std::unique_lock lock(m_outLock);
+-  if (m_realigning)
+-    m_delivered.push_back({text, start, stop});
++  // kept to be shown again when the file is realigned, or turned back
++  m_delivered.push_back({text, start, stop});
+   if (m_fit)
+     m_deliver(text, Moved(start, start), Moved(stop, start));
+   else
+@@ -569,7 +651,7 @@ void CCueStage::Submit(std::string text, double start, double stop)
+   std::vector<std::string> doubts;
+   if (m_cleaner && !m_cleaner->Clean(text, m_doubts ? &doubts : nullptr))
+     text.clear();
+-  if (m_realigning)
++  if (!m_file.empty())
+     m_starts.push_back({Seconds(start), Seconds(stop)});
+   if (m_doubter)
+   {
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index 689c9b9..a7f0ec4 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -79,6 +79,13 @@ public:
+    */
+   std::optional<double> Time(double start, double& stop, const std::string& text);
+ 
++  //! Whether the subtitle files of the playing video are realigned: as the setting says, until
++  //! turned the other way while it plays.
++  static bool RealignOn();
++  //! Turn the realignment of the playing video's subtitle files the other way: a file's lines
++  //! go back to their own times, or are realigned.
++  static void ToggleRealign();
++
+ private:
+   struct Shown
+   {
+@@ -92,6 +99,8 @@ private:
+     std::vector<TIMING::Window> windows;
+   };
+   void Stop();
++  //! Start or stop realigning the file, as RealignOn says.
++  void Turn(bool on);
+   //! Lay the file's cues on the playing video's own subtitles, or its speech.
+   void Realign();
+   //! The playing video, opened as playback opens it, and abortable by Stop until it is let go.
+@@ -117,11 +126,14 @@ private:
+   Deliver m_out;
+   Clear m_clear;
+   std::string m_file;
+-  std::string m_video; //!< the video a file's times are checked against, or empty
++  std::string m_video; //!< the video a file's times are checked against
+   //! a file's times as handed in, and what reached the screen while they were checked
+   std::vector<TIMING::Cue> m_starts;
+   std::vector<Shown> m_delivered;
+-  bool m_realigning{false};
++  bool m_realigning{false}; //!< the file's times are being checked
++  bool m_parsed{false}; //!< the file's cues are all handed in
++  //! starts and stops the realigning thread, from the stream's thread and the GUI's
++  std::mutex m_turnLock;
+   std::optional<TIMING::Fit> m_fit; //!< the change a file's times were found to need
+   std::mutex m_outLock;
+   std::mutex m_inputLock;
+diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+index 34f3031..e3e3128 100644
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -449,7 +449,7 @@ constexpr uint32_t VISUALISATION_PRESET              = 411;
+ constexpr uint32_t VISUALISATION_NAME                = 412;
+ constexpr uint32_t VISUALISATION_ENABLED             = 413;
+ constexpr uint32_t VISUALISATION_HAS_PRESETS         = 414;
+-// unused id 415
++constexpr uint32_t VIDEOPLAYER_SUBTITLE_REALIGN      = 415;
+ constexpr uint32_t VIDEOPLAYER_AUDIO_LANG_EX         = 416;
+ constexpr uint32_t VIDEOPLAYER_AUDIO_NAME            = 417;
+ constexpr uint32_t VIDEOPLAYER_SUBTITLE_LANG_EX      = 418;
+diff --git a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
+index 977d6cf..d8f0623 100644
+--- a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
+@@ -17,6 +17,7 @@
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
+ #include "cores/DataCacheCore.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h"
+ #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+@@ -969,6 +970,9 @@ bool CVideoGUIInfo::GetBool(bool& value,
+     case VIDEOPLAYER_SUBTITLESENABLED:
+       value = m_appPlayer->GetSubtitleVisible();
+       return true;
++    case VIDEOPLAYER_SUBTITLE_REALIGN:
++      value = KODI::SUBTITLES::CCueStage::RealignOn();
++      return true;
+     case VIDEOPLAYER_IS_STEREOSCOPIC:
+       value = !CServiceBroker::GetDataCacheCore().GetVideoStereoMode().empty();
+       return true;
+diff --git a/xbmc/interfaces/builtins/PlayerBuiltins.cpp b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
+index e4e9906..4c54beb 100644
+--- a/xbmc/interfaces/builtins/PlayerBuiltins.cpp
++++ b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
+@@ -20,6 +20,7 @@
+ #include "application/Application.h"
+ #include "application/ApplicationPlayer.h"
+ #include "application/ApplicationPowerHandling.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "input/actions/Action.h"
+@@ -273,6 +274,11 @@ static int PlayerControl(const std::vector<std::string>& params)
+     if (appPlayer->IsPlaying())
+       appPlayer->OnAction(CAction(ACTION_SHOW_VIDEOMENU));
+   }
++  else if (paramlow == "subtitlerealign")
++  {
++    if (appPlayer->IsPlayingVideo())
++      KODI::SUBTITLES::CCueStage::ToggleRealign();
++  }
+   else if (StringUtils::StartsWithNoCase(params[0], "partymode"))
+   {
+     std::string strXspPath;
+@@ -827,6 +833,7 @@ static int SubtitleShiftDown(const std::vector<std::string>& params)
+ ///     | Partymode(video) **     | Toggles video partymode                | none                        |             |
+ ///     | Partymode(path to .xsp) | Partymode for *.xsp-file               | Partymode for *.xsp-file    |             |
+ ///     | ShowVideoMenu           | Shows the DVD/BR menu if available     | none                        |             |
++///     | SubtitleRealign         | Turns the realignment of a subtitle file on or off | none            |             |
+ ///     | FrameAdvance(n) ***     | Advance video by _n_ frames            | none                        | Kodi v18    |
+ ///     <br>
+ ///     '*' = For these controls\, the PlayerControl built-in function can make use of the 'notify'-parameter. For example: PlayerControl(random\, notify)

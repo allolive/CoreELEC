@@ -16,7 +16,9 @@ at least one of these.
 Repair them as the subtitle is read, in memory: a SubRip file in
 CDVDSubtitleStream, and each cue of a SubRip or plain-text track inside
 the video in CDVDOverlayCodecText. The file on disk is never touched and
-the player lists the subtitle once, as before.
+the player lists the subtitle once, as before. Both only call in: the
+work sits in files of its own (CCueStage for a track's cues), so Kodi's
+files carry a few lines each.
 
 Each rule fixes one known kind of damage and nothing else. The words, the
 formatting tags and the start times are never changed; an end time moves
@@ -38,6 +40,18 @@ An exception among correct uses, a name used mid-sentence, a line in
 another language, an accent on a word another language has, numbers and
 Roman numerals are left as they are. A track inside the video learns as
 its cues come.
+
+Two kinds of damage are undone on their own evidence instead. A word the
+OCR broke into letters ("R0 z e r", "fi re") - a run of one- and
+two-character pieces one space apart, one of them damaged - is rejoined
+only into the one reading the subtitle itself confirms: a name it writes
+whole at least twice or the cast of what plays has, or an ordinary word
+the dictionary knows and the subtitle uses at least twice. Letters spelt
+out, a run tied to its neighbours by a hyphen or an apostrophe, and a
+line in another language stay. And a ligature glyph, which only an OCR
+writes, is read as the letters it was mistaken for ("exacﬂy" was
+"exactly") when exactly one of its readings is a word. The cast is the
+roles of the playing item's, and its show's for an episode.
 
 The language is the one the file name or the track gives or, when neither
 does, CLD2's reading of the text when it is sure. A pack is a language's
@@ -67,33 +81,9 @@ on either side of that move.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- CMakeLists.txt                                |    2 +
- .../resources/strings.po                      |   50 +-
- cmake/modules/FindCld2.cmake                  |   28 +
- cmake/modules/FindHunspell.cmake              |   28 +
- system/settings/settings.xml                  |   35 +
- .../DVDCodecs/Overlay/DVDOverlayCodecText.cpp |   58 +
- .../DVDCodecs/Overlay/DVDOverlayCodecText.h   |   11 +
- xbmc/cores/VideoPlayer/DVDStreamInfo.cpp      |    3 +
- xbmc/cores/VideoPlayer/DVDStreamInfo.h        |    1 +
- .../VideoPlayer/DVDSubtitles/CMakeLists.txt   |    4 +
- .../DVDSubtitles/DVDSubtitleStream.cpp        |   43 +
- .../DVDSubtitles/SubtitleCleanup.cpp          | 2292 +++++++++++++++++
- .../DVDSubtitles/SubtitleCleanup.h            |  265 ++
- .../DVDSubtitles/SubtitleCleanupSettings.cpp  |  158 ++
- .../DVDSubtitles/SubtitleCleanupSettings.h    |   40 +
- xbmc/settings/Settings.cpp                    |    8 +
- xbmc/settings/Settings.h                      |    4 +
- 17 files changed, 3029 insertions(+), 1 deletion(-)
- create mode 100644 cmake/modules/FindCld2.cmake
- create mode 100644 cmake/modules/FindHunspell.cmake
- create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
- create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
- create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
- create mode 100644 xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7404d0d8dd..31bafa0e17 100644
+index 7404d0d..31bafa0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -277,7 +277,9 @@ set(optional_deps Alsa>=1.0.27
@@ -107,10 +97,10 @@ index 7404d0d8dd..31bafa0e17 100644
                    LCMS2>=2.10
                    LircClient
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index f083ce47e1..3a5495f2c4 100644
+index 529cd11..dd13b34 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25456,6 +25456,54 @@ msgctxt "#60006"
+@@ -25480,6 +25480,54 @@ msgctxt "#60006"
  msgid "Black bars"
  msgstr ""
  
@@ -167,7 +157,7 @@ index f083ce47e1..3a5495f2c4 100644
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/cmake/modules/FindCld2.cmake b/cmake/modules/FindCld2.cmake
 new file mode 100644
-index 0000000000..8e4e9fd290
+index 0000000..8e4e9fd
 --- /dev/null
 +++ b/cmake/modules/FindCld2.cmake
 @@ -0,0 +1,28 @@
@@ -201,7 +191,7 @@ index 0000000000..8e4e9fd290
 +endif()
 diff --git a/cmake/modules/FindHunspell.cmake b/cmake/modules/FindHunspell.cmake
 new file mode 100644
-index 0000000000..513a776a6b
+index 0000000..513a776
 --- /dev/null
 +++ b/cmake/modules/FindHunspell.cmake
 @@ -0,0 +1,28 @@
@@ -234,7 +224,7 @@ index 0000000000..513a776a6b
 +  endif()
 +endif()
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 87a2f24ad3..adb94b272d 100755
+index 87a2f24..adb94b2 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
 @@ -914,6 +914,41 @@
@@ -280,38 +270,30 @@ index 87a2f24ad3..adb94b272d 100755
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
-index f31e59550f..6089d20148 100644
+index f31e595..9bc02b8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
-@@ -42,6 +42,22 @@ bool CDVDOverlayCodecText::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options
+@@ -41,6 +41,9 @@ bool CDVDOverlayCodecText::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options
+   m_codecId = hints.codec;
  
    m_pOverlay.reset();
++  m_cues.Open(hints, m_codecId != AV_CODEC_ID_SSA,
++              [this](const std::string& text, double start, double stop)
++              { Show(text, start, stop); });
  
-+  m_cleaner.reset();
-+  m_repairTiming = false;
-+  KODI::SUBTITLES::CLEANUP::Options repair;
-+  if (m_codecId != AV_CODEC_ID_SSA && KODI::SUBTITLES::CLEANUP::CurrentOptions(repair))
-+  {
-+    const auto& tag = hints.language;
-+    std::string language;
-+    if (!tag.IsEmpty() && !tag.IsUndetermined())
-+      language = tag.AsIso6391().empty() ? tag.AsIso6392B() : tag.AsIso6391();
-+    m_cleaner.emplace(repair,
-+                      repair.fixOcr ? KODI::SUBTITLES::CLEANUP::InstalledPacks().get() : nullptr,
-+                      language, KODI::SUBTITLES::CLEANUP::DetectLanguage);
-+    m_repairTiming = repair.fixTiming;
-+  }
-+  m_prevLengthened = false;
-+
    return Initialize();
  }
- 
-@@ -72,6 +88,21 @@ OverlayMessage CDVDOverlayCodecText::Decode(DemuxPacket* pPacket)
+@@ -72,6 +75,26 @@ OverlayMessage CDVDOverlayCodecText::Decode(DemuxPacket* pPacket)
    double PTSStopTime = 0;
  
    CDVDOverlayCodec::GetAbsoluteTimes(PTSStartTime, PTSStopTime, pPacket);
++  m_cues.Submit(std::move(text), PTSStartTime, PTSStopTime);
++  return m_pOverlay ? OverlayMessage::OC_DONE : OverlayMessage::OC_OVERLAY;
++}
 +
-+  if (m_cleaner && !m_cleaner->Clean(text))
++void CDVDOverlayCodecText::Show(std::string text, double PTSStartTime, double PTSStopTime)
++{
++  if (text.empty() && m_cues.Removes())
 +  {
 +    // nothing left to show, but a line waiting for its end still takes it from this one
 +    if (m_changePrevStopTime)
@@ -319,95 +301,57 @@ index f31e59550f..6089d20148 100644
 +      ChangeSubtitleStopTime(m_prevSubId, PTSStartTime);
 +      m_changePrevStopTime = false;
 +    }
-+    return m_pOverlay ? OverlayMessage::OC_DONE : OverlayMessage::OC_OVERLAY;
++    return;
 +  }
-+  if (m_repairTiming)
-+    RepairTiming(PTSStartTime, PTSStopTime,
-+                 KODI::SUBTITLES::CLEANUP::CCueCleaner::Position(text));
++  if (const auto end = m_cues.Time(PTSStartTime, PTSStopTime, text);
++      end && m_prevSubId != NO_SUBTITLE_ID && !m_changePrevStopTime)
++    ChangeSubtitleStopTime(m_prevSubId, *end);
 +
    CDVDSubtitleTagSami TagConv;
  
    if (TagConv.Init())
-@@ -102,6 +133,32 @@ OverlayMessage CDVDOverlayCodecText::Decode(DemuxPacket* pPacket)
-   return m_pOverlay ? OverlayMessage::OC_DONE : OverlayMessage::OC_OVERLAY;
+@@ -98,8 +121,6 @@ OverlayMessage CDVDOverlayCodecText::Decode(DemuxPacket* pPacket)
+   }
+   else
+     CLog::Log(LOGERROR, "{} - Failed to initialize tag converter", __FUNCTION__);
+-
+-  return m_pOverlay ? OverlayMessage::OC_DONE : OverlayMessage::OC_OVERLAY;
  }
  
-+void CDVDOverlayCodecText::RepairTiming(double startTime, double& stopTime, int position)
-+{
-+  using namespace KODI::SUBTITLES::CLEANUP;
-+  constexpr double MS = DVD_TIME_BASE / 1000.0;
-+
-+  // the previous line: ends where this one starts if it runs briefly into it at the same place,
-+  // or if it was lengthened to be seen and this one comes sooner
-+  if (m_prevSubId != NO_SUBTITLE_ID && !m_changePrevStopTime && startTime > m_prevStartTime)
-+  {
-+    const double overlap = m_prevStopTime - startTime;
-+    if ((m_prevPosition == position && overlap >= MIN_OVERLAP_MS * MS &&
-+         overlap <= MAX_SLOP_MS * MS) ||
-+        (m_prevLengthened && overlap > 0))
-+      ChangeSubtitleStopTime(m_prevSubId, startTime);
-+  }
-+
-+  // a line up for less than two frames cannot be seen; one whose end comes before its start is
-+  // Kodi's to time already
-+  m_prevLengthened = stopTime >= startTime && stopTime - startTime < MIN_SHOWN_MS * MS;
-+  if (m_prevLengthened)
-+    stopTime = startTime + READABLE_MS * MS;
-+  m_prevStartTime = startTime;
-+  m_prevStopTime = stopTime;
-+  m_prevPosition = position;
-+}
-+
  void CDVDOverlayCodecText::PostProcess(std::string& text)
+@@ -117,6 +138,7 @@ void CDVDOverlayCodecText::Reset()
+ 
+ void CDVDOverlayCodecText::Flush()
  {
-   // The data that come from InputStream could contains \r chars
-@@ -119,6 +176,7 @@ void CDVDOverlayCodecText::Flush()
- {
++  m_cues.Flush();
    m_pOverlay.reset();
    FlushSubtitles();
-+  m_prevLengthened = false;
  }
- 
- std::shared_ptr<CDVDOverlay> CDVDOverlayCodecText::GetOverlay()
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
-index f3a0c44894..a3183da5ec 100644
+index f3a0c44..a815e81 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.h
 @@ -10,6 +10,7 @@
  
  #include "DVDOverlayCodec.h"
  #include "DVDStreamInfo.h"
-+#include "DVDSubtitles/SubtitleCleanup.h"
++#include "DVDSubtitles/SubtitleCueStage.h"
  #include "DVDSubtitles/SubtitlesAdapter.h"
  
  extern "C"
-@@ -17,6 +18,8 @@ extern "C"
- #include <libavcodec/avcodec.h>
- }
- 
-+#include <optional>
-+
- class CDVDOverlay;
- 
- class CDVDOverlayCodecText : public CDVDOverlayCodec, private CSubtitlesAdapter
-@@ -36,7 +39,15 @@ public:
+@@ -36,7 +37,10 @@ public:
  private:
    std::shared_ptr<CDVDOverlay> m_pOverlay;
    CDVDStreamInfo m_hints;
-+  void RepairTiming(double startTime, double& stopTime, int position);
-+
++  void Show(std::string text, double start, double stop);
    int m_prevSubId{-1};
    bool m_changePrevStopTime{false};
    AVCodecID m_codecId{AV_CODEC_ID_NONE};
-+  std::optional<KODI::SUBTITLES::CLEANUP::CCueCleaner> m_cleaner;
-+  bool m_repairTiming{false};
-+  double m_prevStartTime{0};
-+  double m_prevStopTime{0};
-+  int m_prevPosition{0};
-+  bool m_prevLengthened{false};
++  //! last, so whatever delivers its cues stops before anything it delivers to goes
++  KODI::SUBTITLES::CCueStage m_cues;
  };
 diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
-index 444a764962..096f4e66ad 100644
+index 444a764..096f4e6 100644
 --- a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
 @@ -40,6 +40,7 @@ void CDVDStreamInfo::Clear()
@@ -435,7 +379,7 @@ index 444a764962..096f4e66ad 100644
    if (withextradata && right.extraData)
    {
 diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.h b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
-index a4f1ab7514..6e7056d128 100644
+index a4f1ab7..6e7056d 100644
 --- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
 +++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
 @@ -53,6 +53,8 @@ public:
@@ -448,101 +392,57 @@ index a4f1ab7514..6e7056d128 100644
    int codecOptions;
  
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
-index 16d685a030..8e16dd69ed 100644
+index 16d685a..4148b02 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
-@@ -10,6 +10,8 @@ set(SOURCES DVDFactorySubtitle.cpp
+@@ -10,6 +10,9 @@ set(SOURCES DVDFactorySubtitle.cpp
              DVDSubtitleParserSSA.cpp
              DVDSubtitleTagMicroDVD.cpp
              DVDSubtitleTagSami.cpp
 +            SubtitleCleanup.cpp
 +            SubtitleCleanupSettings.cpp
++            SubtitleCueStage.cpp
              SubtitleParserWebVTT.cpp
              SubtitlesAdapter.cpp)
  
-@@ -26,6 +28,8 @@ set(HEADERS DVDFactorySubtitle.h
+@@ -26,6 +29,9 @@ set(HEADERS DVDFactorySubtitle.h
              DVDSubtitleTagMicroDVD.h
              DVDSubtitleTagSami.h
              DVDSubtitlesLibass.h
 +            SubtitleCleanup.h
 +            SubtitleCleanupSettings.h
++            SubtitleCueStage.h
              SubtitleParserWebVTT.h
              SubtitlesAdapter.h
              SubtitlesStyle.h)
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
-index 3fbe53f17b..e7721fd6af 100644
+index 3fbe53f..4816596 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleStream.cpp
-@@ -10,6 +10,11 @@
+@@ -10,6 +10,7 @@
  
  #include "DVDInputStreams/DVDFactoryInputStream.h"
  #include "DVDInputStreams/DVDInputStream.h"
-+#include "ServiceBroker.h"
-+#include "SubtitleCleanup.h"
-+#include "URL.h"
-+#include "settings/Settings.h"
-+#include "settings/SettingsComponent.h"
++#include "SubtitleCleanupSettings.h"
  #include "utils/CharsetConverter.h"
  #include "utils/CharsetDetection.h"
  #include "utils/URIUtils.h"
-@@ -20,6 +25,41 @@
- #include <cstring>
- #include <memory>
- 
-+namespace
-+{
-+void RepairSubRip(const std::string& file, const std::string& raw, std::string& data)
-+{
-+  using namespace KODI::SUBTITLES::CLEANUP;
-+  Options options;
-+  if (!CurrentOptions(options))
-+    return;
-+  // a character set the user chose wins over the one the file's name suggests
-+  const bool userCharset =
-+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
-+          CSettings::SETTING_SUBTITLES_CHARSET) != "DEFAULT";
-+  std::string repaired;
-+  Report report;
-+  const std::shared_ptr<const Packs> packs = options.fixOcr ? InstalledPacks() : nullptr;
-+  if (!CleanSubRip(userCharset ? data : raw, LanguageOfPath(file), options, packs.get(),
-+                   DetectLanguage, repaired, report) ||
-+      !report.Changed())
-+    return;
-+  data = std::move(repaired);
-+  CLog::Log(LOGINFO,
-+            "Subtitle repair: {} read as {}; {} lines with damaged characters, {} music notes, "
-+            "{} letters, {} timings corrected; {} advertising lines removed ({} cues)",
-+            CURL::GetRedacted(file), report.readAs, report.repairedLines, report.notesFixed,
-+            report.ocrFixes, report.timingFixes, report.adLines, report.cuesDropped);
-+  if (!report.ocrLanguage.empty())
-+    CLog::Log(LOGDEBUG, "Subtitle repair: OCR letters read in {}, misreadings {}",
-+              report.ocrLanguage, report.ocrPattern.empty() ? "none" : report.ocrPattern);
-+  for (const std::string& line : report.removed)
-+    CLog::Log(LOGDEBUG, "Subtitle repair: removed \"{}\"", line);
-+  for (const std::string& fix : report.corrected)
-+    CLog::Log(LOGDEBUG, "Subtitle repair: {}", fix);
-+}
-+} // namespace
-+
- CDVDSubtitleStream::CDVDSubtitleStream() = default;
- 
- CDVDSubtitleStream::~CDVDSubtitleStream() = default;
-@@ -86,6 +126,9 @@ bool CDVDSubtitleStream::Open(const std::string& strFile)
+@@ -86,6 +87,9 @@ bool CDVDSubtitleStream::Open(const std::string& strFile)
        m_subtitleData = converted;
      }
  
 +    if (URIUtils::HasExtension(strFile, ".srt"))
-+      RepairSubRip(strFile, tmpStr, m_subtitleData);
++      KODI::SUBTITLES::CLEANUP::RepairSubRipFile(strFile, tmpStr, m_subtitleData);
 +
      m_arrayParser.Reset(m_subtitleData.c_str(), m_subtitleData.size());
      return true;
    }
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
 new file mode 100644
-index 0000000000..3fdaa94aa1
+index 0000000..4ae5ad4
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
-@@ -0,0 +1,2292 @@
+@@ -0,0 +1,2546 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -1338,6 +1238,13 @@ index 0000000000..3fdaa94aa1
 +  return text;
 +}
 +
++const wchar_t* const LIGATURES[] = {L"ff", L"fi", L"fl", L"ffi", L"ffl", L"st", L"st"};
++
++bool IsLigature(wchar_t c)
++{
++  return c >= 0xFB00 && c <= 0xFB06;
++}
++
 +//! Characters that were damaged on the way, put back; the words are not touched.
 +std::wstring RepairChars(const std::wstring& line, bool utf)
 +{
@@ -1356,11 +1263,8 @@ index 0000000000..3fdaa94aa1
 +      continue; // DEL, zero-width space, word joiner, zero-width no-break space
 +    else if (c == 0x2028 || c == 0x2029)
 +      out.push_back(L' '); // Unicode line breaks: not SubRip's
-+    else if (c >= 0xFB00 && c <= 0xFB06)
-+    {
-+      static const wchar_t* const ligatures[] = {L"ff", L"fi", L"fl", L"ffi", L"ffl", L"st", L"st"};
-+      out += ligatures[c - 0xFB00];
-+    }
++    else if (IsLigature(c))
++      out += LIGATURES[c - 0xFB00];
 +    else
 +      out.push_back(c);
 +  }
@@ -1603,6 +1507,8 @@ index 0000000000..3fdaa94aa1
 +constexpr double LANGUAGE_SHARE = 0.6; // of a line's other words, for it to be the language's
 +constexpr double OTHER_MARGIN = 0.2; // how much better another language must explain a line
 +constexpr size_t MAX_CANDIDATES = 256;
++constexpr int NAME_TIMES = 2; // a rejoined name: how often the file writes it whole
++constexpr int WORD_TIMES = 2; // a rejoined word: how often the file uses it, in any case
 +
 +const std::vector<Confusion>& GeneralConfusions()
 +{
@@ -1730,6 +1636,15 @@ index 0000000000..3fdaa94aa1
 +bool AllLower(const std::wstring& w)
 +{
 +  return std::any_of(w.begin(), w.end(), IsLower) && std::none_of(w.begin(), w.end(), IsUpper);
++}
++
++std::wstring Lowered(const std::wstring& w)
++{
++  std::wstring out;
++  out.reserve(w.size());
++  for (const wchar_t c : w)
++    out.push_back(Lower(c));
++  return out;
 +}
 +
 +using Spans = std::vector<std::pair<size_t, size_t>>;
@@ -2235,6 +2150,9 @@ index 0000000000..3fdaa94aa1
 +  m_one = {one.begin(), one.end()};
 +  const std::vector<std::wstring> lone = SplitSpaces(value(L"lone_one"));
 +  m_lone = {lone.begin(), lone.end()};
++  m_spellCues.clear();
++  for (const std::wstring& cue : SplitSpaces(value(L"spell_cues")))
++    m_spellCues.insert(Lowered(cue));
 +  m_capitalisedNouns = value(L"capitalised_nouns") == L"yes";
 +  const std::wstring alphabet = value(L"alphabet");
 +  m_alphabet = {alphabet.begin(), alphabet.end()};
@@ -2317,14 +2235,63 @@ index 0000000000..3fdaa94aa1
 +  return d;
 +}
 +
++LigatureReadings ReadLigatures(const std::wstring& line)
++{
++  // what else OCR draws as each glyph; same length as its expansion, so positions hold
++  static const std::map<wchar_t, std::vector<const wchar_t*>> others = {
++      {0xFB01, {L"ti", L"fl"}}, {0xFB02, {L"tl", L"ti", L"fi"}}};
++  LigatureReadings out;
++  std::wstring expanded;
++  std::vector<std::pair<size_t, wchar_t>> glyphs; // where each glyph's expansion starts
++  for (const wchar_t c : line)
++  {
++    if (!IsLigature(c))
++    {
++      expanded.push_back(c);
++      continue;
++    }
++    if (others.count(c))
++      glyphs.emplace_back(expanded.size(), c);
++    expanded += LIGATURES[c - 0xFB00];
++  }
++  for (const auto& [a, n] : Words(expanded))
++  {
++    std::vector<std::wstring> readings{expanded.substr(a, n)};
++    for (const auto& [at, glyph] : glyphs)
++    {
++      if (at < a || at >= a + n)
++        continue;
++      const size_t count = readings.size();
++      for (size_t k = 0; k < count; ++k)
++        for (const wchar_t* other : others.at(glyph))
++          readings.push_back(readings[k].substr(0, at - a) + other + readings[k].substr(at - a + 2));
++    }
++    if (readings.size() > 1)
++      out[readings.front()].assign(readings.begin() + 1, readings.end());
++  }
++  return out;
++}
++
 +// -- the engine --------------------------------------------------------------------------------
 +
-+COcrEngine::COcrEngine(std::shared_ptr<const CLanguagePack> language, const Packs& others)
++COcrEngine::COcrEngine(std::shared_ptr<const CLanguagePack> language,
++                       const Packs& others,
++                       const std::vector<std::string>& cast)
 +  : m_lang(std::move(language))
 +{
 +  for (const auto& other : others)
 +    if (other->Name() != m_lang->Name())
 +      m_others.push_back(other);
++  for (const std::string& role : cast)
++  {
++    const std::wstring text = Widen(role);
++    for (const auto& [start, n] : Words(text))
++    {
++      const std::wstring w = text.substr(start, n);
++      if (n >= 2 && IsUpper(w[0]) && AllLower(w.substr(1)))
++        m_cast.insert(w);
++    }
++  }
 +}
 +
 +bool COcrEngine::Word(const CLanguagePack& pack, const std::wstring& w)
@@ -2383,6 +2350,12 @@ index 0000000000..3fdaa94aa1
 +  {
 +    const std::wstring text = Visible(line);
 +    const Spans spans = Words(text);
++    for (const auto& [a, n] : spans)
++    {
++      const std::wstring w = text.substr(a, n);
++      ++m_uses[w];
++      ++m_usesLower[Lowered(w)];
++    }
 +    std::vector<std::wstring> words;
 +    for (const auto& [a, n] : spans)
 +      if (n >= 2 && !IsAsciiDigit(text[a]))
@@ -2412,6 +2385,43 @@ index 0000000000..3fdaa94aa1
 +        ++m_evidence[readings.begin()->second][w];
 +    }
 +  }
++}
++
++void COcrEngine::NoteLigatures(const LigatureReadings& readings)
++{
++  m_ligatures.insert(readings.begin(), readings.end());
++}
++
++//! A word a ligature became that is no word, put back when exactly one other reading of the
++//! glyph is: a glyph is the OCR's own evidence, so no pattern of the file is needed.
++std::wstring COcrEngine::FixLigatures(const std::wstring& text,
++                                      std::vector<std::pair<std::wstring, std::wstring>>* fixes)
++{
++  if (m_ligatures.empty())
++    return text;
++  std::wstring out;
++  size_t last = 0;
++  for (const auto& [a, n] : Words(text))
++  {
++    const std::wstring w = text.substr(a, n);
++    out += text.substr(last, a - last);
++    last = a + n;
++    const auto it = m_ligatures.find(w);
++    std::vector<std::wstring> readings;
++    if (it != m_ligatures.end() && !Word(*m_lang, w))
++      for (const std::wstring& reading : it->second)
++        if (Acceptable(w, reading))
++          readings.push_back(reading);
++    if (readings.size() != 1)
++    {
++      out += w;
++      continue;
++    }
++    if (fixes)
++      fixes->emplace_back(w, readings.front());
++    out += readings.front();
++  }
++  return out + text.substr(last);
 +}
 +
 +std::vector<Confusion> COcrEngine::Active() const
@@ -2536,9 +2546,143 @@ index 0000000000..3fdaa94aa1
 +         (length > 1 || Alone(text, start, length));
 +}
 +
-+std::wstring COcrEngine::FixLine(const std::wstring& line,
++// -- a word broken into letters, once ("R0 z e r: A ii the great"): not a misreading the file
++// repeats, so it is rejoined only when the file itself, or the cast, shows the word
++
++//! A piece of a broken word: letters that are no word ("p"), a digit among letters ("R0"), or
++//! only small i's - "ii" is the OCR's "ll", whatever a dictionary of Roman numerals says.
++bool COcrEngine::Damaged(const std::wstring& piece)
++{
++  if (!HasLetter(piece))
++    return false;
++  return !Word(*m_lang, piece) ||
++         (piece.size() >= 2 &&
++          std::all_of(piece.begin(), piece.end(), [](wchar_t c) { return c == L'i'; }));
++}
++
++//! A name the file writes whole often enough, or the cast has - never the dictionary; an
++//! ordinary word the language has and the file uses.
++bool COcrEngine::Rejoinable(const std::wstring& reading, bool name)
++{
++  if (!PlausibleWord(reading))
++    return false;
++  if (name)
++  {
++    if (!IsUpper(reading[0]) || !AllLower(reading.substr(1)))
++      return false;
++    const auto it = m_uses.find(reading);
++    return (it != m_uses.end() && it->second >= NAME_TIMES) || m_cast.count(reading) > 0;
++  }
++  if (!Word(*m_lang, reading))
++    return false;
++  const auto it = m_usesLower.find(Lowered(reading));
++  return it != m_usesLower.end() && it->second >= WORD_TIMES;
++}
++
++//! The word the pieces first..last were. Left as they are: letters spelt out, in capitals
++//! ("W O W", "F B I") or after a word that says so ("spelled r o z e r"); a run with no damaged
++//! piece ("I am"); one that starts with a word ("to o regular"); one tied to the words around
++//! it by a hyphen, an apostrophe or a cut ("a m-o-t-h-e-r", "un e-mail", "'t op", "a t...");
++//! one the break goes on past ("a m atch"); and one the file does not confirm.
++bool COcrEngine::RejoinRun(const std::wstring& text,
++                           const Spans& spans,
++                           size_t first,
++                           size_t last,
++                           std::wstring& fixed)
++{
++  std::vector<std::wstring> pieces;
++  for (size_t k = first; k <= last; ++k)
++    pieces.push_back(text.substr(spans[k].first, spans[k].second));
++  if (std::none_of(pieces.begin(), pieces.end(), [](const std::wstring& p) {
++        return std::any_of(p.begin(), p.end(), IsLower);
++      }))
++    return false;
++  if (std::none_of(pieces.begin(), pieces.end(),
++                   [this](const std::wstring& p) { return Damaged(p); }))
++    return false;
++  if (pieces[0].size() >= 2 && Word(*m_lang, pieces[0]))
++    return false;
++  for (size_t k = first >= 3 ? first - 3 : 0; k < first; ++k)
++    if (m_lang->SpellCue(Lowered(text.substr(spans[k].first, spans[k].second))))
++      return false;
++  const size_t start = spans[first].first;
++  const size_t end = spans[last].first + spans[last].second;
++  if (start > 0 && Contains(L"-'’", text[start - 1]))
++    return false;
++  if (end < text.size() && (text[end] == L'-' || text[end] == L'…'))
++    return false;
++  if (end + 1 < text.size() && text[end] == L'.' && text[end + 1] == L'.')
++    return false;
++  if (last + 1 < spans.size() && spans[last + 1].first == end + 1 && text[end] == L' ')
++  {
++    const std::wstring following = text.substr(spans[last + 1].first, spans[last + 1].second);
++    if (HasLetter(following) && !Word(*m_lang, following))
++      return false;
++  }
++  std::wstring joined;
++  for (const std::wstring& p : pieces)
++    joined += p;
++  size_t before = start;
++  while (before > 0 && IsSpace(text[before - 1]))
++    --before;
++  const bool sentenceStart = before == 0 || Contains(L".!?…:-\"'¿¡“«([*", text[before - 1]);
++  const bool name =
++      (end < text.size() && text[end] == L':') || (IsUpper(joined[0]) && !sentenceStart);
++  std::vector<Confusion> confusions = m_lang->Confusions();
++  confusions.emplace_back(L"i", L"l"); // with the pack's: "A ii" was "All"
++  std::vector<std::wstring> readings = Candidates(joined, confusions);
++  readings.insert(readings.begin(), joined);
++  std::vector<std::wstring> found;
++  for (const std::wstring& reading : readings)
++    if (std::find(found.begin(), found.end(), reading) == found.end() &&
++        Rejoinable(reading, name))
++      found.push_back(reading);
++  if (found.size() != 1)
++    return false;
++  fixed = found[0];
++  return true;
++}
++
++//! Words of one or two characters, one space apart, that were one word the OCR broke: "R0 p e
++//! r" is "Rozer" when the file (or the cast) has Rozer, "A ii" is "All". Only into exactly one
++//! reading, and only in a line of the language; anything else is left.
++std::wstring COcrEngine::Rejoin(const std::wstring& text,
++                                std::vector<std::pair<std::wstring, std::wstring>>* fixes)
++{
++  const Spans spans = Words(text);
++  int language = -1; // whether the line reads as the language, once asked
++  std::wstring out;
++  size_t last = 0;
++  size_t k = 0;
++  while (k < spans.size())
++  {
++    size_t j = k;
++    while (j + 1 < spans.size() && spans[j].second <= 2 && spans[j + 1].second <= 2 &&
++           spans[j + 1].first == spans[j].first + spans[j].second + 1 &&
++           text[spans[j].first + spans[j].second] == L' ')
++      ++j;
++    if (j > k && language < 0)
++      language = ReadsAsLanguage(text, std::vector<bool>(spans.size(), false)) ? 1 : 0;
++    std::wstring fixed;
++    if (j > k && language == 1 && RejoinRun(text, spans, k, j, fixed))
++    {
++      const size_t start = spans[k].first;
++      const size_t end = spans[j].first + spans[j].second;
++      out += text.substr(last, start - last) + fixed;
++      if (fixes)
++        fixes->emplace_back(text.substr(start, end - start), fixed);
++      last = end;
++    }
++    k = j + 1;
++  }
++  return out + text.substr(last);
++}
++
++std::wstring COcrEngine::FixLine(const std::wstring& original,
 +                                 std::vector<std::pair<std::wstring, std::wstring>>* fixes)
 +{
++  const std::wstring line = MapText(original, [&](const std::wstring& part)
++                                    { return FixLigatures(Rejoin(part, fixes), fixes); });
 +  const std::vector<Confusion> active = Active();
 +  if (active.empty())
 +    return line;
@@ -2632,6 +2776,8 @@ index 0000000000..3fdaa94aa1
 +            const std::string& language,
 +            const Packs& packs,
 +            const Detector& detect,
++            const std::vector<std::string>& cast,
++            const LigatureReadings& ligatures,
 +            Report& report)
 +{
 +  std::vector<std::wstring*> lines;
@@ -2651,9 +2797,10 @@ index 0000000000..3fdaa94aa1
 +    pack = Detected(all, packs, detect, sure);
 +  if (!pack)
 +    return;
-+  COcrEngine engine(pack, packs);
++  COcrEngine engine(pack, packs, cast);
 +  engine.NoteNames(all);
 +  engine.Learn(all);
++  engine.NoteLigatures(ligatures);
 +  std::vector<std::pair<std::wstring, std::wstring>> fixes;
 +  for (std::wstring* line : lines)
 +    *line = engine.FixLine(*line, &fixes);
@@ -2700,6 +2847,7 @@ index 0000000000..3fdaa94aa1
 +      edge[cueIndexes[k]] = true;
 +
 +  std::vector<Block> kept;
++  LigatureReadings ligatures;
 +  for (size_t i = 0; i < blocks.size(); ++i)
 +  {
 +    Block& block = blocks[i];
@@ -2712,6 +2860,8 @@ index 0000000000..3fdaa94aa1
 +    std::vector<std::wstring> lines;
 +    for (const std::wstring& original : cue.lines)
 +    {
++      const LigatureReadings found = ReadLigatures(original);
++      ligatures.insert(found.begin(), found.end());
 +      const std::wstring fixed = RepairChars(original, utf);
 +      report.repairedLines += fixed != original;
 +      if (options.removeAds && IsAd(fixed, edge[i]))
@@ -2733,7 +2883,7 @@ index 0000000000..3fdaa94aa1
 +    kept.push_back(std::move(block));
 +  }
 +  if (options.fixOcr && packs)
-+    FixOcr(kept, language, *packs, detect, report);
++    FixOcr(kept, language, *packs, detect, options.cast, ligatures, report);
 +  if (options.fixTiming)
 +  {
 +    std::vector<Cue*> cues;
@@ -2758,7 +2908,7 @@ index 0000000000..3fdaa94aa1
 +  if (!language.empty())
 +  {
 +    if (const auto pack = PackFor(language, m_packs))
-+      m_ocr = std::make_unique<COcrEngine>(pack, m_packs);
++      m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast);
 +  }
 +  else
 +    m_detect = std::move(detect);
@@ -2801,7 +2951,7 @@ index 0000000000..3fdaa94aa1
 +      bool sure = false;
 +      if (const auto pack = Detected(m_undetected, m_packs, m_detect, sure))
 +      {
-+        m_ocr = std::make_unique<COcrEngine>(pack, m_packs);
++        m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast);
 +        m_ocr->NoteNames(m_undetected);
 +        m_ocr->Learn(m_undetected);
 +      }
@@ -2823,8 +2973,12 @@ index 0000000000..3fdaa94aa1
 +    m_ocr->Learn(lines);
 +  }
 +  if (m_ocr)
++  {
++    for (const std::wstring& line : original)
++      m_ocr->NoteLigatures(ReadLigatures(line));
 +    for (std::wstring& line : lines)
 +      line = m_ocr->FixLine(line, nullptr);
++  }
 +  text = ToUtf8(Join(lines, L"\n"));
 +  return true;
 +}
@@ -2837,10 +2991,10 @@ index 0000000000..3fdaa94aa1
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
 new file mode 100644
-index 0000000000..1d67aa29ae
+index 0000000..e0bd69f
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,301 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -2891,6 +3045,13 @@ index 0000000000..1d67aa29ae
 +//! A misreading: what the OCR wrote, and what was there.
 +using Confusion = std::pair<std::wstring, std::wstring>;
 +
++//! Words a ligature glyph ("ﬂ") was expanded into, each with the other words the glyph may
++//! stand for: only OCR writes ligatures, and "exacﬂy" was "exactly".
++using LigatureReadings = std::map<std::wstring, std::vector<std::wstring>>;
++
++//! The words of a line, as it arrived, that hold a ligature glyph.
++LigatureReadings ReadLigatures(const std::wstring& line);
++
 +/*!
 + * \brief A language the OCR repair knows: its Hunspell dictionaries and a profile.txt beside
 + * them, one "key = value" a line - codes, dictionaries, one_letter_words, lone_one,
@@ -2917,6 +3078,8 @@ index 0000000000..1d67aa29ae
 +  bool Readable(const std::wstring& w) const;
 +  bool CapitalisedNouns() const { return m_capitalisedNouns; }
 +  bool LoneOne(const std::wstring& next) const { return m_lone.count(next) > 0; }
++  //! Whether a word (in small letters) announces letters spelt out: "spelled r o z e r".
++  bool SpellCue(const std::wstring& lowered) const { return m_spellCues.count(lowered) > 0; }
 +  //! The general confusions, then the accents the language's OCR may drop.
 +  const std::vector<Confusion>& Confusions() const { return m_confusions; }
 +
@@ -2927,6 +3090,7 @@ index 0000000000..1d67aa29ae
 +  std::vector<std::unique_ptr<CDictionary>> m_dictionaries;
 +  std::unordered_set<std::wstring> m_one;
 +  std::unordered_set<std::wstring> m_lone;
++  std::unordered_set<std::wstring> m_spellCues;
 +  std::unordered_set<wchar_t> m_alphabet;
 +  bool m_capitalisedNouns{false};
 +  std::vector<Confusion> m_confusions;
@@ -2974,7 +3138,13 @@ index 0000000000..1d67aa29ae
 +class COcrEngine
 +{
 +public:
-+  COcrEngine(std::shared_ptr<const CLanguagePack> language, const Packs& others);
++  /*!
++   * \param cast the roles of the film's or show's cast ("Martin Hale Rozer"): names a word
++   * the OCR broke into letters may be, before the file has written them whole
++   */
++  COcrEngine(std::shared_ptr<const CLanguagePack> language,
++             const Packs& others,
++             const std::vector<std::string>& cast = {});
 +
 +  //! Remember the words the lines capitalise mid-sentence: names keep their spelling.
 +  void NoteNames(const std::vector<std::wstring>& lines);
@@ -2982,6 +3152,8 @@ index 0000000000..1d67aa29ae
 +  void Learn(const std::vector<std::wstring>& lines);
 +  //! The confusions the file has shown so far to be its own, in the language's order.
 +  std::vector<Confusion> Active() const;
++  //! Remember the words the lines' ligature glyphs became (see ReadLigatures).
++  void NoteLigatures(const LigatureReadings& readings);
 +  //! The line with the file's misreadings undone; each correction appended to fixes.
 +  std::wstring FixLine(const std::wstring& line,
 +                       std::vector<std::pair<std::wstring, std::wstring>>* fixes);
@@ -3003,15 +3175,30 @@ index 0000000000..1d67aa29ae
 +           size_t length,
 +           const std::vector<Confusion>& active,
 +           std::wstring& fixed);
++  bool Damaged(const std::wstring& piece);
++  bool Rejoinable(const std::wstring& reading, bool name);
++  bool RejoinRun(const std::wstring& text,
++                 const std::vector<std::pair<size_t, size_t>>& spans,
++                 size_t first,
++                 size_t last,
++                 std::wstring& fixed);
++  std::wstring Rejoin(const std::wstring& text,
++                      std::vector<std::pair<std::wstring, std::wstring>>* fixes);
++  std::wstring FixLigatures(const std::wstring& text,
++                            std::vector<std::pair<std::wstring, std::wstring>>* fixes);
 +
 +  std::shared_ptr<const CLanguagePack> m_lang;
 +  Packs m_others;
 +  std::unordered_set<std::wstring> m_names;
++  std::unordered_map<std::wstring, int> m_uses; //!< every word learnt from, as written
++  std::unordered_map<std::wstring, int> m_usesLower; //!< and in small letters
++  std::unordered_set<std::wstring> m_cast; //!< the names in the cast's roles
 +  //! per confusion: the misread words it explains and how often; how often the right letter is
 +  //! written correctly
 +  std::map<Confusion, std::map<std::wstring, int>> m_evidence;
 +  std::map<Confusion, int> m_correct;
 +  std::unordered_map<const CLanguagePack*, std::unordered_map<std::wstring, bool>> m_spelt;
++  LigatureReadings m_ligatures;
 +};
 +
 +struct Options
@@ -3019,6 +3206,9 @@ index 0000000000..1d67aa29ae
 +  bool removeAds{true};
 +  bool fixOcr{true};
 +  bool fixTiming{true};
++  //! the roles of the cast of what plays ("Martin Hale Rozer"), UTF-8: names a word the OCR
++  //! broke into letters may be rejoined into
++  std::vector<std::string> cast;
 +};
 +
 +struct Report
@@ -3108,10 +3298,10 @@ index 0000000000..1d67aa29ae
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
 new file mode 100644
-index 0000000000..5d8b52113d
+index 0000000..6fa1de8
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,223 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3122,13 +3312,16 @@ index 0000000000..5d8b52113d
 +
 +#include "SubtitleCleanupSettings.h"
 +
++#include "FileItem.h"
 +#include "ServiceBroker.h"
 +#include "SubtitleCleanup.h"
++#include "URL.h"
 +#include "addons/AddonInstaller.h"
 +#include "addons/AddonManager.h"
 +#include "addons/AddonVersion.h"
 +#include "addons/IAddon.h"
 +#include "addons/addoninfo/AddonType.h"
++#include "application/Application.h"
 +#include "filesystem/Directory.h"
 +#include "filesystem/SpecialProtocol.h"
 +#include "settings/Settings.h"
@@ -3140,6 +3333,8 @@ index 0000000000..5d8b52113d
 +#include "utils/URIUtils.h"
 +#include "utils/Variant.h"
 +#include "utils/log.h"
++#include "video/VideoDatabase.h"
++#include "video/VideoInfoTag.h"
 +
 +#include <algorithm>
 +#include <map>
@@ -3148,6 +3343,33 @@ index 0000000000..5d8b52113d
 +
 +namespace KODI::SUBTITLES::CLEANUP
 +{
++namespace
++{
++//! The roles of the cast of what plays: the film's, or the episode's and its show's (an
++//! episode lists only its guests). Names a word the OCR broke into letters may be.
++std::vector<std::string> CastOfPlaying()
++{
++  std::vector<std::string> roles;
++  const std::shared_ptr<CFileItem> item = g_application.CurrentFileItemPtr();
++  if (!item || !item->HasVideoInfoTag())
++    return roles;
++  const CVideoInfoTag& tag = *item->GetVideoInfoTag();
++  for (const SActorInfo& actor : tag.m_cast)
++    if (!actor.strRole.empty())
++      roles.push_back(actor.strRole);
++  if (tag.m_iIdShow > 0)
++  {
++    CVideoDatabase db;
++    CVideoInfoTag show;
++    if (db.Open() && db.GetTvShowInfo("", show, tag.m_iIdShow, nullptr, VideoDbDetailsCast))
++      for (const SActorInfo& actor : show.m_cast)
++        if (!actor.strRole.empty())
++          roles.push_back(actor.strRole);
++  }
++  return roles;
++}
++} // namespace
++
 +bool CurrentOptions(Options& options)
 +{
 +  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -3156,6 +3378,8 @@ index 0000000000..5d8b52113d
 +  options.removeAds = settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIRADS);
 +  options.fixOcr = !settings->GetList(CSettings::SETTING_SUBTITLES_REPAIRLANGUAGES).empty();
 +  options.fixTiming = settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIRTIMING);
++  if (options.fixOcr)
++    options.cast = CastOfPlaying();
 +  return true;
 +}
 +
@@ -3221,6 +3445,37 @@ index 0000000000..5d8b52113d
 +  return loaded;
 +}
 +
++void RepairSubRipFile(const std::string& file, const std::string& raw, std::string& data)
++{
++  Options options;
++  if (!CurrentOptions(options))
++    return;
++  // a character set the user chose wins over the one the file's name suggests
++  const bool userCharset =
++      CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
++          CSettings::SETTING_SUBTITLES_CHARSET) != "DEFAULT";
++  std::string repaired;
++  Report report;
++  const std::shared_ptr<const Packs> packs = options.fixOcr ? InstalledPacks() : nullptr;
++  if (!CleanSubRip(userCharset ? data : raw, LanguageOfPath(file), options, packs.get(),
++                   DetectLanguage, repaired, report) ||
++      !report.Changed())
++    return;
++  data = std::move(repaired);
++  CLog::Log(LOGINFO,
++            "Subtitle repair: {} read as {}; {} lines with damaged characters, {} music notes, "
++            "{} letters, {} timings corrected; {} advertising lines removed ({} cues)",
++            CURL::GetRedacted(file), report.readAs, report.repairedLines, report.notesFixed,
++            report.ocrFixes, report.timingFixes, report.adLines, report.cuesDropped);
++  if (!report.ocrLanguage.empty())
++    CLog::Log(LOGDEBUG, "Subtitle repair: OCR letters read in {}, misreadings {}",
++              report.ocrLanguage, report.ocrPattern.empty() ? "none" : report.ocrPattern);
++  for (const std::string& line : report.removed)
++    CLog::Log(LOGDEBUG, "Subtitle repair: removed \"{}\"", line);
++  for (const std::string& fix : report.corrected)
++    CLog::Log(LOGDEBUG, "Subtitle repair: {}", fix);
++}
++
 +CRepairLanguages& CRepairLanguages::GetInstance()
 +{
 +  static CRepairLanguages instance;
@@ -3272,10 +3527,10 @@ index 0000000000..5d8b52113d
 +} // namespace KODI::SUBTITLES::CLEANUP
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
 new file mode 100644
-index 0000000000..ee8d076796
+index 0000000..a32aaaf
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,47 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -3302,6 +3557,13 @@ index 0000000000..ee8d076796
 + * id starts with PACK_PREFIX and carries resources/subtitlerepair/<language>/; the setting lists
 + * those the repositories offer, and choosing one installs it, leaving one out uninstalls it.
 + */
++/*!
++ * \brief Repair a SubRip file beside the video as it is read, as the settings ask.
++ * \param raw the file as it was read, before its character set was converted
++ * \param data the file in UTF-8, replaced by its repair when that changed anything
++ */
++void RepairSubRipFile(const std::string& file, const std::string& raw, std::string& data);
++
 +class CRepairLanguages : public ISettingCallback
 +{
 +public:
@@ -3316,8 +3578,154 @@ index 0000000000..ee8d076796
 +  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 +};
 +} // namespace KODI::SUBTITLES::CLEANUP
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+new file mode 100644
+index 0000000..053d744
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -0,0 +1,76 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleCueStage.h"
++
++#include "cores/VideoPlayer/DVDStreamInfo.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++
++namespace KODI::SUBTITLES
++{
++void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
++{
++  m_deliver = std::move(deliver);
++  m_cleaner.reset();
++  m_timing = false;
++  m_prevLengthened = false;
++  CLEANUP::Options repair;
++  if (!text || !CLEANUP::CurrentOptions(repair))
++    return;
++  const auto& tag = hints.language;
++  std::string language;
++  if (!tag.IsEmpty() && !tag.IsUndetermined())
++    language = tag.AsIso6391().empty() ? tag.AsIso6392B() : tag.AsIso6391();
++  m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr, language,
++                    CLEANUP::DetectLanguage);
++  m_timing = repair.fixTiming;
++}
++
++void CCueStage::Submit(std::string text, double start, double stop)
++{
++  if (m_cleaner && !m_cleaner->Clean(text))
++    text.clear();
++  m_deliver(text, start, stop);
++}
++
++void CCueStage::Flush()
++{
++  m_prevLengthened = false;
++}
++
++std::optional<double> CCueStage::Time(double start, double& stop, const std::string& text)
++{
++  if (!m_timing)
++    return {};
++  using namespace CLEANUP;
++  constexpr double MS = DVD_TIME_BASE / 1000.0;
++  const int position = CCueCleaner::Position(text);
++
++  // the previous line: ends where this one starts if it runs briefly into it at the same place,
++  // or if it was lengthened to be seen and this one comes sooner
++  std::optional<double> endPrevious;
++  if (start > m_prevStart)
++  {
++    const double overlap = m_prevStop - start;
++    if ((m_prevPosition == position && overlap >= MIN_OVERLAP_MS * MS &&
++         overlap <= MAX_SLOP_MS * MS) ||
++        (m_prevLengthened && overlap > 0))
++      endPrevious = start;
++  }
++
++  // a line up for less than two frames cannot be seen; one whose end comes before its start is
++  // Kodi's to time already
++  m_prevLengthened = stop >= start && stop - start < MIN_SHOWN_MS * MS;
++  if (m_prevLengthened)
++    stop = start + READABLE_MS * MS;
++  m_prevStart = start;
++  m_prevStop = stop;
++  m_prevPosition = position;
++  return endPrevious;
++}
++} // namespace KODI::SUBTITLES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+new file mode 100644
+index 0000000..b7261ff
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -0,0 +1,58 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleCleanup.h"
++
++#include <functional>
++#include <optional>
++#include <string>
++
++class CDVDStreamInfo;
++
++namespace KODI::SUBTITLES
++{
++/*!
++ * \brief What happens to the cues of a text subtitle stream between its demuxer and the screen:
++ * the repair the settings ask for, and the times of the cues around one too short to be seen.
++ * The codec hands each cue in, and shows what comes out.
++ */
++class CCueStage
++{
++public:
++  //! A cue to show, with its times; "" when nothing is left of it, which still ends the cue left
++  //! open before it.
++  using Deliver = std::function<void(const std::string& text, double start, double stop)>;
++
++  /*!
++   * \brief Set up for a stream being opened.
++   * \param text whether its cues are text the repair can read (not SSA)
++   */
++  void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver);
++  //! A cue as read, which reaches deliver.
++  void Submit(std::string text, double start, double stop);
++  void Flush();
++  //! Whether a "" cue means there is nothing to show, rather than an empty cue.
++  bool Removes() const { return m_cleaner.has_value(); }
++  /*!
++   * \brief Time a cue about to be shown: one too short to be seen is lengthened.
++   * \return where the cue before it is to end, when it runs into this one
++   */
++  std::optional<double> Time(double start, double& stop, const std::string& text);
++
++private:
++  Deliver m_deliver;
++  std::optional<CLEANUP::CCueCleaner> m_cleaner;
++  bool m_timing{false};
++  double m_prevStart{0};
++  double m_prevStop{0};
++  int m_prevPosition{0};
++  bool m_prevLengthened{false};
++};
++} // namespace KODI::SUBTITLES
 diff --git a/xbmc/settings/Settings.cpp b/xbmc/settings/Settings.cpp
-index f3bc48a369..55a0393915 100644
+index f3bc48a..55a0393 100644
 --- a/xbmc/settings/Settings.cpp
 +++ b/xbmc/settings/Settings.cpp
 @@ -14,6 +14,7 @@
@@ -3364,7 +3772,7 @@ index f3bc48a369..55a0393915 100644
    GetSettingsManager()->UnregisterCallback(&g_passwordManager);
    GetSettingsManager()->UnregisterCallback(&CRssManager::GetInstance());
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 038b69a90b..1c4ced5416 100644
+index 038b69a..1c4ced5 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
 @@ -188,6 +188,10 @@ public:

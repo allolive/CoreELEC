@@ -1,0 +1,2435 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 19:00:00 -0400
+Subject: [PATCH] Subtitles: translate a subtitle with a language model the viewer chooses
+
+Many videos carry subtitles, just not in the language the viewer reads:
+an English film with English and German tracks for a French viewer. With
+"Translate subtitles" on, Kodi offers such a video one more subtitle,
+"Auto-translated to French (from English)", after the video's own, and
+plays it the way it plays a subtitle in the viewer's language. The
+language is the subtitle language setting; a video that has a subtitle
+in it is left as it is, and the viewer's choice for a video still wins.
+
+The track translated is the first, in the order Kodi chooses subtitles,
+that is text - SubRip or plain text inside the video, or a SubRip file
+beside it - in a declared language and not forced. A forced track is
+never translated and does not count as a subtitle in the viewer's
+language: it only covers what is said in another language, so an English
+film with French forced lines still gets its English translated.
+
+The translation is a language model's, through the OpenAI chat API that
+OpenRouter, OpenAI and the servers people run themselves (llama.cpp,
+vLLM, Ollama) all speak. Small translation models drop clauses and read
+idioms word for word; a general model of a few billion parameters does
+neither, and a set-top box cannot run one. Player > Subtitles gains the
+provider, its address for a server of one's own, the key, and the model,
+typed or chosen from the list the provider gives, with a button that
+translates one line to test them. The cues go a few to a request, with
+the lines before them, the title and the characters' names, and the
+model answers with the same numbered lines; an answer that loses the
+numbering is asked again line by line, and a line far longer than its
+source is refused, and so is an answer with a remark after its lines or
+one far too long to be an answer. A reasoning model is asked not to
+reason first. A provider that does not answer, or does not list the
+model, offers no translation: it is asked in the background when its
+settings change and every ten minutes - half a minute after it did not
+answer - and the first time a video needs it, which waits for the answer
+a second and a half at most.
+
+Selecting the entry opens its track with the language to translate into.
+The entry is CTranslatedEntry's to offer, select and describe; the
+player only calls it, and the cue stage the repair added carries the
+translation's thread for the decoder and the subtitle file alike.
+Inside the video, the text decoder hands each repaired cue to a thread
+of its own and the cue reaches libass when its translation is ready, the
+way it would have without: a track inside the video is read seconds
+before its cues are shown, and a request takes a second or a few, so the
+player never waits. A seek drops whatever was not yet delivered and ends
+the request for it; a cue the provider fails still ends the one left
+open before it. Once playing, the viewer's choice of subtitle stands
+when the streams change. A file beside the video is known whole,
+so it is translated from where playback is, ahead of it. A dialogue cue
+keeps one speaker a line; any other is translated as one sentence and
+laid out on two lines. A line in capitals - a song, a sign - goes in
+sentence case, since models read capitals as names, and comes back in
+capitals; the repair's letter case serves, Greek and Cyrillic included.
+Closing the track ends the request in flight.
+
+A subtitle file now carries the language its name gives into its hints,
+as a track inside the video does.
+
+Image subtitles cannot be translated.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index dd13b34..ac5d99f 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25528,6 +25528,132 @@ msgctxt "#60017"
+ msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
+ msgstr ""
+ 
++#. Label of setting "Player -> Subtitles -> Translate subtitles"
++#: system/settings/settings.xml
++msgctxt "#60060"
++msgid "Translate subtitles"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> Translate subtitles"
++#: system/settings/settings.xml
++msgctxt "#60061"
++msgid "When a video has no subtitle in the language chosen for subtitles, offer one translated from a text subtitle in another language, inside the video or in a SubRip file beside it, and show it the way a subtitle in that language would be. A forced subtitle is never translated. The language model of the AI provider below translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. When the provider cannot be reached, nothing is offered."
++msgstr ""
++
++#. Name of a subtitle in the subtitle list, translated into one language from another: "Auto-translated to French (from English)"
++#: xbmc/cores/VideoPlayer/VideoPlayer.cpp
++msgctxt "#60062"
++msgid "Auto-translated to {0:s} (from {1:s})"
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60063"
++msgid "AI provider"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60064"
++msgid "The service whose language model translates subtitles: OpenRouter, OpenAI, or a server of your own that speaks the same API, such as llama.cpp, vLLM or Ollama on another computer of the network."
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60065"
++msgid "OpenRouter"
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60066"
++msgid "OpenAI"
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> AI provider": a server the user runs
++#: system/settings/settings.xml
++msgctxt "#60067"
++msgid "Your own server"
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> Server address"
++#: system/settings/settings.xml
++msgctxt "#60068"
++msgid "Server address"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider -> Server address"
++#: system/settings/settings.xml
++msgctxt "#60069"
++msgid "The address of the server's API, up to and including /v1: http://192.168.1.20:8080/v1."
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> API key"
++#: system/settings/settings.xml
++msgctxt "#60070"
++msgid "API key"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider -> API key"
++#: system/settings/settings.xml
++msgctxt "#60071"
++msgid "The key the provider gave you. A server of your own may need none."
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> Model"
++#: system/settings/settings.xml
++msgctxt "#60072"
++msgid "Model"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider -> Model"
++#: system/settings/settings.xml
++msgctxt "#60073"
++msgid "The model's name as the provider knows it, such as google/gemma-3-27b-it on OpenRouter. Type it, or choose it from the models the provider lists. With no model, nothing is translated."
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> Choose a model", and heading of its list
++#: system/settings/settings.xml
++msgctxt "#60074"
++msgid "Choose a model"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider -> Choose a model"
++#: system/settings/settings.xml
++msgctxt "#60075"
++msgid "Choose the model from those the provider lists."
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> Test the connection", and heading of its answer
++#: system/settings/settings.xml
++msgctxt "#60076"
++msgid "Test the connection"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> AI provider -> Test the connection"
++#: system/settings/settings.xml
++msgctxt "#60077"
++msgid "Ask the model to translate one line, and show its answer."
++msgstr ""
++
++#. Result of "Test the connection": {0} is the model, {1} the line and its translation
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60078"
++msgid "{0:s} answered:[CR]{1:s}"
++msgstr ""
++
++#. Result of "Test the connection" or "Choose a model" when the provider fails: {0} is its error
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60079"
++msgid "The provider could not be reached, or refused the request:[CR]{0:s}"
++msgstr ""
++
++#. Result of "Choose a model" when the provider lists none
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60080"
++msgid "The provider lists no model."
++msgstr ""
++
+ #empty strings from id 39218 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index adb94b2..b18ba74 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -949,6 +949,60 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
++        <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
++          <level>1</level>
++          <default>false</default>
++          <control type="toggle" />
++        </setting>
++        <setting id="subtitles.aiprovider" type="integer" label="60063" help="60064">
++          <level>1</level>
++          <default>0</default> <!-- OpenRouter -->
++          <constraints>
++            <options>
++              <option label="60065">0</option> <!-- OpenRouter -->
++              <option label="60066">1</option> <!-- OpenAI -->
++              <option label="60067">2</option> <!-- A server of one's own -->
++            </options>
++          </constraints>
++          <control type="list" format="string" />
++        </setting>
++        <setting id="subtitles.aiurl" type="string" parent="subtitles.aiprovider" label="60068" help="60069">
++          <level>1</level>
++          <default></default>
++          <constraints>
++            <allowempty>true</allowempty>
++          </constraints>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider">2</dependency>
++          </dependencies>
++          <control type="edit" format="string" />
++        </setting>
++        <setting id="subtitles.aikey" type="string" parent="subtitles.aiprovider" label="60070" help="60071">
++          <level>1</level>
++          <default></default>
++          <constraints>
++            <allowempty>true</allowempty>
++          </constraints>
++          <control type="edit" format="string">
++            <hidden>true</hidden>
++          </control>
++        </setting>
++        <setting id="subtitles.aimodel" type="string" parent="subtitles.aiprovider" label="60072" help="60073">
++          <level>1</level>
++          <default></default>
++          <constraints>
++            <allowempty>true</allowempty>
++          </constraints>
++          <control type="edit" format="string" />
++        </setting>
++        <setting id="subtitles.aimodels" type="action" parent="subtitles.aiprovider" label="60074" help="60075">
++          <level>1</level>
++          <control type="button" format="action" />
++        </setting>
++        <setting id="subtitles.aitest" type="action" parent="subtitles.aiprovider" label="60076" help="60077">
++          <level>1</level>
++          <control type="button" format="action" />
++        </setting>
+         <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
+           <level>3</level>
+           <default>0</default> <!-- OverrideStyles::DISABLED -->
+diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
+index 096f4e6..8f7d619 100644
+--- a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
++++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
+@@ -40,6 +40,7 @@ void CDVDStreamInfo::Clear()
+   codec_tag  = 0;
+   flags = 0;
+   filename.clear();
++  translateTo.clear();
+   language = {};
+   dvd = false;
+ 
+@@ -91,6 +92,10 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
+       flags != right.flags)
+     return false;
+ 
++  // a subtitle read in another language is another stream to its codec
++  if (translateTo != right.translateTo)
++    return false;
++
+   if (compare & COMPARE_EXTRADATA && extradata != right.extradata)
+   {
+     return false;
+@@ -201,6 +206,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
+   codec_tag = right.codec_tag;
+   flags = right.flags;
+   filename = right.filename;
++  translateTo = right.translateTo;
+   language = right.language;
+   dvd = right.dvd;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.h b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
+index 6e7056d..26b6812 100644
+--- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
++++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
+@@ -55,6 +55,7 @@ public:
+   std::string filename;
+   // as the container declares it; empty when it does not
+   decltype(CDemuxStream::language) language;
++  std::string translateTo; // subtitles: the language to translate the text into, or empty
+   bool dvd;
+   int codecOptions;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+index 4148b02..4514f31 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+@@ -10,10 +10,13 @@ set(SOURCES DVDFactorySubtitle.cpp
+             DVDSubtitleParserSSA.cpp
+             DVDSubtitleTagMicroDVD.cpp
+             DVDSubtitleTagSami.cpp
++            SubtitleAI.cpp
+             SubtitleCleanup.cpp
+             SubtitleCleanupSettings.cpp
+             SubtitleCueStage.cpp
++            SubtitleModel.cpp
+             SubtitleParserWebVTT.cpp
++            SubtitleTranslation.cpp
+             SubtitlesAdapter.cpp)
+ 
+ set(HEADERS DVDFactorySubtitle.h
+@@ -29,10 +32,13 @@ set(HEADERS DVDFactorySubtitle.h
+             DVDSubtitleTagMicroDVD.h
+             DVDSubtitleTagSami.h
+             DVDSubtitlesLibass.h
++            SubtitleAI.h
+             SubtitleCleanup.h
+             SubtitleCleanupSettings.h
+             SubtitleCueStage.h
++            SubtitleModel.h
+             SubtitleParserWebVTT.h
++            SubtitleTranslation.h
+             SubtitlesAdapter.h
+             SubtitlesStyle.h)
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+index c1d8b3a..a6686ce 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+@@ -26,6 +26,14 @@ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+   if (!Initialize())
+     return false;
+ 
++  m_cues.OpenFile(hints,
++                  [this](const std::string& text, double start, double stop)
++                  {
++                    std::string line = text;
++                    if (!line.empty())
++                      AddSubtitle(line, start, stop);
++                  });
++
+   CDVDSubtitleTagSami TagConv;
+   if (!TagConv.Init())
+     return false;
+@@ -72,7 +80,7 @@ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+         if (!convText.empty())
+         {
+           TagConv.CloseTag(convText);
+-          AddSubtitle(convText, iPTSStartTime, iPTSStopTime);
++          m_cues.Submit(convText, iPTSStartTime, iPTSStopTime);
+         }
+       }
+     }
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
+index b9611ee..90c0d37 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "DVDSubtitleParser.h"
++#include "SubtitleCueStage.h"
+ #include "SubtitlesAdapter.h"
+ 
+ #include <memory>
+@@ -21,4 +22,8 @@ public:
+   ~CDVDSubtitleParserSubrip() = default;
+ 
+   bool Open(CDVDStreamInfo& hints) override;
++
++private:
++  //! last, so whatever delivers its cues stops before anything it delivers to goes
++  KODI::SUBTITLES::CCueStage m_cues;
+ };
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+new file mode 100644
+index 0000000..2873f3e
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -0,0 +1,623 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleAI.h"
++
++#include "FileItem.h"
++#include "LangInfo.h"
++#include "ServiceBroker.h"
++#include "SubtitleCleanup.h"
++#include "URL.h"
++#include "application/Application.h"
++#include "application/ApplicationComponents.h"
++#include "application/ApplicationPlayer.h"
++#include "cores/VideoPlayer/DVDStreamInfo.h"
++#include "cores/VideoPlayer/Interface/StreamInfo.h"
++#include "cores/VideoPlayer/VideoPlayer.h"
++#include "dialogs/GUIDialogBusy.h"
++#include "dialogs/GUIDialogSelect.h"
++#include "filesystem/CurlFile.h"
++#include "guilib/GUIComponent.h"
++#include "guilib/GUIWindowManager.h"
++#include "guilib/WindowIDs.h"
++#include "jobs/JobManager.h"
++#include "messaging/helpers/DialogOKHelper.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
++#include "settings/lib/Setting.h"
++#include "threads/IRunnable.h"
++#include "utils/JSONVariantParser.h"
++#include "utils/JSONVariantWriter.h"
++#include "utils/LangCodeExpander.h"
++#include "utils/StringUtils.h"
++#include "utils/URIUtils.h"
++#include "utils/Variant.h"
++#include "utils/log.h"
++#include "video/VideoInfoTag.h"
++
++#include <algorithm>
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
++
++namespace KODI::SUBTITLES::AI
++{
++namespace
++{
++using namespace std::chrono_literals;
++
++constexpr auto OPENROUTER_URL = "https://openrouter.ai/api/v1";
++constexpr auto OPENAI_URL = "https://api.openai.com/v1";
++//! Few names: they are for consistency, and a long cast list is mostly extras.
++constexpr size_t MAX_CAST = 40;
++//! How often the provider is asked again whether it answers: soon when it did not - a server
++//! starting, the network coming up after Kodi - and rarely when it did.
++constexpr auto REASK = std::chrono::minutes(10);
++constexpr auto RETRY = std::chrono::seconds(30);
++//! How long the first answer is waited for.
++constexpr auto FIRST_ANSWER = std::chrono::milliseconds(1500);
++//! A question unanswered this long is lost.
++constexpr auto LOST = std::chrono::seconds(30);
++
++const std::string& Localized(uint32_t id)
++{
++  return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(id);
++}
++
++/*!
++ * \brief One HTTP exchange with the provider: the body of its answer, whatever its status, or
++ * false when no answer came. A model being loaded answers late, so only silence ends it.
++ */
++bool Exchange(XFILE::CCurlFile& http,
++              const Provider& provider,
++              const std::string& path,
++              const std::string* post,
++              std::chrono::seconds connect,
++              std::chrono::seconds silence,
++              std::string& answer)
++{
++  http.SetTimeout(static_cast<int>(connect.count()));
++  http.SetLowSpeedTime(static_cast<int>(silence.count()));
++  if (!provider.key.empty())
++    http.SetRequestHeader("Authorization", "Bearer " + provider.key);
++  if (provider.kind == OPENROUTER)
++    http.SetRequestHeader("X-Title", "Kodi");
++  // the body of a refusal says why
++  const std::string url = provider.base + path + "|failonerror=false";
++  if (!post)
++    return http.Get(url, answer);
++  http.SetMimeType("application/json");
++  return http.Post(url, *post, answer);
++}
++
++//! The error a provider's answer carries, or the start of an answer that is no JSON.
++std::string ErrorOf(const CVariant& json, const std::string& raw)
++{
++  std::string error = raw.substr(0, 200);
++  if (json.isMember("error"))
++    error =
++        json["error"].isObject() ? json["error"]["message"].asString() : json["error"].asString();
++  return error.empty() ? "an answer with no reply in it" : error;
++}
++
++struct Status
++{
++  std::mutex lock;
++  std::condition_variable answered;
++  std::string asked; //!< the provider the answer is for: its address, key and model
++  bool ok{false};
++  bool known{false}; //!< it has answered, or failed to, since the settings named it
++  std::chrono::steady_clock::time_point when{};
++  bool asking{false};
++  std::chrono::steady_clock::time_point askedAt{};
++};
++
++Status& GetStatus()
++{
++  static Status status;
++  return status;
++}
++
++std::string Signature(const Provider& provider)
++{
++  return provider.base + "\n" + provider.key + "\n" + provider.model;
++}
++
++//! Whether the provider lists the model: it is up, lets the key in, and has the model. Asked
++//! while a video opens, so briefly.
++bool Ask(const Provider& provider)
++{
++  XFILE::CCurlFile http;
++  std::string answer;
++  CVariant json;
++  bool listed = false;
++  if (Exchange(http, provider, "/models", nullptr, 2s, 3s, answer) &&
++      CJSONVariantParser::Parse(answer, json) && json["data"].isArray())
++    for (unsigned int i = 0; i < json["data"].size() && !listed; ++i)
++      listed = json["data"][i]["id"].asString() == provider.model;
++  CLog::Log(listed ? LOGINFO : LOGWARNING, "Subtitle translation: {} {}",
++            CURL::GetRedacted(provider.base),
++            listed                   ? "answers"
++            : json["data"].isArray() ? "does not list " + provider.model
++                                     : "does not answer: " + ErrorOf(json, answer));
++  return listed;
++}
++
++void Record(const std::string& signature, bool ok)
++{
++  Status& status = GetStatus();
++  std::unique_lock guard(status.lock);
++  if (status.asked != signature)
++    return;
++  status.ok = ok;
++  status.known = true;
++  status.when = std::chrono::steady_clock::now();
++  status.answered.notify_all();
++}
++
++class CChat : public MODEL::IChat
++{
++public:
++  /*!
++   * \param silence how long the provider may say nothing before the request is given up: as
++   * long as the cues it is for can wait
++   */
++  CChat(Provider provider, std::chrono::seconds silence)
++    : m_provider(std::move(provider)),
++      m_silence(silence)
++  {
++  }
++
++  std::optional<std::string> Complete(const std::string& system, const std::string& user) override
++  {
++    // one request failing says nothing of the next: only the question Available() asks offers
++    // or withdraws the translation
++    std::string error;
++    std::optional<std::string> answer = Send(system, user, error);
++    if (!answer && !error.empty())
++      CLog::Log(LOGWARNING, "Subtitle translation: {} refused or did not answer: {}",
++                CURL::GetRedacted(m_provider.base), error);
++    return answer;
++  }
++
++  void Cancel() override
++  {
++    // the exchange ends once its transfer notices, which Cancel() waits for
++    std::unique_lock guard(m_lock);
++    m_cancelled = true;
++    if (m_active)
++      m_active->Cancel();
++  }
++
++  void Begin() override
++  {
++    std::unique_lock guard(m_lock);
++    m_batch = m_aborts;
++  }
++
++  void Abort() override
++  {
++    std::unique_lock guard(m_lock);
++    ++m_aborts;
++    if (m_active)
++      m_active->Cancel();
++  }
++
++  bool Aborted() const override
++  {
++    std::unique_lock guard(m_lock);
++    return m_aborts != m_batch;
++  }
++
++  std::optional<std::string> Send(const std::string& system,
++                                  const std::string& user,
++                                  std::string& error)
++  {
++    CVariant request(CVariant::VariantTypeObject);
++    request["model"] = m_provider.model;
++    request["temperature"] = 0;
++    // a few subtitle lines; a model that runs on is stopped early
++    request["max_tokens"] = 2048;
++    CVariant messages(CVariant::VariantTypeArray);
++    CVariant message(CVariant::VariantTypeObject);
++    message["role"] = "system";
++    message["content"] = system;
++    messages.push_back(message);
++    message["role"] = "user";
++    message["content"] = user;
++    messages.push_back(message);
++    request["messages"] = messages;
++    // a model that reasons first takes ten times as long for nothing a subtitle needs
++    if (m_provider.kind == OPENROUTER)
++      request["reasoning"]["enabled"] = false;
++    else if (m_provider.kind == CUSTOM)
++      request["chat_template_kwargs"]["enable_thinking"] = false;
++
++    std::string body;
++    std::string answer;
++    CVariant json;
++    if (!CJSONVariantWriter::Write(request, body, true))
++    {
++      error = "cannot write the request";
++      return std::nullopt;
++    }
++    XFILE::CCurlFile http;
++    {
++      std::unique_lock guard(m_lock);
++      if (m_cancelled || m_aborts != m_batch)
++        return std::nullopt;
++      m_active = &http;
++    }
++    const bool answered =
++        Exchange(http, m_provider, "/chat/completions", &body, 5s, m_silence, answer);
++    {
++      std::unique_lock guard(m_lock);
++      m_active = nullptr;
++      if (m_cancelled || m_aborts != m_batch)
++        return std::nullopt;
++    }
++    if (!answered)
++    {
++      error = "no answer";
++      return std::nullopt;
++    }
++    if (!CJSONVariantParser::Parse(answer, json) || !json["choices"].isArray() ||
++        json["choices"].size() == 0)
++    {
++      error = ErrorOf(json, answer);
++      return std::nullopt;
++    }
++    return json["choices"][0]["message"]["content"].asString();
++  }
++
++private:
++  const Provider m_provider;
++  const std::chrono::seconds m_silence;
++  mutable std::mutex m_lock;
++  XFILE::CCurlFile* m_active{nullptr};
++  bool m_cancelled{false};
++  unsigned int m_aborts{0}; //!< how many batches were aborted
++  unsigned int m_batch{0}; //!< and how many when the batch in progress began
++};
++
++class CCall : public IRunnable
++{
++public:
++  CCall(std::function<void()> call, std::function<void()> cancel)
++    : m_call(std::move(call)),
++      m_cancel(std::move(cancel))
++  {
++  }
++  void Run() override { m_call(); }
++  void Cancel() override { m_cancel(); }
++
++private:
++  std::function<void()> m_call;
++  std::function<void()> m_cancel;
++};
++
++void ChooseModel()
++{
++  const Provider provider = CurrentProvider();
++  std::vector<std::string> models;
++  std::string error;
++  XFILE::CCurlFile http;
++  CCall list(
++      [&]
++      {
++        std::string answer;
++        CVariant json;
++        if (!Exchange(http, provider, "/models", nullptr, 5s, 10s, answer) ||
++            !CJSONVariantParser::Parse(answer, json) || !json["data"].isArray())
++        {
++          error = answer.empty() ? "no answer" : ErrorOf(json, answer);
++          return;
++        }
++        for (unsigned int i = 0; i < json["data"].size(); ++i)
++          models.push_back(json["data"][i]["id"].asString());
++      },
++      [&] { http.Cancel(); });
++  if (!CGUIDialogBusy::Wait(&list, 100, true))
++    return;
++  std::erase_if(models, [](const std::string& model) { return model.empty(); });
++  std::sort(models.begin(), models.end());
++  if (models.empty())
++  {
++    KODI::MESSAGING::HELPERS::ShowOKDialogText(
++        CVariant{60074},
++        CVariant{error.empty() ? Localized(60080) : StringUtils::Format(Localized(60079), error)});
++    return;
++  }
++
++  auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(
++      WINDOW_DIALOG_SELECT);
++  if (!dialog)
++    return;
++  dialog->Reset();
++  dialog->SetHeading(CVariant{60074});
++  for (const std::string& model : models)
++    dialog->Add(model);
++  dialog->SetSelected(provider.model);
++  dialog->Open();
++  const int chosen = dialog->GetSelectedItem();
++  if (dialog->IsConfirmed() && chosen >= 0 && chosen < static_cast<int>(models.size()))
++    CServiceBroker::GetSettingsComponent()->GetSettings()->SetString(
++        CSettings::SETTING_SUBTITLES_AIMODEL, models[chosen]);
++}
++
++void Test()
++{
++  const Provider provider = CurrentProvider();
++  std::string to = TargetLanguage();
++  if (to.empty())
++    to = "en";
++  const std::string from = to == "fr" ? "en" : "fr";
++  const std::string line = from == "fr" ? "Je vais pas y aller par quatre chemins."
++                                        : "I'm not going to beat around the bush.";
++  std::string result;
++  // a model being loaded first answers late
++  CChat chat(provider, 120s);
++  CCall ask(
++      [&]
++      {
++        TRANSLATION::Context context{LanguageName(from), LanguageName(to), {}, {}};
++        std::string error;
++        const std::optional<std::string> answer =
++            chat.Send(TRANSLATION::SystemPrompt(context),
++                      TRANSLATION::UserPrompt(context, {}, {line}), error);
++        const std::vector<std::string> read =
++            answer ? TRANSLATION::ReadTranslation(*answer, {line}) : std::vector<std::string>{};
++        if (answer || !error.empty())
++          Record(Signature(provider), answer.has_value());
++        if (!answer)
++          result = StringUtils::Format(Localized(60079), error);
++        else
++          result = StringUtils::Format(Localized(60078), provider.model,
++                                       line + " -> " + (read.empty() ? *answer : read[0]));
++      },
++      [&] { chat.Cancel(); });
++  if (!CGUIDialogBusy::Wait(&ask, 100, true))
++    return;
++  KODI::MESSAGING::HELPERS::ShowOKDialogText(CVariant{60076}, CVariant{result});
++}
++} // namespace
++
++Provider CurrentProvider()
++{
++  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  Provider provider;
++  provider.kind = settings->GetInt(CSettings::SETTING_SUBTITLES_AIPROVIDER);
++  provider.base = provider.kind == OPENROUTER ? OPENROUTER_URL
++                  : provider.kind == OPENAI
++                      ? OPENAI_URL
++                      : settings->GetString(CSettings::SETTING_SUBTITLES_AIURL);
++  StringUtils::Trim(provider.base);
++  StringUtils::TrimRight(provider.base, "/");
++  provider.key = settings->GetString(CSettings::SETTING_SUBTITLES_AIKEY);
++  provider.model = settings->GetString(CSettings::SETTING_SUBTITLES_AIMODEL);
++  StringUtils::Trim(provider.key);
++  StringUtils::Trim(provider.model);
++  return provider;
++}
++
++bool TranslateEnabled()
++{
++  const Provider provider = CurrentProvider();
++  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
++             CSettings::SETTING_SUBTITLES_TRANSLATE) &&
++         !provider.base.empty() && !provider.model.empty();
++}
++
++bool Available(bool wait)
++{
++  const Provider provider = CurrentProvider();
++  const std::string signature = Signature(provider);
++  Status& status = GetStatus();
++  std::unique_lock guard(status.lock);
++  if (status.asked != signature)
++  {
++    status.asked = signature;
++    status.ok = false;
++    status.known = false;
++    status.when = {};
++    status.asking = false;
++  }
++  // never on the caller's thread - the player's: in the background, and again now and then; a
++  // question whose job never ran is asked again
++  const auto now = std::chrono::steady_clock::now();
++  if (status.asking && now - status.askedAt > LOST)
++    status.asking = false;
++  if (!status.asking && (!status.known || now - status.when > (status.ok ? REASK : RETRY)))
++  {
++    status.asking = true;
++    status.askedAt = now;
++    CServiceBroker::GetJobManager()->Submit(
++        [provider, signature]
++        {
++          const bool ok = Ask(provider);
++          Record(signature, ok);
++          Status& status = GetStatus();
++          std::unique_lock guard(status.lock);
++          status.asking = false;
++        },
++        // a short question the player may be waiting on: never behind the library's work
++        CJob::PRIORITY_DEDICATED);
++  }
++  if (wait && !status.known)
++    status.answered.wait_for(guard, FIRST_ANSWER,
++                             [&] { return status.known || status.asked != signature; });
++  return status.asked == signature && status.ok;
++}
++
++std::string TargetLanguage()
++{
++  return TRANSLATION::CodeOf(g_langInfo.GetSubtitleLanguage(false));
++}
++
++std::string LanguageName(const std::string& code)
++{
++  std::string name;
++  return CLangCodeExpander::Lookup(code, name) ? name : code;
++}
++
++namespace
++{
++//! The title of what plays, and its characters' names.
++void TitleAndCast(std::string& title, std::vector<std::string>& cast)
++{
++  const std::shared_ptr<CFileItem> item = g_application.CurrentFileItemPtr();
++  if (item && item->HasVideoInfoTag())
++  {
++    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
++    if (!tag.m_strShowTitle.empty())
++      title = StringUtils::Format("{}, season {} episode {}: {}", tag.m_strShowTitle, tag.m_iSeason,
++                                  tag.m_iEpisode, tag.m_strTitle);
++    else if (!tag.m_strTitle.empty())
++      title = tag.GetYear() > 0 ? StringUtils::Format("{} ({})", tag.m_strTitle, tag.GetYear())
++                                : tag.m_strTitle;
++  }
++  for (const std::string& role : CLEANUP::CastOfPlaying())
++    if (cast.size() < MAX_CAST && std::find(cast.begin(), cast.end(), role) == cast.end())
++      cast.push_back(role);
++}
++
++TRANSLATION::Context ContextFor(const std::string& from, const std::string& to)
++{
++  TRANSLATION::Context context{LanguageName(from), LanguageName(to), {}, {}};
++  TitleAndCast(context.title, context.cast);
++  return context;
++}
++
++} // namespace
++
++std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
++                                              std::chrono::seconds silence,
++                                              MODEL::CCueWorker::Deliver deliver,
++                                              MODEL::CCueWorker::Now now)
++{
++  if (hints.translateTo.empty())
++    return nullptr;
++  return std::make_unique<MODEL::CCueWorker>(
++      std::make_unique<CChat>(CurrentProvider(), silence),
++      TRANSLATION::Translation(ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo)),
++      std::move(deliver), std::move(now));
++}
++
++double PlaybackTime()
++{
++  const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++  // milliseconds, and the cues count in microseconds
++  return player ? static_cast<double>(player->GetTime()) * 1000.0 : 0.0;
++}
++
++CAiSettings& CAiSettings::GetInstance()
++{
++  static CAiSettings instance;
++  return instance;
++}
++
++void CAiSettings::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
++{
++  if (setting && TranslateEnabled())
++    Available(false);
++}
++
++void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
++{
++  if (!setting)
++    return;
++  if (setting->GetId() == CSettings::SETTING_SUBTITLES_AIMODELS)
++    ChooseModel();
++  else if (setting->GetId() == CSettings::SETTING_SUBTITLES_AITEST)
++    Test();
++}
++void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
++{
++  namespace TR = TRANSLATION;
++  m_offer.reset();
++  const std::string target = TranslateEnabled() ? TargetLanguage() : std::string();
++  if (target.empty())
++  {
++    m_selected = false;
++    return;
++  }
++  std::vector<TR::Track> tracks;
++  for (const SelectionStream& st : ordered)
++  {
++    // text inside the video, cue by cue, or a SubRip file beside it, read whole
++    const bool text =
++        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
++         (st.codecId == AV_CODEC_ID_SUBRIP || st.codecId == AV_CODEC_ID_TEXT)) ||
++        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
++         URIUtils::HasExtension(st.filename, ".srt"));
++    tracks.push_back({TR::CodeOf(st.language), reads(st.language),
++                      (st.flags & StreamFlags::FLAG_FORCED) != 0, text});
++  }
++  // a provider that does not answer offers nothing - but a translation being shown stays
++  const auto chosen = TR::ChooseSource(tracks);
++  if (chosen && (m_selected || Available()))
++    m_offer = Offer{ordered[*chosen].type_index, tracks[*chosen].code, target};
++  else
++    m_selected = false;
++}
++
++int CTranslatedEntry::Index(const CSelectionStreams& streams)
++{
++  return streams.CountType(StreamType::SUBTITLE);
++}
++
++const SelectionStream* CTranslatedEntry::Default(const CSelectionStreams& streams,
++                                                 bool reset,
++                                                 bool defaultSettings,
++                                                 int saved)
++{
++  m_selected = m_offer && (reset ? defaultSettings || saved == Index(streams) : m_selected);
++  return m_selected ? &streams.Get(StreamType::SUBTITLE, m_offer->sourceIndex) : nullptr;
++}
++
++int CTranslatedEntry::Select(int entry, const CSelectionStreams& streams)
++{
++  m_selected = m_offer && entry == Index(streams);
++  return m_selected ? m_offer->sourceIndex : entry;
++}
++
++void CTranslatedEntry::Opened(bool ok)
++{
++  m_selected = m_selected && ok;
++}
++
++std::string CTranslatedEntry::TranslateTo(int64_t demuxerId,
++                                          int id,
++                                          int source,
++                                          const CSelectionStreams& streams) const
++{
++  if (!m_selected)
++    return {};
++  const SelectionStream& st = streams.Get(StreamType::SUBTITLE, m_offer->sourceIndex);
++  return st.demuxerId == demuxerId && st.id == id && st.source == source ? m_offer->target
++                                                                         : std::string();
++}
++
++bool CTranslatedEntry::Info(int index,
++                            const CSelectionStreams& streams,
++                            SubtitleStreamInfo& info) const
++{
++  if (!m_offer || index != Index(streams))
++    return false;
++  info = SubtitleStreamInfo{};
++  info.valid = true;
++  info.name =
++      StringUtils::Format(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60062),
++                          LanguageName(m_offer->target), LanguageName(m_offer->from));
++  info.language = KODI::UTILS::CLanguageTag::Parse(m_offer->target);
++  info.codecName = "subrip";
++  return true;
++}
++} // namespace KODI::SUBTITLES::AI
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+new file mode 100644
+index 0000000..eec3b04
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -0,0 +1,155 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleTranslation.h"
++#include "settings/lib/ISettingCallback.h"
++
++#include <chrono>
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <optional>
++
++class CDVDStreamInfo;
++class CSelectionStreams;
++struct SelectionStream;
++struct SubtitleStreamInfo;
++namespace KODI::UTILS
++{
++class CLanguageTag;
++}
++#include <string>
++#include <vector>
++
++/*!
++ * \brief The language model the subtitles are translated with: a provider of the OpenAI chat
++ * API (OpenRouter, OpenAI, or any server that speaks it - llama.cpp, vLLM, Ollama), the key and
++ * the model the settings name.
++ */
++namespace KODI::SUBTITLES::AI
++{
++struct Provider
++{
++  std::string base; //!< the API's root, ".../v1"
++  std::string key; //!< empty when the server asks for none
++  std::string model;
++  int kind{0}; //!< the provider setting: OPENROUTER, OPENAI or CUSTOM
++};
++
++constexpr int OPENROUTER = 0;
++constexpr int OPENAI = 1;
++constexpr int CUSTOM = 2;
++
++//! The provider the settings name.
++Provider CurrentProvider();
++
++//! Whether subtitles are to be translated: the setting is on and a provider and model are named.
++bool TranslateEnabled();
++
++/*!
++ * \brief Whether the provider answered, and listed the model, the last time it was asked. It is
++ * asked in the background - when its settings change, and again when the answer is ten minutes
++ * old, or half a minute when it did not answer. A provider that does not answer offers no
++ * translation.
++ * \param wait whether to wait for the first answer for its settings, a second and a half at
++ * most: the video opening would offer the translation, and a server on the network answers in
++ * milliseconds
++ */
++bool Available(bool wait = true);
++
++//! The language subtitles are to be read in, as ISO 639-1 (or 639-2) code: the subtitle language
++//! setting when it names one, else empty.
++std::string TargetLanguage();
++
++//! A language by name in English ("French"), or the code itself when it names none.
++std::string LanguageName(const std::string& code);
++
++/*!
++ * \brief The language model's work on a subtitle stream being opened: translating it when the
++ * player opens it to be read in another language (hints.translateTo); nullptr otherwise.
++ * \param silence how long a request may go without a word: as long as its cues can wait
++ * \param deliver where each cue goes, translated or corrected, with its times; "" when there is
++ * nothing to show for it, which still ends a cue left open before it
++ * \param now where playback is, for a file known whole; empty for a track read as it plays
++ */
++std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
++                                              std::chrono::seconds silence,
++                                              MODEL::CCueWorker::Deliver deliver,
++                                              MODEL::CCueWorker::Now now);
++
++//! Where playback is, in the time base of the cues of a subtitle file.
++double PlaybackTime();
++
++/*!
++ * \brief The player's translated subtitle: one more entry in its subtitle list, after the video's
++ * own, standing for one of its tracks translated into the language the viewer reads - for a
++ * video that has no subtitle in that language. It is copied as the player publishes its streams.
++ */
++class CTranslatedEntry
++{
++public:
++  using Reads = std::function<bool(const KODI::UTILS::CLanguageTag&)>;
++
++  /*!
++   * \brief Decide again what is offered.
++   * \param ordered the video's subtitle tracks, in the order the player would choose them
++   * \param reads whether the viewer reads a language
++   */
++  void Update(const std::vector<SelectionStream>& ordered, const Reads& reads);
++  //! Whether the entry is offered.
++  bool Offered() const { return m_offer.has_value(); }
++  //! Whether the entry is the subtitle selected.
++  bool Selected() const { return m_selected; }
++  //! The entry's place in the subtitle list.
++  static int Index(const CSelectionStreams& streams);
++  /*!
++   * \brief The player chooses its subtitle: with no subtitle in the language the viewer reads,
++   * the translation comes first - unless the viewer chose another for this video; once playing,
++   * the viewer's choice stands.
++   * \param saved the subtitle the video's settings name
++   * \return the track to open translated, or nullptr
++   */
++  const SelectionStream* Default(const CSelectionStreams& streams,
++                                 bool reset,
++                                 bool defaultSettings,
++                                 int saved);
++  //! The viewer chooses an entry: the track to open for it.
++  int Select(int entry, const CSelectionStreams& streams);
++  //! Whether the track chosen opened.
++  void Opened(bool ok);
++  //! The language a subtitle stream being opened is to be read in, or empty.
++  std::string TranslateTo(int64_t demuxerId, int id, int source, const CSelectionStreams& streams) const;
++  //! The entry's details, when index names it.
++  bool Info(int index, const CSelectionStreams& streams, SubtitleStreamInfo& info) const;
++
++private:
++  struct Offer
++  {
++    int sourceIndex{-1}; //!< the track translated, among the subtitle streams
++    std::string from;
++    std::string target;
++  };
++  std::optional<Offer> m_offer;
++  bool m_selected{false};
++};
++
++/*!
++ * \brief The settings' buttons - pick a model from those the provider lists, test the
++ * connection - and a question to the provider when its settings change.
++ */
++class CAiSettings : public ISettingCallback
++{
++public:
++  static CAiSettings& GetInstance();
++
++  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
++  void OnSettingAction(const std::shared_ptr<const CSetting>& setting) override;
++};
++} // namespace KODI::SUBTITLES::AI
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+index 4ae5ad4..32d1f2b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+@@ -2543,4 +2543,47 @@ int CCueCleaner::Position(const std::string& text)
+   return PositionOf(Widen(text));
+ }
+ 
++std::wstring ToWide(const std::string& utf8)
++{
++  return Widen(utf8);
++}
++
++std::string FromWide(const std::wstring& text)
++{
++  return ToUtf8(text);
++}
++
++bool IsCapital(wchar_t c)
++{
++  return IsUpper(c);
++}
++
++bool IsSmall(wchar_t c)
++{
++  return IsLower(c);
++}
++
++wchar_t Small(wchar_t c)
++{
++  return Lower(c);
++}
++
++wchar_t Capital(wchar_t c)
++{
++  static const std::unordered_map<wchar_t, wchar_t> table = []
++  {
++    std::unordered_map<wchar_t, wchar_t> t;
++    for (const auto& [upper, lower] : UpperToLower())
++      t.emplace(lower, upper);
++    return t;
++  }();
++  const auto it = table.find(c);
++  return it == table.end() ? c : it->second;
++}
++
++bool IsWordLetter(wchar_t c)
++{
++  return IsLetter(c);
++}
++
+ } // namespace KODI::SUBTITLES::CLEANUP
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+index e0bd69f..6cc647a 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+@@ -295,7 +295,26 @@ private:
+ //! The options the settings ask for; false when subtitle repair is off.
+ bool CurrentOptions(Options& options);
+ 
++//! The roles of the cast of what plays: the film's, or the episode's and its show's (an
++//! episode lists only its guests). Names a word the OCR broke into letters may be.
++std::vector<std::string> CastOfPlaying();
++
+ //! The language packs of the pack add-ons installed, read again when they change.
+ std::shared_ptr<const Packs> InstalledPacks();
+ 
++//! Text as the repairs read it, and back to UTF-8.
++std::wstring ToWide(const std::string& utf8);
++std::string FromWide(const std::wstring& text);
++
++//! Letter case as the repairs read it - Latin, Greek and Cyrillic, whatever the locale: whether
++//! a character is a capital or a small letter, and each turned into the other; any other
++//! character stays as it is.
++bool IsCapital(wchar_t c);
++bool IsSmall(wchar_t c);
++wchar_t Small(wchar_t c);
++wchar_t Capital(wchar_t c);
++
++//! A letter of a word, in any script: a word character that is no digit.
++bool IsWordLetter(wchar_t c);
++
+ } // namespace KODI::SUBTITLES::CLEANUP
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+index 6fa1de8..2dc8ef7 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+@@ -39,10 +39,6 @@
+ 
+ namespace KODI::SUBTITLES::CLEANUP
+ {
+-namespace
+-{
+-//! The roles of the cast of what plays: the film's, or the episode's and its show's (an
+-//! episode lists only its guests). Names a word the OCR broke into letters may be.
+ std::vector<std::string> CastOfPlaying()
+ {
+   std::vector<std::string> roles;
+@@ -55,16 +51,26 @@ std::vector<std::string> CastOfPlaying()
+       roles.push_back(actor.strRole);
+   if (tag.m_iIdShow > 0)
+   {
+-    CVideoDatabase db;
+-    CVideoInfoTag show;
+-    if (db.Open() && db.GetTvShowInfo("", show, tag.m_iIdShow, nullptr, VideoDbDetailsCast))
+-      for (const SActorInfo& actor : show.m_cast)
+-        if (!actor.strRole.empty())
+-          roles.push_back(actor.strRole);
++    // read once a show: every subtitle stream an episode opens asks
++    static std::mutex lock;
++    static int cachedShow = -1;
++    static std::vector<std::string> showRoles;
++    std::unique_lock guard(lock);
++    if (cachedShow != tag.m_iIdShow)
++    {
++      showRoles.clear();
++      CVideoDatabase db;
++      CVideoInfoTag show;
++      if (db.Open() && db.GetTvShowInfo("", show, tag.m_iIdShow, nullptr, VideoDbDetailsCast))
++        for (const SActorInfo& actor : show.m_cast)
++          if (!actor.strRole.empty())
++            showRoles.push_back(actor.strRole);
++      cachedShow = tag.m_iIdShow;
++    }
++    roles.insert(roles.end(), showRoles.begin(), showRoles.end());
+   }
+   return roles;
+ }
+-} // namespace
+ 
+ bool CurrentOptions(Options& options)
+ {
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 053d744..7c8059b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -8,17 +8,27 @@
+ 
+ #include "SubtitleCueStage.h"
+ 
++#include "SubtitleAI.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ 
+ namespace KODI::SUBTITLES
+ {
++CCueStage::CCueStage() = default;
++
++CCueStage::~CCueStage() = default;
++
+ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+ {
++  // its thread delivers to what follows
++  m_worker.reset();
+   m_deliver = std::move(deliver);
+   m_cleaner.reset();
+   m_timing = false;
+   m_prevLengthened = false;
++  // a track inside the video is read seconds before its cues are shown
++  m_worker = AI::MakeWorker(hints, std::chrono::seconds(30), m_deliver, {});
++  m_removes = m_worker != nullptr;
+   CLEANUP::Options repair;
+   if (!text || !CLEANUP::CurrentOptions(repair))
+     return;
+@@ -29,17 +39,36 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+   m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr, language,
+                     CLEANUP::DetectLanguage);
+   m_timing = repair.fixTiming;
++  m_removes = true;
++}
++
++void CCueStage::OpenFile(const CDVDStreamInfo& hints, Deliver deliver)
++{
++  m_worker.reset();
++  m_deliver = std::move(deliver);
++  m_cleaner.reset();
++  m_timing = false;
++  // the whole file is known: it is translated from where playback is, ahead of it
++  m_worker = AI::MakeWorker(hints, std::chrono::seconds(60), m_deliver, AI::PlaybackTime);
++  m_removes = m_worker != nullptr;
+ }
+ 
+ void CCueStage::Submit(std::string text, double start, double stop)
+ {
+   if (m_cleaner && !m_cleaner->Clean(text))
+     text.clear();
+-  m_deliver(text, start, stop);
++  if (m_worker)
++    // the model's answers come on its thread, and so do the cues it is not asked about, empty
++    // ones too, to keep their order
++    m_worker->Submit(text, start, stop);
++  else
++    m_deliver(text, start, stop);
+ }
+ 
+ void CCueStage::Flush()
+ {
++  if (m_worker)
++    m_worker->Flush();
+   m_prevLengthened = false;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index b7261ff..10e2669 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -11,6 +11,7 @@
+ #include "SubtitleCleanup.h"
+ 
+ #include <functional>
++#include <memory>
+ #include <optional>
+ #include <string>
+ 
+@@ -18,10 +19,16 @@ class CDVDStreamInfo;
+ 
+ namespace KODI::SUBTITLES
+ {
++namespace MODEL
++{
++class CCueWorker;
++}
++
+ /*!
+- * \brief What happens to the cues of a text subtitle stream between its demuxer and the screen:
+- * the repair the settings ask for, and the times of the cues around one too short to be seen.
+- * The codec hands each cue in, and shows what comes out.
++ * \brief What happens to the cues of a text subtitle stream between where they are read and the
++ * screen: the repair the settings ask for, the language model's work on them, and the times of
++ * the cues around one too short to be seen. The codec or parser hands each cue in, and shows
++ * what comes out.
+  */
+ class CCueStage
+ {
+@@ -30,16 +37,22 @@ public:
+   //! open before it.
+   using Deliver = std::function<void(const std::string& text, double start, double stop)>;
+ 
++  CCueStage();
++  ~CCueStage();
++
+   /*!
+-   * \brief Set up for a stream being opened.
++   * \brief Set up for a stream inside the video being opened.
+    * \param text whether its cues are text the repair can read (not SSA)
+    */
+   void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver);
+-  //! A cue as read, which reaches deliver.
++  //! Set up for a subtitle file beside the video, known whole and worked on ahead of playback.
++  void OpenFile(const CDVDStreamInfo& hints, Deliver deliver);
++  //! A cue as read, which reaches deliver - from the language model's thread when it works on
++  //! the cues.
+   void Submit(std::string text, double start, double stop);
+   void Flush();
+   //! Whether a "" cue means there is nothing to show, rather than an empty cue.
+-  bool Removes() const { return m_cleaner.has_value(); }
++  bool Removes() const { return m_removes; }
+   /*!
+    * \brief Time a cue about to be shown: one too short to be seen is lengthened.
+    * \return where the cue before it is to end, when it runs into this one
+@@ -54,5 +67,9 @@ private:
+   double m_prevStop{0};
+   int m_prevPosition{0};
+   bool m_prevLengthened{false};
++  //! set once the worker is in place: its thread asks it, so it never changes under it
++  bool m_removes{false};
++  //! last, so its thread stops before anything it delivers to goes
++  std::unique_ptr<MODEL::CCueWorker> m_worker;
+ };
+ } // namespace KODI::SUBTITLES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+new file mode 100644
+index 0000000..6c2dc50
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -0,0 +1,258 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleModel.h"
++
++#include <algorithm>
++#include <chrono>
++#include <regex>
++
++namespace KODI::SUBTITLES::MODEL
++{
++std::string Plain(const std::string& text)
++{
++  // tags "<i>" and "{\an8}" dropped, white space collapsed
++  std::string out;
++  bool space = false;
++  char closing = 0;
++  for (const char c : text)
++  {
++    if (closing)
++    {
++      closing = c == closing ? 0 : closing;
++      continue;
++    }
++    if (c == '<' || c == '{')
++    {
++      closing = c == '<' ? '>' : '}';
++      continue;
++    }
++    if (c == '\n' || c == '\r' || c == ' ' || c == '\t')
++    {
++      space = !out.empty();
++      continue;
++    }
++    if (space)
++      out += ' ';
++    space = false;
++    out += c;
++  }
++  return out;
++}
++
++std::string Preamble(const std::string& title,
++                     const std::vector<std::string>& cast,
++                     const std::deque<std::string>& before)
++{
++  std::string out;
++  if (!title.empty())
++    out += "Video: " + title + "\n";
++  if (!cast.empty())
++  {
++    out += "Characters:";
++    for (size_t i = 0; i < cast.size(); ++i)
++      out += (i ? ", " : " ") + cast[i];
++    out += "\n";
++  }
++  if (!before.empty())
++  {
++    out += "\nThe lines before, for context only:\n";
++    for (const std::string& line : before)
++      out += line + "\n";
++  }
++  return out;
++}
++
++std::vector<std::string> AnswerLines(const std::string& answer)
++{
++  // a few cues are a few hundred bytes; a model that runs on is no answer
++  constexpr size_t MAX_ANSWER = 16384;
++  const size_t thought = answer.rfind("</think>");
++  const std::string text = thought == std::string::npos ? answer : answer.substr(thought + 8);
++  std::vector<std::string> lines;
++  if (text.size() > MAX_ANSWER)
++    return lines;
++  size_t start = 0;
++  while (start < text.size())
++  {
++    size_t end = text.find('\n', start);
++    if (end == std::string::npos)
++      end = text.size();
++    std::string line = text.substr(start, end - start);
++    start = end + 1;
++    const size_t first = line.find_first_not_of(" \t");
++    if (first == std::string::npos || line.compare(first, 3, "```") != 0)
++      lines.push_back(std::move(line));
++  }
++  return lines;
++}
++
++std::vector<std::string> ReadNumbered(const std::string& answer, size_t count)
++{
++  static const std::regex numbered(R"(^\s*(\d+)\s*[.):]\s*(.*?)\s*$)");
++  std::vector<std::string> out(count);
++  std::vector<bool> seen(count, false);
++  int current = -1;
++  bool trailing = false; // a line after the last numbered one, with no blank line between
++  for (const std::string& line : AnswerLines(answer))
++  {
++    std::smatch m;
++    if (line.find_first_not_of(" \t\r") == std::string::npos)
++    {
++      current = -1;
++      trailing = false;
++    }
++    else if (std::regex_match(line, m, numbered))
++    {
++      const size_t n = std::stoul(m[1].str().substr(0, 6));
++      if (n < 1 || n > count || seen[n - 1])
++        return {};
++      current = static_cast<int>(n - 1);
++      seen[current] = true;
++      out[current] = m[2].str();
++      trailing = false;
++    }
++    else if (current >= 0)
++    {
++      // a line the model broke in two - unless no numbered line follows: then it may be a
++      // remark ("Note: the names are kept."), and the answer is not to be trusted
++      out[current] += (out[current].empty() ? "" : " ") + Plain(line);
++      trailing = true;
++    }
++  }
++  if (trailing)
++    return {};
++  for (size_t i = 0; i < count; ++i)
++    if (!seen[i] || out[i].empty())
++      return {};
++  return out;
++}
++
++// -- the thread ----------------------------------------------------------------------------------
++
++CCueWorker::CCueWorker(std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now)
++  : m_chat(std::move(chat)),
++    m_work(std::move(work)),
++    m_deliver(std::move(deliver)),
++    m_now(std::move(now)),
++    m_thread([this] { Run(); })
++{
++}
++
++CCueWorker::~CCueWorker()
++{
++  {
++    std::unique_lock lock(m_queueLock);
++    m_stop = true;
++  }
++  m_wake.notify_all();
++  m_chat->Cancel();
++  m_thread.join();
++}
++
++void CCueWorker::Submit(const std::string& text,
++                        double start,
++                        double stop,
++                        std::vector<std::string> notes)
++{
++  unsigned generation;
++  {
++    std::unique_lock lock(m_deliverLock);
++    generation = m_generation;
++  }
++  {
++    std::unique_lock lock(m_queueLock);
++    m_queue.push_back({{text, std::move(notes)}, start, stop, generation});
++  }
++  m_wake.notify_one();
++}
++
++void CCueWorker::Flush()
++{
++  {
++    std::unique_lock lock(m_queueLock);
++    m_queue.clear();
++  }
++  {
++    std::unique_lock lock(m_deliverLock);
++    ++m_generation;
++  }
++  m_chat->Abort();
++}
++
++std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
++{
++  std::unique_lock lock(m_queueLock);
++  m_wake.wait(lock, [this] { return m_stop || !m_queue.empty(); });
++  if (m_stop)
++    return {};
++  // a file known whole goes from where playback is; what is behind it comes last
++  size_t first = 0;
++  if (m_now)
++  {
++    const double now = m_now();
++    const auto ahead = std::find_if(m_queue.begin(), m_queue.end(),
++                                    [now](const Cue& cue) { return cue.stop >= now; });
++    if (ahead != m_queue.end())
++      first = ahead - m_queue.begin();
++  }
++  const size_t last = std::min(m_queue.size(), first + BATCH);
++  std::vector<Cue> batch(std::make_move_iterator(m_queue.begin() + first),
++                         std::make_move_iterator(m_queue.begin() + last));
++  m_queue.erase(m_queue.begin() + first, m_queue.begin() + last);
++  return batch;
++}
++
++void CCueWorker::Run()
++{
++  using namespace std::chrono_literals;
++  while (true)
++  {
++    const std::vector<Cue> batch = NextBatch();
++    if (batch.empty())
++      return;
++
++    std::vector<Item> items;
++    for (const Cue& cue : batch)
++      items.push_back(cue.item);
++    // a seek between taking the batch and beginning it already dropped it
++    m_chat->Begin();
++    {
++      std::unique_lock lock(m_deliverLock);
++      if (batch.front().generation != m_generation)
++        continue;
++    }
++    const Outcome outcome = m_work(*m_chat, items);
++    {
++      // closing: nothing more is delivered
++      std::unique_lock lock(m_queueLock);
++      if (m_stop)
++        return;
++    }
++
++    for (size_t c = 0; c < batch.size() && c < outcome.cues.size(); ++c)
++    {
++      std::unique_lock lock(m_deliverLock);
++      if (batch[c].generation == m_generation)
++        m_deliver(outcome.cues[c], batch[c].start, batch[c].stop);
++    }
++    bool dropped;
++    {
++      std::unique_lock lock(m_deliverLock);
++      dropped = batch.front().generation != m_generation;
++    }
++    if (outcome.failed && !dropped)
++    {
++      // the provider is down or refuses: the next request waits a little rather than hammer it
++      std::unique_lock lock(m_queueLock);
++      if (m_wake.wait_for(lock, 10s, [this] { return m_stop; }))
++        return;
++    }
++  }
++}
++} // namespace KODI::SUBTITLES::MODEL
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+new file mode 100644
+index 0000000..1edfce5
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -0,0 +1,138 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <condition_variable>
++#include <deque>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <thread>
++#include <vector>
++
++/*!
++ * \brief Work a language model does on subtitle cues, behind an OpenAI-style chat API: the cues
++ * go a few to a request, on a thread of their own, so the player never waits for the model.
++ */
++namespace KODI::SUBTITLES::MODEL
++{
++/*!
++ * \brief A language model to talk to. Complete() sends one exchange and returns the model's
++ * answer, or nothing when the provider could not be reached or refused the request. Cancel()
++ * may come from another thread.
++ */
++class IChat
++{
++public:
++  virtual ~IChat() = default;
++  virtual std::optional<std::string> Complete(const std::string& system,
++                                              const std::string& user) = 0;
++  //! End the exchange in progress, and refuse any after it: the cues' track is closing.
++  virtual void Cancel() {}
++  //! A batch of cues starts: Abort() ends its exchanges, the one in progress and those after.
++  virtual void Begin() {}
++  //! The batch's cues were dropped: its exchanges answer nothing.
++  virtual void Abort() {}
++  //! Whether the batch begun last was aborted: a missing answer then says nothing of the
++  //! provider.
++  virtual bool Aborted() const { return false; }
++};
++
++//! What became of a batch of cues: each one's text, "" when there is nothing to show for it;
++//! failed when the provider did not answer.
++struct Outcome
++{
++  std::vector<std::string> cues;
++  bool failed{false};
++};
++
++//! A cue as the model's work gets it: its text as it would be shown, and notes about it - the
++//! words the repair doubts, for one.
++struct Item
++{
++  std::string text;
++  std::vector<std::string> notes;
++};
++
++//! What the model does to a batch of cues.
++using Work = std::function<Outcome(IChat& chat, const std::vector<Item>& cues)>;
++
++//! A cue's text as a model reads it: formatting tags dropped, lines joined by a space.
++std::string Plain(const std::string& text);
++
++//! What a model is told of the video before the lines: its title, its characters' names, and
++//! the lines before them, for context only.
++std::string Preamble(const std::string& title,
++                     const std::vector<std::string>& cast,
++                     const std::deque<std::string>& before);
++
++//! The lines of a model's answer: what a reasoning model thought first and code fences left
++//! out; none for an answer far too long to be one.
++std::vector<std::string> AnswerLines(const std::string& answer);
++
++//! The numbered lines of a model's answer: "1. ...", "2) ...", in order, a line the model broke
++//! in two joined again. Empty unless the answer holds exactly lines 1 to count, each once and
++//! none empty, and nothing but a blank line and remarks after the last.
++std::vector<std::string> ReadNumbered(const std::string& answer, size_t count);
++
++/*!
++ * \brief Hands cues to a model's work on a thread of its own, a few at a time, and each result to
++ * deliver with the cue's times, on that thread, in the order of the cues.
++ */
++class CCueWorker
++{
++public:
++  using Deliver = std::function<void(const std::string& text, double start, double stop)>;
++  //! Where playback is, in the cues' time base: a file known whole is worked from there.
++  using Now = std::function<double()>;
++
++  //! How many cues a request carries at most.
++  static constexpr size_t BATCH = 8;
++
++  CCueWorker(std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now = {});
++  ~CCueWorker();
++  CCueWorker(const CCueWorker&) = delete;
++  CCueWorker& operator=(const CCueWorker&) = delete;
++
++  //! A cue: its text as it would be shown, its times, and notes for the work.
++  void Submit(const std::string& text,
++              double start,
++              double stop,
++              std::vector<std::string> notes = {});
++  //! Drop every cue not yet delivered, ending the request for them: none is delivered once this
++  //! returns (after a seek).
++  void Flush();
++
++private:
++  struct Cue
++  {
++    Item item;
++    double start;
++    double stop;
++    unsigned generation;
++  };
++
++  void Run();
++  std::vector<Cue> NextBatch();
++
++  std::unique_ptr<IChat> m_chat;
++  Work m_work;
++  Deliver m_deliver;
++  Now m_now;
++  std::mutex m_queueLock;
++  std::condition_variable m_wake;
++  std::deque<Cue> m_queue;
++  bool m_stop{false};
++  std::mutex m_deliverLock; //!< held while delivering, and to change the generation
++  unsigned m_generation{0};
++  std::thread m_thread;
++};
++} // namespace KODI::SUBTITLES::MODEL
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+new file mode 100644
+index 0000000..0bab663
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+@@ -0,0 +1,251 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleTranslation.h"
++
++#include "SubtitleCleanup.h"
++
++#include <algorithm>
++
++namespace KODI::SUBTITLES::TRANSLATION
++{
++std::optional<size_t> ChooseSource(const std::vector<Track>& tracks)
++{
++  if (std::any_of(tracks.begin(), tracks.end(),
++                  [](const Track& t) { return t.isTarget && !t.forced; }))
++    return std::nullopt;
++  for (size_t i = 0; i < tracks.size(); ++i)
++  {
++    const Track& t = tracks[i];
++    if (t.text && !t.forced && !t.isTarget && !t.code.empty())
++      return i;
++  }
++  return std::nullopt;
++}
++
++std::string Wrap(const std::string& text, size_t width)
++{
++  if (text.size() <= width)
++    return text;
++  const size_t middle = text.size() / 2;
++  size_t best = std::string::npos;
++  for (size_t i = 0; i < text.size(); ++i)
++  {
++    const auto distance = [&](size_t at) { return at > middle ? at - middle : middle - at; };
++    if (text[i] == ' ' && (best == std::string::npos || distance(i) < distance(best)))
++      best = i;
++  }
++  return best == std::string::npos ? text : text.substr(0, best) + "\n" + text.substr(best + 1);
++}
++
++namespace
++{
++//! Text written all in capitals - a song, a sign: the models read capitals as names and keep
++//! them in their own language, so it is translated in ordinary case and set back in capitals.
++//! A script with no case ("これはNASAのデータだ") is not shouting.
++bool Shouted(const std::wstring& text)
++{
++  int capitals = 0;
++  for (const wchar_t c : text)
++  {
++    if (CLEANUP::IsCapital(c))
++      ++capitals;
++    else if (CLEANUP::IsWordLetter(c) && !(c >= L'0' && c <= L'9'))
++      return false;
++  }
++  return capitals >= 4;
++}
++
++std::wstring SentenceCase(const std::wstring& text)
++{
++  std::wstring out;
++  bool start = true;
++  for (const wchar_t c : text)
++  {
++    out.push_back(start ? c : CLEANUP::Small(c));
++    if (CLEANUP::IsCapital(c) || CLEANUP::IsSmall(c))
++      start = false;
++    else if (c == L'.' || c == L'!' || c == L'?')
++      start = true;
++  }
++  return out;
++}
++} // namespace
++
++// -- the request --------------------------------------------------------------------------------
++
++std::string SystemPrompt(const Context& context)
++{
++  return "You translate the subtitles of a film or a television episode from " + context.from +
++         " into " + context.to + ". Translate each numbered line on its own, into natural spoken " +
++         context.to +
++         " that reads well as a subtitle, keeping its meaning, its tone and its register. Keep "
++         "names as they are. Answer with the same numbered lines, translated, and nothing else.";
++}
++
++std::string UserPrompt(const Context& context,
++                       const std::deque<std::string>& before,
++                       const std::vector<std::string>& lines)
++{
++  std::string out = MODEL::Preamble(context.title, context.cast, before);
++  out += "\nThe lines to translate:\n";
++  for (size_t i = 0; i < lines.size(); ++i)
++    out += std::to_string(i + 1) + ". " + lines[i] + "\n";
++  return out;
++}
++
++std::vector<std::string> ReadTranslation(const std::string& answer,
++                                         const std::vector<std::string>& sources)
++{
++  std::vector<std::string> out = MODEL::ReadNumbered(answer, sources.size());
++  for (size_t i = 0; i < out.size(); ++i)
++    if (out[i].size() > 3 * sources[i].size() + 30)
++      return {};
++  return out;
++}
++
++std::optional<std::vector<std::string>> TranslateLines(MODEL::IChat& chat,
++                                                       const Context& context,
++                                                       const std::deque<std::string>& before,
++                                                       const std::vector<std::string>& lines)
++{
++  const std::string system = SystemPrompt(context);
++  const std::optional<std::string> answer =
++      chat.Complete(system, UserPrompt(context, before, lines));
++  if (!answer)
++    return std::nullopt;
++  std::vector<std::string> out = ReadTranslation(*answer, lines);
++  if (!out.empty())
++    return out;
++  // the answer lost the numbering: a line at a time, each with the lines before it
++  out.assign(lines.size(), {});
++  if (lines.size() == 1)
++    return out;
++  std::deque<std::string> earlier = before;
++  for (size_t i = 0; i < lines.size(); ++i)
++  {
++    const std::optional<std::string> one =
++        chat.Complete(system, UserPrompt(context, earlier, {lines[i]}));
++    if (!one)
++      return std::nullopt;
++    const std::vector<std::string> read = ReadTranslation(*one, {lines[i]});
++    if (!read.empty())
++      out[i] = read[0];
++    earlier.push_back(lines[i]);
++  }
++  return out;
++}
++
++// -- the work ----------------------------------------------------------------------------------
++
++namespace
++{
++//! A cue as lines to translate: one sentence, whatever its breaks, or a dialogue, which keeps
++//! one speaker a line.
++struct Layout
++{
++  std::vector<std::string> lines;
++  bool dialogue{false};
++};
++
++Layout LayOut(const std::string& text)
++{
++  std::vector<std::string> lines;
++  size_t start = 0;
++  while (start <= text.size())
++  {
++    const size_t end = text.find('\n', start);
++    lines.push_back(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
++    if (end == std::string::npos)
++      break;
++    start = end + 1;
++  }
++  // every line a speaker's, with something said
++  const bool dialogue =
++      lines.size() > 1 && std::all_of(lines.begin(), lines.end(),
++                                      [](const std::string& line)
++                                      {
++                                        const std::string plain = MODEL::Plain(line);
++                                        return plain.size() > 1 && plain[0] == '-' &&
++                                               plain.find_first_not_of("- ") != std::string::npos;
++                                      });
++  if (!dialogue)
++    return {{MODEL::Plain(text)}, false};
++  for (std::string& line : lines)
++  {
++    line = MODEL::Plain(line).substr(1);
++    line.erase(0, line.find_first_not_of(' '));
++  }
++  return {lines, true};
++}
++} // namespace
++
++MODEL::Work Translation(Context context)
++{
++  return [context = std::move(context), before = std::deque<std::string>()](
++             MODEL::IChat& chat, const std::vector<MODEL::Item>& cues) mutable
++  {
++    std::vector<Layout> layouts;
++    std::vector<std::string> sources;
++    std::vector<bool> shouted;
++    for (const MODEL::Item& cue : cues)
++    {
++      layouts.push_back(LayOut(cue.text));
++      // nothing to translate in it ("{\\an8}", "<i></i>"): it is not asked about
++      if (layouts.back().lines.front().empty())
++        layouts.back().lines.clear();
++      for (const std::string& line : layouts.back().lines)
++      {
++        const std::wstring wide = CLEANUP::ToWide(line);
++        shouted.push_back(Shouted(wide));
++        sources.push_back(shouted.back() ? CLEANUP::FromWide(SentenceCase(wide)) : line);
++      }
++    }
++
++    const std::optional<std::vector<std::string>> translated =
++        sources.empty() ? std::make_optional(std::vector<std::string>())
++                        : TranslateLines(chat, context, before, sources);
++    // the lines before a seek are no context for those after it
++    for (const std::string& source : chat.Aborted() ? std::vector<std::string>() : sources)
++    {
++      before.push_back(source);
++      if (before.size() > BEFORE)
++        before.pop_front();
++    }
++    // the provider is down or refuses: these cues show nothing, but still end the cue before
++    MODEL::Outcome outcome;
++    outcome.cues.resize(cues.size());
++    outcome.failed = !translated;
++    if (!translated || sources.empty())
++      return outcome;
++
++    size_t at = 0;
++    for (size_t c = 0; c < cues.size(); ++c)
++    {
++      std::string out;
++      bool complete = true;
++      for (size_t i = 0; i < layouts[c].lines.size(); ++i, ++at)
++      {
++        std::string line = (*translated)[at];
++        complete = complete && !line.empty();
++        if (shouted[at])
++        {
++          std::wstring upper = CLEANUP::ToWide(line);
++          for (wchar_t& ch : upper)
++            ch = CLEANUP::Capital(ch);
++          line = CLEANUP::FromWide(upper);
++        }
++        out += layouts[c].dialogue ? (out.empty() ? "- " : "\n- ") + line : line;
++      }
++      if (complete && !layouts[c].lines.empty())
++        outcome.cues[c] = layouts[c].dialogue ? out : Wrap(out);
++    }
++    return outcome;
++  };
++}
++} // namespace KODI::SUBTITLES::TRANSLATION
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+new file mode 100644
+index 0000000..2a6752f
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+@@ -0,0 +1,99 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleModel.h"
++
++#include <deque>
++#include <optional>
++#include <string>
++#include <vector>
++
++/*!
++ * \brief Subtitles translated into the language the viewer reads, for a video that has none in
++ * it: a text subtitle in another language is translated by a language model behind an
++ * OpenAI-style chat API, a few cues a request, on a thread of its own.
++ */
++namespace KODI::SUBTITLES::TRANSLATION
++{
++//! A subtitle track as the choice of what to translate sees it.
++struct Track
++{
++  std::string code; //!< ISO 639-1 where the language has one, else 639-2; empty when undeclared
++  bool isTarget{false}; //!< in the language subtitles are to be read in
++  bool forced{false};
++  bool text{false}; //!< text the translation reads, not images
++};
++
++/*!
++ * \brief The track to translate, or none.
++ * \param tracks the subtitle tracks, in the order Kodi would choose them
++ * \return an index into tracks; none when a full track in the target language exists - a forced
++ * one does not count, it only covers what is said in another language - or when no track is text,
++ * not forced, in a declared language
++ */
++std::optional<size_t> ChooseSource(const std::vector<Track>& tracks);
++
++//! The code a language tag is known by here: ISO 639-1 where it has one, else 639-2/B; empty
++//! when the tag declares no language.
++template<class Tag>
++std::string CodeOf(const Tag& tag)
++{
++  if (tag.IsEmpty() || tag.IsUndetermined())
++    return {};
++  const std::string code = tag.AsIso6391();
++  return code.empty() ? tag.AsIso6392B() : code;
++}
++
++//! A translation laid out on at most two lines, broken at the space nearest the middle.
++std::string Wrap(const std::string& text, size_t width = 42);
++
++//! What a model is told about the video, besides the lines.
++struct Context
++{
++  std::string from; //!< the source language's name in English ("French")
++  std::string to; //!< the target language's name in English
++  std::string title; //!< "Title (1999)", or empty
++  std::vector<std::string> cast; //!< the characters' names, to be kept as they are
++};
++
++//! The instructions for translating numbered lines.
++std::string SystemPrompt(const Context& context);
++
++//! The request: what the video is, the lines before (context only) and the numbered lines.
++std::string UserPrompt(const Context& context,
++                       const std::deque<std::string>& before,
++                       const std::vector<std::string>& lines);
++
++//! The translated lines of an answer (see MODEL::ReadNumbered); empty too when a line is
++//! implausibly longer than its source: models that run on invent.
++std::vector<std::string> ReadTranslation(const std::string& answer,
++                                         const std::vector<std::string>& sources);
++
++/*!
++ * \brief The lines translated: all in one request, and line by line when the answer does not
++ * keep to the numbering. A line no answer gives is empty. Nothing when the provider fails.
++ */
++std::optional<std::vector<std::string>> TranslateLines(MODEL::IChat& chat,
++                                                       const Context& context,
++                                                       const std::deque<std::string>& before,
++                                                       const std::vector<std::string>& lines);
++
++//! How many lines before a request it carries for context.
++constexpr size_t BEFORE = 6;
++
++/*!
++ * \brief Translation as a model's work on cues, with the lines before them for context. A cue of
++ * a dialogue ("- Hi." "- Hello.") is translated line by line and keeps its lines; any other is one
++ * sentence, laid out on two lines. A line in capitals goes in ordinary case: models read capitals
++ * as names. A cue with nothing to translate, or that the provider did not answer for, comes
++ * back "".
++ */
++MODEL::Work Translation(Context context);
++} // namespace KODI::SUBTITLES::TRANSLATION
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 666aaeb..0040d00 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1153,8 +1153,18 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
+   if (m_CurrentSubtitle.source == STREAM_SOURCE_VIDEOMUX)
+     CloseStream(m_CurrentSubtitle, false);
+ 
++  UpdateTranslatedSubtitle();
++  if (const SelectionStream* st =
++          m_translatedSubtitle.Default(m_SelectionStreams, reset, isDefaultVideosettings,
++                                       m_processInfo->GetVideoSettings().m_SubtitleStream))
++  {
++    valid = OpenStream(m_CurrentSubtitle, st->demuxerId, st->id, st->source);
++    m_translatedSubtitle.Opened(valid);
++  }
+   for (const auto& stream : m_SelectionStreams.Get(StreamType::SUBTITLE, psp))
+   {
++    if (valid)
++      break;
+     if (OpenStream(m_CurrentSubtitle, stream.demuxerId, stream.id, stream.source))
+     {
+       valid = true;
+@@ -2139,7 +2149,10 @@ void CVideoPlayer::CheckStreamChanges(CCurrentStream& current, CDemuxStream* str
+     /* check so that dmuxer hints or extra data hasn't changed */
+     /* if they have, reopen stream */
+ 
+-    if (current.hint != CDVDStreamInfo(*stream, true))
++    // the hints a stream was opened with also say what it was opened for
++    CDVDStreamInfo hint(*stream, true);
++    hint.translateTo = current.hint.translateTo;
++    if (current.hint != hint)
+     {
+       m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
+       m_SelectionStreams.Update(m_pInputStream, m_pDemuxer.get());
+@@ -3761,7 +3774,9 @@ void CVideoPlayer::HandleMessages()
+     {
+       auto pMsg2 = std::static_pointer_cast<CDVDMsgPlayerSetSubtitleStream>(pMsg);
+ 
+-      SelectionStream& st = m_SelectionStreams.Get(StreamType::SUBTITLE, pMsg2->GetStreamId());
++      SelectionStream& st = m_SelectionStreams.Get(
++          StreamType::SUBTITLE,
++          m_translatedSubtitle.Select(pMsg2->GetStreamId(), m_SelectionStreams));
+       if(st.source != STREAM_SOURCE_NONE)
+       {
+         if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+@@ -3776,7 +3791,8 @@ void CVideoPlayer::HandleMessages()
+         else
+         {
+           CloseStream(m_CurrentSubtitle, false);
+-          OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
++          m_translatedSubtitle.Opened(
++              OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source));
+ 
+           // For embedded subtitles the demuxer is ahead of playback (AV buffers
+           // are full), so the subtitle packets for the current playback time have
+@@ -5334,6 +5350,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+ 
+     hint.Clear();
+     hint.filename = m_SelectionStreams.Get(current.type, index).filename;
++    // a file beside the video gives its language only in its name
++    hint.language = m_SelectionStreams.Get(current.type, index).language;
+     hint.fpsscale = m_CurrentVideo.hint.fpsscale;
+     hint.fpsrate  = m_CurrentVideo.hint.fpsrate;
+   }
+@@ -5369,6 +5387,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+     hint.Assign(*stream, false);
+   }
+ 
++  if (current.type == StreamType::SUBTITLE)
++    hint.translateTo =
++        m_translatedSubtitle.TranslateTo(demuxerId, iStream, source, m_SelectionStreams);
++
+   bool res;
+   switch(current.type)
+   {
+@@ -7388,9 +7410,20 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDeta
+ 
+ void CVideoPlayer::UpdateContent()
+ {
++  UpdateTranslatedSubtitle();
+   std::unique_lock lock(m_content.m_section);
+   m_content.m_selectionStreams = m_SelectionStreams;
+   m_content.m_programs = m_programs;
++  m_content.m_translatedSubtitle = m_translatedSubtitle;
++}
++
++void CVideoPlayer::UpdateTranslatedSubtitle()
++{
++  const SelectionStream& as = m_SelectionStreams.Get(StreamType::AUDIO, GetAudioStream());
++  const PredicateSubtitleFilter filter(as.language, -1);
++  m_translatedSubtitle.Update(
++      m_SelectionStreams.Get(StreamType::SUBTITLE, PredicateSubtitlePriority(as.language, -1)),
++      [&filter](const CLanguageTag& language) { return filter.MatchesSubtitleLanguage(language); });
+ }
+ 
+ void CVideoPlayer::UpdateContentState()
+@@ -7404,6 +7437,8 @@ void CVideoPlayer::UpdateContentState()
+   m_content.m_subtitleIndex =
+       m_SelectionStreams.TypeIndexOf(StreamType::SUBTITLE, m_CurrentSubtitle.source,
+                                      m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
++  if (m_translatedSubtitle.Selected())
++    m_content.m_subtitleIndex = m_translatedSubtitle.Index(m_SelectionStreams);
+ 
+   if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) && m_content.m_videoIndex == -1 &&
+       m_content.m_audioIndex == -1)
+@@ -7593,6 +7628,9 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
+     return;
+   }
+ 
++  if (m_content.m_translatedSubtitle.Info(index, m_content.m_selectionStreams, info))
++    return;
++
+   const SelectionStream& s = m_content.m_selectionStreams.Get(StreamType::SUBTITLE, index);
+   info.name = s.name;
+ 
+@@ -7618,7 +7656,8 @@ void CVideoPlayer::SetSubtitle(int iStream)
+ int CVideoPlayer::GetSubtitleCount() const
+ {
+   std::unique_lock lock(m_content.m_section);
+-  return m_content.m_selectionStreams.CountType(StreamType::SUBTITLE);
++  return m_content.m_selectionStreams.CountType(StreamType::SUBTITLE) +
++         (m_content.m_translatedSubtitle.Offered() ? 1 : 0);
+ }
+ 
+ int CVideoPlayer::GetSubtitle()
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 9db22a2..a263248 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -24,6 +24,7 @@
+ #include "VideoPlayerTeletext.h"
+ #include "cores/IPlayer.h"
+ #include "cores/MenuType.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleAI.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+ #include "guilib/DispResource.h"
+@@ -547,6 +548,7 @@ protected:
+ 
+   virtual void UpdateContent();
+   void UpdateContentState();
++  void UpdateTranslatedSubtitle();
+ 
+   void UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update);
+   int GetPreviousChapter();
+@@ -610,6 +612,7 @@ protected:
+ 
+   CSelectionStreams m_SelectionStreams;
+   std::vector<ProgramInfo> m_programs;
++  KODI::SUBTITLES::AI::CTranslatedEntry m_translatedSubtitle;
+ 
+   struct SContent
+   {
+@@ -619,6 +622,7 @@ protected:
+     int m_videoIndex{-1};
+     int m_audioIndex{-1};
+     int m_subtitleIndex{-1};
++    KODI::SUBTITLES::AI::CTranslatedEntry m_translatedSubtitle;
+   } m_content;
+ 
+   int m_playSpeed;
+diff --git a/xbmc/settings/Settings.cpp b/xbmc/settings/Settings.cpp
+index 55a0393..1bbe78d 100644
+--- a/xbmc/settings/Settings.cpp
++++ b/xbmc/settings/Settings.cpp
+@@ -14,6 +14,7 @@
+ #include "addons/AddonSystemSettings.h"
+ #include "addons/Skin.h"
+ #include "application/AppParams.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleAI.h"
+ #include "cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h"
+ #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+ #include "filesystem/File.h"
+@@ -613,6 +614,13 @@ void CSettings::InitializeISettingCallbacks()
+   GetSettingsManager()->RegisterCallback(&KODI::SUBTITLES::CLEANUP::CRepairLanguages::GetInstance(),
+                                          {CSettings::SETTING_SUBTITLES_REPAIRLANGUAGES});
+ 
++  GetSettingsManager()->RegisterCallback(
++      &KODI::SUBTITLES::AI::CAiSettings::GetInstance(),
++      {CSettings::SETTING_SUBTITLES_AIPROVIDER, CSettings::SETTING_SUBTITLES_AIURL,
++       CSettings::SETTING_SUBTITLES_AIKEY, CSettings::SETTING_SUBTITLES_AIMODEL,
++       CSettings::SETTING_SUBTITLES_AIMODELS, CSettings::SETTING_SUBTITLES_AITEST,
++       CSettings::SETTING_SUBTITLES_TRANSLATE});
++
+   GetSettingsManager()->RegisterCallback(
+       &g_langInfo,
+       {CSettings::SETTING_LOCALE_AUDIOLANGUAGE, CSettings::SETTING_LOCALE_SUBTITLELANGUAGE,
+@@ -656,6 +664,7 @@ void CSettings::UninitializeISettingCallbacks()
+   GetSettingsManager()->UnregisterCallback(&CDisplaySettings::GetInstance());
+   GetSettingsManager()->UnregisterCallback(&g_charsetConverter);
+   GetSettingsManager()->UnregisterCallback(&KODI::SUBTITLES::CLEANUP::CRepairLanguages::GetInstance());
++  GetSettingsManager()->UnregisterCallback(&KODI::SUBTITLES::AI::CAiSettings::GetInstance());
+   GetSettingsManager()->UnregisterCallback(&g_langInfo);
+   GetSettingsManager()->UnregisterCallback(&g_passwordManager);
+   GetSettingsManager()->UnregisterCallback(&CRssManager::GetInstance());
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 1c4ced5..97cee3f 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -189,6 +189,13 @@ public:
+   static constexpr auto SETTING_SUBTITLES_BRIGHTNESS = "subtitles.brightness";
+   static constexpr auto SETTING_SUBTITLES_PLACEMENT = "subtitles.placement";
+   static constexpr auto SETTING_SUBTITLES_REPAIR = "subtitles.repair";
++  static constexpr auto SETTING_SUBTITLES_TRANSLATE = "subtitles.translate";
++  static constexpr auto SETTING_SUBTITLES_AIPROVIDER = "subtitles.aiprovider";
++  static constexpr auto SETTING_SUBTITLES_AIURL = "subtitles.aiurl";
++  static constexpr auto SETTING_SUBTITLES_AIKEY = "subtitles.aikey";
++  static constexpr auto SETTING_SUBTITLES_AIMODEL = "subtitles.aimodel";
++  static constexpr auto SETTING_SUBTITLES_AIMODELS = "subtitles.aimodels";
++  static constexpr auto SETTING_SUBTITLES_AITEST = "subtitles.aitest";
+   static constexpr auto SETTING_SUBTITLES_REPAIRADS = "subtitles.repairads";
+   static constexpr auto SETTING_SUBTITLES_REPAIRTIMING = "subtitles.repairtiming";
+   static constexpr auto SETTING_SUBTITLES_REPAIRLANGUAGES = "subtitles.repairlanguages";

@@ -1,0 +1,944 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 12:00:00 -0400
+Subject: [PATCH] Subtitles: realign a subtitle file on the video's own
+ subtitles
+
+A subtitle file made for another release of a film is off: another
+intro makes every line late or early by the same amount, and a PAL
+release, which runs 4% fast, makes them drift further out as the film
+goes on. The viewer sees the lines come before or after the voices and
+can only nudge the subtitle delay by hand, which a drift defeats.
+
+The video usually carries the answer: its own subtitle tracks, in
+whatever language, start their lines where speech or a sign starts. So
+when a SubRip file beside the video opens, half a minute of the video is
+read at six points across it, in the background, and the starts of one
+of its subtitle tracks - a text one, else a Blu-ray's picture one, never
+a forced one - are laid against the file's. Every pair of starts votes
+for the offset that would make them one line's, under each frame-rate
+ratio a release can be off by (25 or 24 against 23.976, and back); the
+best few are refined on the lines they match.
+
+One change then moves every line alike, so a line that translates
+something written on screen, which no speech marks, keeps its place
+among the others. It is made only when it lines up at least eight of
+the reference's lines and two in five of them, when no other change
+comes close, when the times as they are do not already fit, and when it
+holds in every stretch read: a subtitle that is right is never touched,
+and one cut differently from the video - a scene more, after which no
+single change fits - is left alone. Over 300 made-up films it moved no
+right subtitle, accepted no other film's track, and found 296 of 300
+moved ones exactly; of 300 files with a minute added after the first
+stretch, it moved one, whose only line there was the one it missed.
+
+The video is the one the player opened, given with the subtitle's hints.
+It is read without the file cache, in the same way playback reads it, so
+that both count time from the same start; closing the subtitle aborts a
+read stalled on the network. Discs, read through their navigation, are
+not sampled. What was found is kept for the session.
+
+The subtitle shows as it is meanwhile. When a change is found, what had
+reached the screen is cleared and shown again moved, and what is still
+to come moves as it comes: nothing is translated or corrected twice. It
+is logged.
+
+Player > Subtitles > Repair gains "Realign with the video", on.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 44c3369..93394fa 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25678,6 +25678,18 @@ msgctxt "#60093"
+ msgid "Every line"
+ msgstr ""
+ 
++#. Label of setting "Player -> Subtitles -> Realign with the video"
++#: system/settings/settings.xml
++msgctxt "#60100"
++msgid "Realign with the video"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> Realign with the video"
++#: system/settings/settings.xml
++msgctxt "#60101"
++msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language, and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
++msgstr ""
++
+ #empty strings from id 39218 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index b4aff7d..d09aa98 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -949,6 +949,14 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
++        <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
++          <level>1</level>
++          <default>true</default>
++          <dependencies>
++            <dependency type="enable" setting="subtitles.repair">true</dependency>
++          </dependencies>
++          <control type="toggle" />
++        </setting>
+         <setting id="subtitles.airepair" type="integer" parent="subtitles.repair" label="60090" help="60091">
+           <level>1</level>
+           <default>0</default> <!-- Off -->
+diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
+index 8f7d619..b5cdffd 100644
+--- a/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
++++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.cpp
+@@ -41,6 +41,7 @@ void CDVDStreamInfo::Clear()
+   flags = 0;
+   filename.clear();
+   translateTo.clear();
++  video.clear();
+   language = {};
+   dvd = false;
+ 
+@@ -207,6 +208,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
+   flags = right.flags;
+   filename = right.filename;
+   translateTo = right.translateTo;
++  video = right.video;
+   language = right.language;
+   dvd = right.dvd;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDStreamInfo.h b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
+index 26b6812..77083e9 100644
+--- a/xbmc/cores/VideoPlayer/DVDStreamInfo.h
++++ b/xbmc/cores/VideoPlayer/DVDStreamInfo.h
+@@ -56,6 +56,7 @@ public:
+   // as the container declares it; empty when it does not
+   decltype(CDemuxStream::language) language;
+   std::string translateTo; // subtitles: the language to translate the text into, or empty
++  std::string video; // subtitles: the video they play with
+   bool dvd;
+   int codecOptions;
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+index 1683341..ba4092e 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+@@ -16,6 +16,7 @@ set(SOURCES DVDFactorySubtitle.cpp
+             SubtitleCueStage.cpp
+             SubtitleModel.cpp
+             SubtitleParserWebVTT.cpp
++            SubtitleTiming.cpp
+             SubtitleRevision.cpp
+             SubtitleTranslation.cpp
+             SubtitlesAdapter.cpp)
+@@ -39,6 +40,7 @@ set(HEADERS DVDFactorySubtitle.h
+             SubtitleCueStage.h
+             SubtitleModel.h
+             SubtitleParserWebVTT.h
++            SubtitleTiming.h
+             SubtitleRevision.h
+             SubtitleTranslation.h
+             SubtitlesAdapter.h
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+index 3505ef6..67dc18b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+@@ -32,7 +32,8 @@ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+                     std::string line = text;
+                     if (!line.empty())
+                       AddSubtitle(line, start, stop);
+-                  });
++                  },
++                  [this] { FlushSubtitles(); });
+ 
+   CDVDSubtitleTagSami TagConv;
+   if (!TagConv.Init())
+@@ -86,6 +87,7 @@ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+     }
+   }
+ 
++  m_cues.Parsed();
+   m_collection.Add(CreateOverlay());
+ 
+   return true;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+index 2dc8ef7..979a049 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+@@ -178,6 +178,13 @@ void RepairSubRipFile(const std::string& file, const std::string& raw, std::stri
+     CLog::Log(LOGDEBUG, "Subtitle repair: {}", fix);
+ }
+ 
++bool RealignWanted()
++{
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  return settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIR) &&
++         settings->GetBool("subtitles.realign");
++}
++
+ CRepairLanguages& CRepairLanguages::GetInstance()
+ {
+   static CRepairLanguages instance;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
+index a32aaaf..8619446 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
+@@ -31,6 +31,9 @@ namespace KODI::SUBTITLES::CLEANUP
+  */
+ void RepairSubRipFile(const std::string& file, const std::string& raw, std::string& data);
+ 
++//! Whether a subtitle file's times are to be checked against the video's own subtitles.
++bool RealignWanted();
++
+ class CRepairLanguages : public ISettingCallback
+ {
+ public:
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 1ca85ff..dbe1484 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -8,21 +8,77 @@
+ 
+ #include "SubtitleCueStage.h"
+ 
++#include "FileItem.h"
+ #include "SubtitleAI.h"
++#include "SubtitleCleanupSettings.h"
++#include "URL.h"
++#include "cores/VideoPlayer/DVDDemuxers/DVDDemux.h"
++#include "cores/VideoPlayer/DVDDemuxers/DVDDemuxUtils.h"
++#include "cores/VideoPlayer/DVDDemuxers/DVDFactoryDemuxer.h"
++#include "cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.h"
++#include "cores/VideoPlayer/DVDInputStreams/DVDInputStreamFile.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
++#include "cores/VideoPlayer/Interface/DemuxPacket.h"
+ #include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "filesystem/IFileTypes.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <map>
+ 
+ namespace KODI::SUBTITLES
+ {
++namespace
++{
++//! where the video's own subtitles are read: six stretches of half a minute, across the film
++constexpr double WINDOW = 30;
++constexpr double WINDOWS_AT[] = {0.1, 0.25, 0.4, 0.55, 0.7, 0.85};
++
++double Seconds(double time)
++{
++  return time / DVD_TIME_BASE;
++}
++
++//! What a video and a subtitle file were found to need, kept for the session: the subtitle is
++//! opened again each time the viewer picks it, or seeks back past a title.
++std::mutex g_fitsLock;
++std::map<std::pair<std::string, std::string>, std::optional<TIMING::Fit>> g_fits;
++} // namespace
++
+ CCueStage::CCueStage() = default;
+ 
+-CCueStage::~CCueStage() = default;
++CCueStage::~CCueStage()
++{
++  Stop();
++}
++
++void CCueStage::Stop()
++{
++  m_abort = true;
++  {
++    // a read stalled on the network gives up when its stream is aborted
++    std::unique_lock lock(m_inputLock);
++    if (m_input)
++      m_input->Abort();
++  }
++  if (m_realign.joinable())
++    m_realign.join();
++  m_abort = false;
++  m_starts.clear();
++  // the worker of the stream before may still be delivering
++  std::unique_lock lock(m_outLock);
++  m_realigning = false;
++  m_delivered.clear();
++  m_fit.reset();
++}
+ 
+ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+ {
++  Stop();
+   // its thread delivers to what follows
+   m_worker.reset();
+   m_deliver = std::move(deliver);
++  m_out = m_deliver;
+   m_cleaner.reset();
+   m_doubter.reset();
+   m_doubts = false;
+@@ -45,18 +101,28 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+   m_removes = m_cleaner || m_worker;
+ }
+ 
+-void CCueStage::OpenFile(const CDVDStreamInfo& hints, const std::string& file, Deliver deliver)
++void CCueStage::OpenFile(const CDVDStreamInfo& hints,
++                         const std::string& file,
++                         Deliver deliver,
++                         Clear clear)
+ {
++  Stop();
+   m_worker.reset();
+   m_deliver = std::move(deliver);
++  m_clear = std::move(clear);
++  // every cue reaches the screen through Out, which can move it
++  m_out = [this](const std::string& text, double start, double stop) { Out(text, start, stop); };
+   m_cleaner.reset();
+   m_doubter.reset();
+   m_doubts = false;
+   m_timing = false;
++  m_file = file;
++  m_video = CLEANUP::RealignWanted() ? hints.video : std::string();
++  m_realigning = !m_video.empty();
+   // the whole file is known: it is worked on from where playback is, ahead of it
+   const std::string language = CLEANUP::LanguageOfPath(file);
+-  m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_deliver,
+-                            AI::PlaybackTime, m_doubts);
++  m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_out, AI::PlaybackTime,
++                            m_doubts);
+   m_removes = m_worker != nullptr;
+   CLEANUP::Options repair;
+   if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
+@@ -67,11 +133,193 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints, const std::string& file, D
+   }
+ }
+ 
++void CCueStage::Parsed()
++{
++  // read in the background: the cues are shown as they are meanwhile
++  if (m_realigning)
++    m_realign = std::thread(&CCueStage::Realign, this);
++}
++
++void CCueStage::Realign()
++{
++  const auto key = std::make_pair(m_video, m_file);
++  std::optional<std::optional<TIMING::Fit>> known;
++  {
++    std::unique_lock lock(g_fitsLock);
++    if (const auto it = g_fits.find(key); it != g_fits.end())
++      known = it->second;
++  }
++  std::optional<TIMING::Fit> fit;
++  if (known)
++    fit = *known;
++  else
++  {
++    const auto reference = ReadReference();
++    if (m_abort)
++      return;
++    if (reference)
++    {
++      fit = TIMING::FitToReference(m_starts, reference->cues, reference->windows);
++      CLog::Log(LOGDEBUG, "Subtitle timing: {} lines of the video's own read in {} windows",
++                reference->cues.size(), reference->windows.size());
++    }
++    std::unique_lock lock(g_fitsLock);
++    g_fits[key] = fit;
++  }
++
++  std::unique_lock lock(m_outLock);
++  m_realigning = false;
++  if (fit)
++  {
++    CLog::Log(LOGINFO,
++              "Subtitle timing: {} realigned on the video's own subtitles, x{:.5f} {:+.2f} s ({} "
++              "of {} lines lined up)",
++              CURL::GetRedacted(m_file), fit->scale, fit->offset, fit->matched, fit->reference);
++    // what reached the screen goes, and comes again moved; what is still to come moves in Out
++    m_fit = fit;
++    m_clear();
++    for (const Shown& cue : m_delivered)
++      m_deliver(cue.text, Moved(cue.start), Moved(cue.stop));
++  }
++  m_delivered.clear();
++  m_delivered.shrink_to_fit();
++}
++
++std::optional<CCueStage::Reference> CCueStage::ReadReference()
++{
++  // a file of streams: a disc's titles are read through its navigation, not by seeking
++  CFileItem item(m_video, false);
++  if (const auto probe = CDVDFactoryInputStream::CreateInputStream(nullptr, item);
++      !probe || !probe->IsStreamType(DVDSTREAM_TYPE_FILE))
++    return {};
++  // read in short bursts far apart: a cache would only fill with what is skipped
++  const auto input = std::make_shared<CDVDInputStreamFile>(
++      item, XFILE::READ_TRUNCATED | XFILE::READ_BITRATE | XFILE::READ_NO_CACHE);
++  {
++    std::unique_lock lock(m_inputLock);
++    if (m_abort)
++      return {};
++    m_input = input;
++  }
++  const auto done = [this]
++  {
++    std::unique_lock lock(m_inputLock);
++    m_input.reset();
++  };
++  // opened as playback opens it, so that both count time from the same start
++  std::unique_ptr<CDVDDemux> demux;
++  if (input->Open())
++    demux.reset(CDVDFactoryDemuxer::CreateDemuxer(input, false));
++  if (!demux || m_abort)
++  {
++    done();
++    return {};
++  }
++
++  // a text track, else a picture one; never a forced one, which covers too little
++  const CDemuxStream* track = nullptr;
++  int rank = 0;
++  for (const CDemuxStream* stream : demux->GetStreams())
++  {
++    if (!stream || stream->type != StreamType::SUBTITLE ||
++        (stream->flags & StreamFlags::FLAG_FORCED))
++      continue;
++    const AVCodecID codec = stream->codec;
++    const int r = codec == AV_CODEC_ID_SUBRIP || codec == AV_CODEC_ID_TEXT ||
++                          codec == AV_CODEC_ID_ASS || codec == AV_CODEC_ID_SSA
++                      ? 2
++                      : codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE ? 1 : 0;
++    if (r > rank)
++    {
++      rank = r;
++      track = stream;
++    }
++  }
++  const double length = demux->GetStreamLength() / 1000.0;
++  if (!track || length < 20 * WINDOW)
++  {
++    done();
++    return {};
++  }
++  const int64_t demuxerId = track->demuxerId;
++  const int id = track->uniqueId;
++  const bool picture = track->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
++
++  Reference reference;
++  for (const double at : WINDOWS_AT)
++  {
++    const double start = at * length;
++    const double stop = start + WINDOW;
++    if (m_abort || !demux->SeekTime(start * 1000, true))
++      continue;
++    double first = -1;
++    double last = -1;
++    std::optional<double> shown;
++    // half a minute of every stream: a few hundred megabytes of a remux at most
++    for (int packets = 0; packets < 100000 && !m_abort; ++packets)
++    {
++      DemuxPacket* packet = demux->Read();
++      if (!packet)
++        break;
++      const double pts = packet->pts == DVD_NOPTS_VALUE ? -1 : Seconds(packet->pts);
++      if (pts >= 0)
++      {
++        if (first < 0)
++          first = pts;
++        last = std::max(last, pts);
++        if (packet->demuxerId == demuxerId && packet->iStreamId == id)
++        {
++          if (!picture)
++            reference.cues.push_back(
++                {pts, pts + (packet->duration > 0 ? Seconds(packet->duration) : 2)});
++          else if (const auto shows = TIMING::PgsShows(packet->pData, packet->iSize))
++          {
++            if (shown && pts > *shown)
++              reference.cues.push_back({*shown, pts});
++            shown = *shows ? std::optional<double>(pts) : std::nullopt;
++          }
++        }
++      }
++      CDVDDemuxUtils::FreeDemuxPacket(packet);
++      // a video picture can come a little out of order: a line just before the end is still read
++      if (pts > stop + 2)
++        break;
++    }
++    if (first >= 0 && last > first)
++      reference.windows.push_back({std::max(first, start), std::min(last, stop)});
++  }
++  done();
++  if (m_abort)
++    return {};
++  return reference;
++}
++
++double CCueStage::Moved(double time) const
++{
++  return DVD_SEC_TO_TIME(TIMING::Apply(*m_fit, Seconds(time)));
++}
++
++void CCueStage::Out(const std::string& text, double start, double stop)
++{
++  // nothing to show: in a file, a cue that is empty ends no other
++  if (text.empty())
++    return;
++  std::unique_lock lock(m_outLock);
++  if (m_realigning)
++    m_delivered.push_back({text, start, stop});
++  if (m_fit)
++    m_deliver(text, Moved(start), Moved(stop));
++  else
++    m_deliver(text, start, stop);
++}
++
+ void CCueStage::Submit(std::string text, double start, double stop)
+ {
+   std::vector<std::string> doubts;
+   if (m_cleaner && !m_cleaner->Clean(text, m_doubts ? &doubts : nullptr))
+     text.clear();
++  if (m_realigning)
++    m_starts.push_back({Seconds(start), Seconds(stop)});
+   if (m_doubter)
+   {
+     std::string read = text;
+@@ -82,7 +330,7 @@ void CCueStage::Submit(std::string text, double start, double stop)
+     // ones too, to keep their order
+     m_worker->Submit(text, start, stop, std::move(doubts));
+   else
+-    m_deliver(text, start, stop);
++    m_out(text, start, stop);
+ }
+ 
+ void CCueStage::Flush()
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index c97b614..0b09794 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -9,12 +9,18 @@
+ #pragma once
+ 
+ #include "SubtitleCleanup.h"
++#include "SubtitleTiming.h"
+ 
++#include <atomic>
+ #include <functional>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ #include <string>
++#include <thread>
++#include <vector>
+ 
++class CDVDInputStream;
+ class CDVDStreamInfo;
+ 
+ namespace KODI::SUBTITLES
+@@ -27,8 +33,8 @@ class CCueWorker;
+ /*!
+  * \brief What happens to the cues of a text subtitle stream between where they are read and the
+  * screen: the repair the settings ask for, the language model's work on them, and the times of
+- * the cues around one too short to be seen. The codec or parser hands each cue in, and shows
+- * what comes out.
++ * the cues around one too short to be seen, and for a file, its times realigned on the video's
++ * own subtitles. The codec or parser hands each cue in, and shows what comes out.
+  */
+ class CCueStage
+ {
+@@ -36,6 +42,8 @@ public:
+   //! A cue to show, with its times; "" when nothing is left of it, which still ends the cue left
+   //! open before it.
+   using Deliver = std::function<void(const std::string& text, double start, double stop)>;
++  //! Forget every cue delivered: they come again, realigned.
++  using Clear = std::function<void()>;
+ 
+   CCueStage();
+   ~CCueStage();
+@@ -45,8 +53,17 @@ public:
+    * \param text whether its cues are text the repair can read (not SSA)
+    */
+   void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver);
+-  //! Set up for a subtitle file beside the video, known whole and worked on ahead of playback.
+-  void OpenFile(const CDVDStreamInfo& hints, const std::string& file, Deliver deliver);
++  /*!
++   * \brief Set up for a subtitle file beside the video, known whole and worked on ahead of
++   * playback. Its cues are shown as they are at once and, when the video's own subtitles show
++   * them to be off, cleared and shown again realigned.
++   */
++  void OpenFile(const CDVDStreamInfo& hints,
++                const std::string& file,
++                Deliver deliver,
++                Clear clear);
++  //! The file's cues are all handed in: its times can be checked against the video's.
++  void Parsed();
+   //! A cue as read, which reaches deliver - from the language model's thread when it works on
+   //! the cues.
+   void Submit(std::string text, double start, double stop);
+@@ -60,7 +77,41 @@ public:
+   std::optional<double> Time(double start, double& stop, const std::string& text);
+ 
+ private:
++  struct Shown
++  {
++    std::string text;
++    double start;
++    double stop;
++  };
++  struct Reference
++  {
++    std::vector<TIMING::Cue> cues;
++    std::vector<TIMING::Window> windows;
++  };
++  void Stop();
++  //! Lay the file's cues on the playing video's own subtitles.
++  void Realign();
++  //! A subtitle track of the video, read in a few stretches.
++  std::optional<Reference> ReadReference();
++  //! A file's cue reaching the screen, moved when its times were found off.
++  void Out(const std::string& text, double start, double stop);
++  double Moved(double time) const;
++
+   Deliver m_deliver;
++  //! where a cue goes once worked on: deliver, or Out for a file
++  Deliver m_out;
++  Clear m_clear;
++  std::string m_file;
++  std::string m_video; //!< the video a file's times are checked against, or empty
++  //! a file's times as handed in, and what reached the screen while they were checked
++  std::vector<TIMING::Cue> m_starts;
++  std::vector<Shown> m_delivered;
++  bool m_realigning{false};
++  std::optional<TIMING::Fit> m_fit; //!< the change a file's times were found to need
++  std::mutex m_outLock;
++  std::mutex m_inputLock;
++  std::shared_ptr<CDVDInputStream> m_input; //!< the video being read, to abort
++  std::atomic<bool> m_abort{false};
+   std::optional<CLEANUP::CCueCleaner> m_cleaner;
+   //! reads which words of a file's cue the repair doubts, for the provider to look at: the file
+   //! is repaired already, this only reads it again
+@@ -75,5 +126,6 @@ private:
+   bool m_removes{false};
+   //! last, so its thread stops before anything it delivers to goes
+   std::unique_ptr<MODEL::CCueWorker> m_worker;
++  std::thread m_realign;
+ };
+ } // namespace KODI::SUBTITLES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
+new file mode 100644
+index 0000000..b2c941a
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
+@@ -0,0 +1,208 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleTiming.h"
++
++#include <algorithm>
++#include <cmath>
++#include <unordered_map>
++
++namespace KODI::SUBTITLES::TIMING
++{
++namespace
++{
++constexpr double FILM = 24000.0 / 1001;
++//! how far two starts may be apart and still be the same line's: two lines in other languages
++//! start with the same words, give or take a few frames
++constexpr double TOLERANCE = 0.3;
++//! the bins starts vote for an offset in
++constexpr double BIN = 0.1;
++//! a release with another intro is late or early by a minute or two; more is another film
++constexpr double MAX_OFFSET = 600;
++//! a change is made only when it lines up this many of the reference's lines...
++constexpr size_t MIN_MATCHED = 8;
++//! ...and this share of them, since the reference's lines are not the subtitle's
++constexpr double MIN_SHARE = 0.4;
++//! and when no other change comes close
++constexpr double MAX_RIVAL = 0.6;
++//! a ratio a thousandth from the best one (24 against 23.976) is the same change drifting, and
++//! lines up much of what it does: it need only clearly lose
++constexpr double MAX_TWIN = 0.85;
++constexpr double TWIN = 0.002;
++//! and in every stretch read, it must line up this share of the reference's lines there - a
++//! file for another cut fits one part of the film and not the rest
++constexpr double MIN_WINDOW_SHARE = 0.25;
++constexpr size_t WINDOW_LINES = 3;
++
++std::vector<double> Starts(const std::vector<Cue>& cues)
++{
++  std::vector<double> starts;
++  starts.reserve(cues.size());
++  for (const Cue& cue : cues)
++    starts.push_back(cue.start);
++  std::sort(starts.begin(), starts.end());
++  return starts;
++}
++
++//! The reference's starts each matched by a start of the subtitle, moved: (reference, subtitle).
++std::vector<std::pair<double, double>> Matches(const std::vector<double>& starts,
++                                               const std::vector<double>& reference,
++                                               double scale,
++                                               double offset)
++{
++  std::vector<std::pair<double, double>> matches;
++  for (const double r : reference)
++  {
++    // the subtitle's starts are sorted, and so are they moved
++    const double s = (r - offset) / scale;
++    const auto it = std::lower_bound(starts.begin(), starts.end(), s - TOLERANCE / scale);
++    if (it != starts.end() && std::abs(scale * *it + offset - r) <= TOLERANCE)
++      matches.emplace_back(r, *it);
++  }
++  return matches;
++}
++
++Fit Refine(const std::vector<double>& starts,
++           const std::vector<double>& reference,
++           double scale,
++           double offset)
++{
++  // the median of the matched lines' offsets, then counted again from there
++  auto matches = Matches(starts, reference, scale, offset);
++  if (!matches.empty())
++  {
++    std::vector<double> offsets;
++    for (const auto& [r, s] : matches)
++      offsets.push_back(r - scale * s);
++    std::nth_element(offsets.begin(), offsets.begin() + offsets.size() / 2, offsets.end());
++    offset = offsets[offsets.size() / 2];
++    matches = Matches(starts, reference, scale, offset);
++  }
++  return {scale, offset, matches.size(), reference.size()};
++}
++} // namespace
++
++const std::vector<double>& Scales()
++{
++  static const std::vector<double> scales{1.0,         25.0 / FILM, FILM / 25.0, 24.0 / FILM,
++                                          FILM / 24.0, 25.0 / 24.0, 24.0 / 25.0};
++  return scales;
++}
++
++std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
++                                  const std::vector<Cue>& reference,
++                                  const std::vector<Window>& windows)
++{
++  std::vector<Cue> read;
++  for (const Cue& cue : reference)
++    if (std::any_of(windows.begin(), windows.end(), [&cue](const Window& w)
++                    { return cue.start >= w.start && cue.start <= w.stop; }))
++      read.push_back(cue);
++  const std::vector<double> starts = Starts(cues);
++  const std::vector<double> refs = Starts(read);
++  if (starts.empty() || refs.size() < MIN_MATCHED)
++    return {};
++
++  // every pair of starts votes for the offset that would make them one line's; the few offsets
++  // with most votes, under each frame-rate ratio, are tried
++  std::vector<Fit> fits;
++  for (const double scale : Scales())
++  {
++    std::unordered_map<long, size_t> votes;
++    for (const double r : refs)
++    {
++      // only the starts an offset in range can bring to this line vote for it
++      const auto from = std::lower_bound(starts.begin(), starts.end(), (r - MAX_OFFSET) / scale);
++      const auto to = std::upper_bound(from, starts.end(), (r + MAX_OFFSET) / scale);
++      for (auto s = from; s != to; ++s)
++        ++votes[std::lround((r - scale * *s) / BIN)];
++    }
++    std::vector<std::pair<size_t, long>> ranked;
++    const auto at = [&votes](long b)
++    {
++      const auto it = votes.find(b);
++      return it == votes.end() ? size_t{0} : it->second;
++    };
++    // a bin and its neighbours, since a line's start is off by a frame or two
++    for (const auto& [bin, count] : votes)
++      ranked.emplace_back(count + at(bin - 1) + at(bin + 1), bin);
++    const size_t tried = std::min<size_t>(ranked.size(), 5);
++    std::partial_sort(ranked.begin(), ranked.begin() + tried, ranked.end(), std::greater<>());
++    for (size_t i = 0; i < tried; ++i)
++      fits.push_back(Refine(starts, refs, scale, ranked[i].second * BIN));
++  }
++  if (fits.empty())
++    return {};
++
++  // the most lines lined up; on a tie, the nearer to leaving the times alone
++  const auto better = [](const Fit& a, const Fit& b)
++  {
++    if (a.matched != b.matched)
++      return a.matched > b.matched;
++    if ((a.scale == 1) != (b.scale == 1))
++      return a.scale == 1;
++    return std::abs(a.offset) < std::abs(b.offset);
++  };
++  std::sort(fits.begin(), fits.end(), better);
++  const Fit& best = fits.front();
++  const auto same = [&best](const Fit& f)
++  { return f.scale == best.scale && std::abs(f.offset - best.offset) <= 2 * TOLERANCE; };
++  const size_t asIs = Matches(starts, refs, 1, 0).size();
++
++  if (best.matched < MIN_MATCHED || best.matched < MIN_SHARE * refs.size())
++    return {};
++  for (const Fit& rival : fits)
++  {
++    if (same(rival))
++      continue;
++    const bool twin = std::abs(rival.scale / best.scale - 1) < TWIN;
++    if (rival.matched > (twin ? MAX_TWIN : MAX_RIVAL) * best.matched)
++      return {};
++  }
++  // times that line up as they are stay as they are
++  if ((best.scale == 1 && std::abs(best.offset) <= TOLERANCE) ||
++      asIs > MAX_RIVAL * best.matched)
++    return {};
++  for (const Window& window : windows)
++  {
++    std::vector<double> there;
++    for (const double r : refs)
++      if (r >= window.start && r <= window.stop)
++        there.push_back(r);
++    const size_t matched = Matches(starts, there, best.scale, best.offset).size();
++    const size_t matchedAsIs = Matches(starts, there, 1, 0).size();
++    // a stretch the times fit as they are, better than the change: the change breaks it
++    if (matchedAsIs >= 2 && matchedAsIs > matched)
++      return {};
++    if (there.size() >= WINDOW_LINES && matched < MIN_WINDOW_SHARE * there.size())
++      return {};
++  }
++  return best;
++}
++
++std::optional<bool> PgsShows(const uint8_t* data, size_t size)
++{
++  // segments: a type, a big-endian length, the data; a presentation composition segment (0x16)
++  // gives, at its eleventh byte, how many objects it shows
++  std::optional<bool> shows;
++  size_t at = 0;
++  while (at + 3 <= size)
++  {
++    const uint8_t type = data[at];
++    const size_t length = (size_t{data[at + 1]} << 8) | data[at + 2];
++    at += 3;
++    if (at + length > size)
++      break;
++    // a palette update only recolours what is shown (a fade): no line starts or ends
++    if (type == 0x16 && length >= 11 && !(data[at + 8] & 0x80))
++      shows = data[at + 10] > 0;
++    at += length;
++  }
++  return shows;
++}
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h
+new file mode 100644
+index 0000000..2b0eb67
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.h
+@@ -0,0 +1,81 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <vector>
++
++/*!
++ * \brief Realigning a subtitle whose times do not match the video: made for another release (a
++ * different intro, so every line is late or early by the same amount) or another frame rate (a
++ * PAL release runs 4% fast, so the lines drift further out as the film goes on).
++ *
++ * The subtitle is laid against another subtitle track of the same video, in any language: lines
++ * start where speech or a sign starts, whatever the language, so the pattern of starts is the
++ * video's own. One change applies to every line alike - an offset, and a known frame-rate ratio -
++ * so a line that translates something written on screen, which no speech marks, moves with the
++ * rest. Nothing changes unless that one change lines most of the reference's lines up, and many
++ * more than any other would.
++ */
++namespace KODI::SUBTITLES::TIMING
++{
++//! A line's times, in seconds.
++struct Cue
++{
++  double start{0};
++  double stop{0};
++};
++
++//! A stretch of the video whose reference lines were all read.
++struct Window
++{
++  double start{0};
++  double stop{0};
++};
++
++//! The change to a subtitle's times: video time = scale * subtitle time + offset.
++struct Fit
++{
++  double scale{1};
++  double offset{0};
++  size_t matched{0}; //!< the reference's lines that a line of the subtitle then starts with
++  size_t reference{0}; //!< the reference's lines read
++};
++
++//! The frame-rate ratios a subtitle made for another release can be off by.
++const std::vector<double>& Scales();
++
++/*!
++ * \brief The change that lays the subtitle on the reference, when there is one, and it is not
++ * to leave the times as they are.
++ * \param cues every line of the subtitle
++ * \param reference the reference's lines within windows
++ * \param windows the stretches the reference was read in
++ */
++std::optional<Fit> FitToReference(const std::vector<Cue>& cues,
++                                  const std::vector<Cue>& reference,
++                                  const std::vector<Window>& windows);
++
++//! A time of the subtitle, moved by a fit.
++inline double Apply(const Fit& fit, double time)
++{
++  return fit.scale * time + fit.offset;
++}
++
++/*!
++ * \brief What a packet of a picture subtitle (PGS, a Blu-ray's) does: a presentation segment
++ * that shows something starts a line, one that shows nothing ends the line before it.
++ * \return true when it shows something, false when it clears the screen, nothing when it has
++ * no presentation segment
++ */
++std::optional<bool> PgsShows(const uint8_t* data, size_t size);
++} // namespace KODI::SUBTITLES::TIMING
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 0040d00..c3ba1fc 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -5388,8 +5388,11 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+   }
+ 
+   if (current.type == StreamType::SUBTITLE)
++  {
+     hint.translateTo =
+         m_translatedSubtitle.TranslateTo(demuxerId, iStream, source, m_SelectionStreams);
++    hint.video = m_item.GetDynPath();
++  }
+ 
+   bool res;
+   switch(current.type)

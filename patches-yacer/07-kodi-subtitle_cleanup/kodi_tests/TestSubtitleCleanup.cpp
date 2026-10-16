@@ -458,6 +458,23 @@ TEST(SubtitleCleanup, LeavesACleanFileWithOddWordsAlone)
   EXPECT_EQ(r.report.ocrFixes, 0);
 }
 
+TEST(SubtitleCleanup, ReadsALigatureGlyphAsTheWordItStoodFor)
+{
+  // no pattern needed: only OCR writes "ﬂ"; a word it spells right, or one no reading saves, stays
+  const Result r = Clean(Srt({"That's not exacﬂy true.", "The ﬂoor is wet.", "- Sabbaticzﬂ?"}),
+                         "en", &English());
+  const std::vector<std::string> cues = Cues(r.out);
+  EXPECT_EQ(cues[0], "That's not exactly true.");
+  EXPECT_EQ(cues[1], "The floor is wet.");
+  EXPECT_EQ(cues[2], "- Sabbaticzfl?");
+  EXPECT_EQ(r.report.ocrFixes, 1);
+
+  CCueCleaner cleaner(Options(), &English(), "en", {});
+  std::string cue = "That's not exacﬂy true.";
+  EXPECT_TRUE(cleaner.Clean(cue));
+  EXPECT_EQ(cue, "That's not exactly true.");
+}
+
 TEST(SubtitleCleanup, LeavesOcrLettersAloneWithoutAPackForTheLanguage)
 {
   const std::string text = SrtOf(MisreadsI());
@@ -715,4 +732,107 @@ TEST(CueCleaner, ReadsTheScreenPosition)
 {
   EXPECT_EQ(CCueCleaner::Position("{\\an8}Sign"), 8);
   EXPECT_EQ(CCueCleaner::Position("Dialogue"), 2);
+}
+
+// -- a word the OCR broke into letters, once ------------------------------------------------
+
+//! A file that writes Rozer whole and uses "all", with line as its fourth cue.
+static std::string NameFile(const std::string& line)
+{
+  return Srt({"Rozer told Harold the deal was off.", "Rozer: My new project.",
+              "That is all we have.", line, "All of it, all the time."});
+}
+
+TEST(SubtitleCleanup, RejoinsAWordTheOcrBrokeIntoLetters)
+{
+  // a one-off break, confirmed by the file itself
+  const Result r = Clean(NameFile("R0 z e r: A ii the great inventors"), "en",
+                         &English());
+  EXPECT_EQ(Cues(r.out)[3], "Rozer: All the great inventors");
+  EXPECT_EQ(r.report.ocrFixes, 2);
+}
+
+TEST(SubtitleCleanup, LeavesLettersSpeltOutAndWordsThatAreThere)
+{
+  for (const std::string line :
+       {"It's spelled R-O-Z-E-R.", "W O W, that is all.", "The F B I is here.",
+        "It's spelled r o z e r, all of it.", "I-I don't know.", "Henry VIII was king.",
+        "Plan B, then.", "I am here.", "Is it a or b?", "It's 1 2 3, go."})
+  {
+    const std::string data = NameFile(line);
+    EXPECT_EQ(Clean(data, "en", &English()).out, data) << line;
+  }
+}
+
+TEST(SubtitleCleanup, LeavesABreakTiedToTheWordsAroundIt)
+{
+  // from a real library: a hyphen, a cut, a break that goes on, a word and a stray letter
+  for (const std::string line :
+       {"like a m-o-t-h-e-r-f-u-c-k-e-r.", "I n-need to fix a sign.", "by e-mail, all of it.",
+        "- Sorry, it's a t...", "take it down a n--", "you can light a m atch, all of it.",
+        "But you stick to o regular route."})
+  {
+    const std::string data = NameFile(line);
+    EXPECT_EQ(Clean(data, "en", &English()).out, data) << line;
+  }
+}
+
+TEST(SubtitleCleanup, LeavesABrokenNameTheFileNeverWritesWhole)
+{
+  const std::string data = Srt({"That is all we have.", "R0 z e r: hello there.", "All of it."});
+  EXPECT_EQ(Clean(data, "en", &English()).out, data);
+}
+
+TEST(CueCleaner, RejoinsANameFromTheCastBeforeTheTrackWritesIt)
+{
+  // cue by cue, the first cue comes before any "Rozer" the track writes: only the cast knows
+  // the name, and "All" waits until the track has used the word
+  Options withCast;
+  withCast.cast = {"Martin Hale Rozer", "Daniel Ward"};
+  CCueCleaner cleaner(withCast, &English(), "en", {});
+  std::string first = "R0 z e r: A ii the great inventors";
+  cleaner.Clean(first);
+  EXPECT_EQ(first, "Rozer: A ii the great inventors");
+
+  CCueCleaner noCast(Options(), &English(), "en", {});
+  std::string same = "R0 z e r: A ii the great inventors";
+  noCast.Clean(same);
+  EXPECT_EQ(same, "R0 z e r: A ii the great inventors");
+}
+
+TEST(CueCleaner, RejoinsAnOrdinaryWordOnceTheTrackHasUsedIt)
+{
+  CCueCleaner cleaner(Options(), &English(), "en", {});
+  for (std::string text : {std::string("That is all we have."), std::string("All of it, all day.")})
+    cleaner.Clean(text);
+  std::string later = "A ii the great ones left.";
+  cleaner.Clean(later);
+  EXPECT_EQ(later, "All the great ones left.");
+}
+
+
+// -- the words the rules doubt, for the AI provider ------------------------------------------
+
+TEST(CueCleaner, DoubtsAMisreadingTheTrackHasNotShownToBeItsOwn)
+{
+  // once is no pattern: the rules leave "wouId", and doubt it
+  CCueCleaner cleaner(Options(), &English(), "en", {});
+  std::string text = "I wouId go there, R0zer.";
+  std::vector<std::string> doubts;
+  ASSERT_TRUE(cleaner.Clean(text, &doubts));
+  EXPECT_EQ(text, "I wouId go there, R0zer.");
+  EXPECT_EQ(doubts, (std::vector<std::string>{"wouId", "R0zer"}));
+}
+
+TEST(CueCleaner, DoesNotDoubtNamesWordsOrWhatNoMisreadingExplains)
+{
+  CCueCleaner cleaner(Options(), &English(), "en", {});
+  std::vector<std::string> doubts;
+  std::string text = "Hello there, Rozer. I said zyxt, didn't I?";
+  ASSERT_TRUE(cleaner.Clean(text, &doubts));
+  EXPECT_TRUE(doubts.empty());
+  // nor a line in another language
+  text = "Je ne sais pas, il est parti hier soir avec eux.";
+  ASSERT_TRUE(cleaner.Clean(text, &doubts));
+  EXPECT_TRUE(doubts.empty());
 }

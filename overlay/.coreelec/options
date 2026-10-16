@@ -1,0 +1,6 @@
+# Read by config/options from the root of the tree, after CoreELEC's own
+# options: what these builds add to theirs, without changing a file of theirs.
+
+# the skin a new profile starts on, and the add-ons these builds come with
+# (packages in overlay/packages/mediacenter/allolive)
+ADDITIONAL_PACKAGES+=" skin.estuary.allolive script.module.subtitlespeech.allolive service.shutter3d.allolive"

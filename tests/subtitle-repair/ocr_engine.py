@@ -16,6 +16,9 @@ which misreadings it has, and only those are undone:
 Left as they are: names the file capitalises mid-sentence, lines another language explains
 better, an accent on a word another language has, numbers, Roman numerals.
 
+A word the OCR broke into letters once ("R0 z e r: A ii the great") is not a misreading the file
+repeats, so it is rejoined only when the file itself, or the cast, shows the word: see rejoin().
+
 Everything that depends on a character is decided by the explicit tables below, not by Python's
 Unicode methods, so the C++ can reproduce it exactly. Hunspell is reached through ctypes; set
 HUNSPELL_LIB if it is not found."""
@@ -36,6 +39,9 @@ OTHER_MARGIN = 0.2      # how much better another language must explain a line t
 MAX_CANDIDATES = 256
 DETECT_PERCENT = 80     # of a text the detector must give one language to be believed
 DETECT_CUES = 50        # a track that names no language is read every this many cues
+NAME_TIMES = 2          # a rejoined name: how often the file writes it whole
+WORD_TIMES = 2          # a rejoined word: how often the file uses it, in any case
+REJOIN_CONFUSIONS = [("i", "l")]    # with the pack's: "A ii" was "All"
 
 # (what the OCR wrote, what was there); a pack adds the accents its language drops
 CONFUSIONS: List[Tuple[str, str]] = [
@@ -109,6 +115,10 @@ def all_upper(w: str) -> bool:
 
 def all_lower(w: str) -> bool:
     return any(is_lower(c) for c in w) and not any(is_upper(c) for c in w)
+
+
+def lowered(w: str) -> str:
+    return "".join(lower(c) for c in w)
 
 
 def words_in(text: str) -> List[Tuple[int, int]]:
@@ -224,6 +234,7 @@ class Language:
         self.one = set(profile.get("one_letter_words", "").split())
         self.lone = set(profile.get("lone_one", "").split())
         self.capitalised_nouns = profile.get("capitalised_nouns") == "yes"
+        self.spell_cues = {lowered(w) for w in profile.get("spell_cues", "").split()}
         self.alphabet = set(profile.get("alphabet", ""))
         self.confusions = list(CONFUSIONS)
         for group in profile.get("accents", "").split():
@@ -318,11 +329,20 @@ class Pattern:
 
 
 class Engine:
-    def __init__(self, language: Language, others: Iterable[Language] = ()):
+    def __init__(self, language: Language, others: Iterable[Language] = (), cast: Iterable[str] = ()):
         self.lang = language
         self.others = [o for o in others if o.code != language.code]
         self.names: Set[str] = set()
         self.pattern = Pattern()
+        self.uses: Dict[str, int] = {}          # every word the lines learnt from write, as written
+        self.uses_lower: Dict[str, int] = {}    # and in small letters
+        self.cast: Set[str] = set()             # the names in the cast's roles ("Richard Rozer")
+        self.ligatures: Dict[str, List[str]] = {}   # words a ligature glyph became, and its other readings
+        for role in cast:
+            for start, n in words_in(role):
+                w = role[start:start + n]
+                if n >= 2 and is_upper(w[0]) and all_lower(w[1:]):
+                    self.cast.add(w)
 
     # -- what the file says about itself
 
@@ -353,6 +373,10 @@ class Engine:
         for line in lines:
             text = visible(line)
             spans = words_in(text)
+            for start, n in spans:
+                w = text[start:start + n]
+                self.uses[w] = self.uses.get(w, 0) + 1
+                self.uses_lower[lowered(w)] = self.uses_lower.get(lowered(w), 0) + 1
             if self.claimed_by_other([text[a:a + n] for a, n in spans if n >= 2 and not is_digit(text[a])]):
                 continue    # another language's line: not evidence of this file's misreadings
             for start, n in spans:
@@ -430,7 +454,114 @@ class Engine:
         fixed = self.fix_word(w, active)
         return fixed if fixed is not None and (n > 1 or alone(text, start, n)) else None
 
+    # -- a word broken into letters, once
+
+    def _damaged(self, piece: str) -> bool:
+        """A piece of a broken word: letters that are no word ("p"), a digit among letters ("R0"),
+        or only small i's - "ii" is the OCR's "ll", whatever a dictionary of Roman numerals says.
+        A number alone is not one."""
+        if not any(is_letter(c) for c in piece):
+            return False
+        return not self.lang.word(piece) or (len(piece) >= 2 and all(c == "i" for c in piece))
+
+    def _rejoinable(self, reading: str, name: bool) -> bool:
+        """A name the file writes whole often enough, or the cast has - never the dictionary;
+        an ordinary word the language has and the file uses."""
+        if not plausible(reading):
+            return False
+        if name:
+            return (is_upper(reading[0]) and all_lower(reading[1:])
+                    and (self.uses.get(reading, 0) >= NAME_TIMES or reading in self.cast))
+        return self.lang.word(reading) and self.uses_lower.get(lowered(reading), 0) >= WORD_TIMES
+
+    def _rejoin_run(self, text: str, spans: List[Tuple[int, int]], first: int, last: int) -> Optional[str]:
+        """The word the pieces first..last were, or None. Left as they are: letters spelt out, in
+        capitals ("W O W", "F B I") or after a word that says so ("spelled r o z e r"); a run
+        with no damaged piece ("I am"); one that starts with a word ("to o regular"); one tied
+        to the words around it by a hyphen, an apostrophe or a cut ("a m-o-t-h-e-r", "un e-mail",
+        "'t op", "a t..."); one the break goes on past ("a m atch"); and one the file does not
+        confirm."""
+        pieces = [text[a:a + n] for a, n in spans[first:last + 1]]
+        if not any(is_lower(c) for p in pieces for c in p):
+            return None
+        if not any(self._damaged(p) for p in pieces):
+            return None
+        if len(pieces[0]) >= 2 and self.lang.word(pieces[0]):
+            return None
+        if any(lowered(text[a:a + n]) in self.lang.spell_cues for a, n in spans[max(0, first - 3):first]):
+            return None
+        start, end = spans[first][0], spans[last][0] + spans[last][1]
+        if text[start - 1:start] in ("-", "'", "’") or text[end:end + 1] == "-" \
+                or text[end:end + 2] == ".." or text[end:end + 1] == "…":
+            return None
+        if last + 1 < len(spans) and spans[last + 1][0] == end + 1 and text[end] == " ":
+            following = text[spans[last + 1][0]:spans[last + 1][0] + spans[last + 1][1]]
+            if any(is_letter(c) for c in following) and not self.lang.word(following):
+                return None
+        joined = "".join(pieces)
+        before = text[:start].rstrip()
+        sentence_start = not before or before[-1] in ".!?…:-\"'¿¡“«([*"
+        name = text[end:end + 1] == ":" or (is_upper(joined[0]) and not sentence_start)
+        found: List[str] = []
+        for reading in [joined] + candidates(joined, self.lang.confusions + REJOIN_CONFUSIONS):
+            if reading not in found and self._rejoinable(reading, name):
+                found.append(reading)
+        return found[0] if len(found) == 1 else None
+
+    def rejoin(self, text: str, fixes: Optional[list] = None) -> str:
+        """Words of one or two characters, one space apart, that were one word the OCR broke:
+        "R0 z e r" is "Rozer" when the file (or the cast) has Rozer, "A ii" is "All". Only into
+        exactly one reading, and only in a line of the language; anything else is left."""
+        spans = words_in(text)
+        language: Optional[bool] = None    # whether the line reads as the language, once asked
+        out, last, k = [], 0, 0
+        while k < len(spans):
+            j = k
+            while (j + 1 < len(spans) and spans[j][1] <= 2 and spans[j + 1][1] <= 2
+                   and spans[j + 1][0] == spans[j][0] + spans[j][1] + 1
+                   and text[spans[j][0] + spans[j][1]] == " "):
+                j += 1
+            if j > k and language is None:
+                language = self.reads_as_language(text, set())
+            if j > k and language:
+                fixed = self._rejoin_run(text, spans, k, j)
+                if fixed is not None:
+                    start, end = spans[k][0], spans[j][0] + spans[j][1]
+                    out.append(text[last:start] + fixed)
+                    if fixes is not None:
+                        fixes.append((text[start:end], fixed))
+                    last = end
+            k = j + 1
+        return "".join(out) + text[last:]
+
+    def note_ligatures(self, readings: Dict[str, List[str]]) -> None:
+        for w, others in readings.items():
+            self.ligatures.setdefault(w, others)
+
+    def fix_ligatures(self, text: str, fixes: Optional[list] = None) -> str:
+        """A word a ligature became that is no word, put back when exactly one other reading of
+        the glyph is: a glyph is the OCR's own evidence, so no pattern of the file is needed."""
+        if not self.ligatures:
+            return text
+        out, last = [], 0
+        for a, n in words_in(text):
+            w = text[a:a + n]
+            out.append(text[last:a])
+            last = a + n
+            readings = [r for r in self.ligatures.get(w, []) if self.acceptable(w, r)] if not self.lang.word(w) else []
+            if len(readings) != 1:
+                out.append(w)
+                continue
+            if fixes is not None:
+                fixes.append((w, readings[0]))
+            out.append(readings[0])
+        return "".join(out) + text[last:]
+
     def fix_line(self, line: str, fixes: Optional[list] = None) -> str:
+        parts = split_markup(line)
+        for i in range(0, len(parts), 2):
+            parts[i] = self.fix_ligatures(self.rejoin(parts[i], fixes), fixes)
+        line = "".join(parts)
         active = self.active()
         if not active:
             return line
@@ -452,9 +583,9 @@ class Engine:
 
 
 def repair_file(lines: List[str], language: Language, others: Iterable[Language],
-                fixes: Optional[list] = None) -> Tuple[List[str], List[Tuple[str, str]]]:
+                fixes: Optional[list] = None, cast: Iterable[str] = ()) -> Tuple[List[str], List[Tuple[str, str]]]:
     """A whole file: learn from all of it, then correct it. Returns the lines and the pattern."""
-    engine = Engine(language, others)
+    engine = Engine(language, others, cast)
     engine.note_names(lines)
     engine.learn(lines)
     return [engine.fix_line(line_, fixes) for line_ in lines], engine.active()
@@ -475,22 +606,25 @@ class Stream:
     sure; its cues so far are then learnt from. A track surely in a language no pack is for is
     left as it is."""
 
-    def __init__(self, packs: Dict[str, Language], language: Optional[str] = None, detect=None):
+    def __init__(self, packs: Dict[str, Language], language: Optional[str] = None, detect=None,
+                 cast: Iterable[str] = ()):
         self.packs = packs
+        self.cast = list(cast)
         pack = pack_for(language, packs) if language else None
-        self.engine = Engine(pack, packs.values()) if pack else None
+        self.engine = Engine(pack, packs.values(), self.cast) if pack else None
         self.detect = None if language else detect
         self.undetected: List[str] = []
         self.cues = 0
 
-    def cue(self, lines: List[str], fixes: Optional[list] = None) -> List[str]:
+    def cue(self, lines: List[str], fixes: Optional[list] = None,
+            ligatures: Optional[Dict[str, List[str]]] = None) -> List[str]:
         if self.engine is None and self.detect is not None:
             self.undetected += lines
             self.cues += 1
             if self.cues % DETECT_CUES == 0:
                 pack, sure = detected(self.undetected, self.packs, self.detect)
                 if pack is not None:
-                    self.engine = Engine(pack, self.packs.values())
+                    self.engine = Engine(pack, self.packs.values(), self.cast)
                     self.engine.note_names(self.undetected)
                     self.engine.learn(self.undetected)
                 if sure:
@@ -502,4 +636,5 @@ class Stream:
             self.engine.learn(lines)
         if self.engine is None:
             return lines
+        self.engine.note_ligatures(ligatures or {})
         return [self.engine.fix_line(line_, fixes) for line_ in lines]

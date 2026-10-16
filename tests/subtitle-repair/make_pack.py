@@ -10,6 +10,7 @@ line, so Kodi reads it without a parser:
     dictionaries      the Hunspell dictionaries, by file name
     one_letter_words  the words of one letter the language has (Hunspell takes any letter)
     lone_one          words a lone "1" may stand before when it is the word "I" (English)
+    spell_cues        words that announce letters spelt out ("spelled r o z e r"): those are left
     codes             how subtitle files and tracks name the language: ISO 639-1 and -2 codes
                       and the English name ("fr fre fra french")
     capitalised_nouns yes when every noun takes a capital (German): a capital is then no sign
@@ -27,13 +28,20 @@ LANGUAGES = {
     "en": {"codes": "en eng english", "dics": ["en_US", "en_GB"], "one": "a A I",
            "lone": "am was know think don't can't didn't won't have had will would want need "
                    "mean love just guess thought said do did like can could should hope swear "
-                   "promise told saw heard wish believe remember"},
-    "fr": {"codes": "fr fre fra french", "dics": ["fr"], "one": "a A à À y Y ô Ô"},
-    "es": {"codes": "es spa spanish", "dics": ["es_ES"], "one": "a A e E o O u U y Y"},
-    "pt": {"codes": "pt por portuguese pob pt-br pt_br", "dics": ["pt_PT", "pt_BR"], "one": "a A à À e E é É o O"},
-    "de": {"codes": "de ger deu german", "dics": ["de_DE_frami"], "one": "", "capitalised": True},
-    "nl": {"codes": "nl dut nld dutch", "dics": ["nl_NL"], "one": "u U"},
-    "it": {"codes": "it ita italian", "dics": ["it_IT"], "one": "a A e E è È i I o O"},
+                   "promise told saw heard wish believe remember",
+           "spell": "spell spells spelled spelt spelling letter letters initials"},
+    "fr": {"codes": "fr fre fra french", "dics": ["fr"], "one": "a A à À y Y ô Ô",
+           "spell": "épeler épelle épelles épelez épelons épelé épelée lettre lettres initiales"},
+    "es": {"codes": "es spa spanish", "dics": ["es_ES"], "one": "a A e E o O u U y Y",
+           "spell": "deletrear deletrea deletreo deletreado deletreada letra letras iniciales"},
+    "pt": {"codes": "pt por portuguese pob pt-br pt_br", "dics": ["pt_PT", "pt_BR"], "one": "a A à À e E é É o O",
+           "spell": "soletrar soletra soletro soletrado soletrada soletre letra letras iniciais"},
+    "de": {"codes": "de ger deu german", "dics": ["de_DE_frami"], "one": "", "capitalised": True,
+           "spell": "buchstabieren buchstabiere buchstabiert buchstabe buchstaben initialen"},
+    "nl": {"codes": "nl dut nld dutch", "dics": ["nl_NL"], "one": "u U",
+           "spell": "spellen spel spelt gespeld letter letters initialen"},
+    "it": {"codes": "it ita italian", "dics": ["it_IT"], "one": "a A e E è È i I o O",
+           "spell": "compitare compita compito compitato sillabare lettera lettere iniziali"},
 }
 
 
@@ -77,6 +85,7 @@ def main():
         f"dictionaries = {' '.join(spec['dics'])}",
         f"one_letter_words = {spec['one']}",
         f"lone_one = {spec.get('lone', '')}",
+        f"spell_cues = {spec.get('spell', '')}",
         f"capitalised_nouns = {'yes' if spec.get('capitalised') else 'no'}",
         f"alphabet = {letters_text}",
         f"accents = {accents(letters_text)}",

@@ -1,0 +1,945 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 19:00:00 -0400
+Subject: [PATCH] Subtitles: have the AI provider correct what an OCR misread
+
+The repair undoes only the misreadings a subtitle repeats: one font and
+one OCR engine make the same mistakes hundreds of times, so a confusion
+the file shows often is safe to undo, and one it shows once is not. A
+"wouId" that appears once, a name the OCR broke on its only line, stay.
+A language model reads them the way a person does, from the sentence.
+
+"Repair with the AI provider", under Repair, asks the provider of
+"Translate subtitles" either about the words the rules doubt - no word
+of the language, not a name, and either no word's spelling ("R0zer") or
+turned into a word by a confusion the file does not show often enough to
+be its own - or about every line, for a language no pack is installed
+for. The cues go a few to a request, with the lines before them, the
+title and the characters' names, and the model answers with a list of
+changes, "3: wouId -> would", never a rewritten line.
+
+A change is made only when the rules allow it: what is written stands in
+the line as whole words and is no word of the language, and what it
+becomes is what the OCR's usual confusions explain ("l" for "I", "rn" for
+"m", "0" for "O") - slang a dictionary lacks too, "couIda" is "coulda" -
+or the word that pieces which are none were broken from, rejoined. Only
+where no such reading is a word may it restore an accent the OCR lost or
+misread, into a word of the dictionary or a name of the cast; a letter
+more or less is another word ("Berck" is no "Berk"). A name of the cast
+is never changed, nor what sits inside a formatting tag. With no
+dictionary for the language, only what can be no word's spelling
+("wouId", "R0zer") changes: "modern" might as well be "modem", for all
+the confusions say. In the doubted-words mode it must be a word the
+rules doubted. A subtitle that is right must never come out wrong: a
+model that would rather read "Hip" than "Help", or say "went" for "go",
+changes nothing.
+
+Over 34 English tracks, whole, the doubted words made 44 changes and every
+line, over the first 200 cues of 25, 14: of those 58, 55 were right ("Ancl"
+is "And", "N0" is "No", "I'II" is "I'll") and three were not - a town
+made a word, a name made another, a word rejoined into the wrong one -
+which the rule on accents now refuses, at the cost of three right ones.
+Clean tracks came out unchanged. Gemma 4 E4B, served by llama.cpp on
+the network.
+
+A track inside the video sends every cue through the provider's thread
+once this is on - those it is not asked about too, so they keep their
+order and their timing repair - and each reaches libass as soon as its
+batch is answered. A file beside the video is known whole, so it is
+corrected from where playback is, ahead of it - the parser reads the
+repaired file once more, cue by cue, for the doubted words. A provider
+that does not answer leaves the subtitle as the rules left it, and the
+cues after it go by unasked for a minute rather than wait on it; a seek
+is no failure. A subtitle being translated is not corrected first: the
+model reads through the damage.
+
+The cue work the translation started now carries notes with each cue, the
+doubted words here. COcrEngine::Doubtful() names a repaired line's
+doubted words, and CCueCleaner::Clean() hands them out.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index ac5d99f..44c3369 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25654,6 +25654,30 @@ msgctxt "#60080"
+ msgid "The provider lists no model."
+ msgstr ""
+ 
++#. Label of setting "Player -> Subtitles -> Repair with the AI provider"
++#: system/settings/settings.xml
++msgctxt "#60090"
++msgid "Repair with the AI provider"
++msgstr ""
++
++#. Help text of setting "Player -> Subtitles -> Repair with the AI provider"
++#: system/settings/settings.xml
++msgctxt "#60091"
++msgid "Have the language model of the AI provider correct what an OCR misread in a subtitle made from images: only the words the repair doubts, which it confirms or corrects, or every line. A correction is made only when it turns what is no word into a word close to it; names and the rest of the line stay. The lines, the video's title and the names of its characters are sent to the provider; when it cannot be reached, the subtitle is shown as the repair left it."
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> Repair with the AI provider": only the words the repair doubts
++#: system/settings/settings.xml
++msgctxt "#60092"
++msgid "Doubtful words"
++msgstr ""
++
++#. Value of setting "Player -> Subtitles -> Repair with the AI provider": every line of the subtitle
++#: system/settings/settings.xml
++msgctxt "#60093"
++msgid "Every line"
++msgstr ""
++
+ #empty strings from id 39218 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index b18ba74..b4aff7d 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -949,6 +949,21 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
++        <setting id="subtitles.airepair" type="integer" parent="subtitles.repair" label="60090" help="60091">
++          <level>1</level>
++          <default>0</default> <!-- Off -->
++          <constraints>
++            <options>
++              <option label="351">0</option> <!-- Off -->
++              <option label="60092">1</option> <!-- Doubtful words -->
++              <option label="60093">2</option> <!-- Every line -->
++            </options>
++          </constraints>
++          <dependencies>
++            <dependency type="enable" setting="subtitles.repair">true</dependency>
++          </dependencies>
++          <control type="list" format="string" />
++        </setting>
+         <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
+           <level>1</level>
+           <default>false</default>
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+index 4514f31..1683341 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+@@ -16,6 +16,7 @@ set(SOURCES DVDFactorySubtitle.cpp
+             SubtitleCueStage.cpp
+             SubtitleModel.cpp
+             SubtitleParserWebVTT.cpp
++            SubtitleRevision.cpp
+             SubtitleTranslation.cpp
+             SubtitlesAdapter.cpp)
+ 
+@@ -38,6 +39,7 @@ set(HEADERS DVDFactorySubtitle.h
+             SubtitleCueStage.h
+             SubtitleModel.h
+             SubtitleParserWebVTT.h
++            SubtitleRevision.h
+             SubtitleTranslation.h
+             SubtitlesAdapter.h
+             SubtitlesStyle.h)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+index a6686ce..3505ef6 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+@@ -26,7 +26,7 @@ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+   if (!Initialize())
+     return false;
+ 
+-  m_cues.OpenFile(hints,
++  m_cues.OpenFile(hints, m_filename,
+                   [this](const std::string& text, double start, double stop)
+                   {
+                     std::string line = text;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 2873f3e..827f734 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -495,19 +495,52 @@ TRANSLATION::Context ContextFor(const std::string& from, const std::string& to)
+   return context;
+ }
+ 
++std::optional<REVISION::Mode> RepairMode()
++{
++  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  const int mode = settings->GetInt(CSettings::SETTING_SUBTITLES_AIREPAIR);
++  const Provider provider = CurrentProvider();
++  // a provider that does not answer is let be by the repair itself, request by request
++  if (mode == 0 || !settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIR) ||
++      provider.base.empty() || provider.model.empty())
++    return std::nullopt;
++  return mode == 1 ? REVISION::Mode::DOUBTS : REVISION::Mode::EVERY_LINE;
++}
++
++REVISION::Context RevisionContext(const std::string& language)
++{
++  REVISION::Context context;
++  if (!language.empty())
++    context.language = LanguageName(language);
++  TitleAndCast(context.title, context.cast);
++  const std::shared_ptr<const CLEANUP::Packs> packs = CLEANUP::InstalledPacks();
++  if (const auto pack = language.empty() ? nullptr : CLEANUP::PackFor(language, *packs))
++    context.isWord = [pack](const std::wstring& word) { return pack->Word(word); };
++  return context;
++}
+ } // namespace
+ 
+ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
++                                              const std::string& language,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+-                                              MODEL::CCueWorker::Now now)
+-{
+-  if (hints.translateTo.empty())
++                                              MODEL::CCueWorker::Now now,
++                                              bool& doubts)
++{
++  doubts = false;
++  if (!hints.translateTo.empty())
++    return std::make_unique<MODEL::CCueWorker>(
++        std::make_unique<CChat>(CurrentProvider(), silence),
++        TRANSLATION::Translation(
++            ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo)),
++        std::move(deliver), std::move(now));
++  const std::optional<REVISION::Mode> mode = RepairMode();
++  if (!mode)
+     return nullptr;
+-  return std::make_unique<MODEL::CCueWorker>(
+-      std::make_unique<CChat>(CurrentProvider(), silence),
+-      TRANSLATION::Translation(ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo)),
+-      std::move(deliver), std::move(now));
++  doubts = *mode == REVISION::Mode::DOUBTS;
++  return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(CurrentProvider(), silence),
++                                             REVISION::Revision(RevisionContext(language), *mode),
++                                             std::move(deliver), std::move(now));
+ }
+ 
+ double PlaybackTime()
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index eec3b04..ba4e237 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include "SubtitleRevision.h"
+ #include "SubtitleTranslation.h"
+ #include "settings/lib/ISettingCallback.h"
+ 
+@@ -73,16 +74,21 @@ std::string LanguageName(const std::string& code);
+ 
+ /*!
+  * \brief The language model's work on a subtitle stream being opened: translating it when the
+- * player opens it to be read in another language (hints.translateTo); nullptr otherwise.
++ * player opens it to be read in another language (hints.translateTo), else correcting it when
++ * "Repair with the AI provider" is on; nullptr when neither applies.
++ * \param language the stream's language code, or empty: what the corrections are judged in
+  * \param silence how long a request may go without a word: as long as its cues can wait
+  * \param deliver where each cue goes, translated or corrected, with its times; "" when there is
+  * nothing to show for it, which still ends a cue left open before it
+  * \param now where playback is, for a file known whole; empty for a track read as it plays
++ * \param doubts set to whether the work wants the words the repair doubts with each cue
+  */
+ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
++                                              const std::string& language,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+-                                              MODEL::CCueWorker::Now now);
++                                              MODEL::CCueWorker::Now now,
++                                              bool& doubts);
+ 
+ //! Where playback is, in the time base of the cues of a subtitle file.
+ double PlaybackTime();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+index 32d1f2b..de17466 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+@@ -2273,6 +2273,29 @@ std::wstring COcrEngine::FixLine(const std::wstring& original,
+   });
+ }
+ 
++std::vector<std::wstring> COcrEngine::Doubtful(const std::wstring& line)
++{
++  const std::wstring text = Visible(line);
++  const Spans spans = Words(text);
++  std::vector<std::wstring> doubts;
++  if (!ReadsAsLanguage(text, std::vector<bool>(spans.size(), false)))
++    return doubts;
++  // the general confusions, then the language's own
++  const std::vector<Confusion>& confusions = m_lang->Confusions();
++  for (const auto& [a, n] : spans)
++  {
++    const std::wstring w = text.substr(a, n);
++    if (n < 2 || !HasLetter(w) || m_names.count(w) || m_cast.count(w) || Word(*m_lang, w) ||
++        !m_lang->Readable(w) || std::find(doubts.begin(), doubts.end(), w) != doubts.end())
++      continue;
++    const std::vector<std::wstring> readings = Candidates(w, confusions);
++    if (!PlausibleWord(w) || std::any_of(readings.begin(), readings.end(),
++                                         [&](const std::wstring& r) { return Acceptable(w, r); }))
++      doubts.push_back(w);
++  }
++  return doubts;
++}
++
+ bool Report::Changed() const
+ {
+   if (readAs == "unsure")
+@@ -2469,8 +2492,10 @@ CCueCleaner::CCueCleaner(const Options& options,
+     m_detect = std::move(detect);
+ }
+ 
+-bool CCueCleaner::Clean(std::string& text)
++bool CCueCleaner::Clean(std::string& text, std::vector<std::string>* doubts)
+ {
++  if (doubts)
++    doubts->clear();
+   const std::wstring wide = UnixLines(Widen(text));
+   const std::vector<std::wstring> original = Split(wide, L'\n');
+   if (wide.empty())
+@@ -2532,17 +2557,17 @@ bool CCueCleaner::Clean(std::string& text)
+     for (const std::wstring& line : original)
+       m_ocr->NoteLigatures(ReadLigatures(line));
+     for (std::wstring& line : lines)
++    {
+       line = m_ocr->FixLine(line, nullptr);
++      if (doubts)
++        for (const std::wstring& w : m_ocr->Doubtful(line))
++          doubts->push_back(ToUtf8(w));
++    }
+   }
+   text = ToUtf8(Join(lines, L"\n"));
+   return true;
+ }
+ 
+-int CCueCleaner::Position(const std::string& text)
+-{
+-  return PositionOf(Widen(text));
+-}
+-
+ std::wstring ToWide(const std::string& utf8)
+ {
+   return Widen(utf8);
+@@ -2586,4 +2611,24 @@ bool IsWordLetter(wchar_t c)
+   return IsLetter(c);
+ }
+ 
++bool CouldBeSpelt(const std::wstring& word)
++{
++  return PlausibleWord(word);
++}
++
++std::vector<std::pair<size_t, size_t>> WordSpans(const std::wstring& text)
++{
++  return Words(text);
++}
++
++std::vector<std::wstring> OcrReadings(const std::wstring& word)
++{
++  return Candidates(word, GeneralConfusions());
++}
++
++int CCueCleaner::Position(const std::string& text)
++{
++  return PositionOf(Widen(text));
++}
++
+ } // namespace KODI::SUBTITLES::CLEANUP
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+index 6cc647a..d360c29 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+@@ -160,6 +160,13 @@ public:
+   //! The line with the file's misreadings undone; each correction appended to fixes.
+   std::wstring FixLine(const std::wstring& line,
+                        std::vector<std::pair<std::wstring, std::wstring>>* fixes);
++  /*!
++   * \brief The words of a repaired line the rules doubt but leave: no word of the language,
++   * not a name, and either no word's spelling ("wouId", "R0zer") or turned into a word by a
++   * confusion the file does not show often enough to be its own. None in a line of another
++   * language.
++   */
++  std::vector<std::wstring> Doubtful(const std::wstring& line);
+ 
+   const CLanguagePack& Language() const { return *m_lang; }
+ 
+@@ -274,9 +281,11 @@ public:
+ 
+   /*!
+    * \param text the cue's lines, UTF-8, separated by "\n"; repaired in place
++   * \param doubts if given, the words of the repaired cue the rules doubt (see
++   * COcrEngine::Doubtful); none until the track's language is known
+    * \return false when nothing is left to show
+    */
+-  bool Clean(std::string& text);
++  bool Clean(std::string& text, std::vector<std::string>* doubts = nullptr);
+ 
+   //! The {\anN} position a cue asks for, 2 (bottom centre) when it asks for none.
+   static int Position(const std::string& text);
+@@ -295,13 +304,6 @@ private:
+ //! The options the settings ask for; false when subtitle repair is off.
+ bool CurrentOptions(Options& options);
+ 
+-//! The roles of the cast of what plays: the film's, or the episode's and its show's (an
+-//! episode lists only its guests). Names a word the OCR broke into letters may be.
+-std::vector<std::string> CastOfPlaying();
+-
+-//! The language packs of the pack add-ons installed, read again when they change.
+-std::shared_ptr<const Packs> InstalledPacks();
+-
+ //! Text as the repairs read it, and back to UTF-8.
+ std::wstring ToWide(const std::string& utf8);
+ std::string FromWide(const std::wstring& text);
+@@ -317,4 +319,23 @@ wchar_t Capital(wchar_t c);
+ //! A letter of a word, in any script: a word character that is no digit.
+ bool IsWordLetter(wchar_t c);
+ 
++//! Whether a word could be a word's spelling: no capital after a small letter, no digit among
++//! letters ("wouId" and "R0zer" cannot), and no Roman numeral.
++bool CouldBeSpelt(const std::wstring& word);
++
++//! The words of a text as the repairs read them, as (start, length): letters and digits, joined
++//! by an apostrophe followed by more ("couldn't").
++std::vector<std::pair<size_t, size_t>> WordSpans(const std::wstring& text);
++
++//! What an OCR's usual confusions ("l" for "I", "rn" for "m", "0" for "O") read a word as, in
++//! any mix; no dictionary is asked.
++std::vector<std::wstring> OcrReadings(const std::wstring& word);
++
++//! The roles of the cast of what plays: the film's, or the episode's and its show's (an
++//! episode lists only its guests). Names a word the OCR broke into letters may be.
++std::vector<std::string> CastOfPlaying();
++
++//! The language packs of the pack add-ons installed, read again when they change.
++std::shared_ptr<const Packs> InstalledPacks();
++
+ } // namespace KODI::SUBTITLES::CLEANUP
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 7c8059b..1ca85ff 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -24,43 +24,63 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+   m_worker.reset();
+   m_deliver = std::move(deliver);
+   m_cleaner.reset();
++  m_doubter.reset();
++  m_doubts = false;
+   m_timing = false;
+   m_prevLengthened = false;
+-  // a track inside the video is read seconds before its cues are shown
+-  m_worker = AI::MakeWorker(hints, std::chrono::seconds(30), m_deliver, {});
+-  m_removes = m_worker != nullptr;
++  const std::string language = TRANSLATION::CodeOf(hints.language);
+   CLEANUP::Options repair;
+-  if (!text || !CLEANUP::CurrentOptions(repair))
+-    return;
+-  const auto& tag = hints.language;
+-  std::string language;
+-  if (!tag.IsEmpty() && !tag.IsUndetermined())
+-    language = tag.AsIso6391().empty() ? tag.AsIso6392B() : tag.AsIso6391();
+-  m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr, language,
+-                    CLEANUP::DetectLanguage);
+-  m_timing = repair.fixTiming;
+-  m_removes = true;
++  if (text && CLEANUP::CurrentOptions(repair))
++  {
++    m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr,
++                      language, CLEANUP::DetectLanguage);
++    m_timing = repair.fixTiming;
++  }
++  // the provider's corrections need the repair's rules; a translation does not. A track inside
++  // the video is read seconds before its cues are shown.
++  if (!hints.translateTo.empty() || m_cleaner)
++    m_worker = AI::MakeWorker(hints, language,
++                              std::chrono::seconds(hints.translateTo.empty() ? 15 : 30),
++                              m_deliver, {}, m_doubts);
++  m_removes = m_cleaner || m_worker;
+ }
+ 
+-void CCueStage::OpenFile(const CDVDStreamInfo& hints, Deliver deliver)
++void CCueStage::OpenFile(const CDVDStreamInfo& hints, const std::string& file, Deliver deliver)
+ {
+   m_worker.reset();
+   m_deliver = std::move(deliver);
+   m_cleaner.reset();
++  m_doubter.reset();
++  m_doubts = false;
+   m_timing = false;
+-  // the whole file is known: it is translated from where playback is, ahead of it
+-  m_worker = AI::MakeWorker(hints, std::chrono::seconds(60), m_deliver, AI::PlaybackTime);
++  // the whole file is known: it is worked on from where playback is, ahead of it
++  const std::string language = CLEANUP::LanguageOfPath(file);
++  m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_deliver,
++                            AI::PlaybackTime, m_doubts);
+   m_removes = m_worker != nullptr;
++  CLEANUP::Options repair;
++  if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
++  {
++    repair.removeAds = false;
++    repair.fixTiming = false;
++    m_doubter.emplace(repair, CLEANUP::InstalledPacks().get(), language, CLEANUP::DetectLanguage);
++  }
+ }
+ 
+ void CCueStage::Submit(std::string text, double start, double stop)
+ {
+-  if (m_cleaner && !m_cleaner->Clean(text))
++  std::vector<std::string> doubts;
++  if (m_cleaner && !m_cleaner->Clean(text, m_doubts ? &doubts : nullptr))
+     text.clear();
++  if (m_doubter)
++  {
++    std::string read = text;
++    m_doubter->Clean(read, &doubts);
++  }
+   if (m_worker)
+     // the model's answers come on its thread, and so do the cues it is not asked about, empty
+     // ones too, to keep their order
+-    m_worker->Submit(text, start, stop);
++    m_worker->Submit(text, start, stop, std::move(doubts));
+   else
+     m_deliver(text, start, stop);
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index 10e2669..c97b614 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -46,7 +46,7 @@ public:
+    */
+   void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver);
+   //! Set up for a subtitle file beside the video, known whole and worked on ahead of playback.
+-  void OpenFile(const CDVDStreamInfo& hints, Deliver deliver);
++  void OpenFile(const CDVDStreamInfo& hints, const std::string& file, Deliver deliver);
+   //! A cue as read, which reaches deliver - from the language model's thread when it works on
+   //! the cues.
+   void Submit(std::string text, double start, double stop);
+@@ -62,6 +62,10 @@ public:
+ private:
+   Deliver m_deliver;
+   std::optional<CLEANUP::CCueCleaner> m_cleaner;
++  //! reads which words of a file's cue the repair doubts, for the provider to look at: the file
++  //! is repaired already, this only reads it again
++  std::optional<CLEANUP::CCueCleaner> m_doubter;
++  bool m_doubts{false}; //!< the worker wants the words the repair doubts
+   bool m_timing{false};
+   double m_prevStart{0};
+   double m_prevStop{0};
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp
+new file mode 100644
+index 0000000..0895026
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp
+@@ -0,0 +1,304 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitleRevision.h"
++
++#include "SubtitleCleanup.h"
++
++#include <algorithm>
++#include <chrono>
++#include <regex>
++#include <unordered_set>
++
++namespace KODI::SUBTITLES::REVISION
++{
++namespace
++{
++//! How many lines before a request it carries for context.
++constexpr size_t BEFORE = 4;
++//! How long the cues go by unasked after the provider failed: a cue waiting on a provider that
++//! does not answer would miss its time on screen.
++constexpr std::chrono::seconds QUIET{60};
++
++std::vector<std::wstring> SplitWords(const std::wstring& text)
++{
++  std::vector<std::wstring> words;
++  for (const auto& [start, length] : CLEANUP::WordSpans(text))
++    words.push_back(text.substr(start, length));
++  return words;
++}
++
++size_t Distance(const std::wstring& a, const std::wstring& b)
++{
++  std::vector<size_t> row(b.size() + 1);
++  for (size_t j = 0; j <= b.size(); ++j)
++    row[j] = j;
++  for (size_t i = 1; i <= a.size(); ++i)
++  {
++    size_t diagonal = row[0];
++    row[0] = i;
++    for (size_t j = 1; j <= b.size(); ++j)
++    {
++      const size_t up = row[j];
++      row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] != b[j - 1])});
++      diagonal = up;
++    }
++  }
++  return row[b.size()];
++}
++
++//! Where what is written stands in the line as whole words ("HeIp! HeIp!" twice), outside the
++//! formatting tags ("<font color=...>", "{\c&H00FFFF&}").
++std::vector<size_t> Find(const std::wstring& line, const std::wstring& wrong)
++{
++  std::vector<bool> tag(line.size(), false);
++  wchar_t closing = 0;
++  for (size_t i = 0; i < line.size(); ++i)
++  {
++    if (!closing && (line[i] == L'<' || line[i] == L'{'))
++      closing = line[i] == L'<' ? L'>' : L'}';
++    tag[i] = closing != 0;
++    if (closing && line[i] == closing)
++      closing = 0;
++  }
++  std::vector<size_t> starts;
++  std::vector<size_t> ends;
++  for (const auto& [start, length] : CLEANUP::WordSpans(line))
++  {
++    if (tag[start])
++      continue;
++    starts.push_back(start);
++    ends.push_back(start + length);
++  }
++  const auto in = [](const std::vector<size_t>& v, size_t at)
++  { return std::find(v.begin(), v.end(), at) != v.end(); };
++  std::vector<size_t> found;
++  for (size_t at = line.find(wrong); at != std::wstring::npos;
++       at = line.find(wrong, at + wrong.size()))
++    if (in(starts, at) && in(ends, at + wrong.size()))
++      found.push_back(at);
++  return found;
++}
++
++//! Whether two words differ only by accents: the same length, and every letter that differs
++//! one beyond ASCII ("Ecoutez", "Écoutez").
++bool AccentOnly(const std::wstring& a, const std::wstring& b)
++{
++  if (a.size() != b.size() || a == b)
++    return false;
++  for (size_t i = 0; i < a.size(); ++i)
++    if (a[i] != b[i] && (!CLEANUP::IsWordLetter(a[i]) || !CLEANUP::IsWordLetter(b[i]) ||
++                         (a[i] < 0x80 && b[i] < 0x80)))
++      return false;
++  return true;
++}
++
++std::string Trimmed(std::string text)
++{
++  const auto quote = [](char c) { return c == '"' || c == '\'' || c == '`' || c == ' '; };
++  while (!text.empty() && quote(text.front()))
++    text.erase(0, 1);
++  while (!text.empty() && quote(text.back()))
++    text.pop_back();
++  return text;
++}
++} // namespace
++
++std::string SystemPrompt(const Context& context, Mode mode)
++{
++  std::string out =
++      "You check subtitles in " + context.language +
++      " that an OCR read from the images of a disc, for the errors the OCR made: letters "
++      "misread (\"wouId\" for \"would\", \"rn\" for \"m\", \"0\" for \"O\"), a word broken "
++      "into letters, an accent lost. Correct only such errors. Never change the wording, the "
++      "grammar, slang, a spelling the author chose, a name or the punctuation. ";
++  if (mode == Mode::DOUBTS)
++    out += "After each line come the words a spelling check doubts: decide for each whether it "
++           "is an OCR error, and correct it only if it is - names, slang and words of another "
++           "language are not. ";
++  return out + "Answer with one line per correction: the line's number, a colon, the words as "
++               "written, \" -> \" and the words corrected, as in \"3: wouId -> would\". When "
++               "there is nothing to correct, answer \"none\".";
++}
++
++std::string UserPrompt(const Context& context,
++                       const std::deque<std::string>& before,
++                       const std::vector<std::string>& lines,
++                       const std::vector<std::vector<std::string>>& doubts)
++{
++  std::string out = MODEL::Preamble(context.title, context.cast, before);
++  out += "\nThe lines to check:\n";
++  for (size_t i = 0; i < lines.size(); ++i)
++  {
++    out += std::to_string(i + 1) + ". " + lines[i] + "\n";
++    if (i < doubts.size() && !doubts[i].empty())
++    {
++      out += "   doubted:";
++      for (size_t k = 0; k < doubts[i].size(); ++k)
++        out += (k ? ", " : " ") + doubts[i][k];
++      out += "\n";
++    }
++  }
++  return out;
++}
++
++std::vector<Change> ReadChanges(const std::string& answer, size_t lines)
++{
++  static const std::regex change(R"(^\s*(\d+)\s*[.):]\s*(.+?)\s*(?:->|→|=>)\s*(.+?)\s*$)");
++  std::vector<Change> changes;
++  for (const std::string& line : MODEL::AnswerLines(answer))
++  {
++    std::smatch m;
++    if (!std::regex_match(line, m, change))
++      continue;
++    const size_t n = std::stoul(m[1].str().substr(0, 6));
++    Change c{n - 1, Trimmed(m[2].str()), Trimmed(m[3].str())};
++    if (n >= 1 && n <= lines && !c.wrong.empty() && !c.right.empty())
++      changes.push_back(std::move(c));
++  }
++  return changes;
++}
++
++bool Allowed(const Change& change,
++             const std::string& line,
++             const std::vector<std::string>& doubts,
++             const Context& context,
++             Mode mode)
++{
++  const std::wstring text = CLEANUP::ToWide(line);
++  const std::wstring wrong = CLEANUP::ToWide(change.wrong);
++  const std::wstring right = CLEANUP::ToWide(change.right);
++  if (wrong == right || Find(text, wrong).empty() ||
++      right.find_first_of(L"<>{}\n") != std::wstring::npos)
++    return false;
++
++  // a word broken into pieces ("fi re") becomes one; anything else keeps its words apart
++  const std::vector<std::wstring> was = SplitWords(wrong);
++  const std::vector<std::wstring> becomes = SplitWords(right);
++  const bool rejoined = was.size() > 1 && becomes.size() == 1;
++  if (was.empty() || (!rejoined && was.size() != becomes.size()))
++    return false;
++  std::wstring joined;
++  for (const std::wstring& piece : was)
++    joined += piece;
++  const std::wstring& from = rejoined ? joined : wrong;
++  if (Distance(from, right) > std::max<size_t>(2, from.size() / 3))
++    return false;
++
++  if (mode == Mode::DOUBTS && std::none_of(was.begin(), was.end(),
++                                           [&](const std::wstring& w)
++                                           {
++                                             return std::find(doubts.begin(), doubts.end(),
++                                                              CLEANUP::FromWide(w)) != doubts.end();
++                                           }))
++    return false;
++
++  std::unordered_set<std::wstring> names;
++  for (const std::string& role : context.cast)
++    for (std::wstring& word : SplitWords(CLEANUP::ToWide(role)))
++      names.insert(std::move(word));
++  const auto known = [&](const std::wstring& w)
++  { return names.count(w) > 0 || (context.isWord && context.isWord(w)); };
++  // a name or a word of the language is never "corrected" - with no dictionary, only what can be
++  // no word's spelling ("wouId"): "modern" is "modem" for all the OCR's confusions say
++  if (!rejoined &&
++      std::any_of(was.begin(), was.end(), [&](const std::wstring& w)
++                  { return known(w) || (!context.isWord && CLEANUP::CouldBeSpelt(w)); }))
++    return false;
++  // a word is rejoined only from a piece that is none ("fi re"), into a word: "may be" is no
++  // "maybe", and with no dictionary nothing says
++  if (rejoined && (!context.isWord || std::all_of(was.begin(), was.end(), known) || !known(right)))
++    return false;
++  // what the OCR's usual confusions explain ("couIda" is "coulda", slang or not)
++  const std::vector<std::wstring> readings = CLEANUP::OcrReadings(from);
++  if ((rejoined && from == right) ||
++      std::find(readings.begin(), readings.end(), right) != readings.end())
++    return true;
++  // anything else only where no such reading is a word - "HeIp" is "Help", whatever a model
++  // would rather read ("Hip") - and then only an accent the OCR lost or misread, into words or
++  // names: a letter more or less is another word ("Berck" is no "Berk"); with no dictionary, or
++  // pieces rejoined into what they do not spell, nothing else
++  if (!context.isWord || rejoined || !AccentOnly(from, right) ||
++      std::any_of(readings.begin(), readings.end(),
++                  [&](const std::wstring& reading)
++                  {
++                    const std::vector<std::wstring> words = SplitWords(reading);
++                    return !words.empty() && std::all_of(words.begin(), words.end(), known);
++                  }))
++    return false;
++  return std::all_of(becomes.begin(), becomes.end(), known);
++}
++
++std::string Apply(const Change& change, const std::string& line)
++{
++  std::wstring text = CLEANUP::ToWide(line);
++  const std::wstring wrong = CLEANUP::ToWide(change.wrong);
++  const std::wstring right = CLEANUP::ToWide(change.right);
++  const std::vector<size_t> found = Find(text, wrong);
++  for (auto at = found.rbegin(); at != found.rend(); ++at)
++    text.replace(*at, wrong.size(), right);
++  return CLEANUP::FromWide(text);
++}
++
++MODEL::Work Revision(Context context, Mode mode)
++{
++  return [context = std::move(context), mode, before = std::deque<std::string>(),
++          quietUntil = std::chrono::steady_clock::time_point()](
++             MODEL::IChat& chat, const std::vector<MODEL::Item>& cues) mutable
++  {
++    const auto now = std::chrono::steady_clock::now();
++    MODEL::Outcome outcome;
++    std::vector<size_t> asked;
++    std::vector<std::string> lines;
++    std::vector<std::vector<std::string>> doubts;
++    for (size_t c = 0; c < cues.size(); ++c)
++    {
++      outcome.cues.emplace_back(cues[c].text);
++      const std::string plain = MODEL::Plain(cues[c].text);
++      if (plain.empty() || (mode == Mode::DOUBTS && cues[c].notes.empty()))
++        continue;
++      asked.push_back(c);
++      lines.push_back(plain);
++      doubts.push_back(cues[c].notes);
++    }
++    std::optional<std::string> answer;
++    if (now < quietUntil)
++      asked.clear();
++    if (!asked.empty())
++      answer =
++          chat.Complete(SystemPrompt(context, mode), UserPrompt(context, before, lines, doubts));
++    // the lines before a seek are no context for those after it
++    for (const MODEL::Item& cue : chat.Aborted() ? std::vector<MODEL::Item>() : cues)
++    {
++      const std::string plain = MODEL::Plain(cue.text);
++      if (plain.empty())
++        continue;
++      before.push_back(plain);
++      if (before.size() > BEFORE)
++        before.pop_front();
++    }
++    if (asked.empty())
++      return outcome;
++    // the provider is down or refuses: the cues are shown as the rules left them, and the next
++    // ones too for a while, without waiting on it - unless a seek dropped them
++    if (!answer)
++    {
++      if (!chat.Aborted())
++        quietUntil = std::chrono::steady_clock::now() + QUIET;
++      return outcome;
++    }
++    for (const Change& change : ReadChanges(*answer, asked.size()))
++    {
++      const size_t c = asked[change.line];
++      if (Allowed(change, outcome.cues[c], cues[c].notes, context, mode))
++        outcome.cues[c] = Apply(change, outcome.cues[c]);
++    }
++    return outcome;
++  };
++}
++} // namespace KODI::SUBTITLES::REVISION
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.h
+new file mode 100644
+index 0000000..ce903f0
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.h
+@@ -0,0 +1,89 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleModel.h"
++
++#include <deque>
++#include <functional>
++#include <string>
++#include <vector>
++
++/*!
++ * \brief OCR damage a language model corrects: the words the repair's rules doubt, or every line.
++ * The model answers with a list of changes, and only a change the rules here allow is made - a
++ * subtitle that is right must never come out wrong.
++ */
++namespace KODI::SUBTITLES::REVISION
++{
++enum class Mode
++{
++  DOUBTS, //!< only the words the repair doubts, which the model confirms or corrects
++  EVERY_LINE, //!< every line, read by the model
++};
++
++//! What the model is told, and what a change is judged by.
++struct Context
++{
++  std::string language; //!< the subtitle's language, by name in English
++  std::string title; //!< "Title (1999)", or empty
++  std::vector<std::string> cast; //!< the characters' names
++  //! whether a word is one of the language's, or nothing when no dictionary is installed
++  std::function<bool(const std::wstring& word)> isWord;
++};
++
++//! One change the model asks for: in a line, what is written, and what it should be.
++struct Change
++{
++  size_t line; //!< from 0
++  std::string wrong;
++  std::string right;
++};
++
++//! The instructions.
++std::string SystemPrompt(const Context& context, Mode mode);
++
++/*!
++ * \brief The request: the lines before for context, then the numbered lines, each with the words
++ * the repair doubts when it has any.
++ */
++std::string UserPrompt(const Context& context,
++                       const std::deque<std::string>& before,
++                       const std::vector<std::string>& lines,
++                       const std::vector<std::vector<std::string>>& doubts);
++
++//! The changes an answer asks for: "2: wouId -> would" a line; "none", or anything else, none.
++std::vector<Change> ReadChanges(const std::string& answer, size_t lines);
++
++/*!
++ * \brief Whether a change may be made to its line. What is written must stand in the line as
++ * whole words and be no word of the language; what it becomes must be close to it, and a reading
++ * the OCR's usual confusions explain ("l" for "I", "rn" for "m", "0" for "O"), or the word that
++ * pieces which are none were broken from ("fi re"), rejoined. Only when no such reading is a word
++ * may it restore an accent the OCR lost or misread, into words of the dictionary or the cast's
++ * names; with no dictionary, never, and nothing is rejoined. In DOUBTS mode, only a word the
++ * repair doubted may change.
++ */
++bool Allowed(const Change& change,
++             const std::string& line,
++             const std::vector<std::string>& doubts,
++             const Context& context,
++             Mode mode);
++
++//! The line with an allowed change made, wherever what is written stands.
++std::string Apply(const Change& change, const std::string& line);
++
++/*!
++ * \brief The model's corrections as work on cues. Each cue comes with the words the repair
++ * doubts in it; in DOUBTS mode a batch with none is not sent. A cue the model is not asked
++ * about, or whose answer is refused, stays as it was - and so does every cue of a batch the
++ * provider did not answer, and of those after it for a minute, which go by without waiting.
++ */
++MODEL::Work Revision(Context context, Mode mode);
++} // namespace KODI::SUBTITLES::REVISION
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 97cee3f..684db51 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -196,6 +196,7 @@ public:
+   static constexpr auto SETTING_SUBTITLES_AIMODEL = "subtitles.aimodel";
+   static constexpr auto SETTING_SUBTITLES_AIMODELS = "subtitles.aimodels";
+   static constexpr auto SETTING_SUBTITLES_AITEST = "subtitles.aitest";
++  static constexpr auto SETTING_SUBTITLES_AIREPAIR = "subtitles.airepair";
+   static constexpr auto SETTING_SUBTITLES_REPAIRADS = "subtitles.repairads";
+   static constexpr auto SETTING_SUBTITLES_REPAIRTIMING = "subtitles.repairtiming";
+   static constexpr auto SETTING_SUBTITLES_REPAIRLANGUAGES = "subtitles.repairlanguages";

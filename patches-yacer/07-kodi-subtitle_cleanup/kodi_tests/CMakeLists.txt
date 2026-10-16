@@ -26,6 +26,7 @@ file(WRITE "${pack}/profile.txt"
   "dictionaries = en_US en_GB\n"
   "one_letter_words = a A I\n"
   "lone_one = am was know think don't can't didn't won't have had will would want need mean love just guess thought said do did like can could should hope swear promise told saw heard wish believe remember\n"
+  "spell_cues = spell spells spelled spelt spelling letter letters initials\n"
   "capitalised_nouns = no\n"
   "alphabet = ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÅàâäçèéêîïñóôöü\n"
   "accents = A:Å a:àâä c:ç e:èéê i:îï n:ñ o:óôö u:ü\n")
@@ -36,4 +37,48 @@ yacer_add_test(
   KODI_SOURCES xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
   DEFINES HAS_HUNSPELL SUBTITLE_PACKS="${CMAKE_CURRENT_BINARY_DIR}/packs"
   LIBRARIES PkgConfig::HUNSPELL
+)
+
+# The subtitle translation, without a provider: which track is offered, what a
+# model is asked and how its answer is read, and the thread that works on cues
+# in order, with a stand-in model. None of the files reaches anything of Kodi's
+# (SubtitleCleanup.cpp gives the letter case, built without a dictionary); the
+# provider is SubtitleAI.cpp.
+yacer_add_test(
+  NAME SubtitleTranslation
+  SOURCES TestSubtitleTranslation.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+               xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+               xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+)
+
+# The AI provider's corrections, without a provider: how its answer is read,
+# which changes the rules allow, and what is shown when it fails. The rules
+# read words through SubtitleCleanup.cpp, built here without a dictionary: the
+# suite gives its own.
+yacer_add_test(
+  NAME SubtitleRevision
+  SOURCES TestSubtitleRevision.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+               xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp
+               xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+)
+
+# Realigning a subtitle on another track of the same video: the fit, and how a
+# picture subtitle's packet is read. Nothing of Kodi's is reached; reading the
+# video is SubtitleCueStage.cpp's.
+yacer_add_test(
+  NAME SubtitleTiming
+  SOURCES TestSubtitleTiming.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
+)
+
+# The change a subtitle file's lines need to sit on the video's speech, and the
+# voice activity model's arithmetic. Hearing the video - decoding its sound -
+# is SubtitleListener.cpp's, and the weights come from an add-on.
+yacer_add_test(
+  NAME SubtitleSpeech
+  SOURCES TestSubtitleSpeech.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleSpeech.cpp
+               xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTiming.cpp
 )
