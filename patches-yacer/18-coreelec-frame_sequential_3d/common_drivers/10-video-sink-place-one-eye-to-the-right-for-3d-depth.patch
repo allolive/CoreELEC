@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 11:30:00 -0400
+Subject: [PATCH] video_sink: place one eye to the right for 3D depth
+
+Frame-sequential 3D shows the two eyes on alternate vsyncs, and moving
+one eye sideways relative to the other changes how deep the picture
+sits, as the depth setting of a 3D TV or projector does.
+
+Add fa_depth (parameter, pixels, -64 to 64, 0 by default): on the vsyncs
+of the right eye (positive) or the left eye (negative), vd1's postblend
+window goes that many pixels right. Nothing else changes per eye, so the
+picture is not resized or cropped per eye, and MVC, side-by-side and
+top-and-bottom are moved alike.
+
+The window must stay on screen: written past the output's width, the
+line lengths no longer match and the picture breaks up (measured). So
+whoever sets fa_depth first narrows the video window by as much (Kodi
+does, through the axis, which scales both eyes to the narrower width
+and stays clean), and a window is only moved as far as it has room.
+
+The window is written from the per-vsync 3D switch on every
+frame-alternative vsync, and vd_blend_setting writes it the same way,
+so a vsync that reconfigures the layer does not undo the move.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/drivers/media/video_sink/video.c b/drivers/media/video_sink/video.c
+index d4e9058..f27f425 100644
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -5406,6 +5406,29 @@ static int fa_eye_view(int toggle)
+ 	return (toggle == OUT_FA_A_FRAME) ^ READ_ONCE(fa_swap_eyes);
+ }
+ 
++/*
++ * 3D depth: one eye's picture is placed this many pixels right of the other's,
++ * the right eye's when positive (the picture goes deeper), the left eye's when
++ * negative. Whoever sets it narrows the video window by as much first: a window
++ * is only moved as far as it stays on screen.
++ */
++#define FA_DEPTH_MAX 64
++static int fa_depth;
++module_param(fa_depth, int, 0664);
++MODULE_PARM_DESC(fa_depth, "frame-alternative 3D: pixels one eye is placed right of the other");
++
++/* how far right the eye shown on a vsync with this toggle goes */
++u32 fa_depth_shift(int toggle)
++{
++	int depth = clamp(READ_ONCE(fa_depth), -FA_DEPTH_MAX, FA_DEPTH_MAX);
++	int eye;
++
++	if (!depth || !(process_3d_type & MODE_3D_OUT_FA_MASK))
++		return 0;
++	eye = fa_eye_view(toggle);
++	return eye == (depth > 0) ? abs(depth) : 0;
++}
++
+ static void fa_sync_publish(void)
+ {
+ #ifndef FIQ_VSYNC
+diff --git a/drivers/media/video_sink/video_hw.c b/drivers/media/video_sink/video_hw.c
+index d18ced3..850404a 100644
+--- a/drivers/media/video_sink/video_hw.c
++++ b/drivers/media/video_sink/video_hw.c
+@@ -5276,6 +5276,52 @@ void set_amdv_delay_work_flag(void)
+ /*********************************************************
+  * 3D APIs
+  *********************************************************/
++/* g12a widened the blend window fields to 13 bits */
++static u32 vd_blend_size_mask(void)
++{
++	return legacy_vpp ? VPP_VD_SIZE_MASK : 0x1fff;
++}
++
++/*
++ * The video's place on the output, in postblend_h_start_end's layout. In
++ * frame-alternative 3D, vd1 goes fa_depth_shift() pixels right on the vsyncs
++ * of the eye it moves, as far as the window has room on screen.
++ */
++static u32 vd_postblend_h(struct video_layer_s *layer,
++			  struct blend_setting_s *setting)
++{
++	u32 mask = vd_blend_size_mask();
++	u32 start = setting->postblend_h_start;
++	u32 end = setting->postblend_h_end;
++#ifdef TV_3D_FUNCTION_OPEN
++	u32 shift = layer->layer_id == 0 ?
++		fa_depth_shift(toggle_3d_fa_frame) : 0;
++
++	if (end + 1 < setting->postblend_h_size)
++		shift = min(shift, setting->postblend_h_size - 1 - end);
++	else
++		shift = 0;
++	start += shift;
++	end += shift;
++#endif
++	return ((start & mask) << VPP_VD1_START_BIT) |
++		((end & mask) << VPP_VD1_END_BIT);
++}
++
++#ifdef TV_3D_FUNCTION_OPEN
++/* every frame-alternative vsync: the place of the eye it shows */
++static void fa_depth_place(struct video_layer_s *layer)
++{
++	if (layer->layer_id != 0 ||
++	    cur_dev->display_module == C3_DISPLAY_MODULE ||
++	    !(process_3d_type & MODE_3D_OUT_FA_MASK))
++		return;
++	cur_dev->rdma_func[layer->vpp_index].rdma_wr
++		(layer->vpp_blend_reg.postblend_h_start_end,
++		vd_postblend_h(layer, &layer->bld_setting));
++}
++#endif
++
+ #ifdef TV_3D_FUNCTION_OPEN
+ static void get_3d_horz_pos(struct video_layer_s *layer,
+ 			    struct vframe_s *vf,
+@@ -5704,6 +5750,7 @@ void switch_3d_view_per_vsync(struct video_layer_s *layer)
+ 		switch_3d_view_per_vsync_s5(layer);
+ 		return;
+ 	}
++	fa_depth_place(layer);
+ 
+ 	if (layer->switch_vf && layer->vf_ext)
+ 		dispbuf = layer->vf_ext;
+@@ -6473,7 +6520,7 @@ s32 config_vd_blend(struct video_layer_s *layer,
+ void vd_blend_setting(struct video_layer_s *layer, struct blend_setting_s *setting)
+ {
+ 	u32 misc_off = 0;
+-	u32 vd_size_mask = VPP_VD_SIZE_MASK;
++	u32 vd_size_mask = vd_blend_size_mask();
+ 	struct hw_vpp_blend_reg_s *vpp_blend_reg =
+ 		&layer->vpp_blend_reg;
+ 	u8 vpp_index = layer->vpp_index;
+@@ -6484,9 +6531,6 @@ void vd_blend_setting(struct video_layer_s *layer, struct blend_setting_s *setti
+ 		vd_blend_setting_s5(layer, setting);
+ 		return;
+ 	}
+-	/* g12a change to 13 bits */
+-	if (!legacy_vpp)
+-		vd_size_mask = 0x1fff;
+ 
+ 	if (cur_dev->display_module == C3_DISPLAY_MODULE) {
+ 		/* default video is background */
+@@ -6537,10 +6581,7 @@ void vd_blend_setting(struct video_layer_s *layer, struct blend_setting_s *setti
+ 	/* postblend setting */
+ 	cur_dev->rdma_func[vpp_index].rdma_wr
+ 		(vpp_blend_reg->postblend_h_start_end,
+-		((setting->postblend_h_start & vd_size_mask)
+-		<< VPP_VD1_START_BIT) |
+-		((setting->postblend_h_end & vd_size_mask)
+-		<< VPP_VD1_END_BIT));
++		vd_postblend_h(layer, setting));
+ 
+ 	cur_dev->rdma_func[vpp_index].rdma_wr
+ 		(vpp_blend_reg->postblend_v_start_end,
+diff --git a/drivers/media/video_sink/video_priv.h b/drivers/media/video_sink/video_priv.h
+index 7a62281..b01129a 100644
+--- a/drivers/media/video_sink/video_priv.h
++++ b/drivers/media/video_sink/video_priv.h
+@@ -930,6 +930,7 @@ s32 config_3d_vd2_blend(struct video_layer_s *layer,
+ 			struct blend_setting_s *setting);
+ void switch_3d_view_per_vsync(struct video_layer_s *layer);
+ void fa_mvc_forget(void);
++u32 fa_depth_shift(int toggle);
+ #endif
+ void config_vd_param(struct video_layer_s *layer,
+ 	struct vframe_s *dispbuf);

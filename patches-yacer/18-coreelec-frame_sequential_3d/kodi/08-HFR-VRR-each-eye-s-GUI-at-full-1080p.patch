@@ -39,10 +39,11 @@ did not, so subtitle and GUI depth came out reversed; the 18_02 help text
 sends users to Invert to fix the glasses' timing. The kernel shows, on each
 frame, the GUI half of the eye it reports (fa_eye_view = frame XOR
 fa_swap_eyes), and the picture on that frame is the reported eye's for a
-plain source and the other eye's under Invert: for SBS/TAB fa_swap_eyes is
-right-first XOR Invert, so the right-first part cancels; for MVC
-fa_swap_eyes stays 0 and Invert swaps the decoder's view order. So the GUI
-follows Invert alone: with it the right eye's GUI is drawn in the upper half.
+plain source and the other eye's under Invert: fa_swap_eyes is right-first
+XOR Invert, and a right-first SBS/TAB source's halves are reversed too, so
+the right-first part cancels (a right-first MVC is put in order by the
+decoder and has no right-first part). So the GUI follows Invert alone:
+with it the right eye's GUI is drawn in the upper half.
 A right-eye-first source stays a matter for the video layer only.
 
 With the HDR GUI composite the composite drew the stacked FBO through the
@@ -66,7 +67,7 @@ is never reported stacked without a stacked surface.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/application/Application.cpp b/xbmc/application/Application.cpp
-index ab088ac9e2..8de45cd0a7 100644
+index ab088ac..8de45cd 100644
 --- a/xbmc/application/Application.cpp
 +++ b/xbmc/application/Application.cpp
 @@ -916,8 +916,12 @@ void CApplication::Render()
@@ -85,7 +86,7 @@ index ab088ac9e2..8de45cd0a7 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index 78b6a08574..c7ba4c0f34 100644
+index fc35f9c..7239793 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2888,6 +2888,7 @@ void CAMLCodec::CloseDecoder()
@@ -115,9 +116,9 @@ index 78b6a08574..c7ba4c0f34 100644
        dst_rect.x1 *= xs;
        dst_rect.x2 *= xs;
        dst_rect.y1 *= ys;
-@@ -4150,6 +4154,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4152,6 +4156,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+       m_fs3dMode = mode;
        m_fs3dSwap = swap;
-       m_fs3dView = mvc_view_mode;
      }
 +    // The kernel shows the GUI half of the eye it reports, and with the viewer's
 +    // swap that eye is shown the other eye's picture: the GUI's eyes swap with it.
@@ -126,7 +127,7 @@ index 78b6a08574..c7ba4c0f34 100644
  
  #if 1
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
-index 47535fd33d..29cf3ef580 100644
+index 47535fd..29cf3ef 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererGLES.cpp
 @@ -357,11 +357,11 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
@@ -145,7 +146,7 @@ index 47535fd33d..29cf3ef580 100644
        const std::string layout = CServiceBroker::GetDataCacheCore().GetVideoStereoMode();
        if (layout == "left_right" || layout == "right_left")
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
-index 8d355c3e85..be618c56b5 100644
+index 8d355c3..be618c5 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
 @@ -683,9 +683,9 @@ int GetStereoscopicDepth(bool isPgs, int subtitleDepth)
@@ -171,10 +172,10 @@ index 8d355c3e85..be618c56b5 100644
      depth += subtitleDepth;
    }
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index 17f5ff9d63..d713c76c00 100644
+index 397bf57..549f9ce 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -920,7 +920,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
+@@ -927,7 +927,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
      CRect src, dst, view;
      m_pRenderer->GetVideoRect(src, dst, view);
      m_overlays.SetVideoRect(src, dst, view);
@@ -199,7 +200,7 @@ index 17f5ff9d63..d713c76c00 100644
  
    if (gui || m_renderDebug)
 diff --git a/xbmc/rendering/RenderSystemTypes.h b/xbmc/rendering/RenderSystemTypes.h
-index d2d0f40bc1..e239640909 100644
+index d2d0f40..e239640 100644
 --- a/xbmc/rendering/RenderSystemTypes.h
 +++ b/xbmc/rendering/RenderSystemTypes.h
 @@ -27,7 +27,7 @@ enum class RenderStereoMode
@@ -212,7 +213,7 @@ index d2d0f40bc1..e239640909 100644
    COUNT,
  
 diff --git a/xbmc/windowing/GraphicContext.cpp b/xbmc/windowing/GraphicContext.cpp
-index d06301d713..f10348573d 100644
+index d06301d..f103485 100644
 --- a/xbmc/windowing/GraphicContext.cpp
 +++ b/xbmc/windowing/GraphicContext.cpp
 @@ -27,6 +27,7 @@
@@ -279,7 +280,7 @@ index d06301d713..f10348573d 100644
  }
  
 diff --git a/xbmc/windowing/WinSystem.h b/xbmc/windowing/WinSystem.h
-index ea87c6f23f..76dc12d76f 100644
+index ea87c6f..76dc12d 100644
 --- a/xbmc/windowing/WinSystem.h
 +++ b/xbmc/windowing/WinSystem.h
 @@ -135,6 +135,20 @@ public:
@@ -304,7 +305,7 @@ index ea87c6f23f..76dc12d76f 100644
    virtual bool Restore() { return false; }
    virtual bool Hide() { return false; }
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index d73d414a2b..43cf0d7352 100644
+index d73d414..43cf0d7 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -5,6 +5,7 @@
@@ -444,7 +445,7 @@ index d73d414a2b..43cf0d7352 100644
  
  void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index b80c7b28f0..6581cfe9ba 100644
+index b80c7b2..6581cfe 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -229,6 +229,17 @@ public:
@@ -475,7 +476,7 @@ index b80c7b28f0..6581cfe9ba 100644
    //! the record of a 3D left behind is kept until its desktop has been set
    std::atomic<bool> m_fs3d_state_pending{false};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 7f986c9b01..fca8389883 100644
+index 7f986c9..fca8389 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -842,6 +842,13 @@ float CWinSystemAmlogic::GetVsyncRate()
@@ -493,7 +494,7 @@ index 7f986c9b01..fca8389883 100644
  {
    m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
-index 4ab3d756f9..f0a0fc9d7e 100644
+index 4ab3d75..f0a0fc9 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
 @@ -81,6 +81,13 @@ public:
@@ -523,7 +524,7 @@ index 4ab3d756f9..f0a0fc9d7e 100644
    //! the stereo mode MessagePump last saw
    RenderStereoMode m_fs3dStereoMode{RenderStereoMode::OFF};
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-index 27a726cae9..603e7df245 100644
+index 27a726c..603e7df 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 @@ -186,6 +186,14 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
@@ -627,7 +628,7 @@ index 27a726cae9..603e7df245 100644
  
  EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
-index d9ef60c102..3272dbb97a 100644
+index d9ef60c..3272dbb 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h
 @@ -74,6 +74,9 @@ private:

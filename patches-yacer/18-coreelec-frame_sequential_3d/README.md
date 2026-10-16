@@ -21,6 +21,8 @@ The kernel patches:
   also when the output goes away (plugout, suspend, reboot).
 - 08 keeps a 3D type the player sets from being lost to the vsync's MVC bit.
 - 09 publishes VRR as enabled only after the configuration it enables.
+- 10 places one eye that many pixels right for 3D depth (`fa_depth`), on its
+  vsyncs only, where the video window leaves the room on screen.
 
 The decoder patch (media_modules-aml):
 - 01 pins both MVC views' buffers for a frame kept on screen (pause, seek), so
@@ -85,3 +87,7 @@ The Kodi patches:
   played alone as 2D for the rest of the playlist.
 - 32 picks the output mode again when the HDMI 3D signal changes in playback,
   so a 2D fallback leaves frame packing.
+- 35 adds a 3D depth for each film (-20 to 20 px, 0 unless set), kept in
+  `stereodepth.json` in the profile rather than in the shared video database,
+  with the action stereodepth (its slider) and Player.StereoDepth: the window is
+  narrowed by the depth and kernel patch 10 moves one eye by as much.

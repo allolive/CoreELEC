@@ -1,0 +1,577 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 11:45:00 -0400
+Subject: [PATCH] HFR VRR: 3D depth for each film
+
+How deep a 3D film sits is a matter of the film and the viewer, and a 3D
+TV or projector lets it be moved by shifting one eye's picture sideways.
+In frame-sequential 3D the kernel can now do that (fa_depth, see the
+common_drivers patch of this series): one eye's picture goes that many
+pixels right on its refreshes, provided the video window leaves it the
+room on screen.
+
+- CVideoSettings::m_StereoDepth, the playing film's depth in pixels,
+  -20 to 20, 0 unless set: positive brings the picture forward, more of
+  it out of the screen (the left eye goes right), negative sets it back
+  (the right eye goes right).
+- It is kept per film in special://profile/stereodepth.json, keyed by the
+  film's file as the library knows it, and not in the video database:
+  that has no column for it, adding one changes the database's version,
+  and the library is often shared by several players. Loaded with the
+  film's other video settings, kept when they are stored at stop; a film
+  at 0 is dropped from the file. There is no global default: every film
+  starts at 0.
+- Action stereodepth (992) opens the slider dialog for it, as fs3ddelay
+  does for the glasses delay; the picture moves as the slider does.
+  Player.StereoDepth shows it ("4 px closer", "4 px further", worded as
+  the audio offset's "Ahead by") for a skin button.
+- AMLCodec: in frame-sequential 3D the video window is narrowed by the
+  depth, so both eyes are scaled to the same narrower width and the one
+  the kernel moves stays on screen, and the depth is written to the
+  kernel; 0 outside frame-sequential 3D, at the first window of each
+  film (a crash may have left it set) and when the decoder closes.
+- RendererAML: a depth moved or the eyes swapped while paused (no new
+  frame to carry the window) is applied at once, as entering or leaving
+  HFR VRR already is, so the picture follows the slider and Invert whether
+  the film plays or not.
+
+Shared code: the video setting, its file, the action, the slider and the
+info label are generic Kodi; the window and the kernel parameter are
+Amlogic only.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index be0dbe3..5d230f9 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22719,6 +22719,24 @@ msgctxt "#60033"
+ msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. Half a frame either way covers every timing: if it still improves at one end, turn on Invert stereoscopic 3D mode and carry on from the other end."
+ msgstr ""
+ 
++#. Heading of the slider for the playing film's 3D depth
++#: xbmc/video/PlayerController.cpp
++msgctxt "#60110"
++msgid "3D depth"
++msgstr ""
++
++#. 3D depth of the playing film when positive: the picture comes forward, out of the screen
++#: xbmc/video/StereoDepth.cpp
++msgctxt "#60111"
++msgid "{0:d} px closer"
++msgstr ""
++
++#. 3D depth of the playing film when negative: the picture goes back behind the screen
++#: xbmc/video/StereoDepth.cpp
++msgctxt "#60112"
++msgid "{0:d} px further"
++msgstr ""
++
+ #empty strings from id 36512 to 36519
+ #end of reserved strings for 3d modes
+ 
+diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
+index 77859b6..0911f28 100644
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -862,7 +862,7 @@ constexpr std::array<InfoMap, 7> integer_bools = {{
+ ///     <p>
+ ///   }
+ // clang-format off
+-constexpr std::array<InfoMap, 62> player_labels = {{
++constexpr std::array<InfoMap, 63> player_labels = {{
+     {"hasmedia",              PLAYER_HAS_MEDIA},
+     {"hasaudio",              PLAYER_HAS_AUDIO},
+     {"hasvideo",              PLAYER_HAS_VIDEO},
+@@ -901,6 +901,7 @@ constexpr std::array<InfoMap, 62> player_labels = {{
+     {"audiodelay",            PLAYER_AUDIO_DELAY},
+     {"fs3ddelay",             PLAYER_FS3D_DELAY},
+     {"stereoinvert",          PLAYER_STEREO_INVERT},
++    {"stereodepth",           PLAYER_STEREO_DEPTH},
+     {"chapter",               PLAYER_CHAPTER},
+     {"chaptercount",          PLAYER_CHAPTERCOUNT},
+     {"chaptername",           PLAYER_CHAPTERNAME},
+diff --git a/xbmc/application/ApplicationPlayerCallback.cpp b/xbmc/application/ApplicationPlayerCallback.cpp
+index 5c5093c..31ba45d 100644
+--- a/xbmc/application/ApplicationPlayerCallback.cpp
++++ b/xbmc/application/ApplicationPlayerCallback.cpp
+@@ -38,6 +38,7 @@
+ #include "utils/log.h"
+ #include "video/VideoDatabase.h"
+ #include "video/VideoFileItemClassify.h"
++#include "video/StereoDepth.h"
+ #include "video/VideoInfoTag.h"
+ 
+ #include <chrono>
+@@ -526,6 +527,7 @@ void CApplicationPlayerCallback::RequestVideoSettings(const CFileItem& fileItem)
+     CVideoSettings vs;
+     if (!dbs.GetVideoSettings(fileItem, vs))
+       vs = CMediaSettings::GetInstance().GetDefaultVideoSettings();
++    vs.m_StereoDepth = CStereoDepth::Get(fileItem);
+ 
+     auto& components = CServiceBroker::GetAppComponents();
+     const auto appPlayer = components.GetComponent<CApplicationPlayer>();
+@@ -538,6 +540,8 @@ void CApplicationPlayerCallback::RequestVideoSettings(const CFileItem& fileItem)
+ void CApplicationPlayerCallback::StoreVideoSettings(const CFileItem& fileItem,
+                                                     const CVideoSettings& vs)
+ {
++  CStereoDepth::Set(fileItem, vs.m_StereoDepth);
++
+   CVideoDatabase dbs;
+   if (dbs.Open())
+   {
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index d5436df..420194d 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2906,6 +2906,9 @@ void CAMLCodec::CloseDecoder()
+       CSysfsPath(CAMLDisplay::FS3D_SWAP, 0);
+       m_fs3dMode = FS3D_UNSET;
+     }
++    if (m_fs3dDepth != 0 && m_fs3dDepth != FS3D_DEPTH_UNSET)
++      CSysfsPath(CAMLDisplay::FS3D_DEPTH, 0);
++    m_fs3dDepth = FS3D_DEPTH_UNSET;
+     CWinSystemAmlogic::SetStereoGuiEyesSwapped(false);
+   }
+ 
+@@ -4040,6 +4043,13 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+     m_stereoInvert = stereoInvert;
+     update = true;
+   }
++  // the film's 3D depth, for frame-sequential 3D
++  const int stereoDepth = m_processInfo.GetVideoSettings().m_StereoDepth;
++  if (m_stereoDepth != stereoDepth)
++  {
++    m_stereoDepth = stereoDepth;
++    update = true;
++  }
+   // HFR VRR switches the output on after the stereo mode has changed: work the
+   // video layer's mode out again when it does, or the video keeps the mode found
+   // before the switch, 2D, and nothing alternates.
+@@ -4226,6 +4236,13 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+       dst_rect.y2 *= ys;
+     }
+ 
++    // 3D depth: the kernel places one eye that many pixels right on its refreshes, and
++    // only a window with that much room on screen; both eyes are narrowed by as much,
++    // so they stay the same size and the whole picture moves. The kernel moves the
++    // right eye for a positive value (deeper), Kodi's positive brings the picture forward.
++    const int depth = hfr ? -m_stereoDepth : 0;
++    dst_rect.x2 -= depth > 0 ? depth : -depth;
++
+     // Side by side and top and bottom alternate the halves the same way; a
+     // right-eye-first source or the viewer's swap only changes which eye each
+     // refresh carries, and the glasses follow that.
+@@ -4248,6 +4265,11 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+     // The kernel shows the GUI half of the eye it reports, and with the viewer's
+     // swap that eye is shown the other eye's picture: the GUI's eyes swap with it.
+     CWinSystemAmlogic::SetStereoGuiEyesSwapped(hfr && m_stereoInvert);
++    if (m_fs3dDepth != depth)
++    {
++      CSysfsPath(CAMLDisplay::FS3D_DEPTH, depth);
++      m_fs3dDepth = depth;
++    }
+   }
+ 
+ #if 1
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 8383091..3aa20aa 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -193,6 +193,7 @@ private:
+   RenderStereoMode m_guiStereoMode = RenderStereoMode::OFF;
+   RenderStereoView m_guiStereoView = RenderStereoView::OFF;
+   bool m_stereoInvert = false;
++  int m_stereoDepth = 0;
+   bool m_fs3dActive = false;
+   //! when the output was last asked to enter or leave HFR VRR
+   std::chrono::steady_clock::time_point m_fs3dAsked;
+@@ -203,6 +204,9 @@ private:
+   static constexpr unsigned int FS3D_UNSET = ~0u;
+   unsigned int m_fs3dMode = FS3D_UNSET;
+   bool m_fs3dSwap = false;
++  //! the kernel's 3D depth as written; unknown (a crash may have left it set) until then
++  static constexpr int FS3D_DEPTH_UNSET = -1000;
++  int m_fs3dDepth = FS3D_DEPTH_UNSET;
+   float            m_zoom = -1.0f;
+   int              m_contrast = -1;
+   int              m_brightness = -1;
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+index 43983aa..8ec2fac 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp
+@@ -373,12 +373,15 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+ {
+   ManageRenderArea();
+ 
+-  // HFR VRR entered or left with no new frame on its way (paused): the video
+-  // layer's 3D mode follows now rather than with the next frame
++  // HFR VRR entered or left, the film's 3D depth moved or its eyes swapped, with
++  // no new frame on its way (paused): the video layer follows at once
+   const bool fs3d = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
+                         ->GetAmlDisplay()
+                         ->aml_display_fs3d_active();
+-  if (fs3d != m_fs3dSeen)
++  const int stereoDepth = m_videoSettings.m_StereoDepth;
++  const bool stereoInvert = m_videoSettings.m_StereoInvert;
++  if (fs3d != m_fs3dSeen || stereoDepth != m_stereoDepthSeen ||
++      stereoInvert != m_stereoInvertSeen)
+   {
+     std::shared_ptr<CAMLCodec> codec;
+     {
+@@ -390,6 +393,8 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int
+     {
+       codec->SetVideoRect(m_sourceRect, m_destRect);
+       m_fs3dSeen = fs3d;
++      m_stereoDepthSeen = stereoDepth;
++      m_stereoInvertSeen = stereoInvert;
+     }
+   }
+ 
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+index d623507..d822b91 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h
+@@ -88,9 +88,11 @@ private:
+   //! Frame last released to amvideo, whose metadata goes out when the frame is shown
+   uint32_t m_releasedToken{0};
+   std::shared_ptr<const AMLFrameMetadata> m_releasedMeta;
+-  //! the codec the geometry last went to, and the HFR VRR state it saw then
++  //! the codec the geometry last went to, and the 3D state (HFR VRR, depth, Invert) it saw then
+   std::weak_ptr<CAMLCodec> m_geometryCodec;
+   bool m_fs3dSeen{false};
++  int m_stereoDepthSeen{0};
++  bool m_stereoInvertSeen{false};
+   mutable std::mutex m_prerollMutex;
+   uint64_t m_prerollGeneration{0};
+   bool m_prerollHold{false};
+diff --git a/xbmc/cores/VideoSettings.h b/xbmc/cores/VideoSettings.h
+index 82779fb..0c342f2 100644
+--- a/xbmc/cores/VideoSettings.h
++++ b/xbmc/cores/VideoSettings.h
+@@ -242,6 +242,8 @@ public:
+   int m_ResumeTime;
+   int m_StereoMode;
+   bool m_StereoInvert;
++  //! frame-sequential 3D depth (CStereoDepth); kept in a file of its own, not with the others
++  int m_StereoDepth{0};
+   int m_VideoStream;
+   ETONEMAPMETHOD m_ToneMapMethod;
+   float m_ToneMapParam;
+diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+index 31b4df6..3de7415 100644
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -848,8 +848,9 @@ constexpr uint32_t CONTROL_HAS_FOCUS                 = 30000;
+ // not number into from either side. Skins name an info label, never number it.
+ constexpr uint32_t PLAYER_FS3D_DELAY                 = 20000;
+ constexpr uint32_t PLAYER_STEREO_INVERT              = 20001;
++constexpr uint32_t PLAYER_STEREO_DEPTH               = 20002;
+ static_assert(PLAYER_FS3D_DELAY > WINDOW_IS_MODAL_DIALOG_TOPMOST &&
+-              PLAYER_STEREO_INVERT < CONTROL_GET_LABEL,
++              PLAYER_STEREO_DEPTH < CONTROL_GET_LABEL,
+               "the info labels this build adds must stay clear of Kodi's own");
+ 
+ constexpr int      LISTITEM_START                    = 35000;
+diff --git a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
+index dff138c..f7edca0 100644
+--- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
+@@ -34,6 +34,7 @@
+ #include "utils/URIUtils.h"
+ #include "utils/Variant.h"
+ #include "utils/log.h"
++#include "video/StereoDepth.h"
+ #include "windowing/WinSystem.h"
+ 
+ #include <charconv>
+@@ -207,6 +208,9 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
+           CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+               CSettings::SETTING_VIDEOSCREEN_FS3DDELAY));
+       return true;
++    case PLAYER_STEREO_DEPTH:
++      value = CStereoDepth::Format(m_appPlayer->GetVideoSettings().m_StereoDepth);
++      return true;
+     case PLAYER_CHAPTER:
+       value = StringUtils::Format("{:02}", m_appPlayer->GetChapter());
+       return true;
+diff --git a/xbmc/input/actions/ActionIDs.h b/xbmc/input/actions/ActionIDs.h
+index 839e4fc..d3d011e 100644
+--- a/xbmc/input/actions/ActionIDs.h
++++ b/xbmc/input/actions/ActionIDs.h
+@@ -531,11 +531,14 @@ constexpr const int ACTION_FS3D_DELAY = 990;
+ //! Swap the eyes of the playing 3D video (its Invert stereoscopic 3D mode)
+ constexpr const int ACTION_STEREO_INVERT = 991;
+ 
++//! Show the slider for the playing film's 3D depth (HFR VRR)
++constexpr const int ACTION_STEREO_DEPTH = 992;
++
+ // The NOOP action can be specified to disable an input event. This is
+ // useful in user keyboard.xml etc to disable actions specified in the
+ // system mappings. ERROR action is used to play an error sound
+ constexpr const int ACTION_ERROR = 998;
+ constexpr const int ACTION_NOOP = 999;
+ 
+-static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_STEREO_INVERT < ACTION_ERROR,
++static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_STEREO_DEPTH < ACTION_ERROR,
+               "the actions this build adds must stay clear of Kodi's own");
+diff --git a/xbmc/input/actions/ActionTranslator.cpp b/xbmc/input/actions/ActionTranslator.cpp
+index 94d414a..44d1553 100644
+--- a/xbmc/input/actions/ActionTranslator.cpp
++++ b/xbmc/input/actions/ActionTranslator.cpp
+@@ -62,6 +62,7 @@ constexpr auto ActionMappings = make_map<ActionName, ActionID>({
+     {"dialogselectsubtitle", ACTION_DIALOG_SELECT_SUBTITLE},
+     {"fs3ddelay", ACTION_FS3D_DELAY},
+     {"stereoinvert", ACTION_STEREO_INVERT},
++    {"stereodepth", ACTION_STEREO_DEPTH},
+     {"playerdebug", ACTION_PLAYER_DEBUG},
+     {"playerdebugvideo", ACTION_PLAYER_DEBUG_VIDEO},
+     {"codecinfo", ACTION_PLAYER_PROCESS_INFO},
+diff --git a/xbmc/video/CMakeLists.txt b/xbmc/video/CMakeLists.txt
+index 3932c79..181b4b9 100644
+--- a/xbmc/video/CMakeLists.txt
++++ b/xbmc/video/CMakeLists.txt
+@@ -5,6 +5,7 @@ set(SOURCES Bookmark.cpp
+             PlayerController.cpp
+             PlayerControllerActions.cpp
+             SetInfoTag.cpp
++            StereoDepth.cpp
+             Teletext.cpp
+             VideoDatabase.cpp
+             VideoDatabaseDDL.cpp
+@@ -32,6 +33,7 @@ set(HEADERS Bookmark.h
+             PlayerController.h
+             PlayerControllerActions.h
+             SetInfoTag.h
++            StereoDepth.h
+             Teletext.h
+             TeletextDefines.h
+             VideoDatabase.h
+diff --git a/xbmc/video/PlayerController.cpp b/xbmc/video/PlayerController.cpp
+index 74776aa..2421aec 100644
+--- a/xbmc/video/PlayerController.cpp
++++ b/xbmc/video/PlayerController.cpp
+@@ -33,6 +33,7 @@
+ #include "utils/StringUtils.h"
+ #include "utils/Variant.h"
+ #include "video/PlayerControllerActions.h"
++#include "video/StereoDepth.h"
+ #include "video/VideoStreamSelect.h"
+ #include "video/dialogs/GUIDialogAudioSettings.h"
+ #include "video/guilib/VideoStreamSelectHelper.h"
+@@ -243,6 +244,15 @@ bool CPlayerController::OnAction(const CAction &action)
+         return true;
+       }
+ 
++      case ACTION_STEREO_DEPTH:
++      {
++        ShowSlider(action.GetID(), 60110,
++                   static_cast<float>(appPlayer->GetVideoSettings().m_StereoDepth),
++                   static_cast<float>(-CStereoDepth::MAX), 1.0f,
++                   static_cast<float>(CStereoDepth::MAX), true);
++        return true;
++      }
++
+       case ACTION_STEREO_INVERT:
+       {
+         CVideoSettings vs = appPlayer->GetVideoSettings();
+@@ -711,6 +721,20 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
+       settings->SetInt(CSettings::SETTING_VIDEOSCREEN_FS3DDELAY, value);
+     return;
+   }
++  else if (m_sliderAction == ACTION_STEREO_DEPTH)
++  {
++    const int value = static_cast<int>(std::lround(slider->GetFloatValue()));
++    slider->SetTextValue(CStereoDepth::Format(value));
++    // the film's: shown at once, and kept for it when it stops
++    const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++    CVideoSettings vs = appPlayer->GetVideoSettings();
++    if (appPlayer->HasPlayer() && vs.m_StereoDepth != value)
++    {
++      vs.m_StereoDepth = value;
++      appPlayer->SetVideoSettings(vs);
++    }
++    return;
++  }
+   else if (m_sliderAction == ACTION_VOLAMP_UP ||
+           m_sliderAction == ACTION_VOLAMP_DOWN ||
+           m_sliderAction == ACTION_VOLAMP)
+diff --git a/xbmc/video/StereoDepth.cpp b/xbmc/video/StereoDepth.cpp
+new file mode 100644
+index 0000000..feea07b
+--- /dev/null
++++ b/xbmc/video/StereoDepth.cpp
+@@ -0,0 +1,121 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "StereoDepth.h"
++
++#include "FileItem.h"
++#include "ServiceBroker.h"
++#include "filesystem/File.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
++#include "utils/JSONVariantParser.h"
++#include "utils/JSONVariantWriter.h"
++#include "utils/StringUtils.h"
++#include "utils/Variant.h"
++#include "utils/log.h"
++#include "video/VideoInfoTag.h"
++
++#include <algorithm>
++#include <cstdint>
++#include <mutex>
++#include <optional>
++#include <vector>
++
++namespace
++{
++constexpr const char* DepthFile = "special://profile/stereodepth.json";
++constexpr const char* DepthFileNew = "special://profile/stereodepth.json.new";
++
++std::mutex depthLock;
++//! the file's contents, read once
++std::optional<CVariant> depths;
++
++//! the film's own file, as the library knows it, whichever path played it
++std::string Key(const CFileItem& item)
++{
++  if (item.HasVideoInfoTag() && !item.GetVideoInfoTag()->m_strFileNameAndPath.empty())
++    return item.GetVideoInfoTag()->m_strFileNameAndPath;
++  return item.GetPath();
++}
++
++CVariant& Depths()
++{
++  if (depths)
++    return *depths;
++  depths.emplace(CVariant::VariantTypeObject);
++  std::vector<uint8_t> buffer;
++  XFILE::CFile file;
++  if (file.LoadFile(DepthFile, buffer) <= 0)
++    return *depths;
++  CVariant read;
++  if (CJSONVariantParser::Parse(std::string(buffer.begin(), buffer.end()), read) &&
++      read.isObject())
++    *depths = read;
++  else
++    CLog::LogF(LOGWARNING, "{} is not a JSON object, starting afresh", DepthFile);
++  return *depths;
++}
++
++void Save(const CVariant& depths)
++{
++  std::string json;
++  if (!CJSONVariantWriter::Write(depths, json, false))
++    return;
++  // written aside and renamed over, so a power cut leaves the old file or the new one
++  XFILE::CFile file;
++  if (!file.OpenForWrite(DepthFileNew, true) ||
++      file.Write(json.data(), json.size()) != static_cast<ssize_t>(json.size()))
++  {
++    CLog::LogF(LOGERROR, "cannot write {}", DepthFileNew);
++    return;
++  }
++  file.Close();
++  if (!XFILE::CFile::Rename(DepthFileNew, DepthFile))
++    CLog::LogF(LOGERROR, "cannot replace {}", DepthFile);
++}
++} // unnamed namespace
++
++int CStereoDepth::Get(const CFileItem& item)
++{
++  std::lock_guard lock(depthLock);
++  const CVariant& all = Depths();
++  const std::string key = Key(item);
++  if (!all.isMember(key))
++    return 0;
++  return std::clamp(static_cast<int>(all[key].asInteger()), -MAX, MAX);
++}
++
++void CStereoDepth::Set(const CFileItem& item, int depth)
++{
++  std::lock_guard lock(depthLock);
++  CVariant& all = Depths();
++  const std::string key = Key(item);
++  if (depth == 0)
++  {
++    if (!all.isMember(key))
++      return;
++    all.erase(key);
++  }
++  else
++  {
++    if (all.isMember(key) && all[key].asInteger() == depth)
++      return;
++    all[key] = depth;
++  }
++  Save(all);
++}
++
++std::string CStereoDepth::Format(int depth)
++{
++  if (depth == 0)
++    return "0 px";
++  // as the audio offset's "Delayed by" and "Ahead by": which way the picture went
++  return StringUtils::Format(
++      CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(depth > 0 ? 60111 : 60112),
++      depth > 0 ? depth : -depth);
++}
+diff --git a/xbmc/video/StereoDepth.h b/xbmc/video/StereoDepth.h
+new file mode 100644
+index 0000000..164bd41
+--- /dev/null
++++ b/xbmc/video/StereoDepth.h
+@@ -0,0 +1,34 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <string>
++
++class CFileItem;
++
++/*!
++ * \brief The 3D depth of each film: how many pixels one eye's picture goes right of the other's.
++ * Positive brings the picture forward, more of it out of the screen (the left eye's goes right);
++ * negative sets it back behind the screen (the right eye's goes right).
++ *
++ * Kept in a file of its own in the profile rather than with the film's other video settings: the
++ * video database has no column for it, and is often a library several players share.
++ */
++class CStereoDepth
++{
++public:
++  static constexpr int MAX = 20;
++
++  //! the film's depth, 0 unless one was set for it
++  static int Get(const CFileItem& item);
++  //! keep the film's depth; 0 forgets it
++  static void Set(const CFileItem& item, int depth);
++  //! "4 px closer", "4 px further", "0 px"
++  static std::string Format(int depth);
++};
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 6581cfe..b5beb06 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -213,6 +213,7 @@ public:
+   static constexpr int FS3D_WIDTH = 1920;
+   static constexpr int FS3D_HEIGHT = 1080;
+   static constexpr const char* FS3D_SWAP = "/sys/module/aml_media/parameters/fa_swap_eyes";
++  static constexpr const char* FS3D_DEPTH = "/sys/module/aml_media/parameters/fa_depth";
+   //! 2D sink with game VRR, on a kernel that alternates the video's eyes per vsync
+   bool aml_display_support_fs3d() const { return m_support_fs3d; }
+   //! stereo video is to be handled as stereo: HDMI 3D, or frame-sequential
