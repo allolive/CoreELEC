@@ -1,0 +1,1219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: one model picker, and more AI providers
+
+The model took two settings - a name to type, and a button that filled
+it from the provider's list - and nothing said that an empty one turned
+the feature off. It is one setting now: a button showing the model,
+which opens the provider's own list, without the models that cannot
+chat (speech, images, embeddings, live audio), and "Type a name..."
+last. When the list cannot be read - no key yet, no network - it says
+why and leaves the name to type. Changing the provider clears the
+model, which was the other one's.
+
+No model is marked or built in as suiting subtitles: such a list is out
+of date within months, and a new release would need a new Kodi. Instead
+the list starts with a "Newest" entry for each family the provider has
+several releases of - "Newest gemini-flash-lite", now 3.5 - which names
+the family, not the release: the family is the name without its version
+("gemini-3.1-flash-lite", "gpt-4o-mini-2024-07-18", "qwen/qwen3.5-9b"
+are gemini-flash-lite, gpt-mini, qwen/qwen-9b), and the release used is
+the highest version, then the plain alias before its dated snapshots,
+never a preview, an experiment or a "-latest" alias. It is found each
+time the provider is asked whether it answers, in the background: a
+subtitle opened before that goes without, rather than wait. The
+provider's own "-latest" names come next, then every model. The list
+and the newest are both taken from the models that can chat. A model
+named that the provider no longer lists is replaced by the newest of
+its family, and a notification says so when the replacement changes.
+
+Google Gemini, Anthropic and NVIDIA join OpenRouter, OpenAI and a
+server of one's own, at the OpenAI-style API each of them keeps, so
+their address is not typed: Google's list names its models "models/..."
+and puts its errors in a list, and Anthropic's answers only to its own
+headers. A list in a shape other than OpenAI's, with no refusal in it,
+lets the model named through.
+
+Requests go without the range Kodi's HTTP client asks for: curl sends
+it with a request's body as Content-Range, which Google refuses ("not
+supported"); the others ignored it.
+
+The reading of a model's answer, which already left out what it thought
+first in <think>, now also leaves out <thought>, which Gemma writes, and
+gives no answer when the reasoning was cut short. A refusal for the
+provider's limit - HTTP 429, whoever the provider, for requests a minute
+or a day or for credit - is said once a stream, naming the model, and
+the lines after it are shown as they are. "Test the connection" says
+how long the model took, and that it is no use for a film when it
+reasoned first (in its answer or beside it) or took more than 15
+seconds.
+
+A "How to choose a provider" button, first in the section, opens a
+guide: what is sent, which providers are free to try and how (as of
+when it was written, saying that free offers change), which models
+suit subtitles, and what Test the connection says.
+
+The provider starts at None: nothing is sent anywhere until one is
+chosen, and the key, model and test show only then. What uses it is
+named for it - "AI translate subtitles", "AI repair" - and greyed out,
+its help saying why, until a provider is chosen.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 64b3bda..2993aa7 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25531,13 +25531,13 @@ msgstr ""
+ #. Label of setting "Player -> Subtitles -> Translate subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60060"
+-msgid "Translate subtitles"
++msgid "AI translate subtitles"
+ msgstr ""
+ 
+ #. Help text of setting "Player -> Subtitles -> Translate subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60061"
+-msgid "When a video has no subtitle in the language chosen for subtitles, offer one translated from a text subtitle in another language, inside the video or in a SubRip file beside it, and show it the way a subtitle in that language would be. A forced subtitle is never translated. The language model of the AI provider below translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. When the provider cannot be reached, nothing is offered."
++msgid "When a video has no subtitle in the language chosen for subtitles, offer one translated from a text subtitle in another language, inside the video or in a SubRip file beside it, and show it the way a subtitle in that language would be. A forced subtitle is never translated. The language model of the AI provider below translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. When the provider cannot be reached, nothing is offered. It uses the AI provider chosen in the AI section, and is off until one is."
+ msgstr ""
+ 
+ #. Name of a subtitle in the subtitle list, translated into one language from another: "Auto-translated to French (from English)"
+@@ -25555,7 +25555,7 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> AI provider"
+ #: system/settings/settings.xml
+ msgctxt "#60064"
+-msgid "The service whose language model translates subtitles: OpenRouter, OpenAI, or a server of your own that speaks the same API, such as llama.cpp, vLLM or Ollama on another computer of the network."
++msgid "The service whose language model translates subtitles and corrects what an OCR misread: OpenRouter, OpenAI, Google Gemini, Anthropic, NVIDIA, or a server of your own that speaks the same API, such as llama.cpp, vLLM or Ollama on another computer of the network. With none, nothing is sent anywhere."
+ msgstr ""
+ 
+ #. Value of setting "Player -> Subtitles -> AI provider"
+@@ -25609,19 +25609,19 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> AI provider -> Model"
+ #: system/settings/settings.xml
+ msgctxt "#60073"
+-msgid "The model's name as the provider knows it, such as google/gemma-3-27b-it on OpenRouter. Type it, or choose it from the models the provider lists. With no model, nothing is translated."
++msgid "The model that does the work, from those the provider lists. A \"Newest\" entry follows a family of models - Newest gemini-flash-lite uses its highest release, and the next one when the provider adds it - and a model the provider no longer has is replaced by the newest of its family. Or type its name. Changing the provider clears it."
+ msgstr ""
+ 
+-#. Label of setting "Player -> Subtitles -> AI provider -> Choose a model", and heading of its list
++#. Heading of the list of models to choose the model from
+ #: system/settings/settings.xml
+ msgctxt "#60074"
+ msgid "Choose a model"
+ msgstr ""
+ 
+-#. Help text of setting "Player -> Subtitles -> AI provider -> Choose a model"
+-#: system/settings/settings.xml
++#. Beside a model in the model chooser whose name the provider moves to its newest release
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+ msgctxt "#60075"
+-msgid "Choose the model from those the provider lists."
++msgid "Kept the newest by the provider"
+ msgstr ""
+ 
+ #. Label of setting "Player -> Subtitles -> AI provider -> Test the connection", and heading of its answer
+@@ -25636,10 +25636,10 @@ msgctxt "#60077"
+ msgid "Ask the model to translate one line, and show its answer."
+ msgstr ""
+ 
+-#. Result of "Test the connection": {0} is the model, {1} the line and its translation
++#. Result of "Test the connection": {0} is the model, {1} the seconds it took, {2} the line and its translation
+ #: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+ msgctxt "#60078"
+-msgid "{0:s} answered:[CR]{1:s}"
++msgid "{0:s} answered in {1:s} s:[CR]{2:s}"
+ msgstr ""
+ 
+ #. Result of "Test the connection" or "Choose a model" when the provider fails: {0} is its error
+@@ -25654,16 +25654,70 @@ msgctxt "#60080"
+ msgid "The provider lists no model."
+ msgstr ""
+ 
++#. Option of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60081"
++msgid "Google Gemini"
++msgstr ""
++
++#. Option of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60082"
++msgid "Anthropic"
++msgstr ""
++
++#. Last entry of the model chooser: type the model's name instead
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60083"
++msgid "Type a name..."
++msgstr ""
++
++#. Entry of the model chooser that follows a family of models: {0} is the family
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60084"
++msgid "Newest {0:s}"
++msgstr ""
++
++#. Beside a \"Newest\" entry in the model chooser: {0} is the release it uses now
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60085"
++msgid "Now {0:s}"
++msgstr ""
++
++#. Notification when the provider refuses for its limit: {0} is the model
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60086"
++msgid "{0:s} refused: the provider's limit is reached. The lines after it are shown as they are."
++msgstr ""
++
++#. Added to the result of \"Test the connection\" when the model reasoned before it answered
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60087"
++msgid "It reasoned before it answered, which is too slow to keep up with a film. Choose another model."
++msgstr ""
++
++#. Added to the result of \"Test the connection\" when the model answered slowly
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60088"
++msgid "That is too slow to keep up with a film. Choose another model."
++msgstr ""
++
++#. Notification when the model named is gone: {0} is it, {1} the model used instead
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60089"
++msgid "{0:s} is gone: now using {1:s}"
++msgstr ""
++
+ #. Label of setting "Player -> Subtitles -> Repair with the AI provider"
+ #: system/settings/settings.xml
+ msgctxt "#60090"
+-msgid "Repair with the AI provider"
++msgid "AI repair"
+ msgstr ""
+ 
+ #. Help text of setting "Player -> Subtitles -> Repair with the AI provider"
+ #: system/settings/settings.xml
+ msgctxt "#60091"
+-msgid "Have the language model of the AI provider correct what an OCR misread in a subtitle made from images: only the words the repair doubts, which it confirms or corrects, or every line. A correction is made only when it turns what is no word into a word close to it; names and the rest of the line stay. The lines, the video's title and the names of its characters are sent to the provider; when it cannot be reached, the subtitle is shown as the repair left it."
++msgid "Have the language model of the AI provider correct what an OCR misread in a subtitle made from images: only the words the repair doubts, which it confirms or corrects, or every line. A correction is made only when it turns what is no word into a word close to it; names and the rest of the line stay. The lines, the video's title and the names of its characters are sent to the provider; when it cannot be reached, the subtitle is shown as the repair left it. It uses the AI provider chosen in the AI section, and is off until one is."
+ msgstr ""
+ 
+ #. Value of setting "Player -> Subtitles -> Repair with the AI provider": only the words the repair doubts
+@@ -25678,6 +25732,30 @@ msgctxt "#60093"
+ msgid "Every line"
+ msgstr ""
+ 
++#. Option of setting "Player -> Subtitles -> AI provider"
++#: system/settings/settings.xml
++msgctxt "#60094"
++msgid "NVIDIA"
++msgstr ""
++
++#. Label of setting "Player -> Subtitles -> AI provider -> How to choose a provider", and heading of the guide
++#: system/settings/settings.xml
++msgctxt "#60095"
++msgid "How to choose a provider"
++msgstr ""
++
++#. Help text of setting "How to choose a provider"
++#: system/settings/settings.xml
++msgctxt "#60096"
++msgid "What the AI provider is for, which providers are free to try, and which model to choose."
++msgstr ""
++
++#. The guide shown by "How to choose a provider"
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60097"
++msgid "[B]What it does[/B][CR]A language model translates the subtitles of a video that has none in your language, and can correct what an OCR misread. Each film sends its subtitle lines, a few at a time - about 150 to 200 requests - with the video's title and its characters' names.[CR][CR][B]Free to try[/B] (as of October 2026: free offers change, check the provider's page)[CR]- Google Gemini: a free key at aistudio.google.com/apikey, no card. Its Flash Lite models allow a few films a day.[CR]- NVIDIA: a free developer account at build.nvidia.com. A limit per minute, not per day; meant for trying models out.[CR]- OpenRouter: the models whose name ends in \":free\". Few requests a day until credit is bought.[CR]- Your own server: free and private, on a computer of your network that runs llama.cpp, Ollama or vLLM. It has to be on.[CR][CR][B]Paid[/B][CR]OpenAI, Anthropic, and the paid models of the others: a few cents a film with a small model.[CR][CR][B]Choosing a model[/B][CR]Small, fast models are the ones for subtitles: Flash Lite, mini, Haiku. Choose a \"Newest\" entry - Newest gemini-flash-lite - and the next release is used when it comes out, with nothing to change here. A large model or one that reasons first is slower, not better for a subtitle.[CR][CR][B]Checking it[/B][CR]Test the connection translates one line. It should answer within a few seconds; it says so when the model is too slow for a film. When a free limit is reached during a film, a notification says so and the rest of the subtitle stays as it is.[CR][CR][B]Privacy[/B][CR]Free offers may keep what is sent to improve their models. Only subtitle lines, the title and character names are sent."
++msgstr ""
++
+ #. Label of setting "Player -> Subtitles -> Realign with the video"
+ #: system/settings/settings.xml
+ msgctxt "#60100"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index d09aa98..389823f 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -969,21 +969,33 @@
+           </constraints>
+           <dependencies>
+             <dependency type="enable" setting="subtitles.repair">true</dependency>
++            <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
+           </dependencies>
+           <control type="list" format="string" />
+         </setting>
+         <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
+           <level>1</level>
+           <default>false</default>
++          <dependencies>
++            <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
+           <control type="toggle" />
+         </setting>
++        <setting id="subtitles.aiguide" type="action" label="60095" help="60096">
++          <level>1</level>
++          <control type="button" format="action" />
++        </setting>
+         <setting id="subtitles.aiprovider" type="integer" label="60063" help="60064">
+           <level>1</level>
+-          <default>0</default> <!-- OpenRouter -->
++          <default>3</default> <!-- None -->
+           <constraints>
+             <options>
++              <option label="231">3</option> <!-- None -->
+               <option label="60065">0</option> <!-- OpenRouter -->
+               <option label="60066">1</option> <!-- OpenAI -->
++              <option label="60081">4</option> <!-- Google Gemini -->
++              <option label="60082">5</option> <!-- Anthropic -->
++              <option label="60094">6</option> <!-- NVIDIA -->
+               <option label="60067">2</option> <!-- A server of one's own -->
+             </options>
+           </constraints>
+@@ -1006,6 +1018,9 @@
+           <constraints>
+             <allowempty>true</allowempty>
+           </constraints>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
+           <control type="edit" format="string">
+             <hidden>true</hidden>
+           </control>
+@@ -1016,14 +1031,16 @@
+           <constraints>
+             <allowempty>true</allowempty>
+           </constraints>
+-          <control type="edit" format="string" />
+-        </setting>
+-        <setting id="subtitles.aimodels" type="action" parent="subtitles.aiprovider" label="60074" help="60075">
+-          <level>1</level>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
+           <control type="button" format="action" />
+         </setting>
+         <setting id="subtitles.aitest" type="action" parent="subtitles.aiprovider" label="60076" help="60077">
+           <level>1</level>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
+           <control type="button" format="action" />
+         </setting>
+         <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 827f734..4ee5ee9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -20,9 +20,12 @@
+ #include "cores/VideoPlayer/Interface/StreamInfo.h"
+ #include "cores/VideoPlayer/VideoPlayer.h"
+ #include "dialogs/GUIDialogBusy.h"
++#include "dialogs/GUIDialogKaiToast.h"
+ #include "dialogs/GUIDialogSelect.h"
++#include "dialogs/GUIDialogTextViewer.h"
+ #include "filesystem/CurlFile.h"
+ #include "guilib/GUIComponent.h"
++#include "guilib/GUIKeyboardFactory.h"
+ #include "guilib/GUIWindowManager.h"
+ #include "guilib/WindowIDs.h"
+ #include "jobs/JobManager.h"
+@@ -45,7 +48,10 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <condition_variable>
++#include <cstdlib>
++#include <map>
+ #include <mutex>
++#include <utility>
+ 
+ namespace KODI::SUBTITLES::AI
+ {
+@@ -55,6 +61,12 @@ using namespace std::chrono_literals;
+ 
+ constexpr auto OPENROUTER_URL = "https://openrouter.ai/api/v1";
+ constexpr auto OPENAI_URL = "https://api.openai.com/v1";
++//! the providers' own APIs that speak OpenAI's
++constexpr auto GOOGLE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
++constexpr auto ANTHROPIC_URL = "https://api.anthropic.com/v1";
++constexpr auto NVIDIA_URL = "https://integrate.api.nvidia.com/v1";
++//! The model setting naming a family rather than a model: its newest release is used.
++constexpr std::string_view NEWEST = "newest:";
+ //! Few names: they are for consistency, and a long cast list is mostly extras.
+ constexpr size_t MAX_CAST = 40;
+ //! How often the provider is asked again whether it answers: soon when it did not - a server
+@@ -89,34 +101,245 @@ bool Exchange(XFILE::CCurlFile& http,
+     http.SetRequestHeader("Authorization", "Bearer " + provider.key);
+   if (provider.kind == OPENROUTER)
+     http.SetRequestHeader("X-Title", "Kodi");
+-  // the body of a refusal says why
+-  const std::string url = provider.base + path + "|failonerror=false";
++  // Anthropic lists its models only to its own headers
++  if (provider.kind == ANTHROPIC && !provider.key.empty())
++  {
++    http.SetRequestHeader("x-api-key", provider.key);
++    http.SetRequestHeader("anthropic-version", "2023-06-01");
++  }
++  // the body of a refusal says why; and no range, which curl sends with a request's body as
++  // Content-Range - Google refuses it
++  const std::string url = provider.base + path + "|failonerror=false&seekable=0";
+   if (!post)
+     return http.Get(url, answer);
+   http.SetMimeType("application/json");
+   return http.Post(url, *post, answer);
+ }
+ 
++//! The error a provider's answer carries - Google's comes in a list - or null.
++const CVariant& RefusalOf(const CVariant& json)
++{
++  static const CVariant none;
++  const CVariant& answer = json.isArray() && json.size() > 0 ? json[0] : json;
++  return answer.isObject() && answer.isMember("error") ? answer["error"] : none;
++}
++
+ //! The error a provider's answer carries, or the start of an answer that is no JSON.
+ std::string ErrorOf(const CVariant& json, const std::string& raw)
+ {
+   std::string error = raw.substr(0, 200);
+-  if (json.isMember("error"))
+-    error =
+-        json["error"].isObject() ? json["error"]["message"].asString() : json["error"].asString();
++  const CVariant& refusal = RefusalOf(json);
++  if (!refusal.isNull())
++    error = refusal.isObject() ? refusal["message"].asString() : refusal.asString();
+   return error.empty() ? "an answer with no reply in it" : error;
+ }
+ 
++//! The HTTP status of the provider's last answer: 429 is its limit, requests a minute or a day,
++//! or credit, whoever the provider.
++int StatusOf(const XFILE::CCurlFile& http)
++{
++  const std::vector<std::string> parts =
++      StringUtils::Split(http.GetHttpHeader().GetProtoLine(), ' ');
++  return parts.size() > 1 ? std::atoi(parts[1].c_str()) : 0;
++}
++
++//! Whether the model reasoned before it answered: in the answer, or beside it.
++bool Reasoned(const CVariant& reply)
++{
++  const CVariant& message = reply["choices"][0]["message"];
++  const std::string content = message["content"].asString();
++  for (const char* tag : {"<think>", "</think>", "<thought>", "</thought>"})
++    if (content.find(tag) != std::string::npos)
++      return true;
++  return !message["reasoning"].asString().empty() ||
++         !message["reasoning_content"].asString().empty() ||
++         reply["usage"]["completion_tokens_details"]["reasoning_tokens"].asInteger() > 0;
++}
++
++//! A model a provider lists, by the name its chat takes: Google's list puts "models/" before it.
++std::string ModelOf(const CVariant& listed)
++{
++  std::string id = listed["id"].asString();
++  if (StringUtils::StartsWith(id, "models/"))
++    id.erase(0, 7);
++  return id;
++}
++
++//! Whether a model the provider lists can chat: OpenAI also lists the ones that speak, draw,
++//! hear or index.
++bool Chats(const std::string& model)
++{
++  for (const char* other : {"embed", "tts", "whisper", "dall-e", "moderation", "audio", "realtime",
++                            "transcribe", "image", "search", "live", "veo", "lyria", "imagen",
++                            "robotics", "computer-use", "research", "omni", "aqa", "banana",
++                            "antigravity", "guard", "safety", "reward", "parse", "clip",
++                            "detector", "retriever", "deplot", "kosmos", "calibration"})
++    if (model.find(other) != std::string::npos)
++      return false;
++  return true;
++}
++
++/*!
++ * \brief A model's name taken apart: its family - the name without the version, the size kept -
++ * the version, the date of the snapshot, and whether it is a release: not a preview, not an alias.
++ * "gemini-3.1-flash-lite" is the release 3.1 of gemini-flash-lite, "gpt-4o-mini-2024-07-18" a
++ * snapshot of 4 of gpt-mini, "qwen/qwen3.5-9b" the release 3.5 of qwen/qwen-9b.
++ */
++struct Release
++{
++  std::string family;
++  std::vector<int> version;
++  std::string date;
++  bool stable{true};
++};
++
++//! Whether a part of a name is a size, of the model or of its context: "31b", "8x7b", "500m", "32k".
++bool IsSize(std::string_view part)
++{
++  return part.size() > 1 && (part.back() == 'b' || part.back() == 'm' || part.back() == 'k') &&
++         std::all_of(part.begin(), part.end() - 1,
++                     [](char c) { return StringUtils::isasciidigit(c) || c == '.' || c == 'x'; });
++}
++
++void AppendNumbers(std::string_view part, std::vector<int>& version)
++{
++  int number = -1;
++  for (const char c : part)
++    if (StringUtils::isasciidigit(c))
++      number = (number < 0 ? 0 : number * 10) + (c - '0');
++    else if (number >= 0)
++    {
++      version.push_back(number);
++      number = -1;
++    }
++  if (number >= 0)
++    version.push_back(number);
++}
++
++Release ReleaseOf(std::string_view model)
++{
++  Release release;
++  // OpenRouter's variants, ":free", and the vendor before a slash stay in the family
++  std::string_view variant;
++  if (const size_t colon = model.find(':'); colon != std::string_view::npos)
++  {
++    variant = model.substr(colon);
++    model = model.substr(0, colon);
++  }
++  std::string_view vendor;
++  if (const size_t slash = model.rfind('/'); slash != std::string_view::npos)
++  {
++    vendor = model.substr(0, slash + 1);
++    model = model.substr(slash + 1);
++  }
++  std::vector<std::string> kept;
++  for (const std::string& part : StringUtils::Split(StringUtils::ToLower(std::string(model)), '-'))
++  {
++    if (part.empty())
++      continue;
++    const bool digits = std::all_of(part.begin(), part.end(), StringUtils::isasciidigit);
++    // a date, "20241022", "2506", or its year: it and what follows date the snapshot
++    if (!release.date.empty() || (digits && part.size() >= 4))
++      release.date += part;
++    else if (part == "latest" || part == "preview" || part == "beta" || part == "alpha" ||
++             StringUtils::StartsWith(part, "exp"))
++      release.stable = false;
++    // "4.1", "4o", "v2"
++    else if ((StringUtils::isasciidigit(part[0]) && !IsSize(part)) ||
++             (part.size() > 1 && part[0] == 'v' &&
++              part.find_first_not_of("0123456789.", 1) == std::string::npos))
++      AppendNumbers(part, release.version);
++    // a version after the name, "qwen3.5", "o3"
++    else if (const size_t first = part.find_first_of("0123456789");
++             first != std::string::npos && first > 0 &&
++             part.find_first_not_of("0123456789.", first) == std::string::npos)
++    {
++      kept.push_back(part.substr(0, first));
++      AppendNumbers(std::string_view(part).substr(first), release.version);
++    }
++    else
++      kept.push_back(part);
++  }
++  release.family = std::string(vendor) + StringUtils::Join(kept, "-") + std::string(variant);
++  return release;
++}
++
++//! Whether a release is newer than another of its family: a higher version, then the alias of a
++//! version before its snapshots, then the later snapshot.
++bool Newer(const Release& a, const Release& b)
++{
++  if (a.version != b.version)
++    return a.version > b.version;
++  if (a.date.empty() != b.date.empty())
++    return a.date.empty();
++  return a.date > b.date;
++}
++
++//! The newest release of a family among the models listed, or empty.
++std::string Newest(const std::vector<std::string>& models, const std::string& family)
++{
++  std::string newest;
++  Release best;
++  for (const std::string& model : models)
++  {
++    const Release release = ReleaseOf(model);
++    if (release.stable && release.family == family && (newest.empty() || Newer(release, best)))
++    {
++      newest = model;
++      best = release;
++    }
++  }
++  return newest;
++}
++
++//! The family the model setting names, or empty when it names a model.
++std::string FamilyNamed(const std::string& setting)
++{
++  return StringUtils::StartsWith(setting, NEWEST) ? setting.substr(NEWEST.size()) : std::string();
++}
++
++/*!
++ * \brief The models a provider lists that can chat, sorted; none, with why, when it does not
++ * answer or refuses - and none with error left empty when it answers in a shape other than a list.
++ */
++std::optional<std::vector<std::string>> ListModels(XFILE::CCurlFile& http,
++                                                   const Provider& provider,
++                                                   std::chrono::seconds connect,
++                                                   std::chrono::seconds silence,
++                                                   std::string& error)
++{
++  error.clear();
++  std::string answer;
++  CVariant json;
++  if (!Exchange(http, provider, "/models", nullptr, connect, silence, answer) ||
++      !CJSONVariantParser::Parse(answer, json) || !RefusalOf(json).isNull())
++  {
++    error = answer.empty() ? "no answer" : ErrorOf(json, answer);
++    return std::nullopt;
++  }
++  if (!json["data"].isArray())
++    return std::nullopt;
++  std::vector<std::string> models;
++  for (unsigned int i = 0; i < json["data"].size(); ++i)
++    if (std::string model = ModelOf(json["data"][i]); !model.empty() && Chats(model))
++      models.push_back(std::move(model));
++  std::sort(models.begin(), models.end());
++  models.erase(std::unique(models.begin(), models.end()), models.end());
++  return models;
++}
++
+ struct Status
+ {
+   std::mutex lock;
+   std::condition_variable answered;
+   std::string asked; //!< the provider the answer is for: its address, key and model
+-  bool ok{false};
+   bool known{false}; //!< it has answered, or failed to, since the settings named it
+   std::chrono::steady_clock::time_point when{};
+   bool asking{false};
+   std::chrono::steady_clock::time_point askedAt{};
++  //! the model the provider is asked for - the one named, or a newer of its family - or empty
++  //! when it did not answer
++  std::string model;
+ };
+ 
+ Status& GetStatus()
+@@ -130,36 +353,71 @@ std::string Signature(const Provider& provider)
+   return provider.base + "\n" + provider.key + "\n" + provider.model;
+ }
+ 
+-//! Whether the provider lists the model: it is up, lets the key in, and has the model. Asked
+-//! while a video opens, so briefly.
+-bool Ask(const Provider& provider)
++/*!
++ * \brief The model to ask the provider for, from its list: the one the settings name, the newest
++ * of the family they name, or - the one named being gone - the newest of its family. Empty, with
++ * why, when the provider does not answer or has none of them.
++ */
++std::string Resolve(const Provider& provider,
++                    std::chrono::seconds connect,
++                    std::chrono::seconds silence,
++                    std::string& error)
+ {
+   XFILE::CCurlFile http;
+-  std::string answer;
+-  CVariant json;
+-  bool listed = false;
+-  if (Exchange(http, provider, "/models", nullptr, 2s, 3s, answer) &&
+-      CJSONVariantParser::Parse(answer, json) && json["data"].isArray())
+-    for (unsigned int i = 0; i < json["data"].size() && !listed; ++i)
+-      listed = json["data"][i]["id"].asString() == provider.model;
+-  CLog::Log(listed ? LOGINFO : LOGWARNING, "Subtitle translation: {} {}",
++  const std::optional<std::vector<std::string>> models =
++      ListModels(http, provider, connect, silence, error);
++  const std::string family = FamilyNamed(provider.model);
++  if (!models)
++  {
++    // a list in another shape, but no refusal: the model named is taken
++    if (error.empty() && family.empty())
++      return provider.model;
++    if (error.empty())
++      error = "a list of models it cannot read";
++    return {};
++  }
++  if (family.empty() && std::find(models->begin(), models->end(), provider.model) != models->end())
++    return provider.model;
++  std::string model = Newest(*models, family.empty() ? ReleaseOf(provider.model).family : family);
++  if (model.empty())
++    error = "does not list " + provider.model;
++  return model;
++}
++
++//! The model the provider is asked for, when it answers. Asked while a video opens, so briefly.
++std::string Ask(const Provider& provider)
++{
++  std::string error;
++  const std::string model = Resolve(provider, 2s, 3s, error);
++  CLog::Log(model.empty() ? LOGWARNING : LOGINFO, "Subtitle translation: {} {}",
+             CURL::GetRedacted(provider.base),
+-            listed                   ? "answers"
+-            : json["data"].isArray() ? "does not list " + provider.model
+-                                     : "does not answer: " + ErrorOf(json, answer));
+-  return listed;
++            model.empty() ? "does not answer, or has no such model: " + error
++                          : StringUtils::Format("answers, with {}", model));
++  return model;
+ }
+ 
+-void Record(const std::string& signature, bool ok)
++//! Record the provider's answer for the settings; the model it was asked for before.
++std::string Record(const std::string& signature, const std::string& model)
+ {
+   Status& status = GetStatus();
+   std::unique_lock guard(status.lock);
+   if (status.asked != signature)
+-    return;
+-  status.ok = ok;
++    return {};
++  std::string before = std::exchange(status.model, model);
+   status.known = true;
+   status.when = std::chrono::steady_clock::now();
+   status.answered.notify_all();
++  return before;
++}
++
++//! The model the provider was last found to have for the settings, or empty.
++std::string ModelInUse(const Provider& provider)
++{
++  Status& status = GetStatus();
++  std::unique_lock guard(status.lock);
++  if (status.asked == Signature(provider) && !status.model.empty())
++    return status.model;
++  return FamilyNamed(provider.model).empty() ? provider.model : std::string();
+ }
+ 
+ class CChat : public MODEL::IChat
+@@ -180,13 +438,23 @@ public:
+     // one request failing says nothing of the next: only the question Available() asks offers
+     // or withdraws the translation
+     std::string error;
+-    std::optional<std::string> answer = Send(system, user, error);
+-    if (!answer && !error.empty())
++    Reply reply = Send(system, user, error);
++    if (!reply.text && !error.empty())
+       CLog::Log(LOGWARNING, "Subtitle translation: {} refused or did not answer: {}",
+                 CURL::GetRedacted(m_provider.base), error);
+-    return answer;
++    // said once a stream: the lines after it are shown as they are
++    if (reply.limit && !m_toldLimit)
++    {
++      m_toldLimit = true;
++      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning, Localized(60063),
++                                            StringUtils::Format(Localized(60086), m_provider.model));
++    }
++    return std::move(reply.text);
+   }
+ 
++  //! The model asked for, once the provider's list says which.
++  void Use(std::string model) { m_provider.model = std::move(model); }
++
+   void Cancel() override
+   {
+     // the exchange ends once its transfer notices, which Cancel() waits for
+@@ -216,9 +484,14 @@ public:
+     return m_aborts != m_batch;
+   }
+ 
+-  std::optional<std::string> Send(const std::string& system,
+-                                  const std::string& user,
+-                                  std::string& error)
++  struct Reply
++  {
++    std::optional<std::string> text;
++    bool limit{false}; //!< the provider refused for its limit
++    bool reasoned{false}; //!< the model reasoned before it answered
++  };
++
++  Reply Send(const std::string& system, const std::string& user, std::string& error)
+   {
+     CVariant request(CVariant::VariantTypeObject);
+     request["model"] = m_provider.model;
+@@ -246,13 +519,13 @@ public:
+     if (!CJSONVariantWriter::Write(request, body, true))
+     {
+       error = "cannot write the request";
+-      return std::nullopt;
++      return {};
+     }
+     XFILE::CCurlFile http;
+     {
+       std::unique_lock guard(m_lock);
+       if (m_cancelled || m_aborts != m_batch)
+-        return std::nullopt;
++        return {};
+       m_active = &http;
+     }
+     const bool answered =
+@@ -261,28 +534,29 @@ public:
+       std::unique_lock guard(m_lock);
+       m_active = nullptr;
+       if (m_cancelled || m_aborts != m_batch)
+-        return std::nullopt;
++        return {};
+     }
+     if (!answered)
+     {
+       error = "no answer";
+-      return std::nullopt;
++      return {};
+     }
+     if (!CJSONVariantParser::Parse(answer, json) || !json["choices"].isArray() ||
+         json["choices"].size() == 0)
+     {
+       error = ErrorOf(json, answer);
+-      return std::nullopt;
++      return {std::nullopt, StatusOf(http) == 429};
+     }
+-    return json["choices"][0]["message"]["content"].asString();
++    return {json["choices"][0]["message"]["content"].asString(), false, Reasoned(json)};
+   }
+ 
+ private:
+-  const Provider m_provider;
++  Provider m_provider;
+   const std::chrono::seconds m_silence;
+   mutable std::mutex m_lock;
+   XFILE::CCurlFile* m_active{nullptr};
+   bool m_cancelled{false};
++  bool m_toldLimit{false};
+   unsigned int m_aborts{0}; //!< how many batches were aborted
+   unsigned int m_batch{0}; //!< and how many when the batch in progress began
+ };
+@@ -303,38 +577,72 @@ private:
+   std::function<void()> m_cancel;
+ };
+ 
++/*!
++ * \brief The model: the newest of a family, kept the newest as the provider adds releases, or a
++ * model of those the provider lists, or typed.
++ */
+ void ChooseModel()
+ {
+   const Provider provider = CurrentProvider();
+-  std::vector<std::string> models;
++  if (provider.kind == NONE)
++    return;
++  std::optional<std::vector<std::string>> listed;
+   std::string error;
+   XFILE::CCurlFile http;
+-  CCall list(
+-      [&]
+-      {
+-        std::string answer;
+-        CVariant json;
+-        if (!Exchange(http, provider, "/models", nullptr, 5s, 10s, answer) ||
+-            !CJSONVariantParser::Parse(answer, json) || !json["data"].isArray())
+-        {
+-          error = answer.empty() ? "no answer" : ErrorOf(json, answer);
+-          return;
+-        }
+-        for (unsigned int i = 0; i < json["data"].size(); ++i)
+-          models.push_back(json["data"][i]["id"].asString());
+-      },
+-      [&] { http.Cancel(); });
++  CCall list([&] { listed = ListModels(http, provider, 5s, 10s, error); }, [&] { http.Cancel(); });
+   if (!CGUIDialogBusy::Wait(&list, 100, true))
+     return;
+-  std::erase_if(models, [](const std::string& model) { return model.empty(); });
+-  std::sort(models.begin(), models.end());
++  const std::vector<std::string> models = listed.value_or(std::vector<std::string>{});
++  // a list that cannot be read: the name typed, after saying why
+   if (models.empty())
+-  {
+     KODI::MESSAGING::HELPERS::ShowOKDialogText(
+         CVariant{60074},
+         CVariant{error.empty() ? Localized(60080) : StringUtils::Format(Localized(60079), error)});
+-    return;
++
++  // first the families with releases to follow, then the provider's own names for its newest,
++  // then every model
++  struct Family
++  {
++    size_t releases{0};
++    std::string newest;
++    Release best;
++  };
++  std::map<std::string, Family> families;
++  std::vector<std::string> latest;
++  std::vector<std::string> others;
++  for (const std::string& model : models)
++  {
++    Release release = ReleaseOf(model);
++    if (!release.stable && model.find("latest") != std::string::npos)
++    {
++      latest.push_back(model);
++      continue;
++    }
++    others.push_back(model);
++    if (!release.stable)
++      continue;
++    Family& family = families[release.family];
++    if (family.releases++ == 0 || Newer(release, family.best))
++    {
++      family.newest = model;
++      family.best = std::move(release);
++    }
+   }
++  struct Entry
++  {
++    std::string value;
++    std::string label;
++    std::string label2;
++  };
++  std::vector<Entry> entries;
++  for (const auto& [name, family] : families)
++    if (family.releases > 1)
++      entries.push_back({std::string(NEWEST) + name, StringUtils::Format(Localized(60084), name),
++                         StringUtils::Format(Localized(60085), family.newest)});
++  for (const std::string& model : latest)
++    entries.push_back({model, model, Localized(60075)});
++  for (const std::string& model : others)
++    entries.push_back({model, model, {}});
+ 
+   auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(
+       WINDOW_DIALOG_SELECT);
+@@ -342,16 +650,33 @@ void ChooseModel()
+     return;
+   dialog->Reset();
+   dialog->SetHeading(CVariant{60074});
+-  for (const std::string& model : models)
+-    dialog->Add(model);
+-  dialog->SetSelected(provider.model);
++  dialog->SetUseDetails(true);
++  for (const Entry& entry : entries)
++  {
++    CFileItem item(entry.label);
++    item.SetLabel2(entry.label2);
++    dialog->Add(item);
++  }
++  dialog->Add(Localized(60083));
++  const auto current = std::find_if(entries.begin(), entries.end(),
++                                    [&](const Entry& e) { return e.value == provider.model; });
++  dialog->SetSelected(current != entries.end() ? static_cast<int>(current - entries.begin()) : 0);
+   dialog->Open();
+   const int chosen = dialog->GetSelectedItem();
+-  if (dialog->IsConfirmed() && chosen >= 0 && chosen < static_cast<int>(models.size()))
+-    CServiceBroker::GetSettingsComponent()->GetSettings()->SetString(
+-        CSettings::SETTING_SUBTITLES_AIMODEL, models[chosen]);
++  if (!dialog->IsConfirmed() || chosen < 0)
++    return;
++  std::string model = provider.model;
++  if (chosen < static_cast<int>(entries.size()))
++    model = entries[chosen].value;
++  else if (!CGUIKeyboardFactory::ShowAndGetInput(model, CVariant{60072}, true))
++    return;
++  CServiceBroker::GetSettingsComponent()->GetSettings()->SetString(
++      CSettings::SETTING_SUBTITLES_AIMODEL, StringUtils::Trim(model));
+ }
+ 
++//! An answer slower than this cannot keep ahead of a film: the next lines are needed sooner.
++constexpr auto SLOW = std::chrono::seconds(15);
++
+ void Test()
+ {
+   const Provider provider = CurrentProvider();
+@@ -367,20 +692,35 @@ void Test()
+   CCall ask(
+       [&]
+       {
+-        TRANSLATION::Context context{LanguageName(from), LanguageName(to), {}, {}};
+         std::string error;
+-        const std::optional<std::string> answer =
+-            chat.Send(TRANSLATION::SystemPrompt(context),
+-                      TRANSLATION::UserPrompt(context, {}, {line}), error);
+-        const std::vector<std::string> read =
+-            answer ? TRANSLATION::ReadTranslation(*answer, {line}) : std::vector<std::string>{};
+-        if (answer || !error.empty())
+-          Record(Signature(provider), answer.has_value());
++        const std::string model = Resolve(provider, 5s, 10s, error);
++        Record(Signature(provider), model);
++        if (model.empty())
++        {
++          result = StringUtils::Format(Localized(60079), error);
++          return;
++        }
++        chat.Use(model);
++        TRANSLATION::Context context{LanguageName(from), LanguageName(to), {}, {}};
++        const auto start = std::chrono::steady_clock::now();
++        const CChat::Reply reply = chat.Send(TRANSLATION::SystemPrompt(context),
++                                             TRANSLATION::UserPrompt(context, {}, {line}), error);
++        const auto took = std::chrono::steady_clock::now() - start;
++        const std::optional<std::string>& answer = reply.text;
+         if (!answer)
++        {
+           result = StringUtils::Format(Localized(60079), error);
+-        else
+-          result = StringUtils::Format(Localized(60078), provider.model,
+-                                       line + " -> " + (read.empty() ? *answer : read[0]));
++          return;
++        }
++        const std::vector<std::string> read = TRANSLATION::ReadTranslation(*answer, {line});
++        result = StringUtils::Format(
++            Localized(60078), model,
++            StringUtils::Format("{:.1f}", std::chrono::duration<double>(took).count()),
++            line + " -> " + (read.empty() ? *answer : read[0]));
++        if (reply.reasoned)
++          result += "[CR][CR]" + Localized(60087);
++        else if (took > SLOW)
++          result += "[CR][CR]" + Localized(60088);
+       },
+       [&] { chat.Cancel(); });
+   if (!CGUIDialogBusy::Wait(&ask, 100, true))
+@@ -394,10 +734,30 @@ Provider CurrentProvider()
+   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+   Provider provider;
+   provider.kind = settings->GetInt(CSettings::SETTING_SUBTITLES_AIPROVIDER);
+-  provider.base = provider.kind == OPENROUTER ? OPENROUTER_URL
+-                  : provider.kind == OPENAI
+-                      ? OPENAI_URL
+-                      : settings->GetString(CSettings::SETTING_SUBTITLES_AIURL);
++  switch (provider.kind)
++  {
++    case OPENROUTER:
++      provider.base = OPENROUTER_URL;
++      break;
++    case OPENAI:
++      provider.base = OPENAI_URL;
++      break;
++    case GOOGLE:
++      provider.base = GOOGLE_URL;
++      break;
++    case ANTHROPIC:
++      provider.base = ANTHROPIC_URL;
++      break;
++    case NVIDIA:
++      provider.base = NVIDIA_URL;
++      break;
++    case CUSTOM:
++      provider.base = settings->GetString(CSettings::SETTING_SUBTITLES_AIURL);
++      break;
++    default:
++      // none: nothing is sent anywhere
++      break;
++  }
+   StringUtils::Trim(provider.base);
+   StringUtils::TrimRight(provider.base, "/");
+   provider.key = settings->GetString(CSettings::SETTING_SUBTITLES_AIKEY);
+@@ -424,28 +784,36 @@ bool Available(bool wait)
+   if (status.asked != signature)
+   {
+     status.asked = signature;
+-    status.ok = false;
+     status.known = false;
+     status.when = {};
+     status.asking = false;
++    status.model.clear();
+   }
+   // never on the caller's thread - the player's: in the background, and again now and then; a
+   // question whose job never ran is asked again
+   const auto now = std::chrono::steady_clock::now();
+   if (status.asking && now - status.askedAt > LOST)
+     status.asking = false;
+-  if (!status.asking && (!status.known || now - status.when > (status.ok ? REASK : RETRY)))
++  if (!status.asking && (!status.known || now - status.when > (status.model.empty() ? RETRY : REASK)))
+   {
+     status.asking = true;
+     status.askedAt = now;
+     CServiceBroker::GetJobManager()->Submit(
+         [provider, signature]
+         {
+-          const bool ok = Ask(provider);
+-          Record(signature, ok);
++          const std::string model = Ask(provider);
++          const std::string before = Record(signature, model);
+           Status& status = GetStatus();
+           std::unique_lock guard(status.lock);
+           status.asking = false;
++          // a model named that the provider no longer has: said when the one used instead changes
++          if (!model.empty() && FamilyNamed(provider.model).empty() && model != provider.model &&
++              model != before && status.asked == signature)
++          {
++            CGUIDialogKaiToast::QueueNotification(
++                CGUIDialogKaiToast::Info, Localized(60063),
++                StringUtils::Format(Localized(60089), provider.model, model));
++          }
+         },
+         // a short question the player may be waiting on: never behind the library's work
+         CJob::PRIORITY_DEDICATED);
+@@ -453,7 +821,7 @@ bool Available(bool wait)
+   if (wait && !status.known)
+     status.answered.wait_for(guard, FIRST_ANSWER,
+                              [&] { return status.known || status.asked != signature; });
+-  return status.asked == signature && status.ok;
++  return status.asked == signature && !status.model.empty();
+ }
+ 
+ std::string TargetLanguage()
+@@ -528,9 +896,17 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               bool& doubts)
+ {
+   doubts = false;
++  Provider provider = CurrentProvider();
++  // the newest of a family is known once the provider has been asked: not waited for here, the
++  // subtitle goes without until it is
++  if (!FamilyNamed(provider.model).empty())
++    Available(false);
++  provider.model = ModelInUse(provider);
++  if (provider.model.empty())
++    return nullptr;
+   if (!hints.translateTo.empty())
+     return std::make_unique<MODEL::CCueWorker>(
+-        std::make_unique<CChat>(CurrentProvider(), silence),
++        std::make_unique<CChat>(provider, silence),
+         TRANSLATION::Translation(
+             ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo)),
+         std::move(deliver), std::move(now));
+@@ -538,7 +914,7 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+   if (!mode)
+     return nullptr;
+   doubts = *mode == REVISION::Mode::DOUBTS;
+-  return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(CurrentProvider(), silence),
++  return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+                                              REVISION::Revision(RevisionContext(language), *mode),
+                                              std::move(deliver), std::move(now));
+ }
+@@ -558,7 +934,13 @@ CAiSettings& CAiSettings::GetInstance()
+ 
+ void CAiSettings::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+ {
+-  if (setting && TranslateEnabled())
++  if (!setting)
++    return;
++  // a model is one provider's: another provider starts with none
++  if (setting->GetId() == CSettings::SETTING_SUBTITLES_AIPROVIDER)
++    CServiceBroker::GetSettingsComponent()->GetSettings()->SetString(
++        CSettings::SETTING_SUBTITLES_AIMODEL, "");
++  if (TranslateEnabled())
+     Available(false);
+ }
+ 
+@@ -566,10 +948,20 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
+ {
+   if (!setting)
+     return;
+-  if (setting->GetId() == CSettings::SETTING_SUBTITLES_AIMODELS)
++  if (setting->GetId() == CSettings::SETTING_SUBTITLES_AIMODEL)
+     ChooseModel();
+   else if (setting->GetId() == CSettings::SETTING_SUBTITLES_AITEST)
+     Test();
++  else if (setting->GetId() == CSettings::SETTING_SUBTITLES_AIGUIDE)
++  {
++    auto* guide = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogTextViewer>(
++        WINDOW_DIALOG_TEXT_VIEWER);
++    if (!guide)
++      return;
++    guide->SetHeading(Localized(60095));
++    guide->SetText(Localized(60097));
++    guide->Open();
++  }
+ }
+ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
+ {
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index ba4e237..1a4c4b9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -31,7 +31,7 @@ class CLanguageTag;
+ 
+ /*!
+  * \brief The language model the subtitles are translated with: a provider of the OpenAI chat
+- * API (OpenRouter, OpenAI, or any server that speaks it - llama.cpp, vLLM, Ollama), the key and
++ * API (OpenRouter, OpenAI, Google, Anthropic, NVIDIA, or any server that speaks it - llama.cpp, vLLM, Ollama), the key and
+  * the model the settings name.
+  */
+ namespace KODI::SUBTITLES::AI
+@@ -41,12 +41,16 @@ struct Provider
+   std::string base; //!< the API's root, ".../v1"
+   std::string key; //!< empty when the server asks for none
+   std::string model;
+-  int kind{0}; //!< the provider setting: OPENROUTER, OPENAI or CUSTOM
++  int kind{0}; //!< the provider setting: one of the values below
+ };
+ 
+ constexpr int OPENROUTER = 0;
+ constexpr int OPENAI = 1;
+ constexpr int CUSTOM = 2;
++constexpr int NONE = 3;
++constexpr int GOOGLE = 4;
++constexpr int ANTHROPIC = 5;
++constexpr int NVIDIA = 6;
+ 
+ //! The provider the settings name.
+ Provider CurrentProvider();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index 92668dd..1ebfcc3 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cstring>
+ #include <regex>
+ 
+ namespace KODI::SUBTITLES::MODEL
+@@ -77,9 +78,17 @@ std::vector<std::string> AnswerLines(const std::string& answer)
+ {
+   // a few cues are a few hundred bytes; a model that runs on is no answer
+   constexpr size_t MAX_ANSWER = 16384;
+-  const size_t thought = answer.rfind("</think>");
+-  const std::string text = thought == std::string::npos ? answer : answer.substr(thought + 8);
+   std::vector<std::string> lines;
++  // what a reasoning model thought first is left out; reasoning cut short leaves no answer
++  std::string text = answer;
++  for (const auto& [open, close] :
++       {std::pair{"<think>", "</think>"}, std::pair{"<thought>", "</thought>"}})
++  {
++    if (const size_t end = text.rfind(close); end != std::string::npos)
++      text.erase(0, end + std::strlen(close));
++    else if (text.find(open) != std::string::npos)
++      return lines;
++  }
+   if (text.size() > MAX_ANSWER)
+     return lines;
+   size_t start = 0;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index 1edfce5..91389fa 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -74,8 +74,9 @@ std::string Preamble(const std::string& title,
+                      const std::vector<std::string>& cast,
+                      const std::deque<std::string>& before);
+ 
+-//! The lines of a model's answer: what a reasoning model thought first and code fences left
+-//! out; none for an answer far too long to be one.
++//! The lines of a model's answer: what a reasoning model thought first (<think>, <thought>) and
++//! code fences left out; none for an answer far too long to be one, or whose reasoning was cut
++//! short.
+ std::vector<std::string> AnswerLines(const std::string& answer);
+ 
+ //! The numbered lines of a model's answer: "1. ...", "2) ...", in order, a line the model broke
+diff --git a/xbmc/settings/Settings.cpp b/xbmc/settings/Settings.cpp
+index 1bbe78d..f7624ca 100644
+--- a/xbmc/settings/Settings.cpp
++++ b/xbmc/settings/Settings.cpp
+@@ -618,7 +618,7 @@ void CSettings::InitializeISettingCallbacks()
+       &KODI::SUBTITLES::AI::CAiSettings::GetInstance(),
+       {CSettings::SETTING_SUBTITLES_AIPROVIDER, CSettings::SETTING_SUBTITLES_AIURL,
+        CSettings::SETTING_SUBTITLES_AIKEY, CSettings::SETTING_SUBTITLES_AIMODEL,
+-       CSettings::SETTING_SUBTITLES_AIMODELS, CSettings::SETTING_SUBTITLES_AITEST,
++       CSettings::SETTING_SUBTITLES_AITEST, CSettings::SETTING_SUBTITLES_AIGUIDE,
+        CSettings::SETTING_SUBTITLES_TRANSLATE});
+ 
+   GetSettingsManager()->RegisterCallback(
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 684db51..765c4b4 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -194,8 +194,8 @@ public:
+   static constexpr auto SETTING_SUBTITLES_AIURL = "subtitles.aiurl";
+   static constexpr auto SETTING_SUBTITLES_AIKEY = "subtitles.aikey";
+   static constexpr auto SETTING_SUBTITLES_AIMODEL = "subtitles.aimodel";
+-  static constexpr auto SETTING_SUBTITLES_AIMODELS = "subtitles.aimodels";
+   static constexpr auto SETTING_SUBTITLES_AITEST = "subtitles.aitest";
++  static constexpr auto SETTING_SUBTITLES_AIGUIDE = "subtitles.aiguide";
+   static constexpr auto SETTING_SUBTITLES_AIREPAIR = "subtitles.airepair";
+   static constexpr auto SETTING_SUBTITLES_REPAIRADS = "subtitles.repairads";
+   static constexpr auto SETTING_SUBTITLES_REPAIRTIMING = "subtitles.repairtiming";

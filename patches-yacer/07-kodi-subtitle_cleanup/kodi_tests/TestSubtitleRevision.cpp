@@ -103,6 +103,8 @@ TEST(SubtitleRevision, AllowsANonWordToBecomeTheWordItWasMisreadFor)
   EXPECT_TRUE(Allows(English(), "I wouId go.", "wouId", "would"));
   EXPECT_TRUE(Allows(English(), "He Ieft.", "Ieft", "left"));
   EXPECT_EQ(Apply({0, "wouId", "would"}, "<i>I wouId go.</i>"), "<i>I would go.</i>");
+  // a "<" that closes nothing is text, and what follows it can be corrected
+  EXPECT_EQ(Apply({0, "wouId", "would"}, "< I wouId go"), "< I would go");
 }
 
 TEST(SubtitleRevision, NeverChangesAWordOfTheLanguage)

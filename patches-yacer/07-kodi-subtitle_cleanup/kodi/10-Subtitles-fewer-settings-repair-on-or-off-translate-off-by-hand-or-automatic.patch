@@ -1,0 +1,429 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: fewer settings - repair on or off, translate off,
+ by hand or automatic
+
+Subtitles had nine settings, four of them under "Repair text subtitles"
+and two asking what only the code knows - which languages' letters to
+correct, and whether the model reads every line or the doubted words.
+Now there are five.
+
+"Repair subtitles" is on or off. On does every repair there is - each
+only changes what is plainly broken: the encoding, music notes,
+advertising and credit lines, timing that flashes by or overlaps, and
+the letters an image conversion misreads, in the subtitle's own
+language. The list of languages is gone: the language pack of a
+subtitle's language is installed in the background the first time one
+in it is read, if the repositories offer one, and the subtitle after it
+has it. With an AI provider chosen its model checks the words the
+repair doubts; every line was rarely worth its requests.
+
+"AI translate subtitles" is Off, By hand - the subtitle dialog's
+Translate to button only - or Automatic, which also starts a video with
+no full subtitle in the viewer's language translated into it. The track
+it starts from is a full one in the language spoken, else English, else
+the first, text before pictures in each: a film's own language is
+closest to what is said.
+
+The callback and option filler the language list had are left
+registered, unused, so Kodi's settings code is not touched again; they
+go when this is folded into the patches that added them.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index d38f184..c5f9dfe 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25483,49 +25483,13 @@ msgstr ""
+ #. Label of setting "Player -> Subtitles -> Repair text subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60010"
+-msgid "Repair text subtitles"
++msgid "Repair subtitles"
+ msgstr ""
+ 
+ #. Help text of setting "Player -> Subtitles -> Repair text subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60011"
+-msgid "Repair text subtitles as they are read: text in the wrong encoding, music notes that came out as other signs, and whatever the options below turn on. The words, the formatting and the start times are never changed."
+-msgstr ""
+-
+-#. Label of setting "Player -> Subtitles -> Remove advertising"
+-#: system/settings/settings.xml
+-msgctxt "#60012"
+-msgid "Remove advertising"
+-msgstr ""
+-
+-#. Help text of setting "Player -> Subtitles -> Remove advertising"
+-#: system/settings/settings.xml
+-msgctxt "#60013"
+-msgid "Remove the lines that advertise a subtitle site or a service, or credit whoever uploaded or synchronised the subtitle."
+-msgstr ""
+-
+-#. Label of setting "Player -> Subtitles -> Correct misread letters"
+-#: system/settings/settings.xml
+-msgctxt "#60014"
+-msgid "Correct misread letters"
+-msgstr ""
+-
+-#. Help text of setting "Player -> Subtitles -> Correct misread letters"
+-#: system/settings/settings.xml
+-msgctxt "#60015"
+-msgid "In subtitles made from images, correct the letters the conversion keeps misreading: \"wouId\" becomes \"would\", \"lnspector\" becomes \"Inspector\". Choose the languages to correct; each is installed as a small add-on. Only a mistake the subtitle repeats is corrected, only into a word of its language; names are left alone. With no language chosen, letters are left as they are."
+-msgstr ""
+-
+-#. Label of setting "Player -> Subtitles -> Correct broken timing"
+-#: system/settings/settings.xml
+-msgctxt "#60016"
+-msgid "Correct broken timing"
+-msgstr ""
+-
+-#. Help text of setting "Player -> Subtitles -> Correct broken timing"
+-#: system/settings/settings.xml
+-msgctxt "#60017"
+-msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
++msgid "Repair subtitles as they are read: text in the wrong encoding, music notes that came out as other signs, lines that advertise a subtitle site or credit whoever uploaded it, a line that would flash by too fast to be seen or overlaps the next, and the letters a conversion from images keeps misreading - \"wouId\", \"lnspector\" - in the subtitle's own language, whose small language add-on is installed the first time a subtitle in it is read. With an AI provider chosen, its model also checks the words the repair doubts. Names, the wording and the start times are left as they are."
+ msgstr ""
+ 
+ #. Label of setting "Player -> Subtitles -> Translate subtitles"
+@@ -25537,7 +25501,7 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> Translate subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60061"
+-msgid "Translate subtitles into another language: text inside the video or in a SubRip file beside it, and subtitles made of pictures - Blu-ray, DVD, DVB - when the AI provider's model reads images, which reads them first. The subtitle dialog has a Translate to button: off, the language chosen for subtitles, then the languages subtitles are downloaded in - and whichever subtitle is chosen is shown in that language. A video with no subtitle in the language chosen for subtitles starts translated into it. A forced subtitle is never translated first. The language model of the AI provider translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. It uses the AI provider chosen in the AI section, and is off until one is."
++msgid "Off; By hand: the subtitle dialog's Translate to button translates whichever subtitle is chosen into another language - text inside the video or in a SubRip file beside it, and subtitles made of pictures, which the AI provider's model reads first; Automatic: as By hand, and a video with no full subtitle in the language chosen for subtitles starts translated into it, from a full subtitle in the language spoken, else English, else another, text before pictures. The subtitle's lines, the video's title and the names of its characters are sent to the provider. It uses the AI provider chosen in the AI section, and is off until one is."
+ msgstr ""
+ 
+ #. Name of a subtitle in the subtitle list, translated into one language from another: "French (translated from English)"
+@@ -25708,30 +25672,6 @@ msgctxt "#60089"
+ msgid "{0:s} is gone: now using {1:s}"
+ msgstr ""
+ 
+-#. Label of setting "Player -> Subtitles -> Repair with the AI provider"
+-#: system/settings/settings.xml
+-msgctxt "#60090"
+-msgid "AI repair"
+-msgstr ""
+-
+-#. Help text of setting "Player -> Subtitles -> Repair with the AI provider"
+-#: system/settings/settings.xml
+-msgctxt "#60091"
+-msgid "Have the language model of the AI provider correct what an OCR misread in a subtitle made from images: only the words the repair doubts, which it confirms or corrects, or every line. A correction is made only when it turns what is no word into a word close to it; names and the rest of the line stay. The lines, the video's title and the names of its characters are sent to the provider; when it cannot be reached, the subtitle is shown as the repair left it. It uses the AI provider chosen in the AI section, and is off until one is."
+-msgstr ""
+-
+-#. Value of setting "Player -> Subtitles -> Repair with the AI provider": only the words the repair doubts
+-#: system/settings/settings.xml
+-msgctxt "#60092"
+-msgid "Doubtful words"
+-msgstr ""
+-
+-#. Value of setting "Player -> Subtitles -> Repair with the AI provider": every line of the subtitle
+-#: system/settings/settings.xml
+-msgctxt "#60093"
+-msgid "Every line"
+-msgstr ""
+-
+ #. Option of setting "Player -> Subtitles -> AI provider"
+ #: system/settings/settings.xml
+ msgctxt "#60094"
+@@ -25762,6 +25702,12 @@ msgctxt "#60098"
+ msgid "Translate to"
+ msgstr ""
+ 
++#. Option of setting "AI translate subtitles": only the subtitle dialog's button translates
++#: system/settings/settings.xml
++msgctxt "#60099"
++msgid "By hand"
++msgstr ""
++
+ #. Label of setting "Player -> Subtitles -> Realign with the video"
+ #: system/settings/settings.xml
+ msgctxt "#60100"
+@@ -25774,6 +25720,12 @@ msgctxt "#60101"
+ msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language - or, when the video has none, with where someone speaks in its sound - and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
+ msgstr ""
+ 
++#. Option of setting "AI translate subtitles": a video with none in the viewer's language starts translated
++#: system/settings/settings.xml
++msgctxt "#60102"
++msgid "Automatic"
++msgstr ""
++
+ #empty strings from id 39218 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index 389823f..0e7b04a 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -919,36 +919,6 @@
+           <default>true</default>
+           <control type="toggle" />
+         </setting>
+-        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="60012" help="60013">
+-          <level>1</level>
+-          <default>true</default>
+-          <dependencies>
+-            <dependency type="enable" setting="subtitles.repair">true</dependency>
+-          </dependencies>
+-          <control type="toggle" />
+-        </setting>
+-        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="60014" help="60015">
+-          <level>1</level>
+-          <default></default>
+-          <constraints>
+-            <options>subtitlerepairlanguages</options>
+-            <delimiter>,</delimiter>
+-          </constraints>
+-          <dependencies>
+-            <dependency type="enable" setting="subtitles.repair">true</dependency>
+-          </dependencies>
+-          <control type="list" format="string">
+-            <multiselect>true</multiselect>
+-          </control>
+-        </setting>
+-        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="60016" help="60017">
+-          <level>1</level>
+-          <default>true</default>
+-          <dependencies>
+-            <dependency type="enable" setting="subtitles.repair">true</dependency>
+-          </dependencies>
+-          <control type="toggle" />
+-        </setting>
+         <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
+           <level>1</level>
+           <default>true</default>
+@@ -957,30 +927,21 @@
+           </dependencies>
+           <control type="toggle" />
+         </setting>
+-        <setting id="subtitles.airepair" type="integer" parent="subtitles.repair" label="60090" help="60091">
++        <setting id="subtitles.translate" type="integer" label="60060" help="60061">
+           <level>1</level>
+-          <default>0</default> <!-- Off -->
++          <default>2</default> <!-- Automatic -->
+           <constraints>
+             <options>
+               <option label="351">0</option> <!-- Off -->
+-              <option label="60092">1</option> <!-- Doubtful words -->
+-              <option label="60093">2</option> <!-- Every line -->
++              <option label="60099">1</option> <!-- By hand -->
++              <option label="60102">2</option> <!-- Automatic -->
+             </options>
+           </constraints>
+           <dependencies>
+-            <dependency type="enable" setting="subtitles.repair">true</dependency>
+             <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
+           </dependencies>
+           <control type="list" format="string" />
+         </setting>
+-        <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
+-          <level>1</level>
+-          <default>false</default>
+-          <dependencies>
+-            <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
+-          </dependencies>
+-          <control type="toggle" />
+-        </setting>
+         <setting id="subtitles.aiguide" type="action" label="60095" help="60096">
+           <level>1</level>
+           <control type="button" format="action" />
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 5d0ae3e..f23d554 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -870,8 +870,8 @@ Provider CurrentProvider()
+ bool TranslateEnabled()
+ {
+   const Provider provider = CurrentProvider();
+-  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+-             CSettings::SETTING_SUBTITLES_TRANSLATE) &&
++  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++             CSettings::SETTING_SUBTITLES_TRANSLATE) != TRANSLATE_OFF &&
+          !provider.base.empty() && !provider.model.empty();
+ }
+ 
+@@ -966,13 +966,13 @@ TRANSLATION::Context ContextFor(const std::string& from, const std::string& to)
+ std::optional<REVISION::Mode> RepairMode()
+ {
+   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+-  const int mode = settings->GetInt(CSettings::SETTING_SUBTITLES_AIREPAIR);
+   const Provider provider = CurrentProvider();
+-  // a provider that does not answer is let be by the repair itself, request by request
+-  if (mode == 0 || !settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIR) ||
+-      provider.base.empty() || provider.model.empty())
++  // the words the repair doubts, whenever a provider is chosen; one that does not answer is let
++  // be by the repair itself, request by request
++  if (!settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIR) || provider.base.empty() ||
++      provider.model.empty())
+     return std::nullopt;
+-  return mode == 1 ? REVISION::Mode::DOUBTS : REVISION::Mode::EVERY_LINE;
++  return REVISION::Mode::DOUBTS;
+ }
+ 
+ REVISION::Context RevisionContext(const std::string& language)
+@@ -1253,18 +1253,37 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
+       return;
+     translating = translation.open.has_value();
+   }
+-  // how the video starts: translated when it has no subtitle in the language the viewer reads,
+-  // from text when it has some, else from pictures
+-  std::vector<TR::Track> tracks;
+-  for (const SelectionStream& st : ordered)
+-    tracks.push_back({TR::CodeOf(st.language), reads(st.language),
+-                      (st.flags & StreamFlags::FLAG_FORCED) != 0, IsText(st)});
+-  auto source = TR::ChooseSource(tracks);
+-  if (!source)
++  // how the video starts: translated, when the setting says so, if it has no full subtitle in
++  // the language the viewer reads - from a full one in the spoken language, else English, else
++  // the first, text before pictures in each
++  std::optional<size_t> source;
++  const bool automatic = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++                             CSettings::SETTING_SUBTITLES_TRANSLATE) == TRANSLATE_AUTOMATIC;
++  if (automatic && std::none_of(ordered.begin(), ordered.end(),
++                                [&reads](const SelectionStream& st)
++                                { return reads(st.language) && !(st.flags & StreamFlags::FLAG_FORCED); }))
+   {
+-    for (size_t i = 0; i < tracks.size(); ++i)
+-      tracks[i].text = tracks[i].text || IsPictures(ordered[i]);
+-    source = TR::ChooseSource(tracks);
++    std::string spoken;
++    if (const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>())
++    {
++      AudioStreamInfo audio;
++      player->GetAudioStreamInfo(CURRENT_STREAM, audio);
++      spoken = TR::CodeOf(audio.language);
++    }
++    int best = 0;
++    for (size_t i = 0; i < ordered.size(); ++i)
++    {
++      const SelectionStream& st = ordered[i];
++      const std::string code = TR::CodeOf(st.language);
++      if ((st.flags & StreamFlags::FLAG_FORCED) || code.empty() || (!IsText(st) && !IsPictures(st)))
++        continue;
++      const int rank = (code == spoken ? 1 : code == "en" ? 2 : 3) * 2 + (IsText(st) ? 0 : 1);
++      if (!source || rank < best)
++      {
++        source = i;
++        best = rank;
++      }
++    }
+   }
+   // a provider that does not answer starts nothing - but a translation being shown stays
+   const bool starts = source && (translating || Available());
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 2dfa804..464a577 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -53,6 +53,11 @@ constexpr int GOOGLE = 4;
+ constexpr int ANTHROPIC = 5;
+ constexpr int NVIDIA = 6;
+ 
++//! The "AI translate subtitles" setting.
++constexpr int TRANSLATE_OFF = 0;
++constexpr int TRANSLATE_BY_HAND = 1; //!< the subtitle dialog's button only
++constexpr int TRANSLATE_AUTOMATIC = 2; //!< and a video with none in the viewer's language starts so
++
+ //! The provider the settings name.
+ Provider CurrentProvider();
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+index 979a049..c798abf 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.cpp
+@@ -20,6 +20,7 @@
+ #include "application/Application.h"
+ #include "filesystem/Directory.h"
+ #include "filesystem/SpecialProtocol.h"
++#include "jobs/JobManager.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingUtils.h"
+ #include "settings/SettingsComponent.h"
+@@ -77,11 +78,11 @@ bool CurrentOptions(Options& options)
+   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+   if (!settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIR))
+     return false;
+-  options.removeAds = settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIRADS);
+-  options.fixOcr = !settings->GetList(CSettings::SETTING_SUBTITLES_REPAIRLANGUAGES).empty();
+-  options.fixTiming = settings->GetBool(CSettings::SETTING_SUBTITLES_REPAIRTIMING);
+-  if (options.fixOcr)
+-    options.cast = CastOfPlaying();
++  // every repair there is: each only changes what is plainly broken
++  options.removeAds = true;
++  options.fixOcr = true;
++  options.fixTiming = true;
++  options.cast = CastOfPlaying();
+   return true;
+ }
+ 
+@@ -147,6 +148,38 @@ std::shared_ptr<const Packs> InstalledPacks()
+   return loaded;
+ }
+ 
++void WantPack(const std::string& code)
++{
++  if (code.empty())
++    return;
++  static std::mutex lock;
++  static std::set<std::string> asked;
++  {
++    std::unique_lock guard(lock);
++    if (!asked.insert(code).second)
++      return;
++  }
++  // the repositories are asked off the player's thread
++  CServiceBroker::GetJobManager()->Submit(
++      [code]
++      {
++        for (const auto& addon : PackAddons())
++          if (PackCode(addon->ID()) == code)
++            return;
++        ADDON::VECADDONS offered;
++        CServiceBroker::GetAddonMgr().GetInstallableAddons(offered,
++                                                           ADDON::AddonType::SCRIPT_MODULE);
++        for (const auto& addon : offered)
++          if (PackCode(addon->ID()) == code)
++          {
++            CLog::Log(LOGINFO, "Subtitle repair: installing the language pack {}", addon->ID());
++            ADDON::CAddonInstaller::GetInstance().InstallOrUpdate(
++                addon->ID(), ADDON::BackgroundJob::CHOICE_YES, ADDON::ModalJob::CHOICE_NO);
++            return;
++          }
++      });
++}
++
+ void RepairSubRipFile(const std::string& file, const std::string& raw, std::string& data)
+ {
+   Options options;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
+index 8619446..f6e3646 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanupSettings.h
+@@ -34,6 +34,13 @@ void RepairSubRipFile(const std::string& file, const std::string& raw, std::stri
+ //! Whether a subtitle file's times are to be checked against the video's own subtitles.
+ bool RealignWanted();
+ 
++/*!
++ * \brief The language pack of a subtitle's language installed, when the repositories offer one
++ * and it is not: asked once a session, in the background - the subtitle after it has it.
++ * \param code the language's ISO 639-1 code
++ */
++void WantPack(const std::string& code);
++
+ class CRepairLanguages : public ISettingCallback
+ {
+ public:
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 702d66a..8ee446a 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -228,6 +228,7 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+   if (text && CLEANUP::CurrentOptions(repair))
+   {
+     repair.tags = tags;
++    CLEANUP::WantPack(language);
+     m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr,
+                       language, CLEANUP::DetectLanguage);
+     m_timing = repair.fixTiming;

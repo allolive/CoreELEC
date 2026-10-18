@@ -1,0 +1,599 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: translate whichever subtitle is chosen into the
+ language chosen
+
+A translation was one more entry in the subtitle list, offered only for
+a video with no subtitle in the language the viewer reads, and only into
+that language. Now the tracks are translated themselves: the subtitle
+dialog has a "Translate to" button, VideoPlayer.SubtitleTranslate shows
+what it is on - Off, or a language - and
+PlayerControl(SubtitleTranslate) turns it to the next: off, then the
+subtitle language chosen in Kodi's settings and the languages subtitles
+are downloaded in, in turn. No setting of its own: on a box set to
+English with French among the download languages it goes Off, English,
+French. Whichever track the viewer chooses is read in that language when
+it is text in another, and its name in the list says so ("English
+(translated from French)"); a track already in that language is shown as
+it is, and its own language is never offered: with it open the button
+reads Off. Turning it reopens the subtitle open, translated or not.
+
+A video starts as before: with no subtitle in the language the viewer
+reads, translated into it from the track Kodi would choose - the
+viewer's own choice of subtitle for the video stands - and untranslated
+otherwise. The choice is kept for the film - by its file as the library
+knows it, whichever path plays it - in
+special://profile/subtitletranslation.json, off included, and it starts
+that way when it plays again. The label is empty, and the skin hides the
+button, while "AI translate subtitles" is off or no AI provider is
+chosen.
+
+The player's hooks stay as they were: the entry of its own is never
+offered, so the list is the video's own tracks.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 2993aa70..cf3e892a 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25537,13 +25537,13 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> Translate subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60061"
+-msgid "When a video has no subtitle in the language chosen for subtitles, offer one translated from a text subtitle in another language, inside the video or in a SubRip file beside it, and show it the way a subtitle in that language would be. A forced subtitle is never translated. The language model of the AI provider below translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. When the provider cannot be reached, nothing is offered. It uses the AI provider chosen in the AI section, and is off until one is."
++msgid "Translate subtitles that are text, inside the video or in a SubRip file beside it, into another language. The subtitle dialog has a Translate to button: off, the language chosen for subtitles, then the languages subtitles are downloaded in - and whichever subtitle is chosen is shown in that language. A video with no subtitle in the language chosen for subtitles starts translated into it. A forced subtitle is never translated first. The language model of the AI provider translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. It uses the AI provider chosen in the AI section, and is off until one is."
+ msgstr ""
+ 
+-#. Name of a subtitle in the subtitle list, translated into one language from another: "Auto-translated to French (from English)"
++#. Name of a subtitle in the subtitle list, translated into one language from another: "French (translated from English)"
+ #: xbmc/cores/VideoPlayer/VideoPlayer.cpp
+ msgctxt "#60062"
+-msgid "Auto-translated to {0:s} (from {1:s})"
++msgid "{0:s} (translated from {1:s})"
+ msgstr ""
+ 
+ #. Label of setting "Player -> Subtitles -> AI provider"
+@@ -25756,6 +25756,12 @@ msgctxt "#60097"
+ msgid "[B]What it does[/B][CR]A language model translates the subtitles of a video that has none in your language, and can correct what an OCR misread. Each film sends its subtitle lines, a few at a time - about 150 to 200 requests - with the video's title and its characters' names.[CR][CR][B]Free to try[/B] (as of October 2026: free offers change, check the provider's page)[CR]- Google Gemini: a free key at aistudio.google.com/apikey, no card. Its Flash Lite models allow a few films a day.[CR]- NVIDIA: a free developer account at build.nvidia.com. A limit per minute, not per day; meant for trying models out.[CR]- OpenRouter: the models whose name ends in \":free\". Few requests a day until credit is bought.[CR]- Your own server: free and private, on a computer of your network that runs llama.cpp, Ollama or vLLM. It has to be on.[CR][CR][B]Paid[/B][CR]OpenAI, Anthropic, and the paid models of the others: a few cents a film with a small model.[CR][CR][B]Choosing a model[/B][CR]Small, fast models are the ones for subtitles: Flash Lite, mini, Haiku. Choose a \"Newest\" entry - Newest gemini-flash-lite - and the next release is used when it comes out, with nothing to change here. A large model or one that reasons first is slower, not better for a subtitle.[CR][CR][B]Checking it[/B][CR]Test the connection translates one line. It should answer within a few seconds; it says so when the model is too slow for a film. When a free limit is reached during a film, a notification says so and the rest of the subtitle stays as it is.[CR][CR][B]Privacy[/B][CR]Free offers may keep what is sent to improve their models. Only subtitle lines, the title and character names are sent."
+ msgstr ""
+ 
++#. Label of the subtitle dialog's button that turns the translation to the next language
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60098"
++msgid "Translate to"
++msgstr ""
++
+ #. Label of setting "Player -> Subtitles -> Realign with the video"
+ #: system/settings/settings.xml
+ msgctxt "#60100"
+diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
+index 7f1cc2e9..95e7e3e9 100644
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -3190,6 +3190,14 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
+ ///     video: as the setting says, until `PlayerControl(SubtitleRealign)` turns it the other way.
+ ///     <p>
+ ///   }
++///   \table_row3{   <b>`VideoPlayer.SubtitleTranslate`</b>,
++///                  \anchor VideoPlayer_SubtitleTranslate
++///                  _string_,
++///     @return The language the subtitles are translated into - "Off" when they are not - until
++///     `PlayerControl(SubtitleTranslate)` turns it to the next; empty when no translation can be
++///     chosen.
++///     <p>
++///   }
+ ///   \table_row3{   <b>`VideoPlayer.HasEpg`</b>,
+ ///                  \anchor VideoPlayer_HasEpg
+ ///                  _boolean_,
+@@ -4349,7 +4357,7 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
+ ///
+ /// -----------------------------------------------------------------------------
+ // clang-format off
+-constexpr std::array<InfoMap, 89> videoplayer = {{
++constexpr std::array<InfoMap, 90> videoplayer = {{
+     {"title",                 VIDEOPLAYER_TITLE},
+     {"genre",                 VIDEOPLAYER_GENRE},
+     {"country",               VIDEOPLAYER_COUNTRY},
+@@ -4399,6 +4407,7 @@ constexpr std::array<InfoMap, 89> videoplayer = {{
+     {"hassubtitles",          VIDEOPLAYER_HASSUBTITLES},
+     {"subtitlesenabled",      VIDEOPLAYER_SUBTITLESENABLED},
+     {"subtitlerealign",       VIDEOPLAYER_SUBTITLE_REALIGN},
++    {"subtitletranslate",     VIDEOPLAYER_SUBTITLE_TRANSLATE},
+     {"subtitleslanguage",     VIDEOPLAYER_SUBTITLES_LANG},
+     {"subtitlelanguageex",    VIDEOPLAYER_SUBTITLE_LANG_EX},
+     {"subtitlecodec",         VIDEOPLAYER_SUBTITLE_CODEC},
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 4ee5ee90..8fee6d2c 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -24,6 +24,7 @@
+ #include "dialogs/GUIDialogSelect.h"
+ #include "dialogs/GUIDialogTextViewer.h"
+ #include "filesystem/CurlFile.h"
++#include "filesystem/File.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIKeyboardFactory.h"
+ #include "guilib/GUIWindowManager.h"
+@@ -49,6 +50,7 @@
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdlib>
++#include <iterator>
+ #include <map>
+ #include <mutex>
+ #include <utility>
+@@ -963,34 +965,199 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
+     guide->Open();
+   }
+ }
++namespace
++{
++//! What the playing video's subtitles are translated into: shared by the player, which opens the
++//! subtitle, and the subtitle dialog, which shows and turns it.
++struct Translation
++{
++  std::mutex lock;
++  std::string video; //!< the video it is for
++  bool chosen{false}; //!< the viewer chose the target, which then holds
++  std::string target; //!< what the subtitles are translated into, a language's code, or empty
++  bool available{false}; //!< whether a translation can be chosen
++  struct Open
++  {
++    int64_t demuxerId{-1};
++    int id{-1};
++    int source{-1};
++  };
++  std::optional<Open> open; //!< the track open translated
++  std::string track; //!< the language of the subtitle open, translated or not
++};
++
++Translation& GetTranslation()
++{
++  static Translation translation;
++  return translation;
++}
++
++//! The playing film, as the library knows its file, whichever path played it - a disc's
++//! playlist included.
++std::string PlayingVideo()
++{
++  const std::shared_ptr<CFileItem> item = g_application.CurrentFileItemPtr();
++  if (!item)
++    return {};
++  if (item->HasVideoInfoTag() && !item->GetVideoInfoTag()->m_strFileNameAndPath.empty())
++    return item->GetVideoInfoTag()->m_strFileNameAndPath;
++  return item->GetPath();
++}
++
++//! The language each film's subtitles were last turned to, off included, kept for when it plays
++//! again: in a file of its own, read once.
++constexpr const char* CHOICES = "special://profile/subtitletranslation.json";
++constexpr const char* CHOICES_NEW = "special://profile/subtitletranslation.json.new";
++
++CVariant& Choices()
++{
++  static std::optional<CVariant> choices;
++  if (choices)
++    return *choices;
++  choices.emplace(CVariant::VariantTypeObject);
++  std::vector<uint8_t> buffer;
++  XFILE::CFile file;
++  CVariant read;
++  if (file.LoadFile(CHOICES, buffer) > 0 &&
++      CJSONVariantParser::Parse(std::string(buffer.begin(), buffer.end()), read) && read.isObject())
++    *choices = read;
++  return *choices;
++}
++
++void Keep(const std::string& video, const std::string& target)
++{
++  CVariant& choices = Choices();
++  if (choices.isMember(video) && choices[video].asString() == target)
++    return;
++  choices[video] = target;
++  std::string json;
++  if (!CJSONVariantWriter::Write(choices, json, false))
++    return;
++  // written aside and renamed over: a power cut leaves the old file or the new one
++  XFILE::CFile file;
++  if (!file.OpenForWrite(CHOICES_NEW, true) ||
++      file.Write(json.data(), json.size()) != static_cast<ssize_t>(json.size()))
++  {
++    CLog::LogF(LOGERROR, "cannot write {}", CHOICES_NEW);
++    return;
++  }
++  file.Close();
++  if (!XFILE::CFile::Rename(CHOICES_NEW, CHOICES))
++    CLog::LogF(LOGERROR, "cannot replace {}", CHOICES);
++}
++
++//! The languages to translate into, in turn: the subtitle language, then those subtitles are
++//! downloaded in.
++std::vector<std::string> TranslationLanguages()
++{
++  std::vector<std::string> codes;
++  const auto add = [&codes](const std::string& code)
++  {
++    if (!code.empty() && std::find(codes.begin(), codes.end(), code) == codes.end())
++      codes.push_back(code);
++  };
++  add(TargetLanguage());
++  for (const CVariant& language :
++       CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(
++           CSettings::SETTING_SUBTITLES_LANGUAGES))
++    if (std::string code; CLangCodeExpander::ConvertToISO6391(language.asString(), code))
++      add(code);
++  return codes;
++}
++
++//! Whether a track is text the translation reads: inside the video, cue by cue, or a SubRip file
++//! beside it, read whole.
++bool IsText(const SelectionStream& st)
++{
++  return (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
++          (st.codecId == AV_CODEC_ID_SUBRIP || st.codecId == AV_CODEC_ID_TEXT)) ||
++         (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
++          URIUtils::HasExtension(st.filename, ".srt"));
++}
++} // namespace
++
++std::string TranslationLabel()
++{
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  if (!translation.available || translation.video != PlayingVideo())
++    return {};
++  // a subtitle already in the language is not translated: off
++  if (translation.target.empty() || translation.target == translation.track)
++    return Localized(16039);
++  return LanguageName(translation.target);
++}
++
++void NextTranslation()
++{
++  const std::vector<std::string> languages = TranslationLanguages();
++  {
++    Translation& translation = GetTranslation();
++    std::unique_lock guard(translation.lock);
++    if (!translation.available || translation.video != PlayingVideo())
++      return;
++    // off, then each language in turn - but the open subtitle's own
++    std::vector<std::string> offered;
++    std::copy_if(languages.begin(), languages.end(), std::back_inserter(offered),
++                 [&translation](const std::string& code) { return code != translation.track; });
++    const auto now = std::find(offered.begin(), offered.end(), translation.target);
++    const auto next = now == offered.end() ? offered.begin() : now + 1;
++    translation.target = next == offered.end() ? std::string() : *next;
++    translation.chosen = true;
++    Keep(translation.video, translation.target);
++  }
++  // the subtitle open is opened again, to be read in the language chosen
++  const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++  if (player && player->IsPlayingVideo())
++    if (const int subtitle = player->GetSubtitle(); subtitle >= 0)
++      player->SetSubtitle(subtitle);
++}
++
+ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
+ {
+   namespace TR = TRANSLATION;
+-  m_offer.reset();
+-  const std::string target = TranslateEnabled() ? TargetLanguage() : std::string();
+-  if (target.empty())
++  m_source.reset();
++  const std::string preferred = TranslateEnabled() ? TargetLanguage() : std::string();
++  const std::string video = PlayingVideo();
++  Translation& translation = GetTranslation();
++  bool translating = false;
+   {
+-    m_selected = false;
+-    return;
++    std::unique_lock guard(translation.lock);
++    if (translation.video != video)
++    {
++      translation.video = video;
++      translation.chosen = false;
++      translation.open.reset();
++      translation.track.clear();
++      // the language the viewer last turned this film's subtitles to
++      if (const CVariant& choices = Choices(); choices.isMember(video))
++      {
++        translation.chosen = true;
++        translation.target = choices[video].asString();
++      }
++    }
++    translation.available = !preferred.empty();
++    if (!translation.available)
++      translation.target.clear();
++    else if (translation.chosen && Choices().isMember(video))
++      translation.target = Choices()[video].asString();
++    if (!translation.available || translation.chosen)
++      return;
++    translating = translation.open.has_value();
+   }
++  // how the video starts: translated when it has no subtitle in the language the viewer reads
+   std::vector<TR::Track> tracks;
+   for (const SelectionStream& st : ordered)
+-  {
+-    // text inside the video, cue by cue, or a SubRip file beside it, read whole
+-    const bool text =
+-        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
+-         (st.codecId == AV_CODEC_ID_SUBRIP || st.codecId == AV_CODEC_ID_TEXT)) ||
+-        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
+-         URIUtils::HasExtension(st.filename, ".srt"));
+     tracks.push_back({TR::CodeOf(st.language), reads(st.language),
+-                      (st.flags & StreamFlags::FLAG_FORCED) != 0, text});
+-  }
+-  // a provider that does not answer offers nothing - but a translation being shown stays
+-  const auto chosen = TR::ChooseSource(tracks);
+-  if (chosen && (m_selected || Available()))
+-    m_offer = Offer{ordered[*chosen].type_index, tracks[*chosen].code, target};
+-  else
+-    m_selected = false;
++                      (st.flags & StreamFlags::FLAG_FORCED) != 0, IsText(st)});
++  // a provider that does not answer starts nothing - but a translation being shown stays
++  const auto source = TR::ChooseSource(tracks);
++  const bool starts = source && (translating || Available());
++  if (starts)
++    m_source = ordered[*source].type_index;
++  std::unique_lock guard(translation.lock);
++  if (translation.video == video && !translation.chosen)
++    translation.target = starts ? preferred : std::string();
+ }
+ 
+ int CTranslatedEntry::Index(const CSelectionStreams& streams)
+@@ -1001,48 +1168,71 @@ int CTranslatedEntry::Index(const CSelectionStreams& streams)
+ const SelectionStream* CTranslatedEntry::Default(const CSelectionStreams& streams,
+                                                  bool reset,
+                                                  bool defaultSettings,
+-                                                 int saved)
++                                                 int /* saved */)
+ {
+-  m_selected = m_offer && (reset ? defaultSettings || saved == Index(streams) : m_selected);
+-  return m_selected ? &streams.Get(StreamType::SUBTITLE, m_offer->sourceIndex) : nullptr;
++  return m_source && reset && defaultSettings ? &streams.Get(StreamType::SUBTITLE, *m_source)
++                                              : nullptr;
+ }
+ 
+-int CTranslatedEntry::Select(int entry, const CSelectionStreams& streams)
++int CTranslatedEntry::Select(int entry, const CSelectionStreams& /* streams */)
+ {
+-  m_selected = m_offer && entry == Index(streams);
+-  return m_selected ? m_offer->sourceIndex : entry;
++  return entry;
+ }
+ 
+ void CTranslatedEntry::Opened(bool ok)
+ {
+-  m_selected = m_selected && ok;
++  if (ok)
++    return;
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  translation.open.reset();
+ }
+ 
+ std::string CTranslatedEntry::TranslateTo(int64_t demuxerId,
+                                           int id,
+                                           int source,
+-                                          const CSelectionStreams& streams) const
++                                          const CSelectionStreams& streams)
+ {
+-  if (!m_selected)
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  translation.open.reset();
++  translation.track.clear();
++  const int index = streams.TypeIndexOf(StreamType::SUBTITLE, source, demuxerId, id);
++  if (index < 0)
+     return {};
+-  const SelectionStream& st = streams.Get(StreamType::SUBTITLE, m_offer->sourceIndex);
+-  return st.demuxerId == demuxerId && st.id == id && st.source == source ? m_offer->target
+-                                                                         : std::string();
++  const SelectionStream& st = streams.Get(StreamType::SUBTITLE, index);
++  const std::string from = TRANSLATION::CodeOf(st.language);
++  translation.track = from;
++  if (translation.target.empty())
++    return {};
++  if (!IsText(st) || from.empty() || from == translation.target)
++    return {};
++  translation.open = Translation::Open{demuxerId, id, source};
++  return translation.target;
+ }
+ 
+ bool CTranslatedEntry::Info(int index,
+                             const CSelectionStreams& streams,
+                             SubtitleStreamInfo& info) const
+ {
+-  if (!m_offer || index != Index(streams))
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  if (!translation.open || index < 0 || index >= streams.CountType(StreamType::SUBTITLE))
++    return false;
++  const SelectionStream& s = streams.Get(StreamType::SUBTITLE, index);
++  const Translation::Open& open = *translation.open;
++  if (s.demuxerId != open.demuxerId || s.id != open.id || s.source != open.source)
+     return false;
+   info = SubtitleStreamInfo{};
+   info.valid = true;
+-  info.name =
+-      StringUtils::Format(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60062),
+-                          LanguageName(m_offer->target), LanguageName(m_offer->from));
+-  info.language = KODI::UTILS::CLanguageTag::Parse(m_offer->target);
+-  info.codecName = "subrip";
++  info.name = StringUtils::Format(Localized(60062), LanguageName(translation.target),
++                                  LanguageName(TRANSLATION::CodeOf(s.language)));
++  info.language = KODI::UTILS::CLanguageTag::Parse(translation.target);
++  info.codecName = s.codec;
++  info.codecDesc = s.codecDesc;
++  info.flags = s.flags;
++  info.isExternal = STREAM_SOURCE_MASK(s.source) == STREAM_SOURCE_DEMUX_SUB ||
++                    STREAM_SOURCE_MASK(s.source) == STREAM_SOURCE_TEXT;
+   return true;
+ }
+ } // namespace KODI::SUBTITLES::AI
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 1a4c4b9d..62ac3d69 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -98,9 +98,25 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+ double PlaybackTime();
+ 
+ /*!
+- * \brief The player's translated subtitle: one more entry in its subtitle list, after the video's
+- * own, standing for one of its tracks translated into the language the viewer reads - for a
+- * video that has no subtitle in that language. It is copied as the player publishes its streams.
++ * \brief The language the playing video's subtitles are translated into, as the subtitle dialog
++ * shows it: "Off", a language's name, or empty when no translation can be chosen - "AI translate
++ * subtitles" is off, or no AI provider is chosen.
++ */
++std::string TranslationLabel();
++
++/*!
++ * \brief The viewer turns the translation of the playing video's subtitles to the next language:
++ * off, then the subtitle language chosen in Kodi's settings and the languages subtitles are
++ * downloaded in, each in turn. The subtitle open is opened again, translated or not. The choice
++ * holds for that video.
++ */
++void NextTranslation();
++
++/*!
++ * \brief The translation of the player's subtitles: whichever track the viewer chooses is read in
++ * the language chosen to translate into, when it is text in another language. A video with no
++ * subtitle in the language the viewer reads starts translated into it, from the track Kodi would
++ * choose; any other starts untranslated. Copied as the player publishes its streams.
+  */
+ class CTranslatedEntry
+ {
+@@ -108,46 +124,38 @@ public:
+   using Reads = std::function<bool(const KODI::UTILS::CLanguageTag&)>;
+ 
+   /*!
+-   * \brief Decide again what is offered.
++   * \brief Decide again what the subtitles are translated into.
+    * \param ordered the video's subtitle tracks, in the order the player would choose them
+    * \param reads whether the viewer reads a language
+    */
+   void Update(const std::vector<SelectionStream>& ordered, const Reads& reads);
+-  //! Whether the entry is offered.
+-  bool Offered() const { return m_offer.has_value(); }
+-  //! Whether the entry is the subtitle selected.
+-  bool Selected() const { return m_selected; }
+-  //! The entry's place in the subtitle list.
++  //! Whether the list has an entry of its own: it has none, the tracks are translated themselves.
++  bool Offered() const { return false; }
++  //! Whether that entry is the subtitle selected.
++  bool Selected() const { return false; }
++  //! The place that entry would have in the subtitle list.
+   static int Index(const CSelectionStreams& streams);
+   /*!
+-   * \brief The player chooses its subtitle: with no subtitle in the language the viewer reads,
+-   * the translation comes first - unless the viewer chose another for this video; once playing,
+-   * the viewer's choice stands.
+-   * \param saved the subtitle the video's settings name
+-   * \return the track to open translated, or nullptr
++   * \brief The player chooses its subtitle: for a video that starts translated, the track to
++   * translate - unless the viewer chose a subtitle for this video.
++   * \return the track to open, or nullptr for the player's own choice
+    */
+   const SelectionStream* Default(const CSelectionStreams& streams,
+                                  bool reset,
+                                  bool defaultSettings,
+                                  int saved);
+-  //! The viewer chooses an entry: the track to open for it.
++  //! The viewer chooses an entry: the track to open for it, which is that entry.
+   int Select(int entry, const CSelectionStreams& streams);
+-  //! Whether the track chosen opened.
++  //! Whether the track opened.
+   void Opened(bool ok);
+   //! The language a subtitle stream being opened is to be read in, or empty.
+-  std::string TranslateTo(int64_t demuxerId, int id, int source, const CSelectionStreams& streams) const;
+-  //! The entry's details, when index names it.
++  std::string TranslateTo(int64_t demuxerId, int id, int source, const CSelectionStreams& streams);
++  //! The details of the track at index, when it is the one translated.
+   bool Info(int index, const CSelectionStreams& streams, SubtitleStreamInfo& info) const;
+ 
+ private:
+-  struct Offer
+-  {
+-    int sourceIndex{-1}; //!< the track translated, among the subtitle streams
+-    std::string from;
+-    std::string target;
+-  };
+-  std::optional<Offer> m_offer;
+-  bool m_selected{false};
++  //! The track to translate for a video that starts translated.
++  std::optional<int> m_source;
+ };
+ 
+ /*!
+diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+index e3e3128c..20d35948 100644
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -102,7 +102,8 @@ constexpr uint32_t PLAYER_IS_LIVE                    = 87;
+ constexpr uint32_t WEATHER_DATA                      = 95;
+ constexpr uint32_t WEATHER_IS_UPDATING               = 96;
+ constexpr uint32_t WEATHER_LAST_UPDATED              = 97;
+-// unused id 98 to 99
++constexpr uint32_t VIDEOPLAYER_SUBTITLE_TRANSLATE     = 98;
++// unused id 99
+ constexpr uint32_t WEATHER_CONDITIONS_TEXT           = 100;
+ constexpr uint32_t WEATHER_TEMPERATURE               = 101;
+ constexpr uint32_t WEATHER_LOCATION                  = 102;
+diff --git a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
+index d8f06234..3000abdc 100644
+--- a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
+@@ -17,6 +17,7 @@
+ #include "application/ApplicationComponents.h"
+ #include "application/ApplicationPlayer.h"
+ #include "cores/DataCacheCore.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleAI.h"
+ #include "cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h"
+ #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+ #include "guilib/GUIComponent.h"
+@@ -672,6 +673,9 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
+     case VIDEOPLAYER_SUBTITLE_NAME:
+       value = m_subtitleInfo.name;
+       return true;
++    case VIDEOPLAYER_SUBTITLE_TRANSLATE:
++      value = KODI::SUBTITLES::AI::TranslationLabel();
++      return true;
+     case VIDEOPLAYER_COVER:
+       if (m_appPlayer->IsPlayingVideo())
+       {
+diff --git a/xbmc/interfaces/builtins/PlayerBuiltins.cpp b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
+index 4c54beb0..5ea81248 100644
+--- a/xbmc/interfaces/builtins/PlayerBuiltins.cpp
++++ b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
+@@ -20,6 +20,7 @@
+ #include "application/Application.h"
+ #include "application/ApplicationPlayer.h"
+ #include "application/ApplicationPowerHandling.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitleAI.h"
+ #include "cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h"
+ #include "guilib/GUIComponent.h"
+ #include "guilib/GUIWindowManager.h"
+@@ -279,6 +280,11 @@ static int PlayerControl(const std::vector<std::string>& params)
+     if (appPlayer->IsPlayingVideo())
+       KODI::SUBTITLES::CCueStage::ToggleRealign();
+   }
++  else if (paramlow == "subtitletranslate")
++  {
++    if (appPlayer->IsPlayingVideo())
++      KODI::SUBTITLES::AI::NextTranslation();
++  }
+   else if (StringUtils::StartsWithNoCase(params[0], "partymode"))
+   {
+     std::string strXspPath;
+@@ -834,6 +840,7 @@ static int SubtitleShiftDown(const std::vector<std::string>& params)
+ ///     | Partymode(path to .xsp) | Partymode for *.xsp-file               | Partymode for *.xsp-file    |             |
+ ///     | ShowVideoMenu           | Shows the DVD/BR menu if available     | none                        |             |
+ ///     | SubtitleRealign         | Turns the realignment of a subtitle file on or off | none            |             |
++///     | SubtitleTranslate       | Translates the subtitles into the next language, or none | none      |             |
+ ///     | FrameAdvance(n) ***     | Advance video by _n_ frames            | none                        | Kodi v18    |
+ ///     <br>
+ ///     '*' = For these controls\, the PlayerControl built-in function can make use of the 'notify'-parameter. For example: PlayerControl(random\, notify)

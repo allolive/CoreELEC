@@ -23,6 +23,8 @@
 using namespace KODI::SUBTITLES::TRANSLATION;
 using KODI::SUBTITLES::MODEL::CCueWorker;
 using KODI::SUBTITLES::MODEL::IChat;
+using KODI::SUBTITLES::MODEL::Place;
+using KODI::SUBTITLES::MODEL::AssText;
 using KODI::SUBTITLES::MODEL::Plain;
 using KODI::SUBTITLES::MODEL::ReadNumbered;
 
@@ -216,6 +218,45 @@ TEST(SubtitleTranslation, ReadsACueWithoutItsTagsOnOneLine)
   EXPECT_EQ(Plain("<font color=\"#ffff00\"></font>"), "");
 }
 
+TEST(SubtitleTranslation, LeavesOutWhatTheScreenHides)
+{
+  // a "<...>" or "{...}" closed on its line is hidden; anything else shows, and stays: some
+  // tracks open a voice off screen with "< "
+  EXPECT_EQ(Plain("< The audience at these shows"), "< The audience at these shows");
+  EXPECT_EQ(Plain("< Who's there?\n-> Me"), "< Who's there? -> Me");
+  EXPECT_EQ(Plain("< A voice off\n<i>Me</i>"), "< A voice off Me");
+  EXPECT_EQ(Plain("<Bob> Who's {laughs} there {"), "Who's there {");
+  EXPECT_EQ(Plain("<i>a</i> <b"), "a <b");
+}
+
+TEST(SubtitleTranslation, ReadsTextOffAPictureAsItIs)
+{
+  EXPECT_EQ(Plain("< Il pubblico applaude. >\n{ride}", false), "< Il pubblico applaude. > {ride}");
+}
+
+TEST(SubtitleTranslation, GivesLibassTextOffAPictureToShowAsItIs)
+{
+  EXPECT_EQ(AssText("< Il pubblico,\ndi tutte le età."), "< Il pubblico,\ndi tutte le età.");
+  EXPECT_EQ(AssText("{ride}"), "\\{ride\\}");
+  // "\N", "\h" and "\{" are libass's: a word joiner after the "\" keeps it a character
+  EXPECT_EQ(AssText("a\\Nb \\h \\{"), "a\\\u2060Nb \\\u2060h \\\u2060\\{");
+  EXPECT_EQ(AssText(""), "");
+}
+
+TEST(SubtitleTranslation, PutsTextOffAPictureWhereThePictureWas)
+{
+  // a Blu-ray's two lines at the foot of the picture, a DVD's sign at the top left
+  EXPECT_EQ(Place(560, 930, 1360, 1040, 1920, 1080), 2);
+  EXPECT_EQ(Place(40, 30, 300, 80, 720, 576), 7);
+  EXPECT_EQ(Place(800, 60, 1100, 120, 1920, 1080), 8);
+  EXPECT_EQ(Place(1500, 960, 1880, 1040, 1920, 1080), 3);
+  EXPECT_EQ(Place(860, 500, 1060, 560, 1920, 1080), 5);
+  // one eye of a 3D video: placed on that eye's half
+  EXPECT_EQ(Place(280, 930, 680, 1040, 960, 1080), 2);
+  EXPECT_EQ(Place(0, 0, 0, 0, 1920, 1080), 2);
+  EXPECT_EQ(Place(560, 930, 1360, 1040, 0, 0), 2);
+}
+
 TEST(SubtitleTranslation, LaysALongTranslationOnTwoLines)
 {
   EXPECT_EQ(Wrap("Coucou !"), "Coucou !");
@@ -250,6 +291,12 @@ TEST(SubtitleTranslation, ReadsTheNumberedLinesOfAnAnswer)
             (std::vector<std::string>{"Hello.", "I'm here."}));
 }
 
+TEST(SubtitleTranslation, KeepsTheBracketsOfALineTheModelBrokeInTwo)
+{
+  EXPECT_EQ(ReadNumbered("1) Ciao.\n< Il pubblico applaude. >\n2) {ride}", 2),
+            (std::vector<std::string>{"Ciao. < Il pubblico applaude. >", "{ride}"}));
+}
+
 TEST(SubtitleTranslation, LeavesWhatFollowsTheLinesOutOfThem)
 {
   EXPECT_EQ(ReadNumbered("1. Hello.\n\n(Translated from French.)", 1),
@@ -269,7 +316,9 @@ TEST(SubtitleTranslation, RefusesAnAnswerFarTooLongToBeOne)
 {
   // and reads it without recursing through it: a model that loops can write megabytes
   EXPECT_TRUE(ReadNumbered("1. " + std::string(200000, 'x'), 1).empty());
-  EXPECT_EQ(Plain("<" + std::string(200000, 'x') + ">y"), "y");
+  EXPECT_EQ(Plain("<i>" + std::string(200000, 'x') + "</i>"), std::string(200000, 'x'));
+  EXPECT_EQ(Plain(std::string(200000, '<')), std::string(200000, '<'));
+  EXPECT_EQ(Plain(std::string(200000, '{')), std::string(200000, '{'));
 }
 
 TEST(SubtitleTranslation, RefusesAnAnswerThatLosesTheNumbering)
@@ -390,6 +439,24 @@ TEST(SubtitleTranslation, ASeekEndsTheRequestForTheCuesItDrops)
   ASSERT_TRUE(out.WaitFor(1));
   EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
   EXPECT_EQ(out.Text(0), "AFTER");
+}
+
+TEST(SubtitleTranslation, SendsTextOffAPictureWithItsBrackets)
+{
+  Context pictures = french;
+  pictures.tags = false;
+  auto chat = std::make_unique<CUpper>();
+  CUpper* model = chat.get();
+  Delivered out;
+  {
+    CCueWorker translator(std::move(chat), Translation(pictures), out.Into());
+    translator.Submit("< Il pubblico >", 1, 2);
+    ASSERT_TRUE(out.WaitFor(1));
+    const std::vector<std::string> requests = model->Requests();
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(Asked(requests[0]), std::vector<std::string>{"< Il pubblico >"});
+  }
+  EXPECT_EQ(out.Text(0), "< IL PUBBLICO >");
 }
 
 TEST(SubtitleTranslation, AsksNothingAboutACueWithNothingToTranslate)

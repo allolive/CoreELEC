@@ -528,10 +528,10 @@ index 10e2669..c97b614 100644
    double m_prevStop{0};
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp
 new file mode 100644
-index 0000000..0895026
+index 0000000..3edccf2
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleRevision.cpp
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,309 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -587,18 +587,23 @@ index 0000000..0895026
 +}
 +
 +//! Where what is written stands in the line as whole words ("HeIp! HeIp!" twice), outside the
-+//! formatting tags ("<font color=...>", "{\c&H00FFFF&}").
++//! formatting tags ("<font color=...>", "{\c&H00FFFF&}"): what MODEL::Plain leaves out, a
++//! "<...>" or "{...}" closed on its line.
 +std::vector<size_t> Find(const std::wstring& line, const std::wstring& wrong)
 +{
 +  std::vector<bool> tag(line.size(), false);
-+  wchar_t closing = 0;
++  size_t closes[2] = {0, 0}; // where the next ">" or "}" or line end is, from some point on
 +  for (size_t i = 0; i < line.size(); ++i)
 +  {
-+    if (!closing && (line[i] == L'<' || line[i] == L'{'))
-+      closing = line[i] == L'<' ? L'>' : L'}';
-+    tag[i] = closing != 0;
-+    if (closing && line[i] == closing)
-+      closing = 0;
++    if (line[i] != L'<' && line[i] != L'{')
++      continue;
++    size_t& end = closes[line[i] == L'{'];
++    if (end <= i)
++      end = std::min(line.find_first_of(line[i] == L'<' ? L">\n" : L"}\n", i + 1), line.size());
++    if (end == line.size() || line[end] == L'\n')
++      continue;
++    std::fill(tag.begin() + i, tag.begin() + end + 1, true);
++    i = end;
 +  }
 +  std::vector<size_t> starts;
 +  std::vector<size_t> ends;

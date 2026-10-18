@@ -3,14 +3,18 @@ From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Mon, 28 Sep 2026 23:30:00 -0400
 Subject: [PATCH] settings: gather our settings under System > Yacer
 
-Move every setting this build adds into one category below CoreELEC's:
+Move every setting this build adds into one category below CoreELEC's,
+in the order they matter most to whoever opens it:
 
-- Subtitles: Brightness (05_02), Placement (05_03), Repair and its options
-  (07_01), from Player > Subtitles
-- Passthrough Audio: the audio lead (11_10) and dialogue normalisation defeat
-  (20_02), from System > CoreELEC, whose Passthrough Audio group was ours and
-  goes with them
-- HDR: HDR10+ to Dolby Vision (20_01), from System > CoreELEC
+- Video: HDR10+ to Dolby Vision (20_01), from System > CoreELEC
+- Audio: the audio lead (11_10) and dialogue normalisation defeat (20_02),
+  from System > CoreELEC, whose Passthrough Audio group was ours and goes
+  with them
+- AI: the provider, its address, key and model, and the test (07_02,
+  07_07), from Player > Subtitles
+- Subtitles: Brightness (05_02), AI translate subtitles
+  (07_02), Repair and its options (07_01) with AI repair (07_03), and
+  Realign (07_04), from Player > Subtitles
 
 Dialogue normalisation defeat now applies to AC-3 / E-AC-3 only by default;
 TrueHD Atmos and DTS can still be ticked.
@@ -21,16 +25,12 @@ their own settings.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- .../resources/strings.po                      |  18 +-
- system/settings/settings.xml                  | 160 +++++++++---------
- 2 files changed, 100 insertions(+), 78 deletions(-)
-
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index e773fa8..d1bc00b 100644
+index 6de75bf..ec0311f 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25558,6 +25558,24 @@ msgctxt "#60005"
- msgid "Where subtitles in the lower and upper part of the picture are shown. \"Black bars\" moves them to the edges of the display, into the bars of a wide film, with the first line in one position for the whole film, whether a subtitle has one line or two. Subtitles in the middle of the picture, or of an unusual size, stay where they are."
+@@ -25590,6 +25590,24 @@ msgctxt "#60003"
+ msgid "{0:d} nits"
  msgstr ""
  
 +#. Label of settings category "System -> Yacer"
@@ -42,23 +42,23 @@ index e773fa8..d1bc00b 100644
 +#. Help text of settings category "System -> Yacer"
 +#: system/settings/settings.xml
 +msgctxt "#60008"
-+msgid "Settings added by this build: subtitle brightness, placement and repair, passthrough audio and HDR conversion."
++msgid "Settings added by this build: HDR conversion, passthrough audio, the AI provider that translates and corrects subtitles, and subtitle brightness, repair and realignment."
 +msgstr ""
 +
-+#. Label of settings group "System -> Yacer -> HDR"
++#. Label of settings group "System -> Yacer -> AI"
 +#: system/settings/settings.xml
 +msgctxt "#60009"
-+msgid "HDR"
++msgid "AI"
 +msgstr ""
 +
- #. Value of setting "Player -> Subtitles -> Alter placement": to the edges of the display
+ #. Label of setting "Player -> Subtitles -> Repair text subtitles"
  #: system/settings/settings.xml
- msgctxt "#60006"
+ msgctxt "#60010"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index dbea077..8a5a62b 100755
+index f9fa4dc..e6236ad 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -891,141 +891,6 @@
+@@ -891,108 +891,6 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -74,50 +74,9 @@ index dbea077..8a5a62b 100755
 -            <formatlabel>60003</formatlabel>
 -          </control>
 -        </setting>
--        <setting id="subtitles.placement" type="integer" label="60004" help="60005">
--          <level>1</level>
--          <default>1</default> <!-- black bars -->
--          <constraints>
--            <options>
--              <option label="351">0</option> <!-- Off -->
--              <option label="60006">1</option> <!-- Black bars -->
--            </options>
--          </constraints>
--          <control type="list" format="string" />
--        </setting>
 -        <setting id="subtitles.repair" type="boolean" label="60010" help="60011">
 -          <level>1</level>
 -          <default>true</default>
--          <control type="toggle" />
--        </setting>
--        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="60012" help="60013">
--          <level>1</level>
--          <default>true</default>
--          <dependencies>
--            <dependency type="enable" setting="subtitles.repair">true</dependency>
--          </dependencies>
--          <control type="toggle" />
--        </setting>
--        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="60014" help="60015">
--          <level>1</level>
--          <default></default>
--          <constraints>
--            <options>subtitlerepairlanguages</options>
--            <delimiter>,</delimiter>
--          </constraints>
--          <dependencies>
--            <dependency type="enable" setting="subtitles.repair">true</dependency>
--          </dependencies>
--          <control type="list" format="string">
--            <multiselect>true</multiselect>
--          </control>
--        </setting>
--        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="60016" help="60017">
--          <level>1</level>
--          <default>true</default>
--          <dependencies>
--            <dependency type="enable" setting="subtitles.repair">true</dependency>
--          </dependencies>
 -          <control type="toggle" />
 -        </setting>
 -        <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
@@ -128,33 +87,36 @@ index dbea077..8a5a62b 100755
 -          </dependencies>
 -          <control type="toggle" />
 -        </setting>
--        <setting id="subtitles.airepair" type="integer" parent="subtitles.repair" label="60090" help="60091">
+-        <setting id="subtitles.translate" type="integer" label="60060" help="60061">
 -          <level>1</level>
--          <default>0</default> <!-- Off -->
+-          <default>2</default> <!-- Automatic -->
 -          <constraints>
 -            <options>
 -              <option label="351">0</option> <!-- Off -->
--              <option label="60092">1</option> <!-- Doubtful words -->
--              <option label="60093">2</option> <!-- Every line -->
+-              <option label="60099">1</option> <!-- By hand -->
+-              <option label="60102">2</option> <!-- Automatic -->
 -            </options>
 -          </constraints>
 -          <dependencies>
--            <dependency type="enable" setting="subtitles.repair">true</dependency>
+-            <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
 -          </dependencies>
 -          <control type="list" format="string" />
 -        </setting>
--        <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
+-        <setting id="subtitles.aiguide" type="action" label="60095" help="60096">
 -          <level>1</level>
--          <default>false</default>
--          <control type="toggle" />
+-          <control type="button" format="action" />
 -        </setting>
 -        <setting id="subtitles.aiprovider" type="integer" label="60063" help="60064">
 -          <level>1</level>
--          <default>0</default> <!-- OpenRouter -->
+-          <default>3</default> <!-- None -->
 -          <constraints>
 -            <options>
+-              <option label="231">3</option> <!-- None -->
 -              <option label="60065">0</option> <!-- OpenRouter -->
 -              <option label="60066">1</option> <!-- OpenAI -->
+-              <option label="60081">4</option> <!-- Google Gemini -->
+-              <option label="60082">5</option> <!-- Anthropic -->
+-              <option label="60094">6</option> <!-- NVIDIA -->
 -              <option label="60067">2</option> <!-- A server of one's own -->
 -            </options>
 -          </constraints>
@@ -177,6 +139,9 @@ index dbea077..8a5a62b 100755
 -          <constraints>
 -            <allowempty>true</allowempty>
 -          </constraints>
+-          <dependencies>
+-            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
+-          </dependencies>
 -          <control type="edit" format="string">
 -            <hidden>true</hidden>
 -          </control>
@@ -187,20 +152,22 @@ index dbea077..8a5a62b 100755
 -          <constraints>
 -            <allowempty>true</allowempty>
 -          </constraints>
--          <control type="edit" format="string" />
--        </setting>
--        <setting id="subtitles.aimodels" type="action" parent="subtitles.aiprovider" label="60074" help="60075">
--          <level>1</level>
+-          <dependencies>
+-            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
+-          </dependencies>
 -          <control type="button" format="action" />
 -        </setting>
 -        <setting id="subtitles.aitest" type="action" parent="subtitles.aiprovider" label="60076" help="60077">
 -          <level>1</level>
+-          <dependencies>
+-            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
+-          </dependencies>
 -          <control type="button" format="action" />
 -        </setting>
          <setting id="subtitles.overridestyles" type="integer" label="39154" help="39155">
            <level>3</level>
            <default>0</default> <!-- OverrideStyles::DISABLED -->
-@@ -4298,26 +4163,6 @@
+@@ -4265,26 +4163,6 @@
              <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
            </dependencies>
          </setting>
@@ -227,106 +194,68 @@ index dbea077..8a5a62b 100755
          <setting id="coreelec.amlogic.dolbyvisionled"  type="integer" label="14424" help="14425">
            <requirement>HAVE_AMCODEC</requirement>
            <default>0</default>
-@@ -4340,6 +4185,145 @@
+@@ -4307,7 +4185,31 @@
            <control type="toggle" />
          </setting>
        </group>
+-      <group id="2" label="60025">
 +    </category>
 +    <category id="yacer" label="60007" help="60008">
-+      <group id="1" label="287">
-+        <setting id="subtitles.brightness" type="integer" label="60000" help="60001">
-+          <level>1</level>
-+          <default>100</default> <!-- nits -->
-+          <constraints>
-+            <minimum label="60002">0</minimum> <!-- As authored -->
-+            <step>10</step>
-+            <maximum>400</maximum>
-+          </constraints>
-+          <control type="spinner" format="string">
-+            <formatlabel>60003</formatlabel>
-+          </control>
-+        </setting>
-+        <setting id="subtitles.placement" type="integer" label="60004" help="60005">
-+          <level>1</level>
-+          <default>1</default> <!-- black bars -->
++      <group id="3" label="291">
++        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="60042" help="60043">
++          <requirement>HAVE_AMCODEC</requirement>
++          <default>0</default>
 +          <constraints>
 +            <options>
-+              <option label="351">0</option> <!-- Off -->
-+              <option label="60006">1</option> <!-- Black bars -->
++              <option label="351">0</option>
++              <option label="60040">1</option>
++              <option label="60041">2</option>
 +            </options>
 +          </constraints>
 +          <control type="list" format="string" />
-+        </setting>
-+        <setting id="subtitles.repair" type="boolean" label="60010" help="60011">
-+          <level>1</level>
-+          <default>true</default>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="subtitles.repairlanguages" type="list[string]" parent="subtitles.repair" label="60014" help="60015">
-+          <level>1</level>
-+          <default></default>
-+          <constraints>
-+            <options>subtitlerepairlanguages</options>
-+            <delimiter>,</delimiter>
-+          </constraints>
 +          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
++            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
 +          </dependencies>
-+          <control type="list" format="string">
-+            <multiselect>true</multiselect>
-+          </control>
 +        </setting>
-+        <setting id="subtitles.repairtiming" type="boolean" parent="subtitles.repair" label="60016" help="60017">
++      </group>
++      <group id="2" label="292">
+         <setting id="coreelec.amlogic.displayrelock" type="integer" label="60120" help="60121">
+           <requirement>HAVE_AMCODEC</requirement>
+           <level>2</level>
+@@ -4349,7 +4251,7 @@
+             <delimiter>,</delimiter>
+             <minimumitems>0</minimumitems>
+           </constraints>
+-          <default>0,1,2</default>
++          <default>0</default>
+           <dependencies>
+             <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
+           </dependencies>
+@@ -4358,6 +4260,112 @@
+           </control>
+         </setting>
+       </group>
++      <group id="4" label="60009">
++        <setting id="subtitles.aiguide" type="action" label="60095" help="60096">
 +          <level>1</level>
-+          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="subtitles.repairads" type="boolean" parent="subtitles.repair" label="60012" help="60013">
-+          <level>1</level>
-+          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
-+          <level>1</level>
-+          <default>true</default>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="toggle" />
-+        </setting>
-+        <setting id="subtitles.airepair" type="integer" parent="subtitles.repair" label="60090" help="60091">
-+          <level>1</level>
-+          <default>0</default> <!-- Off -->
-+          <constraints>
-+            <options>
-+              <option label="351">0</option> <!-- Off -->
-+              <option label="60092">1</option> <!-- Doubtful words -->
-+              <option label="60093">2</option> <!-- Every line -->
-+            </options>
-+          </constraints>
-+          <dependencies>
-+            <dependency type="enable" setting="subtitles.repair">true</dependency>
-+          </dependencies>
-+          <control type="list" format="string" />
-+        </setting>
-+        <setting id="subtitles.translate" type="boolean" label="60060" help="60061">
-+          <level>1</level>
-+          <default>false</default>
-+          <control type="toggle" />
++          <control type="button" format="action" />
 +        </setting>
 +        <setting id="subtitles.aiprovider" type="integer" label="60063" help="60064">
 +          <level>1</level>
-+          <default>0</default> <!-- OpenRouter -->
++          <default>3</default> <!-- None -->
 +          <constraints>
 +            <options>
++              <option label="231">3</option> <!-- None -->
 +              <option label="60065">0</option> <!-- OpenRouter -->
 +              <option label="60066">1</option> <!-- OpenAI -->
++              <option label="60081">4</option> <!-- Google Gemini -->
++              <option label="60082">5</option> <!-- Anthropic -->
++              <option label="60094">6</option> <!-- NVIDIA -->
 +              <option label="60067">2</option> <!-- A server of one's own -->
 +            </options>
 +          </constraints>
@@ -349,6 +278,9 @@ index dbea077..8a5a62b 100755
 +          <constraints>
 +            <allowempty>true</allowempty>
 +          </constraints>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
 +          <control type="edit" format="string">
 +            <hidden>true</hidden>
 +          </control>
@@ -359,53 +291,59 @@ index dbea077..8a5a62b 100755
 +          <constraints>
 +            <allowempty>true</allowempty>
 +          </constraints>
-+          <control type="edit" format="string" />
-+        </setting>
-+        <setting id="subtitles.aimodels" type="action" parent="subtitles.aiprovider" label="60074" help="60075">
-+          <level>1</level>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
 +          <control type="button" format="action" />
 +        </setting>
 +        <setting id="subtitles.aitest" type="action" parent="subtitles.aiprovider" label="60076" help="60077">
 +          <level>1</level>
++          <dependencies>
++            <dependency type="visible" setting="subtitles.aiprovider" operator="!is">3</dependency>
++          </dependencies>
 +          <control type="button" format="action" />
 +        </setting>
 +      </group>
-       <group id="2" label="60025">
-         <setting id="coreelec.amlogic.audiolead" type="integer" label="60020" help="60021">
-           <requirement>HAVE_AMCODEC</requirement>
-@@ -4369,7 +4353,7 @@
-             <delimiter>,</delimiter>
-             <minimumitems>0</minimumitems>
-           </constraints>
--          <default>0,1,2</default>
-+          <default>0</default>
-           <dependencies>
-             <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
-           </dependencies>
-@@ -4378,6 +4362,28 @@
-           </control>
-         </setting>
-       </group>
-+      <group id="3" label="60009">
-+        <setting id="coreelec.amlogic.hdr10plus2dv" type="integer" label="60042" help="60043">
-+          <requirement>HAVE_AMCODEC</requirement>
-+          <default>0</default>
++      <group id="1" label="287">
++        <setting id="subtitles.brightness" type="integer" label="60000" help="60001">
++          <level>1</level>
++          <default>100</default> <!-- nits -->
++          <constraints>
++            <minimum label="60002">0</minimum> <!-- As authored -->
++            <step>10</step>
++            <maximum>400</maximum>
++          </constraints>
++          <control type="spinner" format="string">
++            <formatlabel>60003</formatlabel>
++          </control>
++        </setting>
++        <setting id="subtitles.translate" type="integer" label="60060" help="60061">
++          <level>1</level>
++          <default>2</default> <!-- Automatic -->
 +          <constraints>
 +            <options>
-+              <option label="351">0</option>
-+              <option label="60040">1</option>
-+              <option label="60041">2</option>
++              <option label="351">0</option> <!-- Off -->
++              <option label="60099">1</option> <!-- By hand -->
++              <option label="60102">2</option> <!-- Automatic -->
 +            </options>
 +          </constraints>
-+          <control type="list" format="string" />
 +          <dependencies>
-+            <dependency type="enable" setting="coreelec.amlogic.sdr2hdr" operator="is">false</dependency>
-+            <dependency type="enable" setting="coreelec.amlogic.hdr2sdr" operator="is">false</dependency>
-+            <dependency type="enable" setting="coreelec.amlogic.hdr2dv" operator="is">false</dependency>
-+            <dependency type="enable" setting="coreelec.amlogic.dv2sdr" operator="is">false</dependency>
-+            <dependency type="enable" setting="coreelec.amlogic.dv2hdr" operator="is">false</dependency>
-+            <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
++            <dependency type="enable" setting="subtitles.aiprovider" operator="!is">3</dependency>
 +          </dependencies>
++          <control type="list" format="string" />
++        </setting>
++        <setting id="subtitles.repair" type="boolean" label="60010" help="60011">
++          <level>1</level>
++          <default>true</default>
++          <control type="toggle" />
++        </setting>
++        <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
++          <level>1</level>
++          <default>true</default>
++          <dependencies>
++            <dependency type="enable" setting="subtitles.repair">true</dependency>
++          </dependencies>
++          <control type="toggle" />
 +        </setting>
 +      </group>
      </category>

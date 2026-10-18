@@ -1,0 +1,2043 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: translate subtitles made of pictures, read by the
+ AI provider's model
+
+Only text could be translated, so a Blu-ray, a DVD or a DVB recording
+with picture subtitles in another language got nothing. Such a track,
+chosen to be read in another language, now opens in a codec of its own:
+the player's own decoder turns its packets into pictures, and the AI
+provider's model reads them as text - when it reads images - which then
+goes the way a text subtitle's does: repaired, translated, timed and
+shown as text.
+
+Text read off a picture carries no tags: every character of it is the
+subtitle's own - some tracks open a narrator's line with "< " - so the
+repair reads none of it as markup, the translation sends it as it is,
+and the display skips the tag conversion a text track's cues go through
+and writes the text so libass shows each character as itself: a brace
+escaped, a backslash with a word joiner after it, so it starts none of
+libass's own ("\N", "\h", "\{").
+
+Each line is shown where its picture was, by the third of the video its
+centre is in - one eye's video for a 3D subtitle: a sign at the top
+stays at the top, a line at a speaker's side stays at that side. A line
+at the bottom centre, as most are, is placed as any text subtitle is.
+
+Each picture is drawn in grey from its palette, the text's light as
+opaque as it is - its dark outline is not ink - and cropped to the text;
+a 3D subtitle is read by one eye - the player's split for a 3D screen,
+or cut from the picture of both on a 2D one - and the space between
+lines far apart closes to a line's. Its lines are counted and it is
+scaled so each is about 32 pixels high: the text's own height decides,
+not the video's, so a DVD subtitle keeps its size and a 4K one shrinks a
+lot, and none is enlarged. Eight are stacked in one picture, numbered,
+for one request - a model writes their text at the same pace however
+many, so the request costs what its answer does: a little under a second
+a subtitle on an 8 GB Jetson running Gemma 4 E4B, which read 79 of 80
+Blu-ray subtitles exactly. The player reads a disc's subtitles only
+about ten seconds ahead of the picture - three after a seek - and
+reading and translating a line takes about four, so the track is also
+read a minute ahead of playback in a demuxer of its own: the video
+opened again as playback opens it, a disc's playlist through the disc so
+both count time from the same start, a file without the player's cache,
+at no more than four times playback's pace so it takes nothing from it.
+Its subtitles and the player's are read once, whichever comes first; one
+the player reads where the read-ahead has been without seeing it stops
+the read-ahead, and the player's packets carry on alone. A picture is
+handed on as soon as it is read, not with the next packet, which can
+come minutes later; a clear goes the same way, in order. The display
+ends each line as the player ends a picture: where the next starts or
+clears, or at its own end when that comes first - PGS gives none, only
+the farthest time there is. What was read before a seek is dropped. The
+model is asked a word as the track opens, so a server that unloads it
+when idle has it loaded by the first picture.
+
+The model is asked for the text only, numbered; an answer that is not is
+dropped for its batch. When the model refuses three batches in a row, or
+answers them unread, it is taken to read no pictures - a provider that
+does not answer says nothing of that - and the pictures are shown as
+they are. With a track of text in another language the translation still
+starts from it; one of pictures is chosen only when there is none.
+
+The codec factory hands such a stream to the new codec: that seam and
+the two new files in the build list are all the shared code touched.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index cf3e892..d38f184 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25537,7 +25537,7 @@ msgstr ""
+ #. Help text of setting "Player -> Subtitles -> Translate subtitles"
+ #: system/settings/settings.xml
+ msgctxt "#60061"
+-msgid "Translate subtitles that are text, inside the video or in a SubRip file beside it, into another language. The subtitle dialog has a Translate to button: off, the language chosen for subtitles, then the languages subtitles are downloaded in - and whichever subtitle is chosen is shown in that language. A video with no subtitle in the language chosen for subtitles starts translated into it. A forced subtitle is never translated first. The language model of the AI provider translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. It uses the AI provider chosen in the AI section, and is off until one is."
++msgid "Translate subtitles into another language: text inside the video or in a SubRip file beside it, and subtitles made of pictures - Blu-ray, DVD, DVB - when the AI provider's model reads images, which reads them first. The subtitle dialog has a Translate to button: off, the language chosen for subtitles, then the languages subtitles are downloaded in - and whichever subtitle is chosen is shown in that language. A video with no subtitle in the language chosen for subtitles starts translated into it. A forced subtitle is never translated first. The language model of the AI provider translates it: the subtitle's lines, the video's title and the names of its characters are sent to the provider. It uses the AI provider chosen in the AI section, and is off until one is."
+ msgstr ""
+ 
+ #. Name of a subtitle in the subtitle list, translated into one language from another: "French (translated from English)"
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp
+index 99285d6..91a00ed 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.cpp
+@@ -15,6 +15,7 @@
+ #include "Overlay/DVDOverlayCodec.h"
+ #include "Overlay/DVDOverlayCodecCCText.h"
+ #include "Overlay/DVDOverlayCodecFFmpeg.h"
++#include "cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h"
+ #include "Overlay/DVDOverlayCodecSSA.h"
+ #include "Overlay/DVDOverlayCodecTX3G.h"
+ #include "Overlay/DVDOverlayCodecText.h"
+@@ -278,7 +279,10 @@ std::unique_ptr<CDVDOverlayCodec> CDVDFactoryCodec::CreateOverlayCodec(CDVDStrea
+       break;
+ 
+     default:
+-      pCodec = std::make_unique<CDVDOverlayCodecFFmpeg>();
++      if (hint.translateTo.empty())
++        pCodec = std::make_unique<CDVDOverlayCodecFFmpeg>();
++      else
++        pCodec = std::make_unique<CSubtitlePictureCodec>();
+       break;
+   }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+index 7c4af3b..c1df8a0 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
+@@ -17,6 +17,8 @@ set(SOURCES DVDFactorySubtitle.cpp
+             SubtitleListener.cpp
+             SubtitleModel.cpp
+             SubtitleParserWebVTT.cpp
++            SubtitlePictureCodec.cpp
++            SubtitlePictures.cpp
+             SubtitleSpeech.cpp
+             SubtitleTiming.cpp
+             SubtitleRevision.cpp
+@@ -43,6 +45,8 @@ set(HEADERS DVDFactorySubtitle.h
+             SubtitleListener.h
+             SubtitleModel.h
+             SubtitleParserWebVTT.h
++            SubtitlePictureCodec.h
++            SubtitlePictures.h
+             SubtitleSpeech.h
+             SubtitleTiming.h
+             SubtitleRevision.h
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 8fee6d2..5d0ae3e 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -37,6 +37,7 @@
+ #include "settings/SettingsComponent.h"
+ #include "settings/lib/Setting.h"
+ #include "threads/IRunnable.h"
++#include "utils/Base64.h"
+ #include "utils/JSONVariantParser.h"
+ #include "utils/JSONVariantWriter.h"
+ #include "utils/LangCodeExpander.h"
+@@ -493,7 +494,11 @@ public:
+     bool reasoned{false}; //!< the model reasoned before it answered
+   };
+ 
+-  Reply Send(const std::string& system, const std::string& user, std::string& error)
++  //! \param png a picture the user's words are about, or none
++  Reply Send(const std::string& system,
++             const std::string& user,
++             std::string& error,
++             const std::string* png = nullptr)
+   {
+     CVariant request(CVariant::VariantTypeObject);
+     request["model"] = m_provider.model;
+@@ -502,11 +507,26 @@ public:
+     request["max_tokens"] = 2048;
+     CVariant messages(CVariant::VariantTypeArray);
+     CVariant message(CVariant::VariantTypeObject);
+-    message["role"] = "system";
+-    message["content"] = system;
+-    messages.push_back(message);
++    if (!system.empty())
++    {
++      message["role"] = "system";
++      message["content"] = system;
++      messages.push_back(message);
++    }
+     message["role"] = "user";
+     message["content"] = user;
++    if (png)
++    {
++      CVariant text(CVariant::VariantTypeObject);
++      text["type"] = "text";
++      text["text"] = user;
++      CVariant image(CVariant::VariantTypeObject);
++      image["type"] = "image_url";
++      image["image_url"]["url"] = "data:image/png;base64," + Base64::Encode(*png);
++      message["content"] = CVariant(CVariant::VariantTypeArray);
++      message["content"].push_back(text);
++      message["content"].push_back(image);
++    }
+     messages.push_back(message);
+     request["messages"] = messages;
+     // a model that reasons first takes ten times as long for nothing a subtitle needs
+@@ -563,6 +583,84 @@ private:
+   unsigned int m_batch{0}; //!< and how many when the batch in progress began
+ };
+ 
++/*!
++ * \brief The provider the settings name, with the model it is asked for: the newest of a family
++ * once the provider has said which - not waited for - or none until then.
++ */
++std::optional<Provider> ModelProvider()
++{
++  Provider provider = CurrentProvider();
++  if (!FamilyNamed(provider.model).empty())
++    Available(false);
++  provider.model = ModelInUse(provider);
++  if (provider.model.empty())
++    return std::nullopt;
++  return provider;
++}
++} // namespace
++
++struct CPictureAsk::Chat : CChat
++{
++  explicit Chat(Provider provider) : CChat(std::move(provider), 60s) {}
++};
++
++CPictureAsk::CPictureAsk() = default;
++
++CPictureAsk::~CPictureAsk() = default;
++
++std::optional<std::string> CPictureAsk::Ask(const std::string& prompt,
++                                            const std::string& png,
++                                            std::string& error)
++{
++  {
++    std::unique_lock guard(m_lock);
++    if (m_cancelled)
++      return std::nullopt;
++    // the model is known once the provider has been asked: until then nothing is sent
++    if (!m_chat)
++      if (std::optional<Provider> provider = ModelProvider())
++        m_chat = std::make_unique<Chat>(std::move(*provider));
++    if (!m_chat)
++      return std::nullopt;
++  }
++  m_chat->Begin();
++  return m_chat->Send({}, prompt, error, &png).text;
++}
++
++void CPictureAsk::Wake()
++{
++  std::string error;
++  {
++    std::unique_lock guard(m_lock);
++    if (m_cancelled)
++      return;
++    if (!m_chat)
++      if (std::optional<Provider> provider = ModelProvider())
++        m_chat = std::make_unique<Chat>(std::move(*provider));
++    if (!m_chat)
++      return;
++  }
++  m_chat->Begin();
++  m_chat->Send({}, "Answer with the word OK.", error);
++}
++
++void CPictureAsk::Abort()
++{
++  std::unique_lock guard(m_lock);
++  if (m_chat)
++    m_chat->Abort();
++}
++
++void CPictureAsk::Cancel()
++{
++  std::unique_lock guard(m_lock);
++  m_cancelled = true;
++  if (m_chat)
++    m_chat->Cancel();
++}
++
++namespace
++{
+ class CCall : public IRunnable
+ {
+ public:
+@@ -895,23 +993,25 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+                                               MODEL::CCueWorker::Now now,
+-                                              bool& doubts)
++                                              bool& doubts,
++                                              bool tags)
+ {
+   doubts = false;
+-  Provider provider = CurrentProvider();
+-  // the newest of a family is known once the provider has been asked: not waited for here, the
+-  // subtitle goes without until it is
+-  if (!FamilyNamed(provider.model).empty())
+-    Available(false);
+-  provider.model = ModelInUse(provider);
+-  if (provider.model.empty())
++  // the newest of a family is known once the provider has been asked: the subtitle goes without
++  // until it is
++  std::optional<Provider> model = ModelProvider();
++  if (!model)
+     return nullptr;
++  const Provider& provider = *model;
+   if (!hints.translateTo.empty())
+-    return std::make_unique<MODEL::CCueWorker>(
+-        std::make_unique<CChat>(provider, silence),
+-        TRANSLATION::Translation(
+-            ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo)),
+-        std::move(deliver), std::move(now));
++  {
++    TRANSLATION::Context context =
++        ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo);
++    context.tags = tags;
++    return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
++                                               TRANSLATION::Translation(std::move(context)),
++                                               std::move(deliver), std::move(now));
++  }
+   const std::optional<REVISION::Mode> mode = RepairMode();
+   if (!mode)
+     return nullptr;
+@@ -1074,6 +1174,14 @@ bool IsText(const SelectionStream& st)
+          (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
+           URIUtils::HasExtension(st.filename, ".srt"));
+ }
++
++//! Whether a track is pictures inside the video the model can read as text: Blu-ray, DVD, DVB.
++bool IsPictures(const SelectionStream& st)
++{
++  return STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
++         (st.codecId == AV_CODEC_ID_HDMV_PGS_SUBTITLE || st.codecId == AV_CODEC_ID_DVD_SUBTITLE ||
++          st.codecId == AV_CODEC_ID_DVB_SUBTITLE);
++}
+ } // namespace
+ 
+ std::string TranslationLabel()
+@@ -1145,13 +1253,20 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
+       return;
+     translating = translation.open.has_value();
+   }
+-  // how the video starts: translated when it has no subtitle in the language the viewer reads
++  // how the video starts: translated when it has no subtitle in the language the viewer reads,
++  // from text when it has some, else from pictures
+   std::vector<TR::Track> tracks;
+   for (const SelectionStream& st : ordered)
+     tracks.push_back({TR::CodeOf(st.language), reads(st.language),
+                       (st.flags & StreamFlags::FLAG_FORCED) != 0, IsText(st)});
++  auto source = TR::ChooseSource(tracks);
++  if (!source)
++  {
++    for (size_t i = 0; i < tracks.size(); ++i)
++      tracks[i].text = tracks[i].text || IsPictures(ordered[i]);
++    source = TR::ChooseSource(tracks);
++  }
+   // a provider that does not answer starts nothing - but a translation being shown stays
+-  const auto source = TR::ChooseSource(tracks);
+   const bool starts = source && (translating || Available());
+   if (starts)
+     m_source = ordered[*source].type_index;
+@@ -1205,7 +1320,7 @@ std::string CTranslatedEntry::TranslateTo(int64_t demuxerId,
+   translation.track = from;
+   if (translation.target.empty())
+     return {};
+-  if (!IsText(st) || from.empty() || from == translation.target)
++  if ((!IsText(st) && !IsPictures(st)) || from.empty() || from == translation.target)
+     return {};
+   translation.open = Translation::Open{demuxerId, id, source};
+   return translation.target;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 62ac3d6..2dfa804 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -16,6 +16,7 @@
+ #include <cstdint>
+ #include <functional>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ 
+ class CDVDStreamInfo;
+@@ -86,13 +87,15 @@ std::string LanguageName(const std::string& code);
+  * nothing to show for it, which still ends a cue left open before it
+  * \param now where playback is, for a file known whole; empty for a track read as it plays
+  * \param doubts set to whether the work wants the words the repair doubts with each cue
++ * \param tags whether the cues can carry tags: text read off pictures carries none
+  */
+ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               const std::string& language,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+                                               MODEL::CCueWorker::Now now,
+-                                              bool& doubts);
++                                              bool& doubts,
++                                              bool tags = true);
+ 
+ //! Where playback is, in the time base of the cues of a subtitle file.
+ double PlaybackTime();
+@@ -158,6 +161,32 @@ private:
+   std::optional<int> m_source;
+ };
+ 
++/*!
++ * \brief The AI provider's model asked about a picture: how subtitles made of pictures are read.
++ * The provider and model are the settings' when it is made.
++ */
++class CPictureAsk
++{
++public:
++  CPictureAsk();
++  ~CPictureAsk();
++  //! The model's answer about a PNG picture, or none, with why when the provider said.
++  std::optional<std::string> Ask(const std::string& prompt, const std::string& png, std::string& error);
++  //! Have the model loaded before the first picture comes: a server that unloads it when idle
++  //! takes seconds to load it again.
++  void Wake();
++  //! Drop the request in progress: the pictures it is for are no longer wanted.
++  void Abort();
++  //! End the request in progress, and any to come: the stream closes.
++  void Cancel();
++
++private:
++  struct Chat;
++  std::mutex m_lock;
++  std::unique_ptr<Chat> m_chat; //!< made once the model is known
++  bool m_cancelled{false};
++};
++
+ /*!
+  * \brief The settings' buttons - pick a model from those the provider lists, test the
+  * connection - and a question to the provider when its settings change.
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+index de17466..272a54f 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.cpp
+@@ -322,9 +322,12 @@ std::wregex Pattern(const wchar_t* pattern, bool icase = false)
+ 
+ // -- markup ----------------------------------------------------------------------------------
+ 
+-//! A line as alternating text and markup (<tag> or {label}), text first.
+-std::vector<std::wstring> SplitMarkup(const std::wstring& line)
++//! A line as alternating text and markup (<tag> or {label}), text first; a line that carries no
++//! tags is all text.
++std::vector<std::wstring> SplitMarkup(const std::wstring& line, bool tags)
+ {
++  if (!tags)
++    return {line};
+   std::vector<std::wstring> parts;
+   size_t textStart = 0;
+   size_t i = 0;
+@@ -350,19 +353,19 @@ std::vector<std::wstring> SplitMarkup(const std::wstring& line)
+   return parts;
+ }
+ 
+-std::wstring Visible(const std::wstring& line)
++std::wstring Visible(const std::wstring& line, bool tags)
+ {
+   std::wstring out;
+-  const std::vector<std::wstring> parts = SplitMarkup(line);
++  const std::vector<std::wstring> parts = SplitMarkup(line, tags);
+   for (size_t i = 0; i < parts.size(); i += 2)
+     out += parts[i];
+   return out;
+ }
+ 
+ template<typename F>
+-std::wstring MapText(const std::wstring& line, F f)
++std::wstring MapText(const std::wstring& line, F f, bool tags)
+ {
+-  std::vector<std::wstring> parts = SplitMarkup(line);
++  std::vector<std::wstring> parts = SplitMarkup(line, tags);
+   std::wstring out;
+   for (size_t i = 0; i < parts.size(); ++i)
+     out += (i % 2) ? parts[i] : f(parts[i]);
+@@ -853,33 +856,39 @@ std::wstring RepairChars(const std::wstring& line, bool utf)
+ 
+ // -- music notes -----------------------------------------------------------------------------
+ 
+-#define SKIP L"(?:<[^>]*>|\\{[^}]*\\}|\\s)*" // tags and spaces around the visible text
++// tags and spaces around the visible text, or only spaces in text that carries no tags
++#define SKIP L"(?:<[^>]*>|\\{[^}]*\\}|\\s)*"
++#define SPACES L"\\s*"
+ 
+-const std::wregex& LeadHash()
++const std::wregex& LeadHash(bool tags)
+ {
+-  static const std::wregex r = Pattern(L"^(" SKIP L"(?:-" SKIP L")?)#+(?!\\d)"); // "#260": a number
+-  return r;
++  // "#260": a number
++  static const std::wregex r[] = {Pattern(L"^(" SPACES L"(?:-" SPACES L")?)#+(?!\\d)"),
++                                  Pattern(L"^(" SKIP L"(?:-" SKIP L")?)#+(?!\\d)")};
++  return r[tags];
+ }
+ 
+-const std::wregex& TrailHash()
++const std::wregex& TrailHash(bool tags)
+ {
+-  static const std::wregex r = Pattern(L"#+(" SKIP L")$");
+-  return r;
++  static const std::wregex r[] = {Pattern(L"#+(" SPACES L")$"), Pattern(L"#+(" SKIP L")$")};
++  return r[tags];
+ }
+ 
+-const std::wregex& Paired()
++const std::wregex& Paired(bool tags)
+ {
+   // "J Happy birthday to you J"
+-  static const std::wregex r = Pattern(L"^(" SKIP L")([JjÌì]) (.+) \\2(" SKIP L")$");
+-  return r;
++  static const std::wregex r[] = {
++      Pattern(L"^(" SPACES L")([JjÌì]) (.+) \\2(" SPACES L")$"),
++      Pattern(L"^(" SKIP L")([JjÌì]) (.+) \\2(" SKIP L")$")};
++  return r[tags];
+ }
+ 
+ //! Whether a line counts toward "#" being this file's note: wrapped in it ("#ah-ah-ah#") -
+ //! first - or opening with it and a space ("# Love is in the air") - second. A hashtag
+ //! ("#260", "#random") never has a space after it.
+-std::pair<bool, bool> HashEvidence(const std::wstring& line)
++std::pair<bool, bool> HashEvidence(const std::wstring& line, bool tags)
+ {
+-  const std::wstring v = LStrip(Strip(Visible(line)), L"- ");
++  const std::wstring v = LStrip(Strip(Visible(line, tags)), L"- ");
+   if (v.size() >= 2 && v.front() == L'#' && v.back() == L'#')
+     return {true, false};
+   if (v.size() > 2 && v.compare(0, 2, L"# ") == 0)
+@@ -887,13 +896,13 @@ std::pair<bool, bool> HashEvidence(const std::wstring& line)
+   return {false, false};
+ }
+ 
+-bool HashIsNote(const std::vector<std::wstring>& lines)
++bool HashIsNote(const std::vector<std::wstring>& lines, bool tags)
+ {
+   int wrapped = 0;
+   int opened = 0;
+   for (const std::wstring& line : lines)
+   {
+-    const auto [w, o] = HashEvidence(line);
++    const auto [w, o] = HashEvidence(line, tags);
+     wrapped += w;
+     opened += o;
+     if (wrapped >= 2 || opened >= 3)
+@@ -928,26 +937,27 @@ std::wstring NotesInText(const std::wstring& text)
+ }
+ 
+ //! Inside a tag or a {label} a mark is left alone: "{Man ¶¶ 2}" is an OCR'd "#2".
+-std::wstring FixNotes(const std::wstring& input, bool hashNotes)
++std::wstring FixNotes(const std::wstring& input, bool hashNotes, bool tags)
+ {
+-  std::wstring line = MapText(input, NotesInText);
++  std::wstring line = MapText(input, NotesInText, tags);
+   const std::wstring note(1, NOTE);
+   if (hashNotes && line.find(L'#') != std::wstring::npos)
+   {
+-    line = std::regex_replace(line, LeadHash(), L"$1" + note);
+-    line = std::regex_replace(line, TrailHash(), note + L"$1");
++    line = std::regex_replace(line, LeadHash(tags), L"$1" + note);
++    line = std::regex_replace(line, TrailHash(tags), note + L"$1");
+   }
+   // Paired() needs the same mark before a space and after one
+   for (const wchar_t mark : {L'J', L'j', static_cast<wchar_t>(0xCC), static_cast<wchar_t>(0xEC)})
+   {
+     if (line.find(std::wstring{mark, L' '}) != std::wstring::npos &&
+         line.find(std::wstring{L' ', mark}) != std::wstring::npos)
+-      return std::regex_replace(line, Paired(), L"$1" + note + L" $3 " + note + L"$4");
++      return std::regex_replace(line, Paired(tags), L"$1" + note + L" $3 " + note + L"$4");
+   }
+   return line;
+ }
+ 
+ #undef SKIP
++#undef SPACES
+ 
+ // -- advertising -----------------------------------------------------------------------------
+ 
+@@ -1031,18 +1041,18 @@ bool MayBeAdAtEdge(const std::wstring& lower)
+ 
+ //! A line is removed only for what it says itself, never for the line it shares a cue with:
+ //! "Woohoo" and "WWW.CRAZY-TORRENT.COM" can be one cue, and "Woohoo" is the film.
+-bool IsAd(const std::wstring& line, bool atEdge)
++bool IsAd(const std::wstring& line, bool atEdge, bool tags)
+ {
+-  const std::wstring text = Visible(line);
++  const std::wstring text = Visible(line, tags);
+   const std::wstring lower = AsciiLower(text);
+   return (MayBeAd(lower) && std::regex_search(text, AdAnywhere())) ||
+          (atEdge && MayBeAdAtEdge(lower) && std::regex_search(text, AdAtEdges()));
+ }
+ 
+ //! Nothing but markup and ASCII white space.
+-bool OnlyMarkup(const std::wstring& line)
++bool OnlyMarkup(const std::wstring& line, bool tags)
+ {
+-  const std::wstring visible = Visible(line);
++  const std::wstring visible = Visible(line, tags);
+   return std::all_of(visible.begin(), visible.end(), [](wchar_t c) {
+     return c == L' ' || c == L'\t' || c == L'\n' || c == L'\r' || c == L'\f' || c == L'\v';
+   });
+@@ -1831,8 +1841,9 @@ LigatureReadings ReadLigatures(const std::wstring& line)
+ 
+ COcrEngine::COcrEngine(std::shared_ptr<const CLanguagePack> language,
+                        const Packs& others,
+-                       const std::vector<std::string>& cast)
+-  : m_lang(std::move(language))
++                       const std::vector<std::string>& cast,
++                       bool tags)
++  : m_lang(std::move(language)), m_tags(tags)
+ {
+   for (const auto& other : others)
+     if (other->Name() != m_lang->Name())
+@@ -1868,7 +1879,7 @@ void COcrEngine::NoteNames(const std::vector<std::wstring>& lines)
+     return;
+   for (const std::wstring& line : lines)
+   {
+-    const std::wstring text = Visible(line);
++    const std::wstring text = Visible(line, m_tags);
+     for (const auto& [start, n] : Words(text))
+     {
+       const std::wstring w = text.substr(start, n);
+@@ -1903,7 +1914,7 @@ void COcrEngine::Learn(const std::vector<std::wstring>& lines)
+   const std::vector<Confusion>& confusions = m_lang->Confusions();
+   for (const std::wstring& line : lines)
+   {
+-    const std::wstring text = Visible(line);
++    const std::wstring text = Visible(line, m_tags);
+     const Spans spans = Words(text);
+     for (const auto& [a, n] : spans)
+     {
+@@ -2236,12 +2247,13 @@ std::wstring COcrEngine::Rejoin(const std::wstring& text,
+ std::wstring COcrEngine::FixLine(const std::wstring& original,
+                                  std::vector<std::pair<std::wstring, std::wstring>>* fixes)
+ {
+-  const std::wstring line = MapText(original, [&](const std::wstring& part)
+-                                    { return FixLigatures(Rejoin(part, fixes), fixes); });
++  const std::wstring line = MapText(
++      original, [&](const std::wstring& part) { return FixLigatures(Rejoin(part, fixes), fixes); },
++      m_tags);
+   const std::vector<Confusion> active = Active();
+   if (active.empty())
+     return line;
+-  const std::wstring text = Visible(line);
++  const std::wstring text = Visible(line, m_tags);
+   const Spans spans = Words(text);
+   std::vector<bool> pending(spans.size(), false);
+   bool any = false;
+@@ -2270,12 +2282,12 @@ std::wstring COcrEngine::FixLine(const std::wstring& original,
+       last = a + n;
+     }
+     return out + part.substr(last);
+-  });
++  }, m_tags);
+ }
+ 
+ std::vector<std::wstring> COcrEngine::Doubtful(const std::wstring& line)
+ {
+-  const std::wstring text = Visible(line);
++  const std::wstring text = Visible(line, m_tags);
+   const Spans spans = Words(text);
+   std::vector<std::wstring> doubts;
+   if (!ReadsAsLanguage(text, std::vector<bool>(spans.size(), false)))
+@@ -2329,11 +2341,11 @@ std::string LanguageOfPath(const std::string& path)
+ 
+ namespace
+ {
+-std::string JoinVisible(const std::vector<std::wstring>& lines)
++std::string JoinVisible(const std::vector<std::wstring>& lines, bool tags)
+ {
+   std::wstring text;
+   for (size_t i = 0; i < lines.size(); ++i)
+-    text += (i ? L"\n" : L"") + Visible(lines[i]);
++    text += (i ? L"\n" : L"") + Visible(lines[i], tags);
+   return ToUtf8(text);
+ }
+ 
+@@ -2341,9 +2353,10 @@ std::string JoinVisible(const std::vector<std::wstring>& lines)
+ std::shared_ptr<const CLanguagePack> Detected(const std::vector<std::wstring>& lines,
+                                               const Packs& packs,
+                                               const Detector& detect,
+-                                              bool& sure)
++                                              bool& sure,
++                                              bool tags)
+ {
+-  const Detection d = detect(JoinVisible(lines));
++  const Detection d = detect(JoinVisible(lines, tags));
+   sure = d.reliable && d.percent >= DETECT_PERCENT;
+   return sure ? PackFor(d.code, packs) : nullptr;
+ }
+@@ -2372,7 +2385,7 @@ void FixOcr(std::vector<Block>& blocks,
+   if (!language.empty())
+     pack = PackFor(language, packs);
+   else if (detect)
+-    pack = Detected(all, packs, detect, sure);
++    pack = Detected(all, packs, detect, sure, true);
+   if (!pack)
+     return;
+   COcrEngine engine(pack, packs, cast);
+@@ -2418,7 +2431,7 @@ bool CleanSubRip(const std::string& data,
+     cueIndexes.push_back(i);
+     allLines.insert(allLines.end(), blocks[i].cue->lines.begin(), blocks[i].cue->lines.end());
+   }
+-  const bool hashNotes = HashIsNote(allLines);
++  const bool hashNotes = HashIsNote(allLines, true);
+   std::vector<bool> edge(blocks.size(), false);
+   for (size_t k = 0; k < cueIndexes.size(); ++k)
+     if (k < EDGE_CUES || k + EDGE_CUES >= cueIndexes.size())
+@@ -2442,17 +2455,18 @@ bool CleanSubRip(const std::string& data,
+       ligatures.insert(found.begin(), found.end());
+       const std::wstring fixed = RepairChars(original, utf);
+       report.repairedLines += fixed != original;
+-      if (options.removeAds && IsAd(fixed, edge[i]))
++      if (options.removeAds && IsAd(fixed, edge[i], true))
+       {
+         ++report.adLines;
+-        report.removed.push_back(ToUtf8(Strip(Visible(fixed))));
++        report.removed.push_back(ToUtf8(Strip(Visible(fixed, true))));
+         continue;
+       }
+-      std::wstring noted = FixNotes(fixed, hashNotes);
++      std::wstring noted = FixNotes(fixed, hashNotes, true);
+       report.notesFixed += noted != fixed;
+       lines.push_back(std::move(noted));
+     }
+-    if (!cue.lines.empty() && std::all_of(lines.begin(), lines.end(), OnlyMarkup))
++    if (!cue.lines.empty() && std::all_of(lines.begin(), lines.end(),
++                                           [](const std::wstring& l) { return OnlyMarkup(l, true); }))
+     {
+       ++report.cuesDropped;
+       continue;
+@@ -2486,7 +2500,7 @@ CCueCleaner::CCueCleaner(const Options& options,
+   if (!language.empty())
+   {
+     if (const auto pack = PackFor(language, m_packs))
+-      m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast);
++      m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast, m_options.tags);
+   }
+   else
+     m_detect = std::move(detect);
+@@ -2504,7 +2518,7 @@ bool CCueCleaner::Clean(std::string& text, std::vector<std::string>* doubts)
+   // learn, from the cues seen so far, whether "#" is this track's note
+   for (const std::wstring& line : original)
+   {
+-    const auto [w, o] = HashEvidence(line);
++    const auto [w, o] = HashEvidence(line, m_options.tags);
+     m_wrapped += w;
+     m_opened += o;
+   }
+@@ -2514,11 +2528,12 @@ bool CCueCleaner::Clean(std::string& text, std::vector<std::string>* doubts)
+   for (const std::wstring& line : original)
+   {
+     const std::wstring fixed = RepairChars(line, true);
+-    if (m_options.removeAds && IsAd(fixed, false))
++    if (m_options.removeAds && IsAd(fixed, false, m_options.tags))
+       continue;
+-    lines.push_back(FixNotes(fixed, hashNotes));
++    lines.push_back(FixNotes(fixed, hashNotes, m_options.tags));
+   }
+-  if (std::all_of(lines.begin(), lines.end(), OnlyMarkup))
++  if (std::all_of(lines.begin(), lines.end(),
++                  [this](const std::wstring& l) { return OnlyMarkup(l, m_options.tags); }))
+     return false;
+ 
+   if (!m_ocr && m_detect)
+@@ -2529,9 +2544,9 @@ bool CCueCleaner::Clean(std::string& text, std::vector<std::string>* doubts)
+     if (++m_cuesSeen % DETECT_CUES == 0)
+     {
+       bool sure = false;
+-      if (const auto pack = Detected(m_undetected, m_packs, m_detect, sure))
++      if (const auto pack = Detected(m_undetected, m_packs, m_detect, sure, m_options.tags))
+       {
+-        m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast);
++        m_ocr = std::make_unique<COcrEngine>(pack, m_packs, m_options.cast, m_options.tags);
+         m_ocr->NoteNames(m_undetected);
+         m_ocr->Learn(m_undetected);
+       }
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+index d360c29..102760f 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCleanup.h
+@@ -144,10 +144,12 @@ public:
+   /*!
+    * \param cast the roles of the film's or show's cast ("Martin Hale Rozer"): names a word
+    * the OCR broke into letters may be, before the file has written them whole
++   * \param tags whether the lines can carry tags (<i>, {\an8}): with none, every character is text
+    */
+   COcrEngine(std::shared_ptr<const CLanguagePack> language,
+              const Packs& others,
+-             const std::vector<std::string>& cast = {});
++             const std::vector<std::string>& cast = {},
++             bool tags = true);
+ 
+   //! Remember the words the lines capitalise mid-sentence: names keep their spelling.
+   void NoteNames(const std::vector<std::wstring>& lines);
+@@ -203,6 +205,7 @@ private:
+   std::unordered_map<std::wstring, int> m_uses; //!< every word learnt from, as written
+   std::unordered_map<std::wstring, int> m_usesLower; //!< and in small letters
+   std::unordered_set<std::wstring> m_cast; //!< the names in the cast's roles
++  bool m_tags; //!< whether the lines can carry tags
+   //! per confusion: the misread words it explains and how often; how often the right letter is
+   //! written correctly
+   std::map<Confusion, std::map<std::wstring, int>> m_evidence;
+@@ -216,6 +219,9 @@ struct Options
+   bool removeAds{true};
+   bool fixOcr{true};
+   bool fixTiming{true};
++  //! whether the cues can carry tags (<i>, {\an8}); text read off pictures carries none, and a
++  //! "<" or "{" in it is the subtitle's own
++  bool tags{true};
+   //! the roles of the cast of what plays ("Martin Hale Rozer"), UTF-8: names a word the OCR
+   //! broke into letters may be rejoined into
+   std::vector<std::string> cast;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index af32c7a..9e89989 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -210,7 +210,7 @@ void CCueStage::Stop()
+   m_file.clear();
+ }
+ 
+-void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
++void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bool tags)
+ {
+   Stop();
+   // its thread delivers to what follows
+@@ -221,11 +221,13 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+   m_doubter.reset();
+   m_doubts = false;
+   m_timing = false;
++  m_tags = tags;
+   m_prevLengthened = false;
+   const std::string language = TRANSLATION::CodeOf(hints.language);
+   CLEANUP::Options repair;
+   if (text && CLEANUP::CurrentOptions(repair))
+   {
++    repair.tags = tags;
+     m_cleaner.emplace(repair, repair.fixOcr ? CLEANUP::InstalledPacks().get() : nullptr,
+                       language, CLEANUP::DetectLanguage);
+     m_timing = repair.fixTiming;
+@@ -235,7 +237,7 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver)
+   if (!hints.translateTo.empty() || m_cleaner)
+     m_worker = AI::MakeWorker(hints, language,
+                               std::chrono::seconds(hints.translateTo.empty() ? 15 : 30),
+-                              m_deliver, {}, m_doubts);
++                              m_deliver, {}, m_doubts, tags);
+   m_removes = m_cleaner || m_worker;
+ }
+ 
+@@ -254,6 +256,7 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+   m_doubter.reset();
+   m_doubts = false;
+   m_timing = false;
++  m_tags = true;
+   m_file = file;
+   m_video = hints.video;
+   // the whole file is known: it is worked on from where playback is, ahead of it
+@@ -679,7 +682,7 @@ std::optional<double> CCueStage::Time(double start, double& stop, const std::str
+     return {};
+   using namespace CLEANUP;
+   constexpr double MS = DVD_TIME_BASE / 1000.0;
+-  const int position = CCueCleaner::Position(text);
++  const int position = m_tags ? CCueCleaner::Position(text) : MODEL::BOTTOM_CENTRE;
+ 
+   // the previous line: ends where this one starts if it runs briefly into it at the same place,
+   // or if it was lengthened to be seen and this one comes sooner
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index a7f0ec4..d99ed2b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -54,8 +54,9 @@ public:
+   /*!
+    * \brief Set up for a stream inside the video being opened.
+    * \param text whether its cues are text the repair can read (not SSA)
++   * \param tags whether its cues can carry tags: text read off pictures carries none
+    */
+-  void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver);
++  void Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bool tags = true);
+   /*!
+    * \brief Set up for a subtitle file beside the video, known whole and worked on ahead of
+    * playback. Its cues are shown as they are at once and, when the video's own subtitles show
+@@ -145,6 +146,7 @@ private:
+   std::optional<CLEANUP::CCueCleaner> m_doubter;
+   bool m_doubts{false}; //!< the worker wants the words the repair doubts
+   bool m_timing{false};
++  bool m_tags{true}; //!< whether the cues can carry tags, {\anN} among them
+   double m_prevStart{0};
+   double m_prevStop{0};
+   int m_prevPosition{0};
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index 99039be..fead3ab 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -15,7 +15,7 @@
+ 
+ namespace KODI::SUBTITLES::MODEL
+ {
+-std::string Plain(const std::string& text)
++std::string Plain(const std::string& text, bool tags)
+ {
+   // what the screen hides is dropped: a "<...>" or "{...}" closed on its line (Kodi erases the
+   // one, libass the other); a "<" or "{" never closed shows, and stays. White space collapsed.
+@@ -25,7 +25,7 @@ std::string Plain(const std::string& text)
+   for (size_t i = 0; i < text.size(); ++i)
+   {
+     const char c = text[i];
+-    if (c == '<' || c == '{')
++    if (tags && (c == '<' || c == '{'))
+     {
+       size_t& end = ends[c == '{'];
+       if (end <= i)
+@@ -51,6 +51,31 @@ std::string Plain(const std::string& text)
+   return out;
+ }
+ 
++std::string AssText(const std::string& text)
++{
++  std::string out;
++  out.reserve(text.size());
++  for (const char c : text)
++  {
++    if (c == '{' || c == '}')
++      out += '\\';
++    out += c;
++    if (c == '\\')
++      out += "\u2060";
++  }
++  return out;
++}
++
++int Place(int x0, int y0, int x1, int y1, int width, int height)
++{
++  if (width <= 0 || height <= 0 || x1 <= x0 || y1 <= y0)
++    return BOTTOM_CENTRE;
++  // which third the centre is in; twice the centre against two thirds of twice the size
++  const auto third = [](long long a, long long b, long long size)
++  { return (a + b) * 3 < size * 2 ? 0 : (a + b) * 3 < size * 4 ? 1 : 2; };
++  return (2 - third(y0, y1, height)) * 3 + third(x0, x1, width) + 1;
++}
++
+ std::string Preamble(const std::string& title,
+                      const std::vector<std::string>& cast,
+                      const std::deque<std::string>& before)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index 91389fa..f523992 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -65,8 +65,30 @@ struct Item
+ //! What the model does to a batch of cues.
+ using Work = std::function<Outcome(IChat& chat, const std::vector<Item>& cues)>;
+ 
+-//! A cue's text as a model reads it: formatting tags dropped, lines joined by a space.
+-std::string Plain(const std::string& text);
++/*!
++ * \brief A cue's text as a model reads it: formatting tags dropped, lines joined by a space.
++ * \param tags whether the text can carry tags; text read off a picture carries none, and every
++ * character of it is the subtitle's
++ */
++std::string Plain(const std::string& text, bool tags = true);
++
++/*!
++ * \brief Text that carries no tags, as libass is given it to show every character as itself:
++ * a "{" or "}" as an escaped brace, a "\\" with a word joiner after it, so that it starts none
++ * of libass's "\\N", "\\n", "\\h", "\\{" or "\\}". A line break stays one.
++ */
++std::string AssText(const std::string& text);
++
++//! The {\anN} of a text subtitle that asks for no place of its own.
++constexpr int BOTTOM_CENTRE = 2;
++
++/*!
++ * \brief Where on the video a box sits, as the {\anN} that puts a text subtitle there: 7, 8, 9
++ * along the top, 4, 5, 6 across the middle, 1, 2, 3 along the bottom - by the third of the video
++ * its centre is in. BOTTOM_CENTRE for a box or a video with no size.
++ * \param x0, y0, x1, y1 the box, its right and bottom edges excluded
++ */
++int Place(int x0, int y0, int x1, int y1, int width, int height);
+ 
+ //! What a model is told of the video before the lines: its title, its characters' names, and
+ //! the lines before them, for context only.
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+new file mode 100644
+index 0000000..f1b3e61
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+@@ -0,0 +1,377 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitlePictureCodec.h"
++
++#include "DVDDemuxers/DVDDemux.h"
++#include "DVDDemuxers/DVDDemuxUtils.h"
++#include "DVDDemuxers/DVDFactoryDemuxer.h"
++#include "DVDInputStreams/DVDFactoryInputStream.h"
++#include "DVDInputStreams/DVDInputStream.h"
++#include "DVDInputStreams/DVDInputStreamFile.h"
++#include "filesystem/File.h"
++#include "DVDStreamInfo.h"
++#include "DVDSubtitles/SubtitleAI.h"
++#include "FileItem.h"
++#include "URL.h"
++#include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
++#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.h"
++#include "cores/VideoPlayer/Interface/DemuxPacket.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
++#include "utils/log.h"
++
++#include <chrono>
++#include <cmath>
++#include <condition_variable>
++#include <thread>
++#include <vector>
++
++namespace PICTURES = KODI::SUBTITLES::PICTURES;
++
++namespace
++{
++using namespace std::chrono_literals;
++
++//! How long a line with no end of its own lasts unless the next one ends it first.
++constexpr double UNENDED = 20.0 * DVD_TIME_BASE;
++//! How far ahead of playback the track is read: long before reading and translating a line is
++//! done, whatever the model's pace.
++constexpr double AHEAD = 60.0 * DVD_TIME_BASE;
++//! How far behind its latest the read-ahead may be missing a subtitle the player read, timing
++//! aside, before it is taken not to see the track as the player does.
++constexpr double MISSED = 2.0 * DVD_TIME_BASE;
++//! The same subtitle from both paths starts within this.
++constexpr double SAME = 0.01 * DVD_TIME_BASE;
++//! How much faster than playback the read-ahead reads: past that it would take the network and
++//! the disc from playback, more so as a video opens or after a seek.
++constexpr double PACE = 4.0;
++
++//! A subtitle's start, to the nearest SAME: the subtitles the two paths read are one if it is.
++int64_t Slot(double start)
++{
++  return std::llround(start / SAME);
++}
++
++//! The subtitle a decode left in the codec: its picture, or the clear that ends the one before.
++std::optional<PICTURES::CReader::Item> Collect(CDVDOverlayCodecFFmpeg& codec)
++{
++  std::vector<std::shared_ptr<CDVDOverlay>> shown;
++  double start = 0;
++  double stop = 0;
++  bool cleared = false;
++  while (std::shared_ptr<CDVDOverlay> overlay = codec.GetOverlay())
++  {
++    start = overlay->iPTSStartTime;
++    stop = overlay->iPTSStopTime;
++    if (overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
++      shown.push_back(std::move(overlay));
++    else
++      cleared = true;
++  }
++  if (std::optional<PICTURES::Picture> picture = PICTURES::FromOverlays(shown))
++    return PICTURES::CReader::Item{std::move(*picture), start, stop > start ? stop : 0};
++  if (cleared)
++    return PICTURES::CReader::Item{{}, start, 0};
++  return std::nullopt;
++}
++} // namespace
++
++/*!
++ * \brief The track read a minute ahead of playback: the video opened again, as playback opens
++ * it - a disc's playlist through the disc - so both count time from the same start, and its
++ * subtitle packets decoded as the player decodes them.
++ */
++struct CSubtitlePictureCodec::Ahead
++{
++  Ahead(CSubtitlePictureCodec& codec, const CDVDStreamInfo& hints)
++    : m_codec(codec),
++      m_hints(hints),
++      m_thread([this] { Run(); })
++  {
++  }
++
++  ~Ahead()
++  {
++    {
++      std::unique_lock guard(m_lock);
++      m_stop = true;
++      if (m_input)
++        m_input->Abort();
++    }
++    m_wake.notify_all();
++    m_thread.join();
++  }
++
++  //! Playback moved: read from where it is now.
++  void Seek()
++  {
++    {
++      std::unique_lock guard(m_lock);
++      m_seek = true;
++    }
++    m_wake.notify_all();
++  }
++
++private:
++  void Run()
++  {
++    CFileItem item(m_hints.video, false);
++    std::shared_ptr<CDVDInputStream> input = CDVDFactoryInputStream::CreateInputStream(nullptr, item);
++    // a file without the player's cache, which would only hold a second copy of what it reads; a
++    // disc through its own navigation
++    if (input && input->IsStreamType(DVDSTREAM_TYPE_FILE))
++      input = std::make_shared<CDVDInputStreamFile>(
++          item, XFILE::READ_TRUNCATED | XFILE::READ_BITRATE | XFILE::READ_NO_CACHE);
++    if (!input || !input->Open())
++    {
++      CLog::Log(LOGINFO, "Subtitle pictures: {} cannot be read ahead", CURL::GetRedacted(m_hints.video));
++      return;
++    }
++    {
++      std::unique_lock guard(m_lock);
++      if (m_stop)
++        return;
++      m_input = input;
++    }
++    std::unique_ptr<CDVDDemux> demux(CDVDFactoryDemuxer::CreateDemuxer(input, false));
++    const CDemuxStream* track = nullptr;
++    for (const CDemuxStream* stream : demux ? demux->GetStreams() : std::vector<CDemuxStream*>{})
++      if (stream && stream->type == StreamType::SUBTITLE && stream->uniqueId == m_hints.uniqueId &&
++          stream->codec == m_hints.codec)
++        track = stream;
++    CDVDOverlayCodecFFmpeg pictures;
++    CDVDStreamInfo hints(m_hints);
++    CDVDCodecOptions options;
++    if (!track || !pictures.Open(hints, options))
++    {
++      CLog::Log(LOGINFO, "Subtitle pictures: the track is not found again to read it ahead");
++      Release();
++      return;
++    }
++    CLog::Log(LOGDEBUG, "Subtitle pictures: reading the track ahead of playback");
++
++    double reached = 0; //!< where the reading is, in the stream's time
++    double from = 0; //!< and where it was after the last seek
++    auto since = std::chrono::steady_clock::now();
++    unsigned int generation = 0;
++    while (true)
++    {
++      {
++        std::unique_lock guard(m_lock);
++        if (m_stop)
++          break;
++        if (m_seek)
++        {
++          m_seek = false;
++          generation = m_codec.m_generation;
++          guard.unlock();
++          // from a little before where playback is, the subtitle shown then included
++          const double now = KODI::SUBTITLES::AI::PlaybackTime() / 1000.0;
++          demux->SeekTime(std::max(0.0, now - 5000.0), true);
++          pictures.Flush();
++          reached = 0;
++          from = 0;
++          since = std::chrono::steady_clock::now();
++          continue;
++        }
++        // a minute ahead, or read faster than its pace: wait
++        const double read = reached - from;
++        const double allowed =
++            PACE * DVD_TIME_BASE *
++            std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
++        if (reached > 0 &&
++            (reached > KODI::SUBTITLES::AI::PlaybackTime() + AHEAD || read > allowed + AHEAD / 6))
++        {
++          m_wake.wait_for(guard, 500ms, [this] { return m_stop || m_seek; });
++          continue;
++        }
++      }
++      DemuxPacket* packet = demux->Read();
++      if (!packet)
++      {
++        // the end, or nothing yet: until a seek
++        std::unique_lock guard(m_lock);
++        m_wake.wait_for(guard, 1s, [this] { return m_stop || m_seek; });
++        continue;
++      }
++      if (packet->pts != DVD_NOPTS_VALUE)
++      {
++        if (from == 0)
++          from = packet->pts;
++        reached = std::max(reached, packet->pts);
++      }
++      if (packet->iStreamId == track->uniqueId &&
++          pictures.Decode(packet) == OverlayMessage::OC_OVERLAY)
++        if (std::optional<PICTURES::CReader::Item> subtitle = Collect(pictures))
++          m_codec.Hand(std::move(*subtitle), generation);
++      CDVDDemuxUtils::FreeDemuxPacket(packet);
++      if (m_codec.m_aheadWrong)
++        break;
++    }
++    demux.reset();
++    Release();
++  }
++
++  void Release()
++  {
++    std::unique_lock guard(m_lock);
++    m_input.reset();
++  }
++
++  CSubtitlePictureCodec& m_codec;
++  const CDVDStreamInfo m_hints;
++  std::mutex m_lock;
++  std::condition_variable m_wake;
++  std::shared_ptr<CDVDInputStream> m_input; //!< the video read, to abort
++  bool m_stop{false};
++  bool m_seek{true};
++  std::thread m_thread;
++};
++
++CSubtitlePictureCodec::CSubtitlePictureCodec() : CDVDOverlayCodec("Subtitle Picture Reader")
++{
++}
++
++CSubtitlePictureCodec::~CSubtitlePictureCodec()
++{
++  // their threads hand lines on, to the reader and to the cue stage: they go first
++  m_ahead.reset();
++  m_reader.reset();
++}
++
++bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options)
++{
++  m_pictures = std::make_unique<CDVDOverlayCodecFFmpeg>();
++  if (!m_pictures->Open(hints, options))
++    return false;
++  m_reader = std::make_unique<PICTURES::CReader>(
++      KODI::SUBTITLES::AI::LanguageName(KODI::SUBTITLES::TRANSLATION::CodeOf(hints.language)),
++      [this](std::string text, double start, double stop)
++      { m_cues.Submit(std::move(text), start, stop); });
++  m_cues.Open(
++      hints, true, [this](const std::string& text, double start, double stop)
++      { Show(text, start, stop); }, false);
++  if (!hints.video.empty())
++    m_ahead = std::make_unique<Ahead>(*this, hints);
++  return Initialize();
++}
++
++void CSubtitlePictureCodec::Hand(PICTURES::CReader::Item item, unsigned int generation)
++{
++  {
++    std::unique_lock guard(m_seenLock);
++    if (generation && generation != m_generation)
++      return;
++    // each once, whichever path reads it first; a clear apart from a picture at the same time
++    const int64_t key = Slot(item.start) * 2 + (item.picture.grey.empty() ? 1 : 0);
++    if (!m_seen.insert(key).second)
++      return;
++    if (!item.picture.grey.empty())
++      m_places[Slot(item.start)] = item.picture.place;
++    if (generation)
++      m_aheadUpTo = std::max(m_aheadUpTo, item.start);
++    else if (m_ahead && !m_aheadWrong && m_aheadUpTo > item.start + MISSED)
++    {
++      // read ahead past it, yet never seen: the read-ahead does not see the track as the player
++      m_aheadWrong = true;
++      CLog::Log(LOGWARNING, "Subtitle pictures: the read-ahead missed one at {:.1f} s: stopped",
++                item.start / DVD_TIME_BASE);
++    }
++  }
++  if (!item.picture.grey.empty())
++    CLog::Log(LOGDEBUG, "Subtitle pictures: one at {:.1f} s, {:.1f} s ahead of playback, {}",
++              item.start / DVD_TIME_BASE,
++              (item.start - KODI::SUBTITLES::AI::PlaybackTime()) / DVD_TIME_BASE,
++              generation ? "read ahead" : "from the player");
++  m_reader->Add(std::move(item));
++}
++
++OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
++{
++  if (m_asPictures)
++    return m_pictures->Decode(pPacket);
++  if (m_aheadWrong && m_ahead)
++    m_ahead.reset();
++  if (m_pictures->Decode(pPacket) == OverlayMessage::OC_OVERLAY)
++    if (std::optional<PICTURES::CReader::Item> subtitle = Collect(*m_pictures))
++      Hand(std::move(*subtitle), 0);
++  if (m_reader->Failed())
++  {
++    CLog::Log(LOGWARNING, "{} - the AI provider's model reads no pictures: shown as they are",
++              __FUNCTION__);
++    m_asPictures = true;
++    m_ahead.reset();
++  }
++  return m_overlay ? OverlayMessage::OC_DONE : OverlayMessage::OC_OVERLAY;
++}
++
++void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
++{
++  // as the player ends a picture: where the next starts or clears, or at its own end before -
++  // PGS gives none, only the farthest time there is
++  if (m_prevSubId != NO_SUBTITLE_ID && m_prevStop > start && start > m_prevStart)
++    ChangeSubtitleStopTime(m_prevSubId, start);
++  m_prevSubId = NO_SUBTITLE_ID;
++  if (text.empty())
++    return;
++  CLog::Log(LOGDEBUG, "Subtitle pictures: line at {:.1f} s ready {:.1f} s ahead of it",
++            start / DVD_TIME_BASE, (start - KODI::SUBTITLES::AI::PlaybackTime()) / DVD_TIME_BASE);
++  if (stop <= start)
++    stop = start + UNENDED;
++  // read off a picture, it carries no tags: every character of it shows as itself, where the
++  // picture was - bottom centre, as any text subtitle, needs no tag
++  int place = KODI::SUBTITLES::MODEL::BOTTOM_CENTRE;
++  {
++    std::unique_lock guard(m_seenLock);
++    if (const auto it = m_places.find(Slot(start)); it != m_places.end())
++    {
++      place = it->second;
++      m_places.erase(it); // each line is shown once
++    }
++  }
++  text = (place != KODI::SUBTITLES::MODEL::BOTTOM_CENTRE ? "{\\an" + std::to_string(place) + "}"
++                                                         : "") +
++         KODI::SUBTITLES::MODEL::AssText(text);
++  m_prevSubId = AddSubtitle(text, start, stop);
++  m_prevStart = start;
++  m_prevStop = stop;
++}
++
++void CSubtitlePictureCodec::Reset()
++{
++  Flush();
++}
++
++void CSubtitlePictureCodec::Flush()
++{
++  {
++    std::unique_lock guard(m_seenLock);
++    ++m_generation;
++    m_seen.clear();
++    m_places.clear();
++    m_aheadUpTo = 0;
++  }
++  if (m_ahead)
++    m_ahead->Seek();
++  m_pictures->Flush();
++  m_reader->Flush();
++  m_cues.Flush();
++  m_prevSubId = NO_SUBTITLE_ID;
++  m_overlay.reset();
++  FlushSubtitles();
++}
++
++std::shared_ptr<CDVDOverlay> CSubtitlePictureCodec::GetOverlay()
++{
++  if (m_asPictures)
++    return m_pictures->GetOverlay();
++  if (m_overlay)
++    return nullptr;
++  m_overlay = CreateOverlay();
++  return m_overlay;
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h
+new file mode 100644
+index 0000000..2b9c248
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h
+@@ -0,0 +1,70 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "DVDSubtitles/SubtitleCueStage.h"
++#include "DVDSubtitles/SubtitlePictures.h"
++#include "DVDSubtitles/SubtitlesAdapter.h"
++#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodec.h"
++
++#include <atomic>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <set>
++#include <string>
++
++class CDVDOverlayCodecFFmpeg;
++
++/*!
++ * \brief A subtitle made of pictures - PGS, DVD, DVB - opened to be read in another language: its
++ * pictures, decoded as the player decodes them, are read as text by the AI provider's model and
++ * then shown as a text subtitle is, translated. The track is read a minute ahead of playback in a
++ * demuxer of its own, so each line is ready long before it is due; the player's own packets fill
++ * what that misses. Should the model read no pictures, they are shown as they are.
++ */
++class CSubtitlePictureCodec : public CDVDOverlayCodec, private CSubtitlesAdapter
++{
++public:
++  CSubtitlePictureCodec();
++  ~CSubtitlePictureCodec() override;
++  bool Open(CDVDStreamInfo& hints, CDVDCodecOptions& options) override;
++  OverlayMessage Decode(DemuxPacket* pPacket) override;
++  void Reset() override;
++  void Flush() override;
++  std::shared_ptr<CDVDOverlay> GetOverlay() override;
++
++private:
++  struct Ahead;
++
++  void Show(std::string text, double start, double stop);
++  /*!
++   * \brief A subtitle to read, from either path, once.
++   * \param generation the seek the read-ahead read it after; 0 for the player's own packets
++   */
++  void Hand(KODI::SUBTITLES::PICTURES::CReader::Item item, unsigned int generation);
++
++  std::unique_ptr<CDVDOverlayCodecFFmpeg> m_pictures;
++  std::unique_ptr<KODI::SUBTITLES::PICTURES::CReader> m_reader;
++  std::unique_ptr<Ahead> m_ahead;
++  std::mutex m_seenLock;
++  std::set<int64_t> m_seen; //!< the subtitles handed to the reader since the last seek
++  std::map<int64_t, int> m_places; //!< where each of them is shown on the video, by its start
++  double m_aheadUpTo{0}; //!< the latest start the read-ahead handed in
++  //! how many seeks: what the read-ahead read before the last is dropped
++  std::atomic<unsigned int> m_generation{1};
++  std::atomic<bool> m_aheadWrong{false}; //!< the read-ahead missed what the player read
++  bool m_asPictures{false}; //!< the model reads no pictures: they are shown as they are
++  std::shared_ptr<CDVDOverlay> m_overlay;
++  int m_prevSubId{-1}; //!< the line shown last, which the next one ends
++  double m_prevStart{0};
++  double m_prevStop{0};
++  //! last, so whatever delivers its cues stops before anything it delivers to goes
++  KODI::SUBTITLES::CCueStage m_cues;
++};
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+new file mode 100644
+index 0000000..1b97aff
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+@@ -0,0 +1,441 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "SubtitlePictures.h"
++
++#include "PlatformDefs.h"
++#include "SubtitleAI.h"
++#include "ServiceBroker.h"
++#include "SubtitleModel.h"
++#include "cores/DataCacheCore.h"
++#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpegUtils.h"
++#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
++#include "guilib/FFmpegImage.h"
++#include "guilib/TextureFormats.h"
++#include "utils/StringUtils.h"
++#include "utils/log.h"
++
++#include <algorithm>
++#include <array>
++#include <chrono>
++
++namespace KODI::SUBTITLES::PICTURES
++{
++namespace
++{
++//! How high a text line is when the model reads it: smaller costs it less, and a line this high
++//! it reads as well as a full-size one.
++constexpr int LINE_HEIGHT = 32;
++//! Pictures read in one request: the model writes their text at the same pace however many.
++constexpr size_t BATCH = 8;
++//! How long the first picture waits for the others of its batch: a moment - the player reads a
++//! disc's subtitles only a little ahead of the picture.
++constexpr auto GATHER = std::chrono::milliseconds(300);
++//! Batches refused, or answered unread, in a row before the model is taken to read no pictures.
++constexpr int REFUSALS = 3;
++//! Ink darker than this is text.
++constexpr uint8_t INK = 128;
++constexpr int MARGIN = 6;
++
++//! Which pixels are text: a crop's rows and columns.
++struct Box
++{
++  int x0, y0, x1, y1;
++};
++
++std::optional<Box> InkBox(const Picture& picture)
++{
++  Box box{picture.width, picture.height, -1, -1};
++  for (int y = 0; y < picture.height; ++y)
++    for (int x = 0; x < picture.width; ++x)
++      if (picture.grey[y * picture.width + x] < INK)
++      {
++        box.x0 = std::min(box.x0, x);
++        box.y0 = std::min(box.y0, y);
++        box.x1 = std::max(box.x1, x);
++        box.y1 = std::max(box.y1, y);
++      }
++  if (box.x1 < 0)
++    return std::nullopt;
++  return box;
++}
++
++//! A box of the picture, with a white margin around it.
++Picture Crop(const Picture& picture, const Box& box)
++{
++  Picture out;
++  out.width = box.x1 - box.x0 + 1 + 2 * MARGIN;
++  out.height = box.y1 - box.y0 + 1 + 2 * MARGIN;
++  out.grey.assign(static_cast<size_t>(out.width) * out.height, 255);
++  for (int y = box.y0; y <= box.y1; ++y)
++    std::copy_n(picture.grey.begin() + y * picture.width + box.x0, box.x1 - box.x0 + 1,
++                out.grey.begin() + (y - box.y0 + MARGIN) * out.width + MARGIN);
++  return out;
++}
++
++//! How many lines of text a picture holds: bands of rows with ink, the small ones - accents,
++//! dots - not counted.
++int Lines(const Picture& picture)
++{
++  std::vector<std::pair<int, int>> bands;
++  for (int y = 0; y < picture.height; ++y)
++  {
++    const auto row = picture.grey.begin() + y * picture.width;
++    const bool ink = std::any_of(row, row + picture.width, [](uint8_t p) { return p < INK; });
++    if (ink && (bands.empty() || bands.back().second < y - 1))
++      bands.emplace_back(y, y);
++    else if (ink)
++      bands.back().second = y;
++  }
++  int tallest = 0;
++  for (const auto& [top, bottom] : bands)
++    tallest = std::max(tallest, bottom - top + 1);
++  return std::max<int>(1, static_cast<int>(std::count_if(
++                              bands.begin(), bands.end(), [tallest](const auto& band)
++                              { return (band.second - band.first + 1) * 5 >= tallest * 2; })));
++}
++
++//! A picture with the space between its lines no taller than a line: the two lines of a
++//! subtitle at the top and the bottom of the picture are read as one.
++Picture CloseGaps(const Picture& picture)
++{
++  std::vector<bool> ink(picture.height);
++  for (int y = 0; y < picture.height; ++y)
++  {
++    const auto row = picture.grey.begin() + y * picture.width;
++    ink[y] = std::any_of(row, row + picture.width, [](uint8_t p) { return p < INK; });
++  }
++  int tallest = 0;
++  for (int y = 0, run = 0; y < picture.height; ++y)
++    tallest = std::max(tallest, run = ink[y] ? run + 1 : 0);
++  Picture out{picture.width, 0, {}};
++  for (int y = 0, blank = 0; y < picture.height; ++y)
++  {
++    blank = ink[y] ? 0 : blank + 1;
++    if (blank > tallest / 2)
++      continue;
++    out.grey.insert(out.grey.end(), picture.grey.begin() + y * picture.width,
++                    picture.grey.begin() + (y + 1) * picture.width);
++    ++out.height;
++  }
++  return out;
++}
++
++//! A 3x5 digit, or ")", a row in each three bits.
++const std::array<uint8_t, 5>& Glyph(char c)
++{
++  static const std::array<std::array<uint8_t, 5>, 11> glyphs{{
++      {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
++      {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 1, 1}, {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7},
++      {2, 1, 1, 1, 2},
++  }};
++  return glyphs[c == ')' ? 10 : c - '0'];
++}
++
++void Draw(Picture& picture, int left, int top, const std::string& text)
++{
++  constexpr int SCALE = 3;
++  for (const char c : text)
++  {
++    const auto& glyph = Glyph(c);
++    for (int row = 0; row < 5; ++row)
++      for (int column = 0; column < 3; ++column)
++        if (glyph[row] & (4 >> column))
++          for (int dy = 0; dy < SCALE; ++dy)
++            for (int dx = 0; dx < SCALE; ++dx)
++            {
++              const int x = left + column * SCALE + dx;
++              const int y = top + row * SCALE + dy;
++              if (x < picture.width && y >= 0 && y < picture.height)
++                picture.grey[y * picture.width + x] = 0;
++            }
++    left += 4 * SCALE;
++  }
++}
++
++std::string Prompt(size_t count, const std::string& language)
++{
++  return StringUtils::Format(
++      "This image holds {} {}film subtitles, one per numbered row. Transcribe each exactly as "
++      "written, keeping punctuation, accents and capitals; join a row's lines with a single "
++      "space. Answer with one line per row, numbered 1) to {}), and nothing else.",
++      count, language.empty() ? "" : language + " ", count);
++}
++} // namespace
++
++std::optional<Picture> FromOverlays(const std::vector<std::shared_ptr<CDVDOverlay>>& overlays)
++{
++  namespace VS = KODI::VIDEO::SUBTITLES;
++  const VS::BitmapStereoLayout layout =
++      VS::GetBitmapStereoLayout(CServiceBroker::GetDataCacheCore().GetVideoStereoMode());
++  std::vector<std::shared_ptr<CDVDOverlayImage>> eyes; //!< one eye cut from a picture of both
++  std::vector<const CDVDOverlayImage*> images;
++  int videoWidth = 0; //!< the video the subtitle is placed on, one eye's of a 3D one
++  int videoHeight = 0;
++  for (const auto& overlay : overlays)
++  {
++    // a 3D subtitle is read by one eye: the player has split it for a 3D screen, or it is cut
++    if (!overlay || !overlay->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) ||
++        overlay->m_stereoView == DVDOverlayStereoView::RIGHT)
++      continue;
++    const auto* image = static_cast<const CDVDOverlayImage*>(overlay.get());
++    if (image->palette.empty() || image->width <= 0 || image->height <= 0)
++      continue;
++    int width = image->source_width;
++    int height = image->source_height;
++    if (layout != VS::BitmapStereoLayout::MONO && overlay->m_stereoView == DVDOverlayStereoView::BOTH)
++    {
++      VS::BitmapSubtitle bitmap;
++      bitmap.pixels = image->pixels.data();
++      bitmap.stride = image->linesize;
++      bitmap.x = image->x;
++      bitmap.y = image->y;
++      bitmap.width = image->width;
++      bitmap.height = image->height;
++      bitmap.sourceWidth = image->source_width;
++      bitmap.sourceHeight = image->source_height;
++      for (size_t i = 0; i < image->palette.size() && i < bitmap.palette.size(); ++i)
++        if (((image->palette[i] >> PIXEL_ASHIFT) & 0xff) != 0)
++          bitmap.palette[i] = image->palette[i];
++      if (VS::IsStereoBitmap(bitmap, layout))
++      {
++        const VS::BitmapStereoCrop crop = VS::GetStereoCrop(bitmap, layout, false);
++        if (crop.IsEmpty())
++          continue;
++        image = eyes.emplace_back(std::make_shared<CDVDOverlayImage>(
++                                      *image, crop.packedX, crop.packedY, crop.width, crop.height))
++                    .get();
++        width = crop.sourceWidth;
++        height = crop.sourceHeight;
++      }
++    }
++    if (images.empty())
++    {
++      videoWidth = width;
++      videoHeight = height;
++    }
++    images.push_back(image);
++  }
++  if (images.empty())
++    return std::nullopt;
++
++  int x0 = images.front()->x, y0 = images.front()->y, x1 = x0, y1 = y0;
++  for (const CDVDOverlayImage* image : images)
++  {
++    x0 = std::min(x0, image->x);
++    y0 = std::min(y0, image->y);
++    x1 = std::max(x1, image->x + image->width);
++    y1 = std::max(y1, image->y + image->height);
++  }
++  Picture canvas;
++  canvas.width = x1 - x0;
++  canvas.height = y1 - y0;
++  canvas.grey.assign(static_cast<size_t>(canvas.width) * canvas.height, 255);
++  for (const CDVDOverlayImage* image : images)
++  {
++    // the text's light, as opaque as it is: bright text is ink, its dark outline is not
++    std::array<uint8_t, 256> ink;
++    ink.fill(255);
++    for (size_t i = 0; i < image->palette.size() && i < ink.size(); ++i)
++    {
++      const uint32_t color = image->palette[i];
++      const unsigned int alpha = (color >> PIXEL_ASHIFT) & 0xff;
++      const unsigned int light = (299 * ((color >> PIXEL_RSHIFT) & 0xff) +
++                                  587 * ((color >> PIXEL_GSHIFT) & 0xff) +
++                                  114 * ((color >> PIXEL_BSHIFT) & 0xff)) /
++                                 1000;
++      ink[i] = static_cast<uint8_t>(255 - light * alpha / 255);
++    }
++    for (int y = 0; y < image->height; ++y)
++      for (int x = 0; x < image->width; ++x)
++      {
++        uint8_t& out = canvas.grey[(image->y - y0 + y) * canvas.width + image->x - x0 + x];
++        out = std::min(out, ink[image->pixels[y * image->linesize + x]]);
++      }
++  }
++  const std::optional<Box> box = InkBox(canvas);
++  if (!box)
++    return std::nullopt;
++  Picture picture = CloseGaps(Crop(canvas, *box));
++  picture.place = MODEL::Place(x0 + box->x0, y0 + box->y0, x0 + box->x1 + 1, y0 + box->y1 + 1,
++                               videoWidth, videoHeight);
++  return picture;
++}
++
++Picture Scaled(const Picture& picture, int lineHeight)
++{
++  const double factor = static_cast<double>(lineHeight) * Lines(picture) / picture.height;
++  if (factor >= 1.0)
++    return picture;
++  Picture out;
++  out.width = std::max(1, static_cast<int>(picture.width * factor));
++  out.height = std::max(1, static_cast<int>(picture.height * factor));
++  out.grey.resize(static_cast<size_t>(out.width) * out.height);
++  // each pixel the average of the ones it covers
++  for (int y = 0; y < out.height; ++y)
++  {
++    const int top = y * picture.height / out.height;
++    const int bottom = std::max(top + 1, (y + 1) * picture.height / out.height);
++    for (int x = 0; x < out.width; ++x)
++    {
++      const int left = x * picture.width / out.width;
++      const int right = std::max(left + 1, (x + 1) * picture.width / out.width);
++      unsigned int sum = 0;
++      for (int sy = top; sy < bottom; ++sy)
++        for (int sx = left; sx < right; ++sx)
++          sum += picture.grey[sy * picture.width + sx];
++      out.grey[y * out.width + x] =
++          static_cast<uint8_t>(sum / static_cast<unsigned int>((bottom - top) * (right - left)));
++    }
++  }
++  return out;
++}
++
++Picture Stack(const std::vector<Picture>& pictures)
++{
++  constexpr int NUMBERS = 48; //!< the column of the numbers
++  constexpr int GAP = 6;
++  Picture out;
++  for (const Picture& picture : pictures)
++  {
++    out.width = std::max(out.width, NUMBERS + picture.width);
++    out.height += std::max(picture.height, 15) + 2 * GAP + 1;
++  }
++  out.grey.assign(static_cast<size_t>(out.width) * out.height, 255);
++  int top = 0;
++  for (size_t i = 0; i < pictures.size(); ++i)
++  {
++    const Picture& picture = pictures[i];
++    const int row = std::max(picture.height, 15);
++    Draw(out, 4, top + (row - 15) / 2, std::to_string(i + 1) + ")");
++    for (int y = 0; y < picture.height; ++y)
++      std::copy_n(picture.grey.begin() + y * picture.width, picture.width,
++                  out.grey.begin() + (top + y) * out.width + NUMBERS);
++    top += row + GAP;
++    std::fill_n(out.grey.begin() + top * out.width, out.width, 128);
++    top += 1 + GAP;
++  }
++  return out;
++}
++
++std::string Png(const Picture& picture)
++{
++  std::vector<uint8_t> argb(static_cast<size_t>(picture.width) * picture.height * 4);
++  for (size_t i = 0; i < picture.grey.size(); ++i)
++  {
++    // the byte order of XB_FMT_A8R8G8B8: blue, green, red, alpha
++    argb[4 * i] = argb[4 * i + 1] = argb[4 * i + 2] = picture.grey[i];
++    argb[4 * i + 3] = 255;
++  }
++  CFFmpegImage encoder("image/png");
++  unsigned char* out = nullptr;
++  unsigned int size = 0;
++  if (!encoder.CreateThumbnailFromSurface(argb.data(), picture.width, picture.height,
++                                          XB_FMT_A8R8G8B8, picture.width * 4, "subtitle.png",
++                                          out, size))
++    return {};
++  std::string png(reinterpret_cast<const char*>(out), size);
++  encoder.ReleaseThumbnailBuffer();
++  return png;
++}
++
++CReader::CReader(std::string language, Deliver deliver)
++  : m_language(std::move(language)),
++    m_deliver(std::move(deliver)),
++    m_ask(std::make_unique<AI::CPictureAsk>()),
++    m_thread([this] { Run(); })
++{
++}
++
++CReader::~CReader()
++{
++  {
++    std::unique_lock guard(m_lock);
++    m_stop = true;
++  }
++  m_wake.notify_all();
++  m_ask->Cancel();
++  m_thread.join();
++}
++
++void CReader::Add(Item item)
++{
++  {
++    std::unique_lock guard(m_lock);
++    m_queue.push_back(std::move(item));
++  }
++  m_wake.notify_all();
++}
++
++void CReader::Flush()
++{
++  {
++    std::unique_lock guard(m_lock);
++    ++m_generation;
++    m_queue.clear();
++  }
++  m_ask->Abort();
++}
++
++void CReader::Run()
++{
++  int refused = 0;
++  m_ask->Wake();
++  std::unique_lock lock(m_lock);
++  while (true)
++  {
++    m_wake.wait(lock, [this] { return m_stop || !m_queue.empty(); });
++    // the next ones come with the packets that follow: a batch, if they come soon
++    m_wake.wait_for(lock, GATHER, [this] { return m_stop || m_queue.size() >= BATCH; });
++    if (m_stop)
++      return;
++    // in order, the clears among them, up to a batch of pictures
++    std::vector<Item> batch;
++    size_t count = 0;
++    while (!m_queue.empty() && (count < BATCH || m_queue.front().picture.grey.empty()))
++    {
++      count += m_queue.front().picture.grey.empty() ? 0 : 1;
++      batch.push_back(std::move(m_queue.front()));
++      m_queue.pop_front();
++    }
++    const unsigned int generation = m_generation;
++    lock.unlock();
++
++    std::vector<Picture> pictures;
++    for (const Item& item : batch)
++      if (!item.picture.grey.empty())
++        pictures.push_back(Scaled(item.picture, LINE_HEIGHT));
++    const std::string png = pictures.empty() ? std::string() : Png(Stack(pictures));
++    std::string error;
++    const std::optional<std::string> answer =
++        png.empty() ? std::nullopt : m_ask->Ask(Prompt(pictures.size(), m_language), png, error);
++    const std::vector<std::string> texts =
++        answer ? MODEL::ReadNumbered(*answer, pictures.size()) : std::vector<std::string>{};
++    // a provider that does not answer says nothing of whether its model reads pictures
++    if (!texts.empty())
++      refused = 0;
++    else if (!pictures.empty() && (answer || (!error.empty() && error != "no answer")) &&
++             ++refused >= REFUSALS)
++      m_failed = true;
++    if (!error.empty() || (answer && texts.empty()))
++      CLog::Log(LOGWARNING, "Subtitle pictures: {} not read: {}", pictures.size(),
++                answer ? "an answer not numbered" : error);
++
++    // delivered at once, not when the next packet comes - that can be minutes later - and under
++    // the lock, so a flush waits for it
++    lock.lock();
++    if (generation != m_generation)
++      continue;
++    for (size_t i = 0, picture = 0; i < batch.size(); ++i)
++      if (batch[i].picture.grey.empty())
++        m_deliver({}, batch[i].start, batch[i].start);
++      else if (const size_t read = picture++; read < texts.size() && !texts[read].empty())
++        m_deliver(texts[read], batch[i].start, batch[i].stop);
++  }
++}
++} // namespace KODI::SUBTITLES::PICTURES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+new file mode 100644
+index 0000000..46b8388
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+@@ -0,0 +1,114 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include "SubtitleModel.h"
++
++#include <atomic>
++#include <condition_variable>
++#include <cstdint>
++#include <deque>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <thread>
++#include <vector>
++
++class CDVDOverlay;
++
++namespace KODI::SUBTITLES::AI
++{
++class CPictureAsk;
++}
++
++/*!
++ * \brief Subtitles made of pictures - Blu-ray PGS, DVD, DVB - read as text, so they can be
++ * translated: by the AI provider's model, when it reads images.
++ */
++namespace KODI::SUBTITLES::PICTURES
++{
++//! A subtitle picture in grey: its text dark on white.
++struct Picture
++{
++  int width{0};
++  int height{0};
++  std::vector<uint8_t> grey; //!< width * height, row by row
++  int place{MODEL::BOTTOM_CENTRE}; //!< where on the video it is shown, as MODEL::Place gives it
++};
++
++/*!
++ * \brief The picture the overlays of one subtitle make: its text dark on white, cropped to it,
++ * with where its text is shown on the video. The other eye's copy of a 3D subtitle is left out.
++ * None when nothing shows.
++ */
++std::optional<Picture> FromOverlays(const std::vector<std::shared_ptr<CDVDOverlay>>& overlays);
++
++/*!
++ * \brief A picture with its text lines about lineHeight high - the text's own height, not the
++ * video's, decides: a DVD subtitle keeps its size, a 4K one shrinks a lot. Never enlarged.
++ */
++Picture Scaled(const Picture& picture, int lineHeight);
++
++/*!
++ * \brief Pictures one above the other, each with its number on its left and a rule under it:
++ * one picture for the model to read them all.
++ */
++Picture Stack(const std::vector<Picture>& pictures);
++
++//! A picture as PNG, empty when it cannot be made.
++std::string Png(const Picture& picture);
++
++/*!
++ * \brief Reads the text of a stream's subtitle pictures in the background, a few at a time, with
++ * the AI provider's model.
++ */
++class CReader
++{
++public:
++  //! A subtitle's picture, with its times; one with no picture clears the one before.
++  struct Item
++  {
++    Picture picture;
++    double start;
++    double stop; //!< its own end, or 0 for none
++  };
++  //! A picture's text, with its times, as soon as it is read, and "" for a clear, in the order
++  //! they came: from the reader's thread, never after Flush returns.
++  using Deliver = std::function<void(std::string text, double start, double stop)>;
++
++  /*!
++   * \param language the pictures' language, by name in English ("Spanish"), or empty
++   * \param deliver where what is read goes; a picture not read goes nowhere
++   */
++  CReader(std::string language, Deliver deliver);
++  ~CReader();
++
++  void Add(Item item);
++  //! Forget every picture not yet read: a seek.
++  void Flush();
++  //! Whether the model reads no pictures: it refused them, or answered unread, several in a row.
++  bool Failed() const { return m_failed; }
++
++private:
++  void Run();
++
++  const std::string m_language;
++  const Deliver m_deliver;
++  std::unique_ptr<AI::CPictureAsk> m_ask;
++  std::mutex m_lock;
++  std::condition_variable m_wake;
++  std::deque<Item> m_queue;
++  unsigned int m_generation{0}; //!< how many flushes: what is read for an earlier one is dropped
++  bool m_stop{false};
++  std::atomic<bool> m_failed{false};
++  std::thread m_thread;
++};
++} // namespace KODI::SUBTITLES::PICTURES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+index 0bab663..3a5d623 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+@@ -153,7 +153,7 @@ struct Layout
+   bool dialogue{false};
+ };
+ 
+-Layout LayOut(const std::string& text)
++Layout LayOut(const std::string& text, bool tags)
+ {
+   std::vector<std::string> lines;
+   size_t start = 0;
+@@ -168,17 +168,17 @@ Layout LayOut(const std::string& text)
+   // every line a speaker's, with something said
+   const bool dialogue =
+       lines.size() > 1 && std::all_of(lines.begin(), lines.end(),
+-                                      [](const std::string& line)
++                                      [tags](const std::string& line)
+                                       {
+-                                        const std::string plain = MODEL::Plain(line);
++                                        const std::string plain = MODEL::Plain(line, tags);
+                                         return plain.size() > 1 && plain[0] == '-' &&
+                                                plain.find_first_not_of("- ") != std::string::npos;
+                                       });
+   if (!dialogue)
+-    return {{MODEL::Plain(text)}, false};
++    return {{MODEL::Plain(text, tags)}, false};
+   for (std::string& line : lines)
+   {
+-    line = MODEL::Plain(line).substr(1);
++    line = MODEL::Plain(line, tags).substr(1);
+     line.erase(0, line.find_first_not_of(' '));
+   }
+   return {lines, true};
+@@ -195,7 +195,7 @@ MODEL::Work Translation(Context context)
+     std::vector<bool> shouted;
+     for (const MODEL::Item& cue : cues)
+     {
+-      layouts.push_back(LayOut(cue.text));
++      layouts.push_back(LayOut(cue.text, context.tags));
+       // nothing to translate in it ("{\\an8}", "<i></i>"): it is not asked about
+       if (layouts.back().lines.front().empty())
+         layouts.back().lines.clear();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+index 2a6752f..0302f4f 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+@@ -61,6 +61,7 @@ struct Context
+   std::string to; //!< the target language's name in English
+   std::string title; //!< "Title (1999)", or empty
+   std::vector<std::string> cast; //!< the characters' names, to be kept as they are
++  bool tags{true}; //!< whether the cues can carry tags: text read off pictures carries none
+ };
+ 
+ //! The instructions for translating numbered lines.

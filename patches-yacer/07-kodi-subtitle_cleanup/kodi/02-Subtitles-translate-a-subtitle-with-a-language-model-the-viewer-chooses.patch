@@ -37,6 +37,11 @@ settings change and every ten minutes - half a minute after it did not
 answer - and the first time a video needs it, which waits for the answer
 a second and a half at most.
 
+A cue goes to the model as it shows: a "<...>" or "{...}" closed on its
+line is left out, since Kodi and libass hide it, and a "<" or "{" that
+closes nothing stays, since it shows - some tracks open a voice off
+screen with "< ".
+
 Selecting the entry opens its track with the language to translate into.
 The entry is CTranslatedEntry's to offer, select and describe; the
 player only calls it, and the cue stage the repair added carries the
@@ -64,10 +69,10 @@ Image subtitles cannot be translated.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index dd13b34..ac5d99f 100644
+index 0646e8b..17ddbb2 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25528,6 +25528,132 @@ msgctxt "#60017"
+@@ -25510,6 +25510,132 @@ msgctxt "#60017"
  msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
  msgstr ""
  
@@ -201,10 +206,10 @@ index dd13b34..ac5d99f 100644
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index adb94b2..b18ba74 100755
+index 9779396..e38608b 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -949,6 +949,60 @@
+@@ -938,6 +938,60 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -1451,10 +1456,10 @@ index b7261ff..10e2669 100644
  } // namespace KODI::SUBTITLES
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
 new file mode 100644
-index 0000000..6c2dc50
+index 0000000..c7a3b8a
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,267 @@
 +/*
 + *  Copyright (C) 2026 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -1473,21 +1478,26 @@ index 0000000..6c2dc50
 +{
 +std::string Plain(const std::string& text)
 +{
-+  // tags "<i>" and "{\an8}" dropped, white space collapsed
++  // what the screen hides is dropped: a "<...>" or "{...}" closed on its line (Kodi erases the
++  // one, libass the other); a "<" or "{" never closed shows, and stays. White space collapsed.
 +  std::string out;
 +  bool space = false;
-+  char closing = 0;
-+  for (const char c : text)
++  size_t ends[2] = {0, 0}; // where the next ">" or "}" or line end is, from some point on
++  for (size_t i = 0; i < text.size(); ++i)
 +  {
-+    if (closing)
-+    {
-+      closing = c == closing ? 0 : closing;
-+      continue;
-+    }
++    const char c = text[i];
 +    if (c == '<' || c == '{')
 +    {
-+      closing = c == '<' ? '>' : '}';
-+      continue;
++      size_t& end = ends[c == '{'];
++      if (end <= i)
++        end = text.find_first_of(c == '<' ? ">\n" : "}\n", i + 1);
++      if (end == std::string::npos)
++        end = text.size();
++      if (end < text.size() && text[end] != '\n')
++      {
++        i = end;
++        continue;
++      }
 +    }
 +    if (c == '\n' || c == '\r' || c == ' ' || c == '\t')
 +    {
@@ -1577,8 +1587,12 @@ index 0000000..6c2dc50
 +    else if (current >= 0)
 +    {
 +      // a line the model broke in two - unless no numbered line follows: then it may be a
-+      // remark ("Note: the names are kept."), and the answer is not to be trusted
-+      out[current] += (out[current].empty() ? "" : " ") + Plain(line);
++      // remark ("Note: the names are kept."), and the answer is not to be trusted. Its words are
++      // the model's, kept as the numbered part is: "<" and "{" in them are text.
++      const size_t first = line.find_first_not_of(" \t\r");
++      if (first != std::string::npos)
++        out[current] += (out[current].empty() ? "" : " ") +
++                        line.substr(first, line.find_last_not_of(" \t\r") + 1 - first);
 +      trailing = true;
 +    }
 +  }
@@ -2220,7 +2234,7 @@ index 0000000..2a6752f
 +MODEL::Work Translation(Context context);
 +} // namespace KODI::SUBTITLES::TRANSLATION
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 65e9006..b6828d4 100644
+index 5e60629..09a24f8 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1153,8 +1153,18 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
@@ -2254,7 +2268,7 @@ index 65e9006..b6828d4 100644
      {
        m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
        m_SelectionStreams.Update(m_pInputStream, m_pDemuxer.get());
-@@ -3771,7 +3784,9 @@ void CVideoPlayer::HandleMessages()
+@@ -3778,7 +3791,9 @@ void CVideoPlayer::HandleMessages()
      {
        auto pMsg2 = std::static_pointer_cast<CDVDMsgPlayerSetSubtitleStream>(pMsg);
  
@@ -2265,7 +2279,7 @@ index 65e9006..b6828d4 100644
        if(st.source != STREAM_SOURCE_NONE)
        {
          if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
-@@ -3797,7 +3812,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3804,7 +3819,8 @@ void CVideoPlayer::HandleMessages()
            }
  #endif
            CloseStream(m_CurrentSubtitle, false);
@@ -2275,7 +2289,7 @@ index 65e9006..b6828d4 100644
  
            // For embedded subtitles the demuxer is ahead of playback (AV buffers
            // are full), so the subtitle packets for the current playback time have
-@@ -5361,6 +5377,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5368,6 +5384,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
  
      hint.Clear();
      hint.filename = m_SelectionStreams.Get(current.type, index).filename;
@@ -2284,7 +2298,7 @@ index 65e9006..b6828d4 100644
      hint.fpsscale = m_CurrentVideo.hint.fpsscale;
      hint.fpsrate  = m_CurrentVideo.hint.fpsrate;
    }
-@@ -5396,6 +5414,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5403,6 +5421,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
      hint.Assign(*stream, false);
    }
  
@@ -2295,7 +2309,7 @@ index 65e9006..b6828d4 100644
    bool res;
    switch(current.type)
    {
-@@ -7415,9 +7437,20 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDeta
+@@ -7422,9 +7444,20 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDeta
  
  void CVideoPlayer::UpdateContent()
  {
@@ -2316,7 +2330,7 @@ index 65e9006..b6828d4 100644
  }
  
  void CVideoPlayer::UpdateContentState()
-@@ -7431,6 +7464,8 @@ void CVideoPlayer::UpdateContentState()
+@@ -7438,6 +7471,8 @@ void CVideoPlayer::UpdateContentState()
    m_content.m_subtitleIndex =
        m_SelectionStreams.TypeIndexOf(StreamType::SUBTITLE, m_CurrentSubtitle.source,
                                       m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
@@ -2325,7 +2339,7 @@ index 65e9006..b6828d4 100644
  
    if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) && m_content.m_videoIndex == -1 &&
        m_content.m_audioIndex == -1)
-@@ -7620,6 +7655,9 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
+@@ -7627,6 +7662,9 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
      return;
    }
  
@@ -2335,7 +2349,7 @@ index 65e9006..b6828d4 100644
    const SelectionStream& s = m_content.m_selectionStreams.Get(StreamType::SUBTITLE, index);
    info.name = s.name;
  
-@@ -7645,7 +7683,8 @@ void CVideoPlayer::SetSubtitle(int iStream)
+@@ -7652,7 +7690,8 @@ void CVideoPlayer::SetSubtitle(int iStream)
  int CVideoPlayer::GetSubtitleCount() const
  {
    std::unique_lock lock(m_content.m_section);
@@ -2416,12 +2430,12 @@ index 55a0393..1bbe78d 100644
    GetSettingsManager()->UnregisterCallback(&g_passwordManager);
    GetSettingsManager()->UnregisterCallback(&CRssManager::GetInstance());
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 1c4ced5..97cee3f 100644
+index 987f36f..75ed604 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -189,6 +189,13 @@ public:
+@@ -188,6 +188,13 @@ public:
+   static constexpr auto SETTING_SUBTITLES_OVERRIDESTYLES = "subtitles.overridestyles";
    static constexpr auto SETTING_SUBTITLES_BRIGHTNESS = "subtitles.brightness";
-   static constexpr auto SETTING_SUBTITLES_PLACEMENT = "subtitles.placement";
    static constexpr auto SETTING_SUBTITLES_REPAIR = "subtitles.repair";
 +  static constexpr auto SETTING_SUBTITLES_TRANSLATE = "subtitles.translate";
 +  static constexpr auto SETTING_SUBTITLES_AIPROVIDER = "subtitles.aiprovider";

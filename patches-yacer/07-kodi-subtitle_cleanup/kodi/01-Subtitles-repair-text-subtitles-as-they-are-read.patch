@@ -97,11 +97,11 @@ index 7404d0d..31bafa0 100644
                    LCMS2>=2.10
                    LircClient
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 529cd11..dd13b34 100644
+index eda76b5..0646e8b 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25480,6 +25480,54 @@ msgctxt "#60006"
- msgid "Black bars"
+@@ -25462,6 +25462,54 @@ msgctxt "#60003"
+ msgid "{0:d} nits"
  msgstr ""
  
 +#. Label of setting "Player -> Subtitles -> Repair text subtitles"
@@ -224,12 +224,12 @@ index 0000000..513a776
 +  endif()
 +endif()
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 87a2f24..adb94b2 100755
+index b727df8..9779396 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -914,6 +914,41 @@
-           </constraints>
-           <control type="list" format="string" />
+@@ -903,6 +903,41 @@
+             <formatlabel>60003</formatlabel>
+           </control>
          </setting>
 +        <setting id="subtitles.repair" type="boolean" label="60010" help="60011">
 +          <level>1</level>
@@ -3772,13 +3772,13 @@ index f3bc48a..55a0393 100644
    GetSettingsManager()->UnregisterCallback(&g_passwordManager);
    GetSettingsManager()->UnregisterCallback(&CRssManager::GetInstance());
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 038b69a..1c4ced5 100644
+index c6dc7be..987f36f 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -188,6 +188,10 @@ public:
+@@ -187,6 +187,10 @@ public:
+   static constexpr auto SETTING_SUBTITLES_OVERRIDEFONTS = "subtitles.overridefonts";
    static constexpr auto SETTING_SUBTITLES_OVERRIDESTYLES = "subtitles.overridestyles";
    static constexpr auto SETTING_SUBTITLES_BRIGHTNESS = "subtitles.brightness";
-   static constexpr auto SETTING_SUBTITLES_PLACEMENT = "subtitles.placement";
 +  static constexpr auto SETTING_SUBTITLES_REPAIR = "subtitles.repair";
 +  static constexpr auto SETTING_SUBTITLES_REPAIRADS = "subtitles.repairads";
 +  static constexpr auto SETTING_SUBTITLES_REPAIRTIMING = "subtitles.repairtiming";

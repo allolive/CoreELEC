@@ -650,6 +650,32 @@ TEST(CueCleaner, RepairsACueAndDropsOneThatWasAllAdvertising)
   EXPECT_FALSE(cleaner.Clean(ad));
 }
 
+TEST(CueCleaner, TakesNoBracketForATagInTextOffAPicture)
+{
+  Options options;
+  options.tags = false;
+  CCueCleaner cleaner(options, nullptr, "", {});
+  std::string text = "< Il pubblico applaude. >\n{ride}";
+  EXPECT_TRUE(cleaner.Clean(text));
+  EXPECT_EQ(text, "< Il pubblico applaude. >\n{ride}");
+  std::string tagged = "<Il pubblico>";
+  EXPECT_FALSE(CCueCleaner(Options(), nullptr, "", {}).Clean(tagged));
+}
+
+TEST(CueCleaner, KeepsEveryCharacterOfTextOffAPicture)
+{
+  Options options;
+  options.tags = false;
+  CCueCleaner cleaner(options, nullptr, "", {});
+  // what would be a tag, or the symbols a bracket was once swapped for, is text like any other
+  for (std::string text : {"<i></i>", "{\\an8}", "\u2BFC Il pubblico \u2BFD", "\\N {\\i1}"})
+  {
+    const std::string read = text;
+    EXPECT_TRUE(cleaner.Clean(text));
+    EXPECT_EQ(text, read);
+  }
+}
+
 TEST(CueCleaner, LeavesAnEmptyCueToKodi)
 {
   CCueCleaner cleaner(Options(), nullptr, "", {});
