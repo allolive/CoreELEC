@@ -23,6 +23,15 @@ The kernel patches:
 - 09 publishes VRR as enabled only after the configuration it enables.
 - 10 places one eye that many pixels right for 3D depth (`fa_depth`), on its
   vsyncs only, where the video window leaves the room on screen.
+- 11 sends a VESA timing (1080p165) as YCbCr 4:4:4, 10-bit where it fits, when
+  the sink takes 4:4:4: the RGB the S6 made for it was full range in a frame
+  stating limited, and the picture came out dark.
+- 12 makes the fast game-VRR base the sink's own fastest 1080p above 120 Hz
+  (144, 165, 240 Hz), read from its EDID (DisplayID Type I or VII, detailed
+  timings) within the link's 600 MHz, in place of one fixed 1080p165 timing.
+- 13 makes fa_sync give the eye on screen (the one RDMA put out at this vsync,
+  not the one chosen for the next) and the time its first active line leaves
+  the encoder: a glasses delay of 0 is the start of the eye's picture.
 
 The decoder patch (media_modules-aml):
 - 01 pins both MVC views' buffers for a frame kept on screen (pause, seek), so
@@ -91,3 +100,24 @@ The Kodi patches:
   `stereodepth.json` in the profile rather than in the shared video database,
   with the action stereodepth (its slider) and Player.StereoDepth: the window is
   narrowed by the depth and kernel patch 10 moves one eye by as much.
+- 36 notifies the rate Active 3D plays at once the output runs ("23.976 fps
+  at 95.904 Hz, 1080p 165 Hz base") in place of the stereo mode's name.
+- 37 keeps the window when Kodi picks the film's resolution after entering
+  HFR VRR: only the film's rate decides the output there, and the rebuild
+  cost a second audio sink reopen a second into every 3D film.
+- 38 gives every subtitle on a 3D film the disc's depth, text and translated
+  ones included, not only PG ones; and a sequence that has carried only
+  zeros counts as no depth, so the configured one stands in until the disc
+  gives a value.
+- 39 tells the player HFR VRR is coming while it is wanted and not yet on,
+  so a 3D film's sound starts after the switch (11_25 waits for it).
+- 40 runs HFR VRR on that fast 1080p, whatever its rate, where the sink's
+  VRR range reaches it; the film still plays at 96 Hz (95.904 for 23.976).
+- 41 names the 3D mode Active 3D for VRR displays: it no longer runs on 120 Hz only.
+- 42 lets each film move its subtitles closer or further in 3D, on top of the
+  disc's or the configured depth, from the subtitle settings; kept with its 3D depth.
+
+- 43 drops a picture the MVC decoder hands out after a later one (a swapped
+  pair, or an old picture after a resume) rather than stepping the film back.
+- 44 takes a whole-refresh picture offset into the frame latency where a frame
+  spans several refreshes, so 3D lands in sync from its first picture.

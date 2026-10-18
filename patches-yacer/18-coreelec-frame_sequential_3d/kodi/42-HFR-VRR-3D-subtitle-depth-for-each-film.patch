@@ -1,0 +1,449 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 13:00:00 -0400
+Subject: [PATCH] HFR VRR: 3D subtitle depth for each film
+
+A 3D film's subtitles sit at the depth its disc gives them or, when it
+gives none - a disc whose offsets are all zero, or a remux that names no
+plane for its track - at the configured depth, which goes no further
+than 10 pixels and is the same for every film. One that pops further out
+of the screen than that has its subtitles inside the picture.
+
+- CVideoSettings::m_SubtitleDepth, the playing film's change to its
+  subtitles' depth in pixels, -20 to 20, 0 unless set: positive brings
+  them closer. It is added after the choice between the disc's depth and
+  the configured one, so it moves either.
+- It is kept with the film's 3D depth in special://profile/
+  stereodepth.json. A film with only a picture depth is still written as
+  that number alone, as before; one with a subtitle depth too as
+  {"picture": n, "subtitles": n}, which an older build reads as no depth.
+- Action subtitledepth (993) opens the slider dialog for it, as
+  stereodepth does for the picture, worded as its ("4 px closer");
+  Player.SubtitleDepth shows it, for a button next to the subtitle
+  offset in a skin's subtitle select dialog. The subtitle settings
+  dialog has the same slider while a film plays in 3D. The subtitles
+  move as the slider does, and the value is kept for the film when it
+  stops.
+
+Shared code: the video setting, its file, the action, the slider, the
+info label and the overlay renderer's depth are generic Kodi.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22749,6 +22749,14 @@ msgctxt "#60112"
+ msgid "{0:d} px further"
+ msgstr ""
+ 
++#. Label and heading of the slider that moves the playing film's subtitles closer or further in
++#. 3D, on top of the depth the disc or the subtitle settings give them
++#: xbmc/video/PlayerController.cpp
++#: xbmc/video/dialogs/GUIDialogSubtitleSettings.cpp
++msgctxt "#60130"
++msgid "3D subtitle depth"
++msgstr ""
++
+ #. Notification when Active 3D starts: the film's frame rate, the refresh it plays at and the base mode's
+ #: xbmc/windowing/amlogic/AMLDisplay.cpp
+ msgctxt "#60113"
+--- a/xbmc/GUIInfoManager.cpp
++++ b/xbmc/GUIInfoManager.cpp
+@@ -862,7 +862,7 @@ constexpr std::array<InfoMap, 7> integer_bools = {{
+ ///     <p>
+ ///   }
+ // clang-format off
+-constexpr std::array<InfoMap, 63> player_labels = {{
++constexpr std::array<InfoMap, 64> player_labels = {{
+     {"hasmedia",              PLAYER_HAS_MEDIA},
+     {"hasaudio",              PLAYER_HAS_AUDIO},
+     {"hasvideo",              PLAYER_HAS_VIDEO},
+@@ -902,6 +902,7 @@ constexpr std::array<InfoMap, 63> player_labels = {{
+     {"fs3ddelay",             PLAYER_FS3D_DELAY},
+     {"stereoinvert",          PLAYER_STEREO_INVERT},
+     {"stereodepth",           PLAYER_STEREO_DEPTH},
++    {"subtitledepth",         PLAYER_SUBTITLE_DEPTH},
+     {"chapter",               PLAYER_CHAPTER},
+     {"chaptercount",          PLAYER_CHAPTERCOUNT},
+     {"chaptername",           PLAYER_CHAPTERNAME},
+--- a/xbmc/application/ApplicationPlayerCallback.cpp
++++ b/xbmc/application/ApplicationPlayerCallback.cpp
+@@ -527,7 +527,9 @@ void CApplicationPlayerCallback::RequestVideoSettings(const CFileItem& fileItem)
+     CVideoSettings vs;
+     if (!dbs.GetVideoSettings(fileItem, vs))
+       vs = CMediaSettings::GetInstance().GetDefaultVideoSettings();
+-    vs.m_StereoDepth = CStereoDepth::Get(fileItem);
++    const CStereoDepth::Depths depths = CStereoDepth::Get(fileItem);
++    vs.m_StereoDepth = depths.picture;
++    vs.m_SubtitleDepth = depths.subtitles;
+ 
+     auto& components = CServiceBroker::GetAppComponents();
+     const auto appPlayer = components.GetComponent<CApplicationPlayer>();
+@@ -540,7 +542,7 @@ void CApplicationPlayerCallback::RequestVideoSettings(const CFileItem& fileItem)
+ void CApplicationPlayerCallback::StoreVideoSettings(const CFileItem& fileItem,
+                                                     const CVideoSettings& vs)
+ {
+-  CStereoDepth::Set(fileItem, vs.m_StereoDepth);
++  CStereoDepth::Set(fileItem, {vs.m_StereoDepth, vs.m_SubtitleDepth});
+ 
+   CVideoDatabase dbs;
+   if (dbs.Open())
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+@@ -312,7 +312,7 @@ void CRenderer::Render(COverlay* o)
+     }
+   }
+ 
+-  state.x += GetStereoscopicDepth(o->m_3dSubtitleDepth);
++  state.x += GetStereoscopicDepth(o->m_3dSubtitleDepth, m_subtitleDepth);
+ 
+   o->Render(state);
+ }
+@@ -369,6 +369,12 @@ void CRenderer::SetStereoMode(const std::string &stereomode)
+   m_stereomode = stereomode;
+ }
+ 
++void CRenderer::SetSubtitleDepth(int depth)
++{
++  std::unique_lock lock(m_section);
++  m_subtitleDepth = depth;
++}
++
+ void CRenderer::SetSubtitleVerticalPosition(const int value, bool save)
+ {
+   std::unique_lock lock(m_section);
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+@@ -172,6 +172,9 @@ namespace OVERLAY {
+      */
+     void SetSubtitleVerticalPosition(const int value, bool save);
+ 
++    //! The film's own change to its subtitles' 3D depth, in pixels: positive brings them closer.
++    void SetSubtitleDepth(int depth);
++
+   protected:
+     /*!
+      * \brief Reset the subtitle position to default value
+@@ -250,6 +253,7 @@ namespace OVERLAY {
+     // or a PositonResInfoState value for deferred processing
+     int m_subtitlePosResInfo{POSRESINFO_UNSET};
+     int m_subtitleVerticalMargin{0};
++    int m_subtitleDepth{0};
+     bool m_saveSubtitlePosition{false}; // To save subtitle position permanently
+     KODI::SUBTITLES::HorizontalAlign m_subtitleHorizontalAlign{
+         KODI::SUBTITLES::HorizontalAlign::CENTER};
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -677,7 +677,7 @@ void ScaleRgbaLight(std::vector<uint32_t>& rgba, float factor)
+   }
+ }
+ 
+-int GetStereoscopicDepth(std::optional<int> subtitleDepth)
++int GetStereoscopicDepth(std::optional<int> subtitleDepth, int filmChange)
+ {
+   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+ 
+@@ -697,13 +697,14 @@ int GetStereoscopicDepth(std::optional<int> subtitleDepth)
+       subtitleDepth)
+   {
+     const int width = CServiceBroker::GetWinSystem()->GetGfxContext().GetWidth();
+-    depth = static_cast<int>(std::lround(*subtitleDepth * width / 1920.0));
++    depth = static_cast<int>(std::lround((*subtitleDepth + filmChange) * width / 1920.0));
+   }
+   else
+   {
+     // get configured depth
+     depth = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+-        CSettings::SETTING_SUBTITLES_STEREOSCOPICDEPTH);
++                CSettings::SETTING_SUBTITLES_STEREOSCOPICDEPTH) +
++            filmChange;
+   }
+ 
+   // correct depth according to the current left/right eye view
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+@@ -138,6 +138,8 @@ void FindVisibleBox(const uint8_t* src,
+ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int passes);
+ 
+ bool convert_quad(ASS_Image* images, SQuads& quads, int max_x);
+-int GetStereoscopicDepth(std::optional<int> subtitleDepth);
++//! The 3D depth a subtitle is shown at: the disc's, or the configured one, and the film's own
++//! change to it on top
++int GetStereoscopicDepth(std::optional<int> subtitleDepth, int filmChange);
+ 
+ } // namespace OVERLAY
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -114,6 +114,7 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
+   {
+     m_pRenderer->SetVideoSettings(settings);
+   }
++  m_overlays.SetSubtitleDepth(settings.m_SubtitleDepth);
+ }
+ 
+ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
+--- a/xbmc/cores/VideoSettings.h
++++ b/xbmc/cores/VideoSettings.h
+@@ -244,6 +244,8 @@ public:
+   bool m_StereoInvert;
+   //! frame-sequential 3D depth (CStereoDepth); kept in a file of its own, not with the others
+   int m_StereoDepth{0};
++  //! added to the 3D subtitle depth the disc or the subtitle settings give; kept with m_StereoDepth
++  int m_SubtitleDepth{0};
+   int m_VideoStream;
+   ETONEMAPMETHOD m_ToneMapMethod;
+   float m_ToneMapParam;
+--- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
++++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
+@@ -850,8 +850,9 @@ constexpr uint32_t CONTROL_HAS_FOCUS                 = 30000;
+ constexpr uint32_t PLAYER_FS3D_DELAY                 = 20000;
+ constexpr uint32_t PLAYER_STEREO_INVERT              = 20001;
+ constexpr uint32_t PLAYER_STEREO_DEPTH               = 20002;
++constexpr uint32_t PLAYER_SUBTITLE_DEPTH             = 20003;
+ static_assert(PLAYER_FS3D_DELAY > WINDOW_IS_MODAL_DIALOG_TOPMOST &&
+-              PLAYER_STEREO_DEPTH < CONTROL_GET_LABEL,
++              PLAYER_SUBTITLE_DEPTH < CONTROL_GET_LABEL,
+               "the info labels this build adds must stay clear of Kodi's own");
+ 
+ constexpr int      LISTITEM_START                    = 35000;
+--- a/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
++++ b/xbmc/guilib/guiinfo/PlayerGUIInfo.cpp
+@@ -211,6 +211,9 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
+     case PLAYER_STEREO_DEPTH:
+       value = CStereoDepth::Format(m_appPlayer->GetVideoSettings().m_StereoDepth);
+       return true;
++    case PLAYER_SUBTITLE_DEPTH:
++      value = CStereoDepth::Format(m_appPlayer->GetVideoSettings().m_SubtitleDepth);
++      return true;
+     case PLAYER_CHAPTER:
+       value = StringUtils::Format("{:02}", m_appPlayer->GetChapter());
+       return true;
+--- a/xbmc/input/actions/ActionIDs.h
++++ b/xbmc/input/actions/ActionIDs.h
+@@ -534,11 +534,14 @@ constexpr const int ACTION_STEREO_INVERT = 991;
+ //! Show the slider for the playing film's 3D depth (HFR VRR)
+ constexpr const int ACTION_STEREO_DEPTH = 992;
+ 
++//! Show the slider for the playing film's change to its subtitles' 3D depth
++constexpr const int ACTION_SUBTITLE_DEPTH = 993;
++
+ // The NOOP action can be specified to disable an input event. This is
+ // useful in user keyboard.xml etc to disable actions specified in the
+ // system mappings. ERROR action is used to play an error sound
+ constexpr const int ACTION_ERROR = 998;
+ constexpr const int ACTION_NOOP = 999;
+ 
+-static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_STEREO_DEPTH < ACTION_ERROR,
++static_assert(ACTION_FS3D_DELAY > ACTION_ANALOG_MOVE_Y_DOWN && ACTION_SUBTITLE_DEPTH < ACTION_ERROR,
+               "the actions this build adds must stay clear of Kodi's own");
+--- a/xbmc/input/actions/ActionTranslator.cpp
++++ b/xbmc/input/actions/ActionTranslator.cpp
+@@ -63,6 +63,7 @@ constexpr auto ActionMappings = make_map<ActionName, ActionID>({
+     {"fs3ddelay", ACTION_FS3D_DELAY},
+     {"stereoinvert", ACTION_STEREO_INVERT},
+     {"stereodepth", ACTION_STEREO_DEPTH},
++    {"subtitledepth", ACTION_SUBTITLE_DEPTH},
+     {"playerdebug", ACTION_PLAYER_DEBUG},
+     {"playerdebugvideo", ACTION_PLAYER_DEBUG_VIDEO},
+     {"codecinfo", ACTION_PLAYER_PROCESS_INFO},
+--- a/xbmc/video/PlayerController.cpp
++++ b/xbmc/video/PlayerController.cpp
+@@ -253,6 +253,15 @@ bool CPlayerController::OnAction(const CAction &action)
+         return true;
+       }
+ 
++      case ACTION_SUBTITLE_DEPTH:
++      {
++        ShowSlider(action.GetID(), 60130,
++                   static_cast<float>(appPlayer->GetVideoSettings().m_SubtitleDepth),
++                   static_cast<float>(-CStereoDepth::MAX), 1.0f,
++                   static_cast<float>(CStereoDepth::MAX), true);
++        return true;
++      }
++
+       case ACTION_STEREO_INVERT:
+       {
+         CVideoSettings vs = appPlayer->GetVideoSettings();
+@@ -735,6 +744,20 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
+     }
+     return;
+   }
++  else if (m_sliderAction == ACTION_SUBTITLE_DEPTH)
++  {
++    const int value = static_cast<int>(std::lround(slider->GetFloatValue()));
++    slider->SetTextValue(CStereoDepth::Format(value));
++    // the film's, as its 3D depth is
++    const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++    CVideoSettings vs = appPlayer->GetVideoSettings();
++    if (appPlayer->HasPlayer() && vs.m_SubtitleDepth != value)
++    {
++      vs.m_SubtitleDepth = value;
++      appPlayer->SetVideoSettings(vs);
++    }
++    return;
++  }
+   else if (m_sliderAction == ACTION_VOLAMP_UP ||
+           m_sliderAction == ACTION_VOLAMP_DOWN ||
+           m_sliderAction == ACTION_VOLAMP)
+--- a/xbmc/video/StereoDepth.cpp
++++ b/xbmc/video/StereoDepth.cpp
+@@ -43,7 +43,7 @@ std::string Key(const CFileItem& item)
+   return item.GetPath();
+ }
+ 
+-CVariant& Depths()
++CVariant& Stored()
+ {
+   if (depths)
+     return *depths;
+@@ -80,22 +80,38 @@ void Save(const CVariant& depths)
+ }
+ } // unnamed namespace
+ 
+-int CStereoDepth::Get(const CFileItem& item)
++CStereoDepth::Depths CStereoDepth::Get(const CFileItem& item)
+ {
+   std::lock_guard lock(depthLock);
+-  const CVariant& all = Depths();
++  const CVariant& all = Stored();
+   const std::string key = Key(item);
+   if (!all.isMember(key))
+-    return 0;
+-  return std::clamp(static_cast<int>(all[key].asInteger()), -MAX, MAX);
++    return {};
++  // the picture's depth alone, or both
++  const CVariant& entry = all[key];
++  const auto read = [](const CVariant& depth)
++  { return std::clamp(static_cast<int>(depth.asInteger()), -MAX, MAX); };
++  if (!entry.isObject())
++    return {read(entry), 0};
++  return {read(entry["picture"]), read(entry["subtitles"])};
+ }
+ 
+-void CStereoDepth::Set(const CFileItem& item, int depth)
++void CStereoDepth::Set(const CFileItem& item, const Depths& depths)
+ {
+   std::lock_guard lock(depthLock);
+-  CVariant& all = Depths();
++  CVariant& all = Stored();
+   const std::string key = Key(item);
+-  if (depth == 0)
++  CVariant entry;
++  // the picture's depth alone is written as it always was
++  if (depths.subtitles == 0)
++    entry = depths.picture;
++  else
++  {
++    entry = CVariant(CVariant::VariantTypeObject);
++    entry["picture"] = depths.picture;
++    entry["subtitles"] = depths.subtitles;
++  }
++  if (depths.picture == 0 && depths.subtitles == 0)
+   {
+     if (!all.isMember(key))
+       return;
+@@ -103,9 +119,9 @@ void CStereoDepth::Set(const CFileItem& item, int depth)
+   }
+   else
+   {
+-    if (all.isMember(key) && all[key].asInteger() == depth)
++    if (all.isMember(key) && all[key] == entry)
+       return;
+-    all[key] = depth;
++    all[key] = entry;
+   }
+   Save(all);
+ }
+--- a/xbmc/video/StereoDepth.h
++++ b/xbmc/video/StereoDepth.h
+@@ -15,7 +15,8 @@ class CFileItem;
+ /*!
+  * \brief The 3D depth of each film: how many pixels one eye's picture goes right of the other's.
+  * Positive brings the picture forward, more of it out of the screen (the left eye's goes right);
+- * negative sets it back behind the screen (the right eye's goes right).
++ * negative sets it back behind the screen (the right eye's goes right). And the same for its
++ * subtitles, on top of the depth the disc or the subtitle settings give them.
+  *
+  * Kept in a file of its own in the profile rather than with the film's other video settings: the
+  * video database has no column for it, and is often a library several players share.
+@@ -25,10 +26,16 @@ class CStereoDepth
+ public:
+   static constexpr int MAX = 20;
+ 
+-  //! the film's depth, 0 unless one was set for it
+-  static int Get(const CFileItem& item);
+-  //! keep the film's depth; 0 forgets it
+-  static void Set(const CFileItem& item, int depth);
++  struct Depths
++  {
++    int picture{0};
++    int subtitles{0}; //!< added to the subtitles' own depth
++  };
++
++  //! the film's depths, 0 unless one was set for it
++  static Depths Get(const CFileItem& item);
++  //! keep the film's depths; both 0 forgets them
++  static void Set(const CFileItem& item, const Depths& depths);
+   //! "4 px closer", "4 px further", "0 px"
+   static std::string Format(int depth);
+ };
+--- a/xbmc/video/dialogs/GUIDialogSubtitleSettings.cpp
++++ b/xbmc/video/dialogs/GUIDialogSubtitleSettings.cpp
+@@ -40,14 +40,19 @@
+ #include "utils/URIUtils.h"
+ #include "utils/Variant.h"
+ #include "utils/log.h"
++#include "rendering/RenderSystemTypes.h"
++#include "video/StereoDepth.h"
+ #include "video/VideoDatabase.h"
+ #include "video/VideoStreamSelect.h"
++#include "windowing/GraphicContext.h"
++#include "windowing/WinSystem.h"
+ 
+ #include <string>
+ #include <vector>
+ 
+ #define SETTING_SUBTITLE_ENABLE                "subtitles.enable"
+ #define SETTING_SUBTITLE_DELAY                 "subtitles.delay"
++#define SETTING_SUBTITLE_DEPTH                 "subtitles.depth"
+ #define SETTING_SUBTITLE_STREAM                "subtitles.stream"
+ #define SETTING_SUBTITLE_BROWSER               "subtitles.browser"
+ #define SETTING_SUBTITLE_SEARCH                "subtitles.search"
+@@ -113,6 +118,13 @@ void CGUIDialogSubtitleSettings::OnSettingChanged(const std::shared_ptr<const CS
+     float value = static_cast<float>(std::static_pointer_cast<const CSettingNumber>(setting)->GetValue());
+     appPlayer->SetSubTitleDelay(value);
+   }
++  else if (settingId == SETTING_SUBTITLE_DEPTH)
++  {
++    // the film's: shown at once, and kept for it when it stops
++    CVideoSettings vs = appPlayer->GetVideoSettings();
++    vs.m_SubtitleDepth = std::static_pointer_cast<const CSettingInt>(setting)->GetValue();
++    appPlayer->SetVideoSettings(vs);
++  }
+   else if (settingId == SETTING_SUBTITLE_STREAM)
+   {
+     m_subtitleStream = std::static_pointer_cast<const CSettingInt>(setting)->GetValue();
+@@ -329,6 +341,23 @@ void CGUIDialogSubtitleSettings::InitializeSettings()
+     std::static_pointer_cast<CSettingControlSlider>(settingSubtitleDelay->GetControl())->SetFormatter(SettingFormatterDelay);
+   }
+ 
++  // the film's own change to its subtitles' 3D depth, while it plays in 3D
++  const RenderStereoMode stereoMode =
++      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
++  if (appPlayer->HasPlayer() && stereoMode != RenderStereoMode::OFF &&
++      stereoMode != RenderStereoMode::MONO)
++  {
++    std::shared_ptr<CSettingInt> settingSubtitleDepth =
++        AddSlider(groupSubtitles, SETTING_SUBTITLE_DEPTH, 60130, SettingLevel::Basic,
++                  videoSettings.m_SubtitleDepth, "{:d}", -CStereoDepth::MAX, 1, CStereoDepth::MAX,
++                  60130, usePopup);
++    std::static_pointer_cast<CSettingControlSlider>(settingSubtitleDepth->GetControl())
++        ->SetFormatter([](const std::shared_ptr<const CSettingControlSlider>&,
++                          const CVariant& value, const CVariant&, const CVariant&,
++                          const CVariant&)
++                       { return CStereoDepth::Format(static_cast<int>(value.asInteger())); });
++  }
++
+   // subtitle stream setting
+   if (SupportsSubtitleFeature(IPlayerSubtitleCaps::SELECT_STREAM))
+     AddSubtitleStreams(groupSubtitles, SETTING_SUBTITLE_STREAM);

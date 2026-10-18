@@ -46,7 +46,7 @@ index be0dbe3..5d230f9 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -22719,6 +22719,24 @@ msgctxt "#60033"
- msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. Half a frame either way covers every timing: if it still improves at one end, turn on Invert stereoscopic 3D mode and carry on from the other end."
+ msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. A whole frame either way covers every timing, swapped eyes included: past half a frame the glasses take the other eye, so turning on Invert stereoscopic 3D mode is never needed for them."
  msgstr ""
  
 +#. Heading of the slider for the playing film's 3D depth

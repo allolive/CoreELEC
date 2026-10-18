@@ -59,6 +59,10 @@ A packet without a pts was keyed by its dts, which puts a reordered picture
 at another place than it is shown: such packets now feed neither a table nor
 the GOP start.
 
+The tables are read from a disc's MVC (AMVC, Annex B) as from a remux's
+(MVC1): the disc's was left out, so a Blu-ray played from its playlist had
+no table and its subtitles took the depth setting.
+
 One INFO line per film says what was found: the first table (sequences x
 frames, and the sequence the subtitle follows), or that after 10 s of
 pictures the stream carries none; and once if the subtitle's sequence is not
@@ -355,17 +359,20 @@ index 8c0e000..151838a 100644
    int8_t* qp_table;                //< Quantization parameters, primarily used by filters
    int qstride;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 68f8649..b6eac47 100644
+index 68f8649..9b2b606 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -626,6 +626,50 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -626,6 +626,53 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
    if (pData)
    {
-+    // Blu-ray 3D subtitle depth, read before Convert() can rewrite the access unit
-+    // Tables are keyed by display time: a packet without a pts is left out, its dts
-+    // would put a reordered picture at the wrong place.
-+    if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && packet.pts != DVD_NOPTS_VALUE)
++    // Blu-ray 3D subtitle depth, read before Convert() can rewrite the access unit:
++    // a remux's MVC1 and a disc's AMVC alike. Tables are keyed by display time: a
++    // packet without a pts is left out, its dts would put a reordered picture at
++    // the wrong place.
++    if ((m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') ||
++         m_hints.codec_tag == MKTAG('A', 'M', 'V', 'C')) &&
++        packet.pts != DVD_NOPTS_VALUE)
 +    {
 +      m_mvcDepthSequence = packet.subtitlePlane;
 +      AML_MVC_DEPTH::Offsets offsets;
@@ -409,7 +416,7 @@ index 68f8649..b6eac47 100644
      // named by how the EL arrives; a track pair can open with solo packets, so
      // dt-dl may correct an early st-dl
      if (m_dualLayer && m_streamMeta.structure != "dt-dl")
-@@ -817,6 +861,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -817,6 +864,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
    m_has_keyframe = false;
    if (m_frameNumRewriter)
      m_frameNumRewriter->ResetState();
@@ -417,7 +424,7 @@ index 68f8649..b6eac47 100644
    if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1') && m_mvcParams == MvcParams::OWN)
    {
      m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
-@@ -856,6 +901,16 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
+@@ -856,6 +904,16 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
      pVideoPicture->videoBuffer = nullptr;
      pVideoPicture->SetParams(m_videobuffer);
  

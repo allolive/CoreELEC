@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 12:00:00 -0400
+Subject: [PATCH] HFR VRR: the 3D mode is Active 3D for VRR displays
+
+The 3D mode took its name from the 1080p 120 Hz base it first ran on.
+It now runs on the sink's fastest 1080p (144, 165, 240 Hz), so the name
+drops the rate; the shutter add-on takes the same one.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22734,7 +22734,7 @@ msgstr ""
+ #. Stereoscopic 3D mode: one eye per refresh at a high refresh rate with VRR, for shutter glasses on a 2D display
+ #: system/settings/settings.xml
+ msgctxt "#60030"
+-msgid "Active 3D for 120 Hz VRR displays"
++msgid "Active 3D for VRR displays"
+ msgstr ""
+ 
+ #: system/settings/settings.xml
+@@ -22752,7 +22752,7 @@ msgstr ""
+ #. Description of setting with label #60031 "3D glasses delay"
+ #: system/settings/settings.xml
+ msgctxt "#60033"
+-msgid "Only in Active 3D for 120 Hz VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. A whole frame either way covers every timing, swapped eyes included: past half a frame the glasses take the other eye, so turning on Invert stereoscopic 3D mode is never needed for them."
++msgid "Only in Active 3D for VRR displays: moves the shutter glasses' eye switch after each refresh, for an emitter driven from the box. Tune it during a 3D film: through one lens the other eye's picture should be as faint as it gets, and as faint at the top of the screen as at the bottom. A screen that takes most of the frame to draw leaves some in lenses that stay open the whole frame, and this only moves it; glasses or an emitter that can shorten the opening can remove it, with this delay placing the opening once the screen has settled. A whole frame either way covers every timing, swapped eyes included: past half a frame the glasses take the other eye, so turning on Invert stereoscopic 3D mode is never needed for them."
+ msgstr ""
+ 
+ #. Heading of the slider for the playing film's 3D depth

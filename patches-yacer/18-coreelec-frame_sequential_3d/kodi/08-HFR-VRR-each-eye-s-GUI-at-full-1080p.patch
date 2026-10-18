@@ -86,7 +86,7 @@ index ab088ac..8de45cd 100644
        CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index fc35f9c..7239793 100644
+index d7790ca..68221d8 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 @@ -2888,6 +2888,7 @@ void CAMLCodec::CloseDecoder()
@@ -97,7 +97,7 @@ index fc35f9c..7239793 100644
    }
  
    // never leave vcodec ff/rw or paused.
-@@ -4122,11 +4123,14 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4124,11 +4125,14 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
      else if (hfr && (layout == "top_bottom" || layout == "bottom_top"))
        mode = MODE_3D_ENABLE | MODE_FORCE_3D_FA_TB | MODE_3D_OUT_FA_L_FIRST;
  
@@ -116,7 +116,7 @@ index fc35f9c..7239793 100644
        dst_rect.x1 *= xs;
        dst_rect.x2 *= xs;
        dst_rect.y1 *= ys;
-@@ -4152,6 +4156,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+@@ -4154,6 +4158,9 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
        m_fs3dMode = mode;
        m_fs3dSwap = swap;
      }
@@ -305,7 +305,7 @@ index ea87c6f..76dc12d 100644
    virtual bool Restore() { return false; }
    virtual bool Hide() { return false; }
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index d73d414..43cf0d7 100644
+index 41b2080..d1c08e0 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -5,6 +5,7 @@
@@ -316,7 +316,7 @@ index d73d414..43cf0d7 100644
  #include <cmath>
  #include <cstdlib>
  #include <fcntl.h>
-@@ -1209,13 +1210,15 @@ void CAMLDisplay::fs3d_recover()
+@@ -1210,13 +1211,15 @@ void CAMLDisplay::fs3d_recover()
                            StringUtils::EqualsNoCase(mode, FS3D_MODE_165);
    // left by a Kodi in 3D; the base mode alone is also a desktop someone chose
    const bool left = saved || StringUtils::StartsWith(vrrMode, "game") ||
@@ -336,7 +336,7 @@ index d73d414..43cf0d7 100644
  
    if (!left && !onFs3dMode)
      return;
-@@ -1302,8 +1305,9 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+@@ -1303,8 +1306,9 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
   * Frame-sequential 3D (HFR VRR). The sink keeps seeing a 2D 1080p 120 Hz signal,
   * and game VRR slows it to the largest even multiple of the film rate it carries
   * (24p at 96 Hz: each eye sees every frame twice). The video layer alternates the
@@ -348,7 +348,7 @@ index d73d414..43cf0d7 100644
   */
  void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
  {
-@@ -1322,11 +1326,9 @@ void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
+@@ -1323,11 +1327,9 @@ void CAMLDisplay::fs3d_apply(bool on, int vrr_rate, bool vrr_frac)
        CSysfsPath(FS3D_VRR_RATE, 0);
        CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
      }
@@ -360,7 +360,7 @@ index d73d414..43cf0d7 100644
      CSysfsPath(FS3D_VRR_RATE, 0);
      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vrr_mode", std::string("none"));
      CSysfsPath(FS3D_ALLM, m_fs3d_allm.empty() ? std::string("0") : m_fs3d_allm);
-@@ -1358,6 +1360,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1359,6 +1361,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
      m_fs3d_vrr_rate = 0;
      m_fs3d_vrr_frac = false;
      m_fs3d_vsync_hz = 0.0;
@@ -369,16 +369,16 @@ index d73d414..43cf0d7 100644
      CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
      // the record goes once the output is off the 3D base mode, not before
      const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
-@@ -1373,7 +1377,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
-   if (fps <= 0)
-     fps = res.fRefreshRate;
+@@ -1382,7 +1386,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+     m_fs3d_hz = m_fs3d_offers_165 ? 165 : 120;
+   }
  
 -  // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
 +  // Only the mode changes; Kodi's resolution stays the film's.
    const bool fast = m_fs3d_hz == 165;
    const Fs3dRates rates = fs3d_rates(fps);
    RESOLUTION_INFO base = res;
-@@ -1401,6 +1405,18 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1410,6 +1414,18 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
        fs3d_state_save(m_fs3d_allm, before);
    }
    const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
@@ -397,7 +397,7 @@ index d73d414..43cf0d7 100644
    if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
    {
      CLog::Log(LOGERROR, "CAMLDisplay::{} - could not set {}", __FUNCTION__, m_fs3d_mode);
-@@ -1418,6 +1434,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1428,6 +1444,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
      m_fs3d_vrr_rate = 0;
      m_fs3d_vrr_frac = false;
      m_fs3d_vsync_hz = 0.0;
@@ -406,7 +406,7 @@ index d73d414..43cf0d7 100644
      // for the rest of this film: it is not held back waiting for it
      m_fs3d_entry_failed = true;
      const bool restored = set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
-@@ -1442,6 +1460,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1452,6 +1470,8 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
    m_fs3d_vsync_hz = vrr_rate ? vrr_rate / 100.0 * (fracVsync ? 1000.0 / 1001.0 : 1.0)
                               : static_cast<double>(base.fRefreshRate);
    m_fs3d_res = res;
@@ -415,7 +415,7 @@ index d73d414..43cf0d7 100644
    m_fs3d_fps = fps;
    m_fs3d_rates = rates;
    m_fs3d_active = true;
-@@ -1519,6 +1539,11 @@ bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
+@@ -1529,6 +1549,11 @@ bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
           (m_fs3d_res.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK);
  }
  
@@ -427,7 +427,7 @@ index d73d414..43cf0d7 100644
  bool CAMLDisplay::aml_display_fs3d_stale() const
  {
    const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-@@ -1551,6 +1576,7 @@ bool CAMLDisplay::fs3d_next_film_starting() const
+@@ -1561,6 +1586,7 @@ bool CAMLDisplay::fs3d_next_film_starting() const
  
  void CAMLDisplay::aml_fs3d_leave()
  {
@@ -435,7 +435,7 @@ index d73d414..43cf0d7 100644
    if (!m_fs3d_active)
      return;
    fs3d_apply(false, 0);
-@@ -1558,6 +1584,8 @@ void CAMLDisplay::aml_fs3d_leave()
+@@ -1568,6 +1594,8 @@ void CAMLDisplay::aml_fs3d_leave()
    m_fs3d_vrr_rate = 0;
    m_fs3d_vrr_frac = false;
    m_fs3d_vsync_hz = 0.0;
@@ -445,7 +445,7 @@ index d73d414..43cf0d7 100644
  
  void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index b80c7b2..6581cfe 100644
+index da72a21..4783a4c 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -229,6 +229,17 @@ public:
@@ -466,8 +466,8 @@ index b80c7b2..6581cfe 100644
    //! leave frame-sequential 3D, if it is on (Kodi shutting down)
    void aml_fs3d_leave();
    //! playback stopped: a failed entry into 3D no longer holds for the next film
-@@ -291,6 +302,8 @@ private:
-   std::string m_fs3d_165_failed;
+@@ -293,6 +304,8 @@ private:
+   bool m_fs3d_offers_165 = false;
    //! a refresh read frame-sequential 3D as gone and it was kept: the next one decides
    bool m_fs3d_drop_seen = false;
 +  std::atomic<int> m_fs3d_gui_width{0};

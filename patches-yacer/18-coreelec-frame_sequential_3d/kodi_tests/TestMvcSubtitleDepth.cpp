@@ -211,6 +211,28 @@ TEST(MvcSubtitleDepth, NoTableNoSequenceNoOffset)
   EXPECT_FALSE(tables.Offset(10 * FRAME, 0, FRAME));
 }
 
+TEST(MvcSubtitleDepth, OnlyZerosAreNoDepth)
+{
+  CTables tables;
+  tables.Add(0, {{0, 0}, {0, 3}});
+  EXPECT_FALSE(tables.Offset(0, 0, FRAME));
+  EXPECT_EQ(tables.Offset(0, 1, FRAME), 0);
+  EXPECT_EQ(tables.Offset(FRAME, 1, FRAME), 3);
+}
+
+TEST(MvcSubtitleDepth, ADepthOnceSetHoldsThroughZerosAndSeeks)
+{
+  CTables tables;
+  tables.Add(0, {{0, 0}});
+  EXPECT_FALSE(tables.Offset(0, 0, FRAME));
+  tables.Add(2 * FRAME, {{0, -4}});
+  EXPECT_EQ(tables.Offset(2 * FRAME, 0, FRAME), 0);
+  EXPECT_EQ(tables.Offset(3 * FRAME, 0, FRAME), -4);
+  tables.Clear();
+  tables.Add(100 * FRAME, {{0, 0}});
+  EXPECT_EQ(tables.Offset(100 * FRAME, 0, FRAME), 0);
+}
+
 TEST(MvcSubtitleDepth, ReadsOfmdNestedInMvcScalableNesting)
 {
   const auto sei = NestedOfmdSei();

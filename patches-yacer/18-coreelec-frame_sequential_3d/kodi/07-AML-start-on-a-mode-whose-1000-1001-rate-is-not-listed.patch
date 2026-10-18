@@ -62,7 +62,7 @@ leaves the base mode in the same session.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index bc646f2d6a..d73d414a2b 100644
+index e2a1658..41b2080 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
 @@ -8,6 +8,7 @@
@@ -73,7 +73,7 @@ index bc646f2d6a..d73d414a2b 100644
  #include <sys/ioctl.h>
  #include <amcodec/codec.h>
  
-@@ -1154,20 +1155,91 @@ void CAMLDisplay::aml_refresh_display_caps()
+@@ -1155,20 +1156,91 @@ void CAMLDisplay::aml_refresh_display_caps()
      m_support_fs3d = support_fs3d;
    }
  
@@ -176,7 +176,7 @@ index bc646f2d6a..d73d414a2b 100644
  }
  
  // Without HDMI 3D the only stereo output is HFR VRR. Taking stereo video as
-@@ -1218,6 +1290,11 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+@@ -1219,6 +1291,11 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
        handle_display_stereo_mode(stereo_mode);
    }
  
@@ -188,7 +188,7 @@ index bc646f2d6a..d73d414a2b 100644
    return result;
  }
  
-@@ -1282,7 +1359,13 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1283,7 +1360,13 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
      m_fs3d_vrr_frac = false;
      m_fs3d_vsync_hz = 0.0;
      CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
@@ -203,7 +203,7 @@ index bc646f2d6a..d73d414a2b 100644
    }
  
    // The film rate: the video's own, or the refresh Kodi picked for it.
-@@ -1308,6 +1391,14 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1317,6 +1400,14 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
    {
      m_fs3d_allm = CSysfsPath(FS3D_ALLM).Get<std::string>().value_or("0");
      StringUtils::Trim(m_fs3d_allm);
@@ -218,7 +218,7 @@ index bc646f2d6a..d73d414a2b 100644
    }
    const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
    if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
-@@ -1329,7 +1420,12 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1339,7 +1430,12 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
      m_fs3d_vsync_hz = 0.0;
      // for the rest of this film: it is not held back waiting for it
      m_fs3d_entry_failed = true;
@@ -233,7 +233,7 @@ index bc646f2d6a..d73d414a2b 100644
  
    const int vrr_rate = rates.vrrRate;
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index dc9fee6cac..b80c7b28f0 100644
+index f13da3b..da72a21 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -10,6 +10,8 @@
@@ -268,8 +268,8 @@ index dc9fee6cac..b80c7b28f0 100644
    static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
    static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
    static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
-@@ -280,4 +291,7 @@ private:
-   std::string m_fs3d_165_failed;
+@@ -282,4 +293,7 @@ private:
+   bool m_fs3d_offers_165 = false;
    //! a refresh read frame-sequential 3D as gone and it was kept: the next one decides
    bool m_fs3d_drop_seen = false;
 +  std::optional<std::pair<std::string, float>> m_fs3d_recovered_desktop;
@@ -277,7 +277,7 @@ index dc9fee6cac..b80c7b28f0 100644
 +  std::atomic<bool> m_fs3d_state_pending{false};
  };
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-index 81402af1a9..7f986c9b01 100644
+index 81402af..7f986c9 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 @@ -623,6 +623,61 @@ void CWinSystemAmlogic::RefreshResolutions()

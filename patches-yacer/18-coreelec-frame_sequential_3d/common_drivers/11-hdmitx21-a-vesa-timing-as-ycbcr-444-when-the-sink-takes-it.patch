@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:00:00 -0400
+Subject: [PATCH] hdmitx21: a VESA timing as YCbCr 4:4:4 when the sink takes it
+
+1080p165, the frame-sequential 3D base, went out as RGB 8-bit like every
+VESA timing. On S6 that RGB is made from the VPU's YCbCr by a matrix that
+expands video levels to full range and uses BT.601, while the AVI frame
+states limited range and BT.709: a TV that believes the frame shows the
+picture crushed and dark.
+
+A VESA timing now goes out as YCbCr 4:4:4 when the sink declares 4:4:4,
+as the VPU makes it, so no matrix runs; with deep colour when the sink
+takes deep colour in 4:4:4 and the driver's own check of the mode and
+format passes (10-bit 1080p165 needs 501 MHz of TMDS clock). A sink without 4:4:4, or
+an attr naming RGB, keeps RGB 8-bit. hdmitx21_set_display forces RGB on a
+VESA timing only where DRM did not decide 4:4:4.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/drm/meson_hdmi.c
++++ b/drivers/drm/meson_hdmi.c
+@@ -421,12 +421,24 @@ static int meson_hdmitx_decide_color_att
+ 		}
+ 	}
+ 
+-	/* VESA timings go out as RGB 8-bit (hdmitx21_set_display); decide it
+-	 * here too, so the TMDS clock is worked out for what is sent
++	/* A VESA timing goes out as YCbCr 4:4:4, as the VPU makes it, when the
++	 * sink takes it, in deep colour where it takes that in 4:4:4 and the
++	 * link carries it; otherwise as RGB 8-bit
+ 	 */
+ 	if (vic >= HDMITX_VESA_OFFSET) {
+-		attr->colorformat = HDMI_COLORSPACE_RGB;
+-		attr->bitdepth = colordepth_to_bitdepth(COLORDEPTH_24B);
++		char attr_str[16];
++
++		if (attr->colorformat != HDMI_COLORSPACE_RGB &&
++		    (common->rxcap.native_Mode & (1 << 5))) {
++			attr->colorformat = HDMI_COLORSPACE_YUV444;
++			build_hdmitx_attr_str(attr_str, attr->colorformat, attr->bitdepth);
++			if (attr->bitdepth > 8 && (!common->rxcap.dc_y444 ||
++			    !hdmitx_common_chk_mode_attr_sup(outputmode, attr_str)))
++				attr->bitdepth = colordepth_to_bitdepth(COLORDEPTH_24B);
++		} else {
++			attr->colorformat = HDMI_COLORSPACE_RGB;
++			attr->bitdepth = colordepth_to_bitdepth(COLORDEPTH_24B);
++		}
+ 	}
+ 
+ 	DRM_INFO("[%s]:[%s,eotf:%d,vic:%d]=>attr[%s,%dbit]\n", __func__,
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_video.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+@@ -103,7 +103,9 @@ int hdmitx21_set_display(struct hdmitx_d
+ 	struct hdmi_format_para *param = &hdev->tx_comm.fmt_para;
+ 	int ret = -1;
+ 
+-	if (videocode >= HDMITX_VESA_OFFSET) {
++	/* a VESA timing goes as YCbCr 4:4:4 where DRM decided it, else as RGB */
++	if (videocode >= HDMITX_VESA_OFFSET &&
++	    param->cs != HDMI_COLORSPACE_YUV444) {
+ 		param->cs = HDMI_COLORSPACE_RGB;
+ 		param->cd = COLORDEPTH_24B;
+ 		HDMITX_INFO("VESA only support RGB format\n");

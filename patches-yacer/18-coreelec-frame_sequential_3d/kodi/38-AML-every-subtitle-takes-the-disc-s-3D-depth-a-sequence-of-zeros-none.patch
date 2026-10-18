@@ -1,0 +1,168 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 01:05:00 -0400
+Subject: [PATCH] AML: every subtitle takes the disc's 3D depth; a sequence of
+ zeros gives none
+
+The disc's subtitle depth reached every overlay but only a PG subtitle
+used it: a text subtitle on the same 3D film, a translated one included,
+sat at the configured depth while the film's own subtitles followed the
+picture. It follows the depth of the sequence the selected track names,
+as a PG one does.
+
+Some discs fill every offset of every sequence with zero, the whole film
+long. That is a disc that set no depth, and a film popping out of the
+screen then has its subtitles inside the picture. A sequence that has
+given only zeros now has no offset, so the configured depth stands in,
+until it gives a value of its own; from then on the disc's offsets hold,
+zeros included, across seeks.
+
+Shared code: GetStereoscopicDepth, the overlay renderer and CDVDOverlay
+lose the PG-only flag that 09 added.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecFFmpeg.cpp
+@@ -300,7 +300,6 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
+     overlay->iPTSStartTime = m_StartTime;
+     overlay->iPTSStopTime = m_StopTime;
+     overlay->replace = true;
+-    overlay->m_isPgs = m_pCodecContext->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+     overlay->linesize = rect.w;
+     overlay->pixels.resize(rect.w * rect.h);
+     overlay->palette.resize(rect.nb_colors);
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h
+@@ -62,7 +62,6 @@ public:
+     m_setForcedMargins = src.m_setForcedMargins;
+     m_stereoView = src.m_stereoView;
+     m_isMenu = src.m_isMenu;
+-    m_isPgs = src.m_isPgs;
+   }
+ 
+   virtual ~CDVDOverlay() = default;
+@@ -126,7 +125,6 @@ public:
+   DVDOverlayStereoView m_stereoView;
+ 
+   int m_3dSubtitleDepth;
+-  bool m_isPgs{false}; //!< a Blu-ray PG subtitle, which can follow the disc's 3D depth
+ protected:
+   DVDOverlayType m_type;
+   bool m_enableTextAlign;
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLMvcSubtitleDepth.h
+@@ -109,12 +109,19 @@ inline bool ParseOfmd(const uint8_t* data, size_t size, int lengthSize, Offsets&
+  * later one of the GOP turns out to be shown before it (an open GOP's leading
+  * pictures). A picture's offset is then read by its own pts, however many
+  * pictures the decoder holds between input and output.
++ *
++ * A sequence that has given nothing but zeros is a disc that set no subtitle
++ * depth, not one that put every subtitle on the screen plane: it has no offset
++ * until a value of its own comes, and the setting stands in for it.
+  */
+ class CTables
+ {
+ public:
+   void Add(double pts, Offsets offsets)
+   {
++    for (size_t s = 0; s < offsets.size(); s++)
++      if (std::any_of(offsets[s].begin(), offsets[s].end(), [](int8_t v) { return v != 0; }))
++        m_authored |= uint64_t{1} << s;
+     m_tables[pts] = std::move(offsets);
+     while (m_tables.size() > MAX_TABLES)
+       m_tables.erase(m_tables.begin());
+@@ -138,7 +145,8 @@ public:
+   //! the offset for the picture shown at pts on the sequence; the last one of a table holds past its end
+   std::optional<int> Offset(double pts, int sequence, double frameDuration) const
+   {
+-    if (m_tables.empty() || sequence < 0 || frameDuration <= 0)
++    if (m_tables.empty() || sequence < 0 || frameDuration <= 0 || sequence >= 64 ||
++        !(m_authored & (uint64_t{1} << sequence)))
+       return std::nullopt;
+     auto it = m_tables.upper_bound(pts + frameDuration / 2);
+     if (it == m_tables.begin())
+@@ -153,12 +161,14 @@ public:
+     return frames[index];
+   }
+ 
++  //! a seek: the sequences a disc has set a depth on stay known
+   void Clear() { m_tables.clear(); }
+   bool Empty() const { return m_tables.empty(); }
+ 
+ private:
+   static constexpr size_t MAX_TABLES = 4;
+   std::map<double, Offsets> m_tables;
++  uint64_t m_authored = 0;
+ };
+ 
+ } // namespace AML_MVC_DEPTH
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
+@@ -312,7 +312,7 @@ void CRenderer::Render(COverlay* o)
+     }
+   }
+ 
+-  state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
++  state.x += GetStereoscopicDepth(o->m_3dSubtitleDepth);
+ 
+   o->Render(state);
+ }
+@@ -772,10 +772,7 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
+ 
+   // the 3D depth follows the video picture: this buffer's, on the render thread
+   if (r)
+-  {
+     r->m_3dSubtitleDepth = e.depth3d;
+-    r->m_pgsSubtitle = o.m_isPgs;
+-  }
+   return r;
+ }
+ 
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
+@@ -94,7 +94,6 @@ namespace OVERLAY {
+     bool m_isHDROverlay{false};
+ 
+     std::optional<int> m_3dSubtitleDepth;
+-    bool m_pgsSubtitle{false};
+ 
+   protected:
+     /*!
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp
+@@ -677,7 +677,7 @@ void ScaleRgbaLight(std::vector<uint32_t>& rgba, float factor)
+   }
+ }
+ 
+-int GetStereoscopicDepth(bool isPgs, std::optional<int> subtitleDepth)
++int GetStereoscopicDepth(std::optional<int> subtitleDepth)
+ {
+   auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+ 
+@@ -690,11 +690,11 @@ int GetStereoscopicDepth(bool isPgs, std::optional<int> subtitleDepth)
+   }
+ 
+   int depth = 0;
+-  // In case of MVC playback and PGS subtitles, the depth the disc gives the subtitle
+-  // replaces the configured one, which covers the subtitles without it. It is in
+-  // pixels of a 1920 wide picture.
++  // In case of MVC playback, the depth the disc gives the subtitles replaces the
++  // configured one, which covers a disc without it. It is in pixels of a 1920 wide
++  // picture.
+   if ((stereo_mode == RenderStereoMode::HARDWAREBASED || stereo_mode == RenderStereoMode::HFR_VRR) &&
+-      isPgs && subtitleDepth)
++      subtitleDepth)
+   {
+     const int width = CServiceBroker::GetWinSystem()->GetGfxContext().GetWidth();
+     depth = static_cast<int>(std::lround(*subtitleDepth * width / 1920.0));
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.h
+@@ -138,6 +138,6 @@ void FindVisibleBox(const uint8_t* src,
+ void PixelArtScale(std::vector<uint32_t>& rgba, int& width, int& height, int passes);
+ 
+ bool convert_quad(ASS_Image* images, SQuads& quads, int max_x);
+-int GetStereoscopicDepth(bool isPgs, std::optional<int> subtitleDepth);
++int GetStereoscopicDepth(std::optional<int> subtitleDepth);
+ 
+ } // namespace OVERLAY

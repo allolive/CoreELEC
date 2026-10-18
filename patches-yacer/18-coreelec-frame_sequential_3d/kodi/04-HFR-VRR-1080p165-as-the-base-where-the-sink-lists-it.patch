@@ -35,15 +35,17 @@ of a film: a leave, a mode switch, and possibly another re-sync of the sink.
 Support is now kept while 3D is on and the mode it runs on is still listed,
 and otherwise dropped only when a second read agrees. A refresh also no
 longer changes the base mode (120 or 165) while 3D runs on it; the next entry
-takes the new one.
+takes the new one. The refresh records what the sink offered and each entry
+reads it: one that came while 3D ran had nothing to set then, and nothing
+refreshes on leaving, so the next film stayed on 120 until a hotplug.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
-index 5ad96c144b..5e16e9b987 100644
+index 5ad96c1..7f035d0 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.cpp
 +++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
-@@ -1098,19 +1098,56 @@ void CAMLDisplay::aml_refresh_display_caps()
+@@ -1098,19 +1098,57 @@ void CAMLDisplay::aml_refresh_display_caps()
    if (aml_get_display_connected())
    {
      bool support_fs3d = false;
@@ -71,6 +73,7 @@ index 5ad96c144b..5e16e9b987 100644
 +                          modes != m_fs3d_165_failed;
 +        support_fs3d = fast || modes.find(FS3D_MODE) != std::string::npos;
 +        // a running 3D keeps its base until it is entered again
++        m_fs3d_offers_165 = fast;
 +        if (support_fs3d && !m_fs3d_active)
 +        {
 +          m_fs3d_mode = fast ? FS3D_MODE_165 : FS3D_MODE;
@@ -101,7 +104,7 @@ index 5ad96c144b..5e16e9b987 100644
      if (support_fs3d != m_support_fs3d)
        CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D {}", __FUNCTION__,
                  support_fs3d ? "available" : "not available");
-@@ -1191,14 +1228,23 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
+@@ -1191,14 +1229,23 @@ bool CAMLDisplay::set_native_resolution(const RESOLUTION_INFO &res, std::string
   * eyes; the GUI is drawn once, the same for both. ALLM keeps the TV out of motion
   * smoothing, which would blend the eyes. Leaving puts all of it back.
   */
@@ -129,7 +132,7 @@ index 5ad96c144b..5e16e9b987 100644
      CSysfsPath(FS3D_OSD, 0);
    }
    else
-@@ -1233,6 +1279,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1233,6 +1280,7 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
      fs3d_apply(false, 0);
      m_fs3d_active = false;
      m_fs3d_vrr_rate = 0;
@@ -137,9 +140,18 @@ index 5ad96c144b..5e16e9b987 100644
      CLog::Log(LOGINFO, "CAMLDisplay::{} - left frame-sequential 3D", __FUNCTION__);
      return set_display_resolution(res, framebuffer_name, true, hotplug_mode_switch);
    }
-@@ -1243,15 +1290,13 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1242,16 +1290,22 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   if (fps <= 0)
      fps = res.fRefreshRate;
  
++  // Entering, take the base the sink offered at its last refresh: one that came
++  // while 3D ran left the running base alone, and nothing refreshes on leaving.
++  if (!m_fs3d_active)
++  {
++    m_fs3d_mode = m_fs3d_offers_165 ? FS3D_MODE_165 : FS3D_MODE;
++    m_fs3d_hz = m_fs3d_offers_165 ? 165 : 120;
++  }
++
    // Kodi's GUI keeps its own size (the plane scales it); only the mode changes.
 -  // A 1000/1001 film rate takes the 119.88 Hz twin, so VRR lands on it exactly.
 +  const bool fast = m_fs3d_hz == 165;
@@ -157,7 +169,7 @@ index 5ad96c144b..5e16e9b987 100644
  
    // the 120/119.88 twins share a mode name: switch when the policy differs
    const int frac = base.fRefreshRate == std::floor(base.fRefreshRate) ? 0 : 1;
-@@ -1266,34 +1311,39 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+@@ -1266,34 +1320,40 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
    const bool switch_mode = force_mode_switch || !m_fs3d_active || twin;
    if (!set_display_resolution(base, framebuffer_name, switch_mode, hotplug_mode_switch))
    {
@@ -167,6 +179,7 @@ index 5ad96c144b..5e16e9b987 100644
 +    {
 +      // back to 1080p120, which it also has, until the sink's modes change
 +      m_fs3d_165_failed = m_amlDRMUtils->aml_get_drmDevice_modes();
++      m_fs3d_offers_165 = false;
 +      m_fs3d_mode = FS3D_MODE;
 +      m_fs3d_hz = 120;
 +      return set_fs3d_resolution(res, framebuffer_name, stereo_mode, true, hotplug_mode_switch);
@@ -210,7 +223,7 @@ index 5ad96c144b..5e16e9b987 100644
    return true;
  }
  
-@@ -1310,10 +1360,54 @@ bool CAMLDisplay::aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) co
+@@ -1310,10 +1370,54 @@ bool CAMLDisplay::aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) co
    return !layout.empty() && layout != "mono";
  }
  
@@ -266,7 +279,7 @@ index 5ad96c144b..5e16e9b987 100644
           m_fs3d_res.iWidth == res.iWidth && m_fs3d_res.iHeight == res.iHeight &&
           m_fs3d_res.iScreenWidth == res.iScreenWidth &&
           m_fs3d_res.iScreenHeight == res.iScreenHeight &&
-@@ -1324,7 +1418,7 @@ bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
+@@ -1324,7 +1428,7 @@ bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
  bool CAMLDisplay::aml_display_fs3d_stale() const
  {
    const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
@@ -275,7 +288,7 @@ index 5ad96c144b..5e16e9b987 100644
  }
  
  void CAMLDisplay::aml_fs3d_decoder_closed()
-@@ -1358,6 +1452,7 @@ void CAMLDisplay::aml_fs3d_leave()
+@@ -1358,6 +1462,7 @@ void CAMLDisplay::aml_fs3d_leave()
    fs3d_apply(false, 0);
    m_fs3d_active = false;
    m_fs3d_vrr_rate = 0;
@@ -283,7 +296,7 @@ index 5ad96c144b..5e16e9b987 100644
  }
  
  void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
-@@ -1625,6 +1720,11 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
+@@ -1625,6 +1730,11 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
    RESOLUTION_INFO res;
    for (std::vector<std::string>::const_iterator i = probe_str.begin(); i != probe_str.end(); ++i)
    {
@@ -296,7 +309,7 @@ index 5ad96c144b..5e16e9b987 100644
      {
        if (aml_mode_to_resolution(i->c_str(), &res))
 diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
-index 234557a21c..b4f540c657 100644
+index 234557a..e35678d 100644
 --- a/xbmc/windowing/amlogic/AMLDisplay.h
 +++ b/xbmc/windowing/amlogic/AMLDisplay.h
 @@ -204,8 +204,10 @@ public:
@@ -330,7 +343,7 @@ index 234557a21c..b4f540c657 100644
    static constexpr const char* FS3D_OSD = "/sys/module/aml_drm/parameters/osd_fa_3d";
    static constexpr const char* FS3D_VRR_RATE = "/sys/class/amhdmitx/amhdmitx0/vrr_rate";
    static constexpr const char* FS3D_ALLM = "/sys/class/amhdmitx/amhdmitx0/allm_mode";
-@@ -252,7 +264,16 @@ private:
+@@ -252,7 +264,18 @@ private:
    std::string m_fs3d_allm;
    RESOLUTION_INFO m_fs3d_res;
    std::atomic<float> m_fs3d_fps{0.0f};
@@ -344,6 +357,8 @@ index 234557a21c..b4f540c657 100644
 +  int m_fs3d_hz = 120;
 +  //! the sink's mode list when 1080p165 could not be set: not tried again on it
 +  std::string m_fs3d_165_failed;
++  //! the sink offered 1080p165 at its last refresh; taken when 3D is next entered
++  bool m_fs3d_offers_165 = false;
 +  //! a refresh read frame-sequential 3D as gone and it was kept: the next one decides
 +  bool m_fs3d_drop_seen = false;
  };

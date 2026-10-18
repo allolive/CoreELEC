@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 00:20:00 -0400
+Subject: [PATCH] HFR VRR: no new window for Kodi's resolution alone
+
+A 3D film starts HFR VRR from the GUI's resolution: the stereo mode
+changes first, then Kodi picks the film's own resolution (1080p 23.98).
+HFR VRR remembered the resolution it was entered with and took the second
+one as a change, so it built the window again for the very mode already
+on the output. That costs a lost and reset display, and with it a second
+reopen of the audio sink: with passthrough, the receiver loses the
+bitstream once more a second into the film.
+
+In HFR VRR the output follows the film's rate, never Kodi's resolution,
+so only the rate decides whether the window is still the right one.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -1472,7 +1472,6 @@
+   const bool fracVsync = fast ? vrr_frac : frac != 0;
+   m_fs3d_vsync_hz = vrr_rate ? vrr_rate / 100.0 * (fracVsync ? 1000.0 / 1001.0 : 1.0)
+                              : static_cast<double>(base.fRefreshRate);
+-  m_fs3d_res = res;
+   m_fs3d_gui_width = guiWidth;
+   m_fs3d_gui_height = guiHeight;
+   m_fs3d_fps = fps;
+@@ -1550,15 +1549,10 @@
+ 
+ // A measured rate that moved in its last digits (23.976 then 23.97602) is the
+ // same film: only a base mode, twin or VRR rate of its own makes it another.
+-bool CAMLDisplay::aml_display_fs3d_matches(const RESOLUTION_INFO& res) const
++bool CAMLDisplay::aml_display_fs3d_matches() const
+ {
+   const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
+-  return m_fs3d_active && (fps <= 0 || fs3d_rates(fps) == m_fs3d_rates) &&
+-         m_fs3d_res.iWidth == res.iWidth && m_fs3d_res.iHeight == res.iHeight &&
+-         m_fs3d_res.iScreenWidth == res.iScreenWidth &&
+-         m_fs3d_res.iScreenHeight == res.iScreenHeight &&
+-         m_fs3d_res.fRefreshRate == res.fRefreshRate &&
+-         (m_fs3d_res.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK);
++  return m_fs3d_active && (fps <= 0 || fs3d_rates(fps) == m_fs3d_rates);
+ }
+ 
+ void CAMLDisplay::aml_set_fs3d_osd(int mode)
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -226,8 +226,8 @@
+   double aml_display_fs3d_vsync_rate() const { return m_fs3d_vsync_hz; }
+   //! frame-sequential 3D should be on: HFR VRR, supported, and a 3D film playing
+   bool aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const;
+-  //! frame-sequential 3D is on for this resolution of Kodi's and this film rate
+-  bool aml_display_fs3d_matches(const RESOLUTION_INFO& res) const;
++  //! frame-sequential 3D is on for this film rate
++  bool aml_display_fs3d_matches() const;
+   //! frame-sequential 3D is on for another film rate than the playing one
+   bool aml_display_fs3d_stale() const;
+   //! In frame-sequential 3D, the size of each eye's GUI, stacked in a surface of
+@@ -288,7 +288,6 @@
+   std::atomic<int64_t> m_fs3d_closed_at{0};
+   bool fs3d_next_film_starting() const;
+   std::string m_fs3d_allm;
+-  RESOLUTION_INFO m_fs3d_res;
+   std::atomic<float> m_fs3d_fps{0.0f};
+   Fs3dRates m_fs3d_rates;
+   //! the check for a 3D left behind by a Kodi that died has been made
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -165,10 +165,10 @@
+     __FUNCTION__,
+     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
+ 
+-  // In HFR VRR the output is 1080p 120 Hz whatever Kodi's resolution says, so
+-  // the resolution it was entered with counts as the current one.
++  // In HFR VRR the output follows the film's rate whatever Kodi's resolution
++  // says, so any resolution of Kodi's is the current one.
+   const bool fs3d_same = m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) &&
+-                         m_amlDisplay->aml_display_fs3d_matches(res);
++                         m_amlDisplay->aml_display_fs3d_matches();
+   // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
+   if (fs3d_same)
+     force_mode_switch_by_fractional_rate = false;

@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:10:00 -0400
+Subject: [PATCH] HFR VRR: say the rate Active 3D plays at
+
+Entering a stereo mode, Kodi shows the mode's name, and Active 3D's says
+"120 Hz" whatever the output does: it now runs on 1080p165 where the TV
+offers it, and the refresh it plays at is a multiple of the film's
+(95.904 Hz for 23.976 fps). The name is all the stereo manager can show:
+it notifies when the mode is chosen, before the output has switched.
+
+So the AML display says it instead, once the output runs: "Active 3D:
+23.976 fps at 95.904 Hz, 1080p 165 Hz base", once per entry (not for the
+repeated sets of a running 3D). The stereo manager skips its own
+notification for this one mode, or the two would follow each other.
+
+Shared code: one condition in CStereoscopicsManager, which is the only
+place that notification is made.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index ba92216..cd6ca9d 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22761,6 +22761,12 @@ msgctxt "#60112"
+ msgid "{0:d} px further"
+ msgstr ""
+ 
++#. Notification when Active 3D starts: the film's frame rate, the refresh it plays at and the base mode's
++#: xbmc/windowing/amlogic/AMLDisplay.cpp
++msgctxt "#60113"
++msgid "Active 3D: {0:.3f} fps at {1:.3f} Hz, 1080p {2:d} Hz base"
++msgstr ""
++
+ #empty strings from id 36512 to 36519
+ #end of reserved strings for 3d modes
+ 
+diff --git a/xbmc/guilib/StereoscopicsManager.cpp b/xbmc/guilib/StereoscopicsManager.cpp
+index 1fc98f4..d76b33e 100644
+--- a/xbmc/guilib/StereoscopicsManager.cpp
++++ b/xbmc/guilib/StereoscopicsManager.cpp
+@@ -563,7 +563,8 @@ void CStereoscopicsManager::ApplyStereoMode(const RenderStereoMode mode, bool no
+       }
+     }
+ 
+-    if (notify)
++    // Active 3D says so itself once the output runs, with the rate it runs at
++    if (notify && mode != RenderStereoMode::HFR_VRR)
+       CGUIDialogKaiToast::QueueNotification(
+           CGUIDialogKaiToast::Info,
+           CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36501),
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index d1c08e0..5b6bb3a 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -18,8 +18,11 @@
+ #include "application/ApplicationPlayer.h"
+ #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
+ #include "cores/DataCacheCore.h"
++#include "dialogs/GUIDialogKaiToast.h"
+ #include "filesystem/SpecialProtocol.h"
+ #include "platform/linux/SysfsPath.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
+ #include "linux/fb.h"
+ #include "rendering/RenderSystem.h"
+ #include "ServiceBroker.h"
+@@ -1474,10 +1477,19 @@ bool CAMLDisplay::set_fs3d_resolution(const RESOLUTION_INFO &res, std::string fr
+   m_fs3d_gui_height = guiHeight;
+   m_fs3d_fps = fps;
+   m_fs3d_rates = rates;
++  const bool entered = !m_fs3d_active;
+   m_fs3d_active = true;
+ 
+   CLog::Log(LOGINFO, "CAMLDisplay::{} - frame-sequential 3D on {}, {:.3f} fps at vrr_rate {}{}",
+             __FUNCTION__, m_fs3d_mode, fps, vrr_rate, vrr_frac ? " (1000/1001)" : "");
++  // what the stereo mode's own notification cannot know: the rate it plays at
++  if (entered)
++  {
++    const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++    CGUIDialogKaiToast::QueueNotification(
++        CGUIDialogKaiToast::Info, strings.Get(36501),
++        StringUtils::Format(strings.Get(60113), fps, m_fs3d_vsync_hz.load(), m_fs3d_hz));
++  }
+   return true;
+ }
+ 

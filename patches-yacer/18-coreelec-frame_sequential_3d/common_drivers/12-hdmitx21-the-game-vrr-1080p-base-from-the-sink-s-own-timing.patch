@@ -1,0 +1,344 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 11:00:00 -0400
+Subject: [PATCH] hdmitx21: the game-VRR 1080p base from the sink's own timing
+
+The fast frame-sequential 3D base was one fixed VESA timing, the 1080p165
+an LG 2025 OLED lists, and a sink was offered it only when its EDID gave
+those exact numbers. A 144 Hz TV, or a 240 Hz monitor, lists its own
+blanking and clock, matched nothing, and stayed on 1080p120, where each
+eye is drawn in 8 ms of its 10.4 ms frame.
+
+HDMIV_27 is now the sink's fastest 1080p above 120 Hz, filled from its
+EDID: DisplayID 1.x Type I and 2.x Type VII timings, and detailed
+timings, progressive, whose pixel clock the link carries in 8-bit
+without FRL (600 MHz). The fastest wins; it is named from its rate
+("1920x1080p144hzV"), so the name says what is sent. Until an EDID lists
+one the slot is empty and matches nothing, and each parse starts it
+afresh. It is never the sink's preferred mode. The board's refresh limit
+gives way to the slot's own rate, as it did to 165.
+
+The LG's EDID gives the same timing as before: 401 MHz, 2080 x 1169,
+hsync +, vsync -, named 1920x1080p165hzV.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
++++ b/drivers/media/vout/hdmitx21/hw/hdmi_tx_hw.c
+@@ -626,9 +626,9 @@ static int hdmitx_validate_mode(struct h
+ 	if (!tx_hw || !global_tx_hw->chip_data)
+ 		return -EINVAL;
+ 
+-	/*hdmitx21 VESA mode is not supported yet, but for 1080p165 (RGB 8-bit)*/
++	/*hdmitx21 VESA mode is not supported yet, but for the sink's fast 1080p*/
+ 	if (vic == HDMI_0_UNKNOWN ||
+-	    (vic > HDMI_CEA_VIC_END && vic != HDMIV_27_1920x1080p165hz))
++	    (vic > HDMI_CEA_VIC_END && vic != HDMIV_27_1920x1080p_fast))
+ 		return -EINVAL;
+ 
+ 	timing = hdmitx_mode_vic_to_hdmi_timing(vic);
+--- a/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_check_valid.c
+@@ -76,10 +76,10 @@ int hdmitx_common_validate_vic(struct hd
+ 		if (timing->v_active >= 2160 && timing->v_freq >= 5000)
+ 			return -ERANGE;
+ 
+-	/* filter max refreshrate. 1080p165 comes from the sink's own list, and
+-	 * its clock is below 4k60's: the board's 1080p limit does not apply
++	/* filter max refreshrate. The fast 1080p comes from the sink's own list,
++	 * within the link's clock: the board's 1080p limit does not apply
+ 	 */
+-	if (vic != HDMIV_27_1920x1080p165hz &&
++	if (vic != HDMIV_27_1920x1080p_fast &&
+ 	    timing->v_freq > (tx_comm->max_refreshrate * 1000)) {
+ 		/* HDMITX_INFO("validate refreshrate (%s)-(%d) fail\n", */
+ 		/* timing->name, timing->v_freq); */
+@@ -88,8 +88,9 @@ int hdmitx_common_validate_vic(struct hd
+ 
+ 	/* ip level filter */
+ 	if (hdmitx_hw_validate_mode(tx_comm->tx_hw, vic,
+-				    vic == HDMIV_27_1920x1080p165hz ?
+-				    max_t(u32, tx_comm->max_refreshrate, 165) :
++				    vic == HDMIV_27_1920x1080p_fast ?
++				    max_t(u32, tx_comm->max_refreshrate,
++					  DIV_ROUND_UP(timing->v_freq, 1000)) :
+ 				    tx_comm->max_refreshrate) != 0)
+ 		return -EPERM;
+ 
+--- a/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_edid_parse.c
+@@ -468,47 +468,68 @@ static void store_vesa_idx(struct rx_cap
+ 	}
+ }
+ 
+-/* DisplayID 1.x Type I detailed timing (20 bytes): keep it when it is one of
+- * our VESA timings. A 1080p165 TV lists that mode only here.
++/* a DisplayID Type I (1.x, clock in 10 kHz) or Type VII (2.x, clock in kHz)
++ * detailed timing, 20 bytes: a fast 1080p, or one of our VESA timings
+  */
+-static void displayid_type1_timing(struct rx_cap *prxcap, const u8 *t)
++static void displayid_timing(struct rx_cap *prxcap, const u8 *t, u32 clk_unit_khz)
+ {
++	struct hdmitx_sink_timing s = {0};
+ 	struct dtd d = {0};
+ 	const struct hdmi_timing *timing;
+-	u32 clk = (t[0] | t[1] << 8 | t[2] << 16) + 1;	/* 10 kHz */
++	u32 clk = (t[0] | t[1] << 8 | t[2] << 16) + 1;
+ 
+-	/* struct dtd keeps the clock in 16 bits; skip interlaced timings */
+-	if (clk > 0xffff || (t[3] & 0x10))
+-		return;
+-	d.pixel_clock = clk;
+-	d.h_active = (t[4] | t[5] << 8) + 1;
+-	d.h_blank = (t[6] | t[7] << 8) + 1;
+-	d.h_sync_offset = (t[8] | (t[9] & 0x7f) << 8) + 1;
+-	d.h_sync = (t[10] | t[11] << 8) + 1;
+-	d.v_active = (t[12] | t[13] << 8) + 1;
+-	d.v_blank = (t[14] | t[15] << 8) + 1;
+-	d.v_sync_offset = (t[16] | (t[17] & 0x7f) << 8) + 1;
+-	d.v_sync = (t[18] | t[19] << 8) + 1;
++	s.pixel_khz = clk * clk_unit_khz;
++	s.interlaced = t[3] & 0x10;
++	s.h_active = (t[4] | t[5] << 8) + 1;
++	s.h_blank = (t[6] | t[7] << 8) + 1;
++	s.h_front = (t[8] | (t[9] & 0x7f) << 8) + 1;
++	s.h_pos = t[9] & 0x80;
++	s.h_sync = (t[10] | t[11] << 8) + 1;
++	s.v_active = (t[12] | t[13] << 8) + 1;
++	s.v_blank = (t[14] | t[15] << 8) + 1;
++	s.v_front = (t[16] | (t[17] & 0x7f) << 8) + 1;
++	s.v_pos = t[17] & 0x80;
++	s.v_sync = (t[18] | t[19] << 8) + 1;
++	if (hdmitx_mode_offer_fast_1080p(&s))
++		return;
++
++	/* struct dtd keeps the clock in 10 kHz, in 16 bits */
++	if (s.interlaced || s.pixel_khz / 10 > 0xffff)
++		return;
++	d.pixel_clock = s.pixel_khz / 10;
++	d.h_active = s.h_active;
++	d.h_blank = s.h_blank;
++	d.h_sync_offset = s.h_front;
++	d.h_sync = s.h_sync;
++	d.v_active = s.v_active;
++	d.v_blank = s.v_blank;
++	d.v_sync_offset = s.v_front;
++	d.v_sync = s.v_sync;
+ 	timing = hdmitx_mode_match_dtd_timing(&d);
+ 	if (timing && timing->vic >= HDMITX_VESA_OFFSET)
+ 		store_vesa_idx(prxcap, timing->vic);
+ }
+ 
+-/* a DisplayID 1.x extension block (tag 0x70): its Type I timings */
++/* a DisplayID extension block (tag 0x70): its Type I timings (DisplayID
++ * 1.x) or Type VII timings (2.x)
++ */
+ static void edid_parse_displayid(struct rx_cap *prxcap, const u8 *blk)
+ {
++	const u8 version = blk[1] >> 4;
++	const u8 tag = version == 1 ? 0x03 : 0x22;
++	const u32 clk_unit_khz = version == 1 ? 10 : 1;
+ 	int pos = 5, end, len, j;
+ 
+-	if ((blk[1] >> 4) != 1)
++	if (version != 1 && version != 2)
+ 		return;
+ 	end = 5 + min_t(int, blk[2], 121);
+ 	while (pos + 3 <= end) {
+ 		len = blk[pos + 2];
+ 		if (!len || pos + 3 + len > end)
+ 			break;
+-		if (blk[pos] == 0x03)
++		if (blk[pos] == tag)
+ 			for (j = 0; j + 20 <= len; j += 20)
+-				displayid_type1_timing(prxcap, &blk[pos + 3 + j]);
++				displayid_timing(prxcap, &blk[pos + 3 + j], clk_unit_khz);
+ 		pos += 3 + len;
+ 	}
+ }
+@@ -2348,7 +2369,8 @@ next:
+  * call hdmitx_mode_match_dtd_timing() to check t is matched with VIC
+  */
+ 	timing = hdmitx_mode_match_dtd_timing(t);
+-	if (timing->vic != HDMI_0_UNKNOWN) {
++	/* the fast 1080p is a 3D base, never the sink's preferred mode */
++	if (timing->vic != HDMI_0_UNKNOWN && timing->vic != HDMIV_27_1920x1080p_fast) {
+ 		/* diff 4x3 and 16x9 mode */
+ 		if (timing->vic == HDMI_6_720x480i60_4x3 ||
+ 			timing->vic == HDMI_2_720x480p60_4x3 ||
+@@ -2371,7 +2393,21 @@ next:
+ 		else
+ 			store_vesa_idx(prxcap, t->vic);
+ 	} else {
+-		dump_dtd_info(t);
++		struct hdmitx_sink_timing s = {
++			.pixel_khz = t->pixel_clock * 10,
++			.h_active = t->h_active, .h_blank = t->h_blank,
++			.h_front = t->h_sync_offset, .h_sync = t->h_sync,
++			.v_active = t->v_active, .v_blank = t->v_blank,
++			.v_front = t->v_sync_offset, .v_sync = t->v_sync,
++			/* digital separate sync carries the polarities */
++			.h_pos = (t->flags & 0x18) == 0x18 && (t->flags & 0x02),
++			.v_pos = (t->flags & 0x18) == 0x18 && (t->flags & 0x04),
++			.interlaced = t->flags & 0x80,
++		};
++
++		/* a fast 1080p a sink lists as a detailed timing */
++		if (!hdmitx_mode_offer_fast_1080p(&s))
++			dump_dtd_info(t);
+ 	}
+ }
+ 
+@@ -2766,6 +2802,8 @@ int hdmitx_edid_parse(struct rx_cap *prx
+ 
+ 	pr_debug(EDID "EDID Parser:\n");
+ 
++	/* the fast 1080p is the one this EDID lists, if any */
++	hdmitx_mode_clear_fast_1080p();
+ 	if (hdmitx_edid_check_data_valid(edid_check, edid_buf) == false) {
+ 		edid_set_fallback_mode(prxcap);
+ 		HDMITX_INFO("set fallback mode\n");
+@@ -2790,6 +2828,9 @@ int hdmitx_edid_parse(struct rx_cap *prx
+ 	 */
+ 	edid_standardtiming(prxcap, &edid_buf[0x26], 8);
+ 	edid_parseceatiming(prxcap, &edid_buf[0x36]);
++	/* every timing seen (detailed, DisplayID): the fastest 1080p is listed */
++	if (hdmitx_mode_vic_to_hdmi_timing(HDMIV_27_1920x1080p_fast)->h_active)
++		store_vesa_idx(prxcap, HDMIV_27_1920x1080p_fast);
+ /*
+  * Because DTDs are not able to represent some Video Formats, which can be
+  * represented as SVDs and might be preferred by Sinks, the first DTD in the
+--- a/drivers/media/vout/hdmitx_common/hdmitx_mode.c
++++ b/drivers/media/vout/hdmitx_common/hdmitx_mode.c
+@@ -344,7 +344,11 @@ static const struct hdmi_timing edid_cea
+  *All names end with "V" to identify from cea modes.
+  *!!! PLEASE UPDATE VESA_TIMING_END also when add new timing in vesa_modes.
+  */
+-static const struct hdmi_timing vesa_modes[] = {
++/* "1920x1080p<rate>hzV", the name of the fast 1080p the sink lists */
++static char fast_1080p_name[24] = "-";
++
++/* HDMIV_27_1920x1080p_fast is filled from the sink's EDID */
++static struct hdmi_timing vesa_modes[] = {
+ 	{HDMIV_0_640x480p60hz, "640x480p60hzV", NULL, 1, 26218, 59940, 25175,
+ 		800, 160, 16, 96, 48, 640, 525, 45, 10, 2, 33, 480, 1, 0, 0, 4, 3, 1, 1},
+ 	{HDMIV_1_800x480p60hz, "800x480p60hzV", NULL, 1, 30000, 60000, 29760,
+@@ -399,12 +403,84 @@ static const struct hdmi_timing vesa_mod
+ 		2482, 82, 20, 30, 32, 2400, 1252, 52, 17, 5, 30, 1200, 1, 1, 1, 2, 1},
+ 	{HDMIV_26_3840x1080p60hz, "3840x1080p60hzV", NULL, 1, 67500, 60000, 297000,
+ 		4400, 560, 176, 88, 296, 3840, 1125, 45, 4, 5, 36, 1080, 1, 1, 1, 32, 6},
+-	/* reduced blanking, as 165 Hz TVs list it in a DisplayID extension */
+-	{HDMIV_27_1920x1080p165hz, "1920x1080p165hzV", NULL, 1, 192788, 164917, 401000,
+-		2080, 160, 48, 32, 80, 1920, 1169, 89, 3, 5, 81, 1080, 1, 1, 0, 16, 9, 1, 1},
++	/* empty, matching nothing, until a sink lists one */
++	{HDMIV_27_1920x1080p_fast, fast_1080p_name},
+ };
+ 
+-#define VESA_TIMING_END HDMIV_27_1920x1080p165hz
++#define VESA_TIMING_END HDMIV_27_1920x1080p_fast
++
++/* without FRL the link carries at most 600 MHz of TMDS clock */
++#define FAST_1080P_MAX_KHZ 600000
++/* above 1080p120, which CEA timings already give */
++#define FAST_1080P_MIN_MHZ 120500
++
++/*
++ * A 1080p timing faster than 120 Hz that a sink lists (a 144, 165 or 240 Hz
++ * screen gives its own blanking, in a DisplayID or a detailed timing) becomes
++ * HDMIV_27_1920x1080p_fast, if it is the fastest offered and the link carries
++ * it in 8-bit. It is a game-VRR base: frame-sequential 3D draws each eye in less
++ * of its frame on it. Returns whether it was taken.
++ */
++static struct hdmi_timing *fast_1080p_slot(void)
++{
++	return &vesa_modes[ARRAY_SIZE(vesa_modes) - 1];
++}
++
++bool hdmitx_mode_offer_fast_1080p(const struct hdmitx_sink_timing *t)
++{
++	struct hdmi_timing *fast = fast_1080p_slot();
++	struct hdmi_timing rate = {.pi_mode = 1};
++	u32 v_freq;
++
++	if (!t || t->interlaced || t->h_active != 1920 || t->v_active != 1080 ||
++	    !t->pixel_khz || t->pixel_khz > FAST_1080P_MAX_KHZ ||
++	    t->h_front + t->h_sync > t->h_blank || t->v_front + t->v_sync > t->v_blank)
++		return false;
++	rate.pixel_freq = t->pixel_khz;
++	rate.h_total = t->h_active + t->h_blank;
++	rate.v_total = t->v_active + t->v_blank;
++	v_freq = hdmi_timing_vrefresh(&rate);
++	if (v_freq < FAST_1080P_MIN_MHZ || v_freq <= fast->v_freq)
++		return false;
++
++	fast->h_freq = DIV_ROUND_CLOSEST(t->pixel_khz * 1000, rate.h_total);
++	fast->v_freq = v_freq;
++	fast->pixel_freq = t->pixel_khz;
++	fast->h_total = rate.h_total;
++	fast->h_blank = t->h_blank;
++	fast->h_front = t->h_front;
++	fast->h_sync = t->h_sync;
++	fast->h_back = t->h_blank - t->h_front - t->h_sync;
++	fast->h_active = t->h_active;
++	fast->v_total = rate.v_total;
++	fast->v_blank = t->v_blank;
++	fast->v_front = t->v_front;
++	fast->v_sync = t->v_sync;
++	fast->v_back = t->v_blank - t->v_front - t->v_sync;
++	fast->v_active = t->v_active;
++	fast->v_sync_ln = 1;
++	fast->h_pol = t->h_pos;
++	fast->v_pol = t->v_pos;
++	fast->h_pict = 16;
++	fast->v_pict = 9;
++	fast->h_pixel = 1;
++	fast->v_pixel = 1;
++	snprintf(fast_1080p_name, sizeof(fast_1080p_name), "1920x1080p%uhzV",
++		 DIV_ROUND_CLOSEST(v_freq, 1000));
++	return true;
++}
++
++/* a new EDID: no fast 1080p until it lists one */
++void hdmitx_mode_clear_fast_1080p(void)
++{
++	struct hdmi_timing *fast = fast_1080p_slot();
++
++	memset(fast, 0, sizeof(*fast));
++	fast->vic = HDMIV_27_1920x1080p_fast;
++	fast->name = fast_1080p_name;
++	fast->pi_mode = 1;
++	strscpy(fast_1080p_name, "-", sizeof(fast_1080p_name));
++}
+ 
+ /*return NULL for invalid hdmi_timing.*/
+ const struct hdmi_timing *hdmitx_mode_index_to_hdmi_timing(u32 idx)
+--- a/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
++++ b/include/linux/amlogic/media/vout/hdmitx_common/hdmitx_mode.h
+@@ -209,7 +209,7 @@ enum hdmi_vic {
+ 	HDMIV_24_3440x1440p60hz,
+ 	HDMIV_25_2400x1200p90hz,
+ 	HDMIV_26_3840x1080p60hz,
+-	HDMIV_27_1920x1080p165hz,
++	HDMIV_27_1920x1080p_fast, /* the sink's fastest 1080p, from its EDID */
+ 	/*not supported in timing*/
+ 	HDMIV_2560x1080p60hz,
+ 	HDMIV_2560x1440p60hz,
+@@ -348,6 +348,18 @@ const struct hdmi_timing *hdmitx_mode_vi
+  * when failed, return timing with invalid vic(0).
+  */
+ const struct hdmi_timing *hdmitx_mode_match_dtd_timing(struct dtd *t);
++
++/* a detailed timing a sink lists, as it gives it */
++struct hdmitx_sink_timing {
++	u32 pixel_khz;
++	u16 h_active, h_blank, h_front, h_sync;
++	u16 v_active, v_blank, v_front, v_sync;
++	bool h_pos, v_pos, interlaced;
++};
++
++/* HDMIV_27_1920x1080p_fast: the fastest 1080p above 120 Hz the sink lists */
++bool hdmitx_mode_offer_fast_1080p(const struct hdmitx_sink_timing *t);
++void hdmitx_mode_clear_fast_1080p(void);
+ /* always return valid struct hdmi_timing.
+  * when failed, return timing with invalid vic(0).
+  */

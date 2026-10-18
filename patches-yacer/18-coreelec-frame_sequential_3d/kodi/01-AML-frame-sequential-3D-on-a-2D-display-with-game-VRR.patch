@@ -213,7 +213,7 @@ index e800a5d..1ef671d 100644
    m_drain = false;
    m_cur_pts = DVD_NOPTS_VALUE;
 @@ -2727,6 +2751,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
-     m_trimWasPassthrough = false;
+     m_trimEngaged = false;
      m_opened.store(true, std::memory_order_release);
    }
 +  {

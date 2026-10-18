@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 13:00:00 -0400
+Subject: [PATCH] video sink: fa_sync gives the eye on screen, from its first line
+
+fa_sync told the eye the toggle had just chosen, stamped at the vsync
+interrupt's entry. The toggle's registers go out by RDMA at the next
+vsync, so the eye named was the one on screen a frame later: a TV fed
+directly needed a glasses delay of a whole frame (10.4 ms at 95.9 Hz),
+which is the other eye. Through an AVR that buffers a frame it did not
+show.
+
+fa_sync now gives the eye the toggle chose at the vsync before (with
+RDMA off, the one it chose at this vsync), and the time the frame's
+first active line leaves the encoder: the interrupt's stamp plus the
+lines from the one it came in on to the first active one, at the mode's
+line time (86 lines, 0.45 ms, on 1080p165). A glasses delay of 0 is then
+the start of the eye's picture on the HDMI output.
+
+The GUI's eye switch still reads the eye chosen for the next vsync, the
+one its own RDMA writes go out with.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/media/video_sink/video.c
++++ b/drivers/media/video_sink/video.c
+@@ -5390,6 +5390,8 @@ static seqcount_t fa_sync_seq = SEQCNT_Z
+ static u32 fa_sync_vsync;
+ static u64 fa_sync_ns;
+ static int fa_sync_eye = 2;
++/* the eye on screen from this vsync */
++static int fa_sync_shown = 2;
+ /* the source carries the right eye first (or the viewer asked to swap) */
+ static bool fa_swap_eyes;
+ module_param(fa_swap_eyes, bool, 0664);
+@@ -5429,20 +5431,45 @@ u32 fa_depth_shift(int toggle)
+ 	return eye == (depth > 0) ? abs(depth) : 0;
+ }
+ 
++/*
++ * From the interrupt to the frame's first active line leaving the encoder: the
++ * lines between the one the interrupt came in on and the first active one, at
++ * the mode's line time. 0 if the interrupt came in later than that line.
++ */
++static u64 fa_first_line_ns(void)
++{
++	const struct vinfo_s *vinfo = get_current_vinfo();
++	u32 start = get_active_start_line();
++
++	if (!vinfo || !vinfo->htotal || !vinfo->video_clk ||
++	    av_probe_isr_line >= start || start - av_probe_isr_line >= vinfo->vtotal)
++		return 0;
++	return div_u64((u64)(start - av_probe_isr_line) * vinfo->htotal * 1000000,
++		       vinfo->video_clk);
++}
++
+ static void fa_sync_publish(void)
+ {
+ #ifndef FIQ_VSYNC
+ 	void (*notify)(void);
+ #endif
++	int chosen;
+ 
+-	if (!(process_3d_type & MODE_3D_OUT_FA_MASK))
++	if (!(process_3d_type & MODE_3D_OUT_FA_MASK)) {
++		fa_sync_eye = 2;
+ 		return;
++	}
++	chosen = fa_eye_view(toggle_3d_fa_frame);
+ 	raw_write_seqcount_begin(&fa_sync_seq);
+ 	fa_sync_vsync = av_probe_vsync;
+-	/* the interrupt-entry stamp, moved onto the clock NTP does not slew */
+-	fa_sync_ns = av_probe_isr_ns +
++	/* the first line's time, moved onto the clock NTP does not slew */
++	fa_sync_ns = av_probe_isr_ns + fa_first_line_ns() +
+ 		     (ktime_get_raw_fast_ns() - ktime_get_mono_fast_ns());
+-	fa_sync_eye = fa_eye_view(toggle_3d_fa_frame);
++	/* the toggle's registers go out by RDMA at the next vsync: on screen
++	 * from this one is the eye chosen at the last
++	 */
++	fa_sync_shown = is_vsync_rdma_enable() ? fa_sync_eye : chosen;
++	fa_sync_eye = chosen;
+ 	raw_write_seqcount_end(&fa_sync_seq);
+ #ifndef FIQ_VSYNC
+ 	notify = READ_ONCE(fa_sync_notify);
+@@ -5465,7 +5492,8 @@ void amvideo_set_fa_notify(void (*fn)(vo
+ 		synchronize_rcu();
+ }
+ 
+-static void fa_sync_read(u32 *vsync, u64 *ns, int *eye)
++/* eye: chosen for the next vsync; shown (if wanted): on screen from this one */
++static void fa_sync_read(u32 *vsync, u64 *ns, int *eye, int *shown)
+ {
+ 	unsigned int seq;
+ 
+@@ -5474,6 +5502,8 @@ static void fa_sync_read(u32 *vsync, u64
+ 		*vsync = fa_sync_vsync;
+ 		*ns = fa_sync_ns;
+ 		*eye = fa_sync_eye;
++		if (shown)
++			*shown = fa_sync_shown;
+ 	} while (read_seqcount_retry(&fa_sync_seq, seq));
+ }
+ 
+@@ -5490,7 +5520,7 @@ int amvideo_get_fa_eye(u32 *gen)
+ 
+ 	if (!(process_3d_type & MODE_3D_OUT_FA_MASK))
+ 		return -1;
+-	fa_sync_read(&vsync, &ns, &eye);
++	fa_sync_read(&vsync, &ns, &eye, NULL);
+ 	if (gen)
+ 		*gen = vsync;
+ 	return eye;
+@@ -11107,9 +11137,10 @@ static ssize_t av_probe_show
+  *
+  *   <vsync> <ns> <eye>
+  *
+- * vsync and ns are the av_probe interrupt-entry stamp (CLOCK_MONOTONIC), eye is
+- * L (left view), R (right view) or - (blank), as chosen by the toggle in that
+- * interrupt. A read blocks until the next such vsync and returns "off" after 100 ms without one, so a
++ * vsync is the av_probe count, ns the time (CLOCK_MONOTONIC_RAW) the frame's
++ * first active line leaves the encoder, eye the one that frame shows: L (left
++ * view), R (right view) or - (blank). With RDMA that is the eye the toggle chose
++ * at the vsync before, its registers going out at this one. A read blocks until the next such vsync and returns "off" after 100 ms without one, so a
+  * reader rereading from offset 0 gets every frame it keeps up with; the vsync
+  * count shows any it missed.
+  */
+@@ -11122,7 +11153,7 @@ static ssize_t fa_sync_show
+ 	long left;
+ 	u32 vsync;
+ 	u64 ns;
+-	int eye;
++	int eye, shown;
+ 
+ 	left = wait_event_interruptible_timeout(fa_sync_wq,
+ 		READ_ONCE(fa_sync_vsync) != from, msecs_to_jiffies(100));
+@@ -11130,9 +11161,9 @@ static ssize_t fa_sync_show
+ 		return left;
+ 	if (!left)
+ 		return sysfs_emit(buf, "off\n");
+-	fa_sync_read(&vsync, &ns, &eye);
++	fa_sync_read(&vsync, &ns, &eye, &shown);
+ 	return sysfs_emit(buf, "%u %llu %c\n", vsync, ns,
+-		eye == 0 ? 'L' : eye == 1 ? 'R' : '-');
++		shown == 0 ? 'L' : shown == 1 ? 'R' : '-');
+ }
+ #endif
+ 

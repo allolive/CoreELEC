@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 13:30:00 -0400
+Subject: [PATCH] AML: MVC, drop a picture the decoder hands out after a later
+ one
+
+About once a minute on a 3D Blu-ray the MVC decoder hands out two
+pictures in swapped order (35.827 s, then 35.786 s), and after an
+unprepared resume it hands out one more that is 460 ms late. Shown, the
+late one steps the film back.
+
+amlvideo shows pictures in the order they are handed back, so the late
+one cannot be put in front of the other. Drop it instead: a picture
+older than one already out goes as a drop, one a second or more older
+is a timestamp discontinuity and starts the order again.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -114,6 +114,7 @@
+   // close open decoder if necessary
+   if (m_opened)
+     Close();
++  m_dropLate = false;
+ 
+   m_hints = hints;
+   m_hints.pClock = hints.pClock;
+@@ -242,6 +243,7 @@
+           m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
+       {
+         m_pFormatName = "am-h264mvc";
++        m_dropLate = true;
+         if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
+         {
+           m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
+@@ -958,6 +960,7 @@
+ 
+ void CDVDVideoCodecAmlogic::ResetStream()
+ {
++  m_lastOut = DVD_NOPTS_VALUE;
+   if (m_Codec)
+     m_Codec->Reset();
+ 
+@@ -1056,9 +1059,32 @@
+     }
+   }
+ 
++  if (m_dropLate && retVal == VC_PICTURE)
++    DropLate(pVideoPicture);
+   return retVal;
+ }
+ 
++// The MVC decoder now and then hands out two pictures in swapped order, and
++// once more an old one after an unprepared resume. The kernel shows pictures in
++// the order they are handed back, so one older than a picture already out
++// cannot be put in front of it: shown, it steps the film back. It goes as a
++// drop. One a second or more older is a timestamp discontinuity, and starts the
++// order again.
++void CDVDVideoCodecAmlogic::DropLate(VideoPicture* pVideoPicture)
++{
++  if (pVideoPicture->pts == DVD_NOPTS_VALUE)
++    return;
++  if (m_lastOut != DVD_NOPTS_VALUE && pVideoPicture->pts < m_lastOut &&
++      m_lastOut - pVideoPicture->pts < DVD_TIME_BASE)
++  {
++    CLog::Log(LOGDEBUG, LOGVIDEO, "{}: picture {:.3f} dropped, {:.3f} already out",
++              __MODULE_NAME__, pVideoPicture->pts / DVD_TIME_BASE, m_lastOut / DVD_TIME_BASE);
++    pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
++  }
++  else
++    m_lastOut = pVideoPicture->pts;
++}
++
+ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+ {
+   if (flags & DVD_CODEC_CTRL_DRAIN)
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -101,6 +101,10 @@
+ 
+   const char     *m_pFormatName;
+   VideoPicture m_videobuffer;
++  //! MVC: pictures handed out after a later one are dropped.
++  bool m_dropLate{false};
++  double m_lastOut{DVD_NOPTS_VALUE};
++  void DropLate(VideoPicture* pVideoPicture);
+   bool            m_opened;
+   int             m_codecControlFlags;
+   CDVDStreamInfo  m_hints;
