@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 13:00:00 -0400
+Subject: [PATCH] AMLCodec: hand frames back to amlvideo in the order they came
+ out
+
+amlvideo's QBUF takes back every frame dequeued before the one it names,
+treated as that one is. Kodi releases from two threads: the renderer
+shows or drops the frames in its queue, the video thread drops the ones
+a start or a seek does not want. When the video thread got there first,
+its drop returned a frame the renderer still held; the renderer's own
+release of it then matched nothing, and amlvideo sent every frame out at
+that moment to the screen at once. The picture ran that many frames -
+about sixteen on a 3D film, 0.66 s - ahead of the sound for the rest of
+the film, on about half the starts.
+
+Keep the frames out in the order they came, and hold a release that
+comes ahead of an older frame until that one is back. A frame never
+released would hold back every one after it, and amlvideo hands out no
+more than 16: once 12 wait for it, it goes back as dropped.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3591,9 +3591,54 @@
+ 
+ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+ {
++  // How many may wait for an older frame before that one counts as never
++  // released: amlvideo hands out no more than 16 at a time.
++  constexpr size_t FRAMES_BACK_EARLY_MAX = 12;
++
+   std::lock_guard<std::mutex> lock(m_frameMutex);
+   if (generation != m_frameGeneration.load())
+     return -ESTALE;
++
++  // amlvideo takes back with one QBUF every frame out before the one named,
++  // treated as that one is. Released ahead of an older one, a frame returned
++  // the older one while it was still held, and that one's own release then
++  // found nothing to match and sent every frame out at that moment to the
++  // screen at once: the picture ran that far ahead of the sound for the rest
++  // of the film. Each goes back in the order it came out instead.
++  SyncFramesOut(generation);
++  if (m_framesSentBack.erase(index))
++    return 0;
++  if (std::find(m_framesOut.begin(), m_framesOut.end(), index) == m_framesOut.end())
++    return QueueFrame(index, drop);
++
++  m_framesBackEarly[index] = drop;
++  if (m_framesBackEarly.size() >= FRAMES_BACK_EARLY_MAX &&
++      !m_framesBackEarly.contains(m_framesOut.front()))
++  {
++    const uint32_t held = m_framesOut.front();
++    CLog::Log(LOGWARNING, "CAMLCodec::ReleaseFrame - frame {} never released, sent back dropped",
++              held);
++    m_framesBackEarly[held] = true;
++    m_framesSentBack.insert(held);
++  }
++
++  int ret = 0;
++  while (!m_framesOut.empty())
++  {
++    const auto back = m_framesBackEarly.find(m_framesOut.front());
++    if (back == m_framesBackEarly.end())
++      break;
++    const int queued = QueueFrame(back->first, back->second);
++    if (back->first == index)
++      ret = queued;
++    m_framesBackEarly.erase(back);
++    m_framesOut.pop_front();
++  }
++  return ret;
++}
++
++int CAMLCodec::QueueFrame(uint32_t index, bool drop)
++{
+   int ret;
+   v4l2_buffer vbuf = v4l2_buffer();
+   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+@@ -3618,6 +3663,17 @@
+   return ret;
+ }
+ 
++void CAMLCodec::SyncFramesOut(uint64_t generation)
++{
++  // a reset decoder hands out a new set; the old one is not coming back
++  if (m_framesOutGeneration == generation)
++    return;
++  m_framesOut.clear();
++  m_framesBackEarly.clear();
++  m_framesSentBack.clear();
++  m_framesOutGeneration = generation;
++}
++
+ float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len, int &size)
+ {
+   struct buf_status bs;
+@@ -3666,6 +3722,9 @@
+   			static_cast<double>(m_cur_pts) /  DVD_TIME_BASE, vbuf.index);
+ 
+     m_bufferIndex = vbuf.index;
++    std::lock_guard<std::mutex> lock(m_frameMutex);
++    SyncFramesOut(m_frameGeneration.load());
++    m_framesOut.push_back(vbuf.index);
+   }
+   else if (ret != EAGAIN)
+   {
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -18,6 +18,8 @@
+ #include "utils/Geometry.h"
+ 
+ #include <deque>
++#include <map>
++#include <set>
+ #include <mutex>
+ #include <atomic>
+ 
+@@ -145,6 +147,7 @@
+   std::string   GetVfmMap(const std::string &name);
+   void          SetVfmMap(const std::string &name, const std::string &map);
+   int           DequeueBuffer();
++  int           QueueFrame(uint32_t index, bool drop);
+   unsigned int  GetDecoderVideoRate();
+   std::string   GetHDRStaticMetadata(bool dv_enable);
+ 
+@@ -164,6 +167,14 @@
+   uint32_t         m_bufferIndex;
+   std::mutex m_frameMutex;
+   std::atomic<uint64_t> m_frameGeneration{1};
++  //! Under m_frameMutex: the frames out of amlvideo in the order they came
++  //! out, those released ahead of an older one (and whether dropped), and
++  //! those sent back for a frame never released.
++  std::deque<uint32_t> m_framesOut;
++  std::map<uint32_t, bool> m_framesBackEarly;
++  std::set<uint32_t> m_framesSentBack;
++  uint64_t m_framesOutGeneration{0};
++  void SyncFramesOut(uint64_t generation);
+ 
+   CRect            m_dst_rect;
+   CRect            m_display_rect;
