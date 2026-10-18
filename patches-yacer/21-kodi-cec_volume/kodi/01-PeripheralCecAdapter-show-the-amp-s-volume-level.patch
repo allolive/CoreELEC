@@ -1,0 +1,243 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 14:20:00 -0400
+Subject: [PATCH] PeripheralCecAdapter: show the amp's volume level
+
+When an amp handles volume over CEC, Kodi pins its own volume at 100% and
+forwards the volume keys. Nothing on screen says where the amp is: the
+volume action is consumed before the volume bar would open, and the bar
+would show Kodi's 100% anyway.
+
+The amp does tell us. Its <Report Audio Status> carries the level (0-100)
+below the mute bit, and the handler already receives it, but kept only the
+mute bit. Keep the level too, and publish it as the Home window property
+'cec.ampvolume' (empty while the amp does not handle volume), so a skin
+can draw it. Set it through the application thread: the window manager's
+lock can be held by a GUI thread that waits for the adapter thread to
+stop, as when CEC is disabled from its settings dialog.
+
+Amps do not report the level a keypress leaves them at on their own, so
+ask with <Give Audio Status> once the key is released. Send that request
+ourselves rather than through AudioStatus(): when the request is lost,
+AudioStatus() answers from libCEC's cache, which put back a mute state the
+amp had just left. The amp is busy for a moment after acting on a key and
+does not take the request then, so try again after 200 ms, up to three
+times. The answer arrives through the command callback.
+
+Flip the mute state when the key is queued rather than when it is sent,
+and have the application open the volume bar (TMSG_VOLUME_SHOW) for the
+volume and mute actions the amp handles, so the bar shows the new mute
+state at once and the level once the amp answers.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
++++ b/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
+@@ -54,6 +54,8 @@
+ #define SCREENSAVER_TIMEOUT 20
+ #define VOLUME_CHANGE_TIMEOUT 250
+ #define VOLUME_REFRESH_TIMEOUT 100
++#define AUDIO_STATUS_RETRIES 3
++#define AUDIO_STATUS_RETRY_DELAY 200ms
+ 
+ #define LOCALISED_ID_TV 36037
+ #define LOCALISED_ID_AVR 36038
+@@ -443,6 +445,8 @@
+     m_bStarted = false;
+     m_bIsRunning = false;
+   }
++
++  PublishAmpVolume(-1);
+ }
+ 
+ bool CPeripheralCecAdapter::HasAudioControl(void)
+@@ -481,8 +485,13 @@
+     appVolume->SetVolume(CApplicationVolumeHandling::VOLUME_MAXIMUM, false);
+   }
+ 
+-  std::unique_lock lock(m_critSection);
+-  m_volumeTarget = address;
++  {
++    std::unique_lock lock(m_critSection);
++    m_volumeTarget = address;
++  }
++
++  if (address != CECDEVICE_AUDIOSYSTEM)
++    PublishAmpVolume(-1);
+ }
+ 
+ cec_logical_address CPeripheralCecAdapter::GetTvVolumeTarget(void)
+@@ -504,13 +513,68 @@
+   SetVolumeTarget(bToAmp ? CECDEVICE_AUDIOSYSTEM : GetTvVolumeTarget());
+ }
+ 
+-void CPeripheralCecAdapter::SetAmpMuted(bool bSetTo)
++void CPeripheralCecAdapter::SetAmpAudioStatus(uint8_t status)
+ {
+-  std::unique_lock lock(m_critSection);
+-  /* the mute state belongs to whichever device handles volume, so leave it alone while the amp
+-     reports one it is not acting on */
+-  if (m_volumeTarget == CECDEVICE_AUDIOSYSTEM)
+-    m_bIsMuted = bSetTo;
++  /* nothing was reported. a muted amp with an unknown level still reports its mute bit */
++  if (status == CEC_AUDIO_VOLUME_STATUS_UNKNOWN)
++    return;
++
++  {
++    std::unique_lock lock(m_critSection);
++    /* the mute state belongs to whichever device handles volume, so leave it alone while the amp
++       reports one it is not acting on */
++    if (m_volumeTarget != CECDEVICE_AUDIOSYSTEM)
++      return;
++    m_bIsMuted = (status & CEC_AUDIO_MUTE_STATUS_MASK) == CEC_AUDIO_MUTE_STATUS_MASK;
++  }
++
++  const int volume = status & CEC_AUDIO_VOLUME_STATUS_MASK;
++  if (volume <= CEC_AUDIO_VOLUME_MAX)
++    PublishAmpVolume(volume);
++}
++
++void CPeripheralCecAdapter::RequestAmpAudioStatus(void)
++{
++  /* AudioStatus() answers from libCEC's cache when the request is lost, which would put back a
++     state the amp has just left. send the request ourselves and take the answer from CecCommand.
++     the amp is busy for a moment after acting on a key, so try again when it is not heard */
++  cec_command command;
++  cec_command::Format(command, m_cecAdapter->GetLogicalAddresses().primary, CECDEVICE_AUDIOSYSTEM,
++                      CEC_OPCODE_GIVE_AUDIO_STATUS);
++  for (int retry = 0; !m_cecAdapter->Transmit(command) && retry < AUDIO_STATUS_RETRIES && !m_bStop;
++       retry++)
++    CThread::Sleep(AUDIO_STATUS_RETRY_DELAY);
++}
++
++void CPeripheralCecAdapter::PublishAmpVolume(int volume)
++{
++  /* through the application thread: the window manager's lock is held by a GUI thread that can be
++     waiting for this one to stop, as when CEC is disabled from its settings dialog */
++  CServiceBroker::GetAppMessenger()->PostMsg(
++      TMSG_EXECUTE_BUILT_IN, -1, -1, nullptr,
++      volume < 0 ? "ClearProperty(cec.ampvolume,home)"
++                 : StringUtils::Format("SetProperty(cec.ampvolume,{},home)", volume));
++}
++
++void CPeripheralCecAdapter::QueueVolumeChange(CecVolumeChange change, int actionId)
++{
++  if (!HasAudioControl())
++    return;
++
++  bool bAmp;
++  {
++    std::unique_lock lock(m_critSection);
++    m_volumeChangeQueue.push(change);
++    /* flip the mute state with the keypress, so the volume bar opened below already shows it */
++    if (change == VOLUME_CHANGE_MUTE)
++      m_bIsMuted = !m_bIsMuted;
++    bAmp = m_volumeTarget == CECDEVICE_AUDIOSYSTEM;
++  }
++
++  /* Kodi does not open the volume bar for an action a peripheral handled. the amp's level
++     follows once it answers */
++  if (bAmp)
++    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_VOLUME_SHOW, actionId);
+ }
+ 
+ void CPeripheralCecAdapter::ProcessVolumeChange(void)
+@@ -575,43 +639,32 @@
+       break;
+     case VOLUME_CHANGE_MUTE:
+       m_cecAdapter->SendKeypress(target, CEC_USER_CONTROL_CODE_MUTE, false);
+-      {
+-        std::unique_lock lock(m_critSection);
+-        m_bIsMuted = !m_bIsMuted;
+-      }
+       break;
+     case VOLUME_CHANGE_NONE:
+       if (bSendRelease)
++      {
+         m_cecAdapter->SendKeyRelease(target, false);
++        /* amps do not report the level a keypress left them at, so ask once the key is up */
++        if (target == CECDEVICE_AUDIOSYSTEM)
++          RequestAmpAudioStatus();
++      }
+       break;
+   }
+ }
+ 
+ void CPeripheralCecAdapter::VolumeUp(void)
+ {
+-  if (HasAudioControl())
+-  {
+-    std::unique_lock lock(m_critSection);
+-    m_volumeChangeQueue.push(VOLUME_CHANGE_UP);
+-  }
++  QueueVolumeChange(VOLUME_CHANGE_UP, ACTION_VOLUME_UP);
+ }
+ 
+ void CPeripheralCecAdapter::VolumeDown(void)
+ {
+-  if (HasAudioControl())
+-  {
+-    std::unique_lock lock(m_critSection);
+-    m_volumeChangeQueue.push(VOLUME_CHANGE_DOWN);
+-  }
++  QueueVolumeChange(VOLUME_CHANGE_DOWN, ACTION_VOLUME_DOWN);
+ }
+ 
+ void CPeripheralCecAdapter::ToggleMute(void)
+ {
+-  if (HasAudioControl())
+-  {
+-    std::unique_lock lock(m_critSection);
+-    m_volumeChangeQueue.push(VOLUME_CHANGE_MUTE);
+-  }
++  QueueVolumeChange(VOLUME_CHANGE_MUTE, ACTION_MUTE);
+ }
+ 
+ bool CPeripheralCecAdapter::IsMuted(void)
+@@ -795,8 +848,7 @@
+         break;
+       case CEC_OPCODE_REPORT_AUDIO_STATUS:
+         if (command->initiator == CECDEVICE_AUDIOSYSTEM && command->parameters.size == 1)
+-          adapter->SetAmpMuted((command->parameters[0] & CEC_AUDIO_MUTE_STATUS_MASK) ==
+-                               CEC_AUDIO_MUTE_STATUS_MASK);
++          adapter->SetAmpAudioStatus(command->parameters[0]);
+         break;
+       default:
+         break;
+@@ -1753,10 +1805,7 @@
+   m_adapter->SetAmpControlsVolume(true);
+ 
+   /* adopt the amp's mute state, so the first mute keypress does not toggle it the wrong way */
+-  const uint8_t audioStatus = m_adapter->m_cecAdapter->AudioStatus();
+-  if (audioStatus != CEC_AUDIO_VOLUME_STATUS_UNKNOWN)
+-    m_adapter->SetAmpMuted((audioStatus & CEC_AUDIO_MUTE_STATUS_MASK) ==
+-                           CEC_AUDIO_MUTE_STATUS_MASK);
++  m_adapter->RequestAmpAudioStatus();
+ 
+   return strAmpName;
+ }
+--- a/xbmc/peripherals/devices/PeripheralCecAdapter.h
++++ b/xbmc/peripherals/devices/PeripheralCecAdapter.h
+@@ -188,7 +188,21 @@
+    *               Kodi when the TV is not expected to act on them.
+    */
+   void SetAmpControlsVolume(bool bSetTo);
+-  void SetAmpMuted(bool bSetTo);
++  /*!
++   * @brief Take in a <Report Audio Status> from the amp: its mute state and its volume level.
++   * @param status Mute in the top bit, the volume (0-100, 0x7F when unknown) below it.
++   */
++  void SetAmpAudioStatus(uint8_t status);
++  /*!
++   * @brief Ask the amp for its audio status. The answer arrives through CecCommand.
++   */
++  void RequestAmpAudioStatus(void);
++  /*!
++   * @brief Publish the amp's volume level as the Home window property 'cec.ampvolume'.
++   * @param volume 0-100, or -1 to clear the property while the amp does not handle volume.
++   */
++  void PublishAmpVolume(int volume);
++  void QueueVolumeChange(CecVolumeChange change, int actionId);
+   void SetMenuLanguage(const char* strLanguage);
+   void OnTvStandby(void);
+ 

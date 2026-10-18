@@ -1,0 +1,713 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 19:55:00 -0400
+Subject: [PATCH] PeripheralCecAdapter: bring the amp to the level shown
+
+A CEC amp reports its level only when asked, and a request and its
+answer take ~150 ms of a bus the keys also need. It does not acknowledge
+a key for a moment after acting on one, acknowledges but ignores a key
+that follows the last one within ~300 ms, and answers with the level and
+mute state from before the keys it has not acted on yet. The level shown
+lagged the keys, ran ahead of the amp, or was put back by a late answer,
+and a release that was not acknowledged was not sent again, which leaves
+the key held on the amp. An amp on CEC 1.4 has no <Set Audio Volume
+Level> to set a level outright.
+
+Once the amp has reported a level, let the volume keys set the level
+wanted and show it as the key is pressed: one step a press, one every
+200 ms while a key is held. The first key after a 3 s pause counts from
+the level the amp reports then, whatever set it, read before the amp is
+moved. The adapter thread brings the amp to the level wanted at the
+amp's pace, keys 300 ms apart, counting only the presses the amp
+acknowledged and sending again 50 ms later any key it did not, a single
+press up to four times, a release until it is acknowledged, to the
+device the key was pressed on. A device that acknowledges no key for 2 s
+is given up on. A key queued before the amp reported a level moves the
+level shown with it once the level is known. Some inputs repeat a held
+key without a hold time: the same action within 100 ms of the last one
+is taken for a repeat, and a mute repeated that way is dropped like a
+held one. Keys pressed while CEC is disabled are not sent once it is
+enabled again.
+
+1 s after the last key, ask the amp for its level and mute state, and
+ignore any answer before that; it is not asked while it is being brought
+to the level, nor while a key is held. Bring the amp to the level shown
+wherever it settled, until it settles no closer twice in a row (the
+amp's second answer to a request does not count), as at a limit set on
+the amp; show the amp's level then, and whenever it is reported other
+than after volume keys. An answer with no level (0x7F) still carries the
+mute state. An amp can take more than a second to report a mute: until 3
+s after a mute key is pressed or taken, an answer at odds with the mute
+state it set is asked again 500 ms later, unless a volume key, which can
+unmute the amp, followed. When a key is dropped unsent, flip the mute
+state flipped with it back, and ask the amp for the one it kept. The
+volume bar opened while muted stays open until the next volume action,
+so give it one when the amp turns out not to be muted after all, a mute
+key that opened it is dropped, or the amp no longer handles volume. Wait
+150 ms after an answer before asking again: an amp can answer a request
+twice, ~110 ms apart.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
++++ b/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
+@@ -33,6 +33,8 @@
+ #include "utils/log.h"
+ #include "interfaces/legacy/configini.h"
+ 
++#include <algorithm>
++#include <cstdlib>
+ #include <mutex>
+ 
+ #include <libcec/cec.h>
+@@ -54,14 +56,42 @@
+ #define SCREENSAVER_TIMEOUT 20
+ /* a remote repeats a held key every few tens of ms. the key is up once the repeats stop */
+ #define VOLUME_HOLD_TIMEOUT 150ms
++/* a held key is pressed again this often. AMP_KEY_INTERVAL paces it further for the amp */
+ #define VOLUME_HOLD_REPEAT 100ms
+-/* leave the bus to the keys for a moment between an answer and the next request */
+-#define AUDIO_STATUS_INTERVAL 50ms
++/* some inputs repeat a held key without a hold time. the same volume action this soon after the
++   last one is taken for a repeat */
++#define VOLUME_REPEAT_GAP 100ms
++/* the volume target does not acknowledge keys for a moment after acting on one. send a key it did
++   not acknowledge again after this time, a single press up to VOLUME_KEY_ATTEMPTS times */
++#define VOLUME_KEY_RETRY 50ms
++#define VOLUME_KEY_ATTEMPTS 4
++/* a device that acknowledges no key for this long is gone: stop sending it any */
++#define VOLUME_KEY_GIVE_UP 2s
++/* the amp can answer a request twice, so wait for the second answer before asking again. the
++   keys get the bus in between */
++#define AUDIO_STATUS_INTERVAL 150ms
+ /* an amp that does not answer within this time lost the request. it is busy for a moment after
+    acting on a key */
+ #define AUDIO_STATUS_TIMEOUT 300ms
+ /* stop asking an amp that does not answer at all */
+ #define AUDIO_STATUS_GIVE_UP 2s
++/* an amp answers with the level and mute state from before the keys it has not acted on yet, so
++   it is asked only once it has had this long after the last one */
++#define VOLUME_KEY_SETTLE 1s
++/* an amp acknowledges a key that follows the last one sooner than this, but does not act on it */
++#define AMP_KEY_INTERVAL 300ms
++/* how long an amp may take to report the mute state a mute key set, and how often it is asked */
++#define MUTE_KEY_SETTLE 3s
++#define MUTE_KEY_RECHECK 500ms
++/* a held key moves the level shown by one this often */
++#define AMP_VOLUME_HOLD_STEP 200ms
++/* the first volume key after this long counts from the level the amp reports, whatever set it.
++   without a report within AMP_VOLUME_READ_TIMEOUT it counts from the last one */
++#define AMP_VOLUME_IDLE 3s
++#define AMP_VOLUME_READ_TIMEOUT 1s
++/* bring the amp to the level shown until it settles no closer to it this many times in a row,
++   as at a limit set on the amp. show the amp's level then */
++#define AMP_VOLUME_STALLS 2
+ #define SYSTEM_AUDIO_MODE_RETRIES 3
+ #define SYSTEM_AUDIO_MODE_RETRY_DELAY 500ms
+ 
+@@ -139,13 +169,27 @@
+ 
+   /* replaced by the amp's own mute state once it reports one */
+   m_bIsMuted = false;
++  m_volumeChangeQueue = {};
+   m_heldVolumeChange = VOLUME_CHANGE_NONE;
+   m_lastHeldAction = {};
+-  m_sentHeldChange = VOLUME_CHANGE_NONE;
+-  m_lastHeldKeySent = {};
++  m_keyDown = VOLUME_CHANGE_NONE;
++  m_keyDownTarget = CECDEVICE_UNKNOWN;
++  m_lastKeyPressed = {};
++  m_keyToPress = VOLUME_CHANGE_NONE;
++  m_keyPressAttempts = 0;
++  m_nextKeyAttempt = {};
++  m_keyFailingSince = {};
+   m_audioStatusWanted = {};
+   m_audioStatusRequested = {};
+   m_audioStatusAnswered = {};
++  ResetAmpVolume();
++  m_ampVolumePublished = -2;
++  CloseMutedVolumeBar();
++  m_muteSettled = {};
++  m_ampVolumeSettled = {};
++  m_lastVolumeChange = VOLUME_CHANGE_NONE;
++  m_lastVolumeKeyAction = {};
++  m_lastVolumeStep = {};
+ 
+   m_bGoingToStandby = false;
+   m_bIsRunning = false;
+@@ -422,6 +466,13 @@
+     m_bGoingToStandby = false;
+     m_bIsRunning = true;
+     m_bActiveSourceBeforeStandby = false;
++    /* keys pressed while CEC was disabled are not sent late. learn the amp's level and mute state
++       again */
++    for (; !m_volumeChangeQueue.empty(); m_volumeChangeQueue.pop())
++      DropVolumeKey(m_volumeChangeQueue.front());
++    m_heldVolumeChange = VOLUME_CHANGE_NONE;
++    if (m_volumeTarget == CECDEVICE_AUDIOSYSTEM)
++      RequestAmpAudioStatus();
+   }
+ 
+   CServiceBroker::GetAnnouncementManager()->AddAnnouncer(
+@@ -450,6 +501,9 @@
+ 
+   m_queryThread->StopThread(true);
+ 
++  if (m_keyDown != VOLUME_CHANGE_NONE)
++    m_cecAdapter->SendKeyRelease(m_keyDownTarget, true);
++
+   UnregisterDevice();
+ 
+   m_cecAdapter->Close();
+@@ -460,7 +514,13 @@
+     std::unique_lock lock(m_critSection);
+     m_bStarted = false;
+     m_bIsRunning = false;
++    /* keys pressed while CEC is disabled do not move the level shown */
++    ResetAmpVolume();
+   }
++  m_keyDown = VOLUME_CHANGE_NONE;
++  DropVolumeKey(m_keyToPress);
++  m_keyToPress = VOLUME_CHANGE_NONE;
++  m_keyFailingSince = {};
+ 
+   PublishAmpVolume(-1);
+ }
+@@ -504,10 +564,17 @@
+   {
+     std::unique_lock lock(m_critSection);
+     m_volumeTarget = address;
++    ResetAmpVolume();
++    /* learn the level of an amp taking over. the clear is published under the lock, so that it
++       cannot land after an answer from an amp that took over again */
++    if (address == CECDEVICE_AUDIOSYSTEM)
++      RequestAmpAudioStatus();
++    else
++    {
++      PublishAmpVolume(-1);
++      CloseMutedVolumeBar();
++    }
+   }
+-
+-  if (address != CECDEVICE_AUDIOSYSTEM)
+-    PublishAmpVolume(-1);
+ }
+ 
+ cec_logical_address CPeripheralCecAdapter::GetTvVolumeTarget(void)
+@@ -529,31 +596,77 @@
+   SetVolumeTarget(bToAmp ? CECDEVICE_AUDIOSYSTEM : GetTvVolumeTarget());
+ }
+ 
+-void CPeripheralCecAdapter::SetAmpAudioStatus(uint8_t status)
++static int ClampAmpVolume(int volume)
+ {
+-  /* nothing was reported. a muted amp with an unknown level still reports its mute bit */
+-  if (status == CEC_AUDIO_VOLUME_STATUS_UNKNOWN)
+-    return;
++  return std::clamp(volume, 0, static_cast<int>(CEC_AUDIO_VOLUME_MAX));
++}
+ 
++void CPeripheralCecAdapter::SetAmpAudioStatus(uint8_t status)
++{
++  const int volume = status & CEC_AUDIO_VOLUME_STATUS_MASK;
+   {
+     std::unique_lock lock(m_critSection);
+     /* the mute state belongs to whichever device handles volume, so leave it alone while the amp
+        reports one it is not acting on */
+     if (m_volumeTarget != CECDEVICE_AUDIOSYSTEM)
+       return;
+-    m_bIsMuted = (status & CEC_AUDIO_MUTE_STATUS_MASK) == CEC_AUDIO_MUTE_STATUS_MASK;
+     m_audioStatusAnswered = std::chrono::steady_clock::now();
++    if (m_audioStatusAnswered < m_ampVolumeSettled)
++      return;
++    /* a muted amp with an unknown level still reports its mute bit */
++    const bool bMuted = (status & CEC_AUDIO_MUTE_STATUS_MASK) == CEC_AUDIO_MUTE_STATUS_MASK;
++    if (bMuted != m_bIsMuted && m_audioStatusAnswered < m_muteSettled)
++    {
++      m_audioStatusWanted =
++          std::max(m_audioStatusWanted, m_audioStatusAnswered + MUTE_KEY_RECHECK);
++      return;
++    }
++    m_bIsMuted = bMuted;
++    if (!bMuted)
++      CloseMutedVolumeBar();
++    if (volume <= CEC_AUDIO_VOLUME_MAX)
++      SetAmpVolume(volume);
++    else
++      m_bAmpVolumeDriven = false;
+   }
++}
+ 
+-  const int volume = status & CEC_AUDIO_VOLUME_STATUS_MASK;
+-  if (volume <= CEC_AUDIO_VOLUME_MAX)
+-    PublishAmpVolume(volume);
++void CPeripheralCecAdapter::SetAmpVolume(int volume)
++{
++  if (!m_ampVolumeRead.IsTimePast())
++  {
++    /* the keys pressed since the first one after a pause count from here */
++    m_ampVolumeWanted = ClampAmpVolume(volume + m_ampVolumeWanted - m_ampVolume);
++    m_ampVolume = volume;
++    m_ampVolumeRead.SetExpired();
++  }
++  else
++  {
++    /* the level shown stays, and the amp is brought to it. an answer that follows no key, as the
++       amp's second answer to a request, is no step closer or further */
++    m_ampVolume = volume;
++    if (m_bAmpKeysSinceCheck && m_ampVolumeChecked >= 0 &&
++        std::abs(m_ampVolumeWanted - volume) >= std::abs(m_ampVolumeWanted - m_ampVolumeChecked))
++      m_ampVolumeStalls++;
++    if (m_bAmpKeysSinceCheck || m_ampVolumeChecked < 0)
++      m_ampVolumeChecked = volume;
++    m_bAmpKeysSinceCheck = false;
++    /* take the amp's own level once it is reached, stalls, or was set other than by the keys */
++    if (!m_bAmpVolumeDriven || m_ampVolumeStalls >= AMP_VOLUME_STALLS ||
++        volume == m_ampVolumeWanted)
++    {
++      m_ampVolumeWanted = volume;
++      m_bAmpVolumeDriven = false;
++      m_ampVolumeStalls = 0;
++    }
++  }
++  PublishAmpVolume(m_ampVolumeWanted);
+ }
+ 
+ void CPeripheralCecAdapter::RequestAmpAudioStatus(void)
+ {
+   std::unique_lock lock(m_critSection);
+-  m_audioStatusWanted = std::chrono::steady_clock::now();
++  m_audioStatusWanted = std::max(m_audioStatusWanted, std::chrono::steady_clock::now());
+ }
+ 
+ void CPeripheralCecAdapter::ProcessAudioStatus(void)
+@@ -561,14 +674,26 @@
+   const auto now = std::chrono::steady_clock::now();
+   std::chrono::steady_clock::time_point wanted;
+   std::chrono::steady_clock::time_point answered;
++  bool bChanging;
+   {
+     std::unique_lock lock(m_critSection);
+     if (m_volumeTarget != CECDEVICE_AUDIOSYSTEM)
+       return;
+     wanted = m_audioStatusWanted;
+     answered = m_audioStatusAnswered;
++    /* the amp is not read while it is brought to the level shown */
++    bChanging = m_keyDown != VOLUME_CHANGE_NONE || m_keyToPress != VOLUME_CHANGE_NONE ||
++                (m_ampVolumeWanted != m_ampVolume && m_ampVolumeRead.IsTimePast());
++    /* an amp that does not answer the check after the keys is not brought to the level shown by a
++       later answer either */
++    if (!bChanging && answered < m_audioStatusRequested &&
++        now - wanted >= AUDIO_STATUS_GIVE_UP)
++      m_bAmpVolumeDriven = false;
+   }
+ 
++  if (now < wanted || bChanging)
++    return;
++
+   /* one request at a time, the next one shortly after the answer, until a request sent after the
+      status was wanted is answered */
+   const bool bAnswered = answered >= m_audioStatusRequested;
+@@ -590,6 +715,11 @@
+ 
+ void CPeripheralCecAdapter::PublishAmpVolume(int volume)
+ {
++  std::unique_lock lock(m_critSection);
++  if (volume == m_ampVolumePublished)
++    return;
++  m_ampVolumePublished = volume;
++
+   /* through the application thread: the window manager's lock is held by a GUI thread that can be
+      waiting for this one to stop, as when CEC is disabled from its settings dialog */
+   CServiceBroker::GetAppMessenger()->PostMsg(
+@@ -598,30 +728,80 @@
+                  : StringUtils::Format("SetProperty(cec.ampvolume,{},home)", volume));
+ }
+ 
++void CPeripheralCecAdapter::ResetAmpVolume(void)
++{
++  m_ampVolume = -1;
++  m_ampVolumeWanted = -1;
++  m_bAmpVolumeDriven = false;
++  m_ampVolumeChecked = -1;
++  m_bAmpKeysSinceCheck = false;
++  m_ampVolumeStalls = 0;
++  m_ampVolumeRead.SetExpired();
++}
++
+ void CPeripheralCecAdapter::QueueVolumeChange(CecVolumeChange change, int actionId, bool bHeld)
+ {
+   if (!HasAudioControl())
+     return;
+ 
+   bool bAmp;
++  bool bShow = true;
+   {
+     std::unique_lock lock(m_critSection);
+-    if (bHeld)
++    const auto now = std::chrono::steady_clock::now();
++    bHeld = bHeld ||
++            (change == m_lastVolumeChange && now - m_lastVolumeKeyAction < VOLUME_REPEAT_GAP);
++    const bool bIdle = now - m_lastVolumeKeyAction >= AMP_VOLUME_IDLE;
++    m_lastVolumeChange = change;
++    m_lastVolumeKeyAction = now;
++    /* a held mute key would toggle mute back and forth */
++    if (bHeld && change == VOLUME_CHANGE_MUTE)
++      return;
++
++    bAmp = m_volumeTarget == CECDEVICE_AUDIOSYSTEM;
++    if (bAmp && change != VOLUME_CHANGE_MUTE && m_ampVolume >= 0)
++    {
++      /* ask the amp for a level rather than send it the keys: the level shown is then the one the
++         keys asked for, and the amp is brought to it at its own pace */
++      if (!m_bAmpVolumeDriven && bIdle)
++      {
++        m_ampVolumeWanted = m_ampVolume;
++        m_ampVolumeRead.Set(AMP_VOLUME_READ_TIMEOUT);
++        RequestAmpAudioStatus();
++      }
++      bShow = !bHeld || now - m_lastVolumeStep >= AMP_VOLUME_HOLD_STEP;
++      if (bShow)
++      {
++        m_ampVolumeWanted =
++            ClampAmpVolume(m_ampVolumeWanted + (change == VOLUME_CHANGE_UP ? 1 : -1));
++        m_lastVolumeStep = now;
++        /* an answer before the amp has taken the key must not put the level back */
++        m_bAmpVolumeDriven = true;
++        m_ampVolumeChecked = -1;
++        m_ampVolumeStalls = 0;
++        PublishAmpVolume(m_ampVolumeWanted);
++      }
++    }
++    else if (bHeld)
+     {
+       m_heldVolumeChange = change;
+-      m_lastHeldAction = std::chrono::steady_clock::now();
++      m_lastHeldAction = now;
+     }
+     else
+       m_volumeChangeQueue.push(change);
+-    /* flip the mute state with the keypress, so the volume bar opened below already shows it */
++    /* flip the mute state with the keypress, so the volume bar opened below already shows it. an
++       answer before the amp has taken the key must not put it back */
+     if (change == VOLUME_CHANGE_MUTE)
++    {
+       m_bIsMuted = !m_bIsMuted;
+-    bAmp = m_volumeTarget == CECDEVICE_AUDIOSYSTEM;
++      m_muteSettled = now + MUTE_KEY_SETTLE;
++    }
++    if (bAmp && bShow)
++      m_bVolumeBarMuted = m_bIsMuted;
+   }
+ 
+-  /* Kodi does not open the volume bar for an action a peripheral handled. the amp's level
+-     follows once it answers */
+-  if (bAmp)
++  /* Kodi does not open the volume bar for an action a peripheral handled */
++  if (bAmp && bShow)
+     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_VOLUME_SHOW, actionId);
+ }
+ 
+@@ -635,56 +815,176 @@
+ void CPeripheralCecAdapter::ProcessVolumeChange(void)
+ {
+   const auto now = std::chrono::steady_clock::now();
+-  CecVolumeChange change = VOLUME_CHANGE_NONE;
+   CecVolumeChange held;
++  CecVolumeChange towards = VOLUME_CHANGE_NONE;
+   cec_logical_address target;
+   {
+     std::unique_lock lock(m_critSection);
+     target = m_volumeTarget;
+     held = now - m_lastHeldAction < VOLUME_HOLD_TIMEOUT ? m_heldVolumeChange : VOLUME_CHANGE_NONE;
+-    if (held == VOLUME_CHANGE_NONE && !m_volumeChangeQueue.empty())
++    /* hold the keys until the amp reports the level the first one after a pause counts from */
++    if (target == CECDEVICE_AUDIOSYSTEM && m_ampVolumeWanted != m_ampVolume &&
++        m_ampVolumeRead.IsTimePast())
++      towards = m_ampVolumeWanted > m_ampVolume ? VOLUME_CHANGE_UP : VOLUME_CHANGE_DOWN;
++    /* check the level the amp settles on also after a step that sent no key, as one at a limit or
++       one undone by the next */
++    if (m_bAmpVolumeDriven && towards == VOLUME_CHANGE_NONE && m_ampVolumeRead.IsTimePast())
++      m_audioStatusWanted = std::max(
++          {m_audioStatusWanted, m_ampVolumeSettled, m_lastVolumeStep + VOLUME_KEY_SETTLE});
++    if (held == VOLUME_CHANGE_NONE && towards == VOLUME_CHANGE_NONE &&
++        m_keyToPress == VOLUME_CHANGE_NONE && !m_volumeChangeQueue.empty())
+     {
+-      change = m_volumeChangeQueue.front();
++      m_keyToPress = m_volumeChangeQueue.front();
+       m_volumeChangeQueue.pop();
++      m_keyPressAttempts = 0;
+     }
+   }
+ 
++  if (now < m_nextKeyAttempt)
++    return;
++
++  /* a key goes out as a press, repeated while it is held or while the amp has further to go, and
++     one release once it is not, to the device it was pressed on. a single press goes out as a
++     press and a release, so the device never takes it for held. a release that is not
++     acknowledged leaves the key down, so it is sent until it is */
++  const CecVolumeChange holding = towards != VOLUME_CHANGE_NONE ? towards : held;
++  if (m_keyDown != VOLUME_CHANGE_NONE && (m_keyDown != holding || m_keyDownTarget != target))
++  {
++    if (!SentVolumeKey(m_cecAdapter->SendKeyRelease(m_keyDownTarget, true), now))
++      return;
++    if (m_keyDownTarget == CECDEVICE_AUDIOSYSTEM)
++    {
++      /* check the level the amp settles on */
++      std::unique_lock lock(m_critSection);
++      m_audioStatusWanted = std::max(m_audioStatusWanted, m_ampVolumeSettled);
++    }
++    m_keyDown = VOLUME_CHANGE_NONE;
++    return;
++  }
++
+   /* the target can be cleared while a key is held or queued. send nothing then */
+   if (target == CECDEVICE_UNKNOWN)
+   {
+-    m_sentHeldChange = VOLUME_CHANGE_NONE;
++    m_keyToPress = VOLUME_CHANGE_NONE;
+     return;
+   }
+ 
+-  /* a held key goes out as a press repeated while the remote repeats it, and one release when it
+-     stops. a single press goes out as a press and a release, so the amp never takes it for held */
+-  bool bSent = false;
+-  if (m_sentHeldChange != VOLUME_CHANGE_NONE && held != m_sentHeldChange)
++  CecVolumeChange press = VOLUME_CHANGE_NONE;
++  if (holding != VOLUME_CHANGE_NONE)
+   {
+-    m_cecAdapter->SendKeyRelease(target, true);
+-    m_sentHeldChange = VOLUME_CHANGE_NONE;
+-    bSent = true;
++    if (m_keyDown == VOLUME_CHANGE_NONE || now - m_lastKeyPressed >= VOLUME_HOLD_REPEAT)
++      press = holding;
+   }
+-  if (held != VOLUME_CHANGE_NONE &&
+-      (held != m_sentHeldChange || now - m_lastHeldKeySent >= VOLUME_HOLD_REPEAT))
++  else
++    press = m_keyToPress;
++  if (press == VOLUME_CHANGE_NONE)
+   {
+-    m_cecAdapter->SendKeypress(target, VolumeKey(held), true);
+-    m_sentHeldChange = held;
+-    m_lastHeldKeySent = now;
+-    bSent = true;
++    m_keyFailingSince = {};
++    return;
+   }
+-  else if (change != VOLUME_CHANGE_NONE)
++  if (target == CECDEVICE_AUDIOSYSTEM && now - m_lastKeyPressed < AMP_KEY_INTERVAL)
++    return;
++
++  if (!SentVolumeKey(m_cecAdapter->SendKeypress(target, VolumeKey(press), true), now))
+   {
+-    m_cecAdapter->SendKeypress(target, VolumeKey(change), true);
+-    m_cecAdapter->SendKeyRelease(target, true);
+-    bSent = true;
++    if (holding == VOLUME_CHANGE_NONE && ++m_keyPressAttempts >= VOLUME_KEY_ATTEMPTS)
++    {
++      DropVolumeKey(m_keyToPress);
++      m_keyToPress = VOLUME_CHANGE_NONE;
++      m_keyFailingSince = {};
++    }
++    return;
+   }
++  /* the key was acknowledged once the call returns, and the next one is timed from then */
++  const auto pressed = std::chrono::steady_clock::now();
++  m_keyDown = press;
++  m_keyDownTarget = target;
++  m_lastKeyPressed = pressed;
++  if (holding == VOLUME_CHANGE_NONE)
++    m_keyToPress = VOLUME_CHANGE_NONE;
+ 
+-  /* amps do not report the level a key leaves them at */
+-  if (bSent)
++  if (target != CECDEVICE_AUDIOSYSTEM)
++    return;
++
++  /* the amp acts on a key it acknowledged */
++  std::unique_lock lock(m_critSection);
++  if (press != VOLUME_CHANGE_MUTE && m_ampVolume >= 0)
++  {
++    const int step = press == VOLUME_CHANGE_UP ? 1 : -1;
++    m_ampVolume = ClampAmpVolume(m_ampVolume + step);
++    /* a key queued or held before the amp's level was known moves the level shown with it */
++    if (towards == VOLUME_CHANGE_NONE)
++    {
++      m_ampVolumeWanted = ClampAmpVolume(m_ampVolumeWanted + step);
++      PublishAmpVolume(m_ampVolumeWanted);
++    }
++    m_bAmpVolumeDriven = true;
++    m_bAmpKeysSinceCheck = true;
++    /* a volume key can unmute the amp: take the mute state it reports next */
++    m_muteSettled = {};
++  }
++  m_ampVolumeSettled = std::max(m_ampVolumeSettled, pressed + VOLUME_KEY_SETTLE);
++  if (press == VOLUME_CHANGE_MUTE)
++    m_muteSettled = pressed + MUTE_KEY_SETTLE;
++}
++
++bool CPeripheralCecAdapter::SentVolumeKey(bool bAcknowledged,
++                                          std::chrono::steady_clock::time_point now)
++{
++  if (bAcknowledged)
++  {
++    m_keyFailingSince = {};
++    return true;
++  }
++
++  m_nextKeyAttempt = now + VOLUME_KEY_RETRY;
++  if (m_keyFailingSince == std::chrono::steady_clock::time_point{})
++    m_keyFailingSince = now;
++  else if (now - m_keyFailingSince >= VOLUME_KEY_GIVE_UP)
++  {
++    /* the device is gone. leave the key to its own timeout, stop bringing the amp to the level
++       shown and show the amp's level once it answers again */
++    CLog::Log(LOGWARNING, "{} - no volume key acknowledged for {}s, giving up", __FUNCTION__,
++              std::chrono::duration_cast<std::chrono::seconds>(VOLUME_KEY_GIVE_UP).count());
++    m_keyFailingSince = {};
++    m_keyDown = VOLUME_CHANGE_NONE;
++    DropVolumeKey(m_keyToPress);
++    m_keyToPress = VOLUME_CHANGE_NONE;
++    std::unique_lock lock(m_critSection);
++    m_ampVolumeWanted = m_ampVolume;
++    m_bAmpVolumeDriven = false;
++    PublishAmpVolume(m_ampVolumeWanted);
++    RequestAmpAudioStatus();
++  }
++  return false;
++}
++
++void CPeripheralCecAdapter::DropVolumeKey(CecVolumeChange change)
++{
++  if (change == VOLUME_CHANGE_NONE)
++    return;
++
++  std::unique_lock lock(m_critSection);
++  if (change == VOLUME_CHANGE_MUTE)
++  {
++    m_bIsMuted = !m_bIsMuted;
++    if (!m_bIsMuted)
++      CloseMutedVolumeBar();
++  }
++  if (m_volumeTarget == CECDEVICE_AUDIOSYSTEM)
+     RequestAmpAudioStatus();
+ }
+ 
++void CPeripheralCecAdapter::CloseMutedVolumeBar(void)
++{
++  if (!m_bVolumeBarMuted)
++    return;
++
++  /* a volume action lets the bar time out again */
++  m_bVolumeBarMuted = false;
++  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_VOLUME_SHOW, ACTION_VOLUME_SET);
++}
++
+ void CPeripheralCecAdapter::VolumeUp(bool bHeld)
+ {
+   QueueVolumeChange(VOLUME_CHANGE_UP, ACTION_VOLUME_UP, bHeld);
+--- a/xbmc/peripherals/devices/PeripheralCecAdapter.h
++++ b/xbmc/peripherals/devices/PeripheralCecAdapter.h
+@@ -46,6 +46,7 @@
+ #include "input/cec/ICecInputProvider.h"
+ #include "interfaces/AnnouncementManager.h"
+ #include "threads/CriticalSection.h"
++#include "threads/SystemClock.h"
+ #include "threads/Thread.h"
+ 
+ #include <chrono>
+@@ -167,6 +168,22 @@
+   void ProcessActivateSource(void);
+   void ProcessStandbyDevices(void);
+   void ProcessVolumeChange(void);
++  /*!
++   * @brief Keep track of a volume key sent: send it again shortly when it was not acknowledged,
++   * and give up on a device that acknowledges none.
++   * @return bAcknowledged.
++   */
++  bool SentVolumeKey(bool bAcknowledged, std::chrono::steady_clock::time_point now);
++  /*!
++   * @brief Put right the mute state flipped with a key that is dropped unsent: flip it back, and
++   * ask the amp for the one it kept.
++   */
++  void DropVolumeKey(CecVolumeChange change);
++  /*!
++   * @brief Close a volume bar opened while muted: it stays open until a volume action, and the mute
++   * state it waits for may not come. m_critSection must be held.
++   */
++  void CloseMutedVolumeBar(void);
+   void ProcessAudioStatus(void);
+ 
+   void PushCecKeypress(const CEC::cec_keypress& key);
+@@ -205,6 +222,16 @@
+    * @param volume 0-100, or -1 to clear the property while the amp does not handle volume.
+    */
+   void PublishAmpVolume(int volume);
++  /*!
++   * @brief Take in a level the amp reported, and publish the level shown. m_critSection must be
++   * held.
++   */
++  void SetAmpVolume(int volume);
++  /*!
++   * @brief Forget the amp's volume level, as when another device takes volume control.
++   * m_critSection must be held.
++   */
++  void ResetAmpVolume(void);
+   void QueueVolumeChange(CecVolumeChange change, int actionId, bool bHeld = false);
+   void SetMenuLanguage(const char* strLanguage);
+   void OnTvStandby(void);
+@@ -239,13 +266,49 @@
+   /* the volume key the remote holds down, and when it last repeated */
+   CecVolumeChange m_heldVolumeChange;
+   std::chrono::steady_clock::time_point m_lastHeldAction;
+-  /* the key held down on the volume target, and when it was last sent */
+-  CecVolumeChange m_sentHeldChange;
+-  std::chrono::steady_clock::time_point m_lastHeldKeySent;
++  /* the key down on a device until its release is acknowledged, the device, and when the key was
++     last pressed */
++  CecVolumeChange m_keyDown;
++  CEC::cec_logical_address m_keyDownTarget;
++  std::chrono::steady_clock::time_point m_lastKeyPressed;
++  /* a single press taken from the queue, until the volume target acknowledges it */
++  CecVolumeChange m_keyToPress;
++  int m_keyPressAttempts;
++  /* a key the device did not acknowledge is sent again after this time. a device that has
++     acknowledged none since then is given up on */
++  std::chrono::steady_clock::time_point m_nextKeyAttempt;
++  std::chrono::steady_clock::time_point m_keyFailingSince;
+   /* the amp's audio status is wanted as it is after this time */
+   std::chrono::steady_clock::time_point m_audioStatusWanted;
+   std::chrono::steady_clock::time_point m_audioStatusRequested;
+   std::chrono::steady_clock::time_point m_audioStatusAnswered;
++  /* the amp's volume level: the last one it reported, moved by the keys it acknowledged since.
++     -1 while unknown */
++  int m_ampVolume;
++  /* the level the volume keys asked for, the one shown, and the one the amp is brought to. -1 while
++     unknown */
++  int m_ampVolumeWanted;
++  /* the level last published: -1 for cleared, -2 before anything was */
++  int m_ampVolumePublished;
++  /* the volume bar was opened while muted, and stays open until a volume action. initialised
++     here, as ResetMembers() reads it */
++  bool m_bVolumeBarMuted{false};
++  /* until then, an answer at odds with the mute state a mute key set is asked again */
++  std::chrono::steady_clock::time_point m_muteSettled;
++  /* the amp is being brought to the level shown, after volume keys. the level it settled on, keys
++     it acknowledged since, and how many times in a row it settled no closer to the level shown */
++  bool m_bAmpVolumeDriven;
++  int m_ampVolumeChecked;
++  bool m_bAmpKeysSinceCheck;
++  int m_ampVolumeStalls;
++  /* the last volume action, when it came, and when a key last moved the level shown */
++  CecVolumeChange m_lastVolumeChange;
++  std::chrono::steady_clock::time_point m_lastVolumeKeyAction;
++  std::chrono::steady_clock::time_point m_lastVolumeStep;
++  /* the level the first key after a pause counts from is being read from the amp */
++  XbmcThreads::EndTime<> m_ampVolumeRead;
++  /* when the amp is expected to have acted on the last key */
++  std::chrono::steady_clock::time_point m_ampVolumeSettled;
+   int m_iExitCode;
+   bool m_bIsMuted;
+   bool m_bGoingToStandby;

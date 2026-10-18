@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 14:25:00 -0400
+Subject: [PATCH] PeripheralCecAdapter: ask the amp again when system audio
+ mode is unknown
+
+When the adapter connects, Kodi asks the amp whether system audio mode is
+on and only hands it the volume when it is. On a busy bus that request is
+lost now and then ("Write: write failed"), libCEC returns 'unknown', and
+Kodi treats that as 'off': volume stays with Kodi for the whole session,
+because an amp only reports system audio mode again when it changes.
+
+libCEC sends the request again for as long as the answer is unknown, so
+ask up to three more times, half a second apart, and log 'unknown' apart
+from a real 'off'.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
++++ b/xbmc/peripherals/devices/PeripheralCecAdapter.cpp
+@@ -56,6 +56,8 @@
+ #define VOLUME_REFRESH_TIMEOUT 100
+ #define AUDIO_STATUS_RETRIES 3
+ #define AUDIO_STATUS_RETRY_DELAY 200ms
++#define SYSTEM_AUDIO_MODE_RETRIES 3
++#define SYSTEM_AUDIO_MODE_RETRY_DELAY 500ms
+ 
+ #define LOCALISED_ID_TV 36037
+ #define LOCALISED_ID_AVR 36038
+@@ -1791,10 +1793,22 @@
+ #if CEC_LIB_HAS_SYSTEM_AUDIO_MODE_STATUS
+   /* an amp only acts on volume keypresses while system audio mode is on. handing it the volume
+      while it is off leaves the user with no working volume control at all. */
+-  if (m_adapter->m_cecAdapter->SystemAudioModeStatus() != CEC_SYSTEM_AUDIO_STATUS_ON)
++  uint8_t systemAudioMode = m_adapter->m_cecAdapter->SystemAudioModeStatus();
++  /* libCEC asks again for as long as the answer is unknown. the request is lost now and then on
++     a busy bus, and an amp only reports system audio mode again when it changes */
++  for (int retry = 0; retry < SYSTEM_AUDIO_MODE_RETRIES &&
++                      systemAudioMode == CEC_SYSTEM_AUDIO_STATUS_UNKNOWN && !m_bStop;
++       retry++)
++  {
++    CThread::Sleep(SYSTEM_AUDIO_MODE_RETRY_DELAY);
++    systemAudioMode = m_adapter->m_cecAdapter->SystemAudioModeStatus();
++  }
++
++  if (systemAudioMode != CEC_SYSTEM_AUDIO_STATUS_ON)
+   {
+-    CLog::Log(LOGDEBUG, "{} - CEC capable amplifier found ({}), but system audio mode is off",
+-              __FUNCTION__, ampName);
++    CLog::Log(LOGDEBUG, "{} - CEC capable amplifier found ({}), but system audio mode is {}",
++              __FUNCTION__, ampName,
++              systemAudioMode == CEC_SYSTEM_AUDIO_STATUS_OFF ? "off" : "unknown");
+     m_adapter->SetAmpControlsVolume(false);
+     return strAmpName;
+   }
