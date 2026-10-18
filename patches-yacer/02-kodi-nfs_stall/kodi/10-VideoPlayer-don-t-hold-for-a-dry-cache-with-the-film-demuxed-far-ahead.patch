@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 18:00:00 -0400
+Subject: [PATCH] VideoPlayer: don't hold for a dry cache with the film demuxed
+ far ahead
+
+Right after a start the source cache reads empty: the demuxer has just
+taken everything it held, and is already tens of seconds past the clock.
+The source-underrun hold took that for a dry source and paused playback
+for 180 ms, 1.7 s into the film; the audio queued in the sink ran past
+the stopped clock and the engine's correction after it dropped a frame.
+
+Skip the hold while the last demuxed video packet is more than 10 s past
+the clock. A source that really has gone away still gets its hold, once
+the demuxed runway has come down to that.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2289,6 +2289,8 @@ constexpr double SRC_UNDERRUN_WATCH = 2.
+ constexpr auto SRC_PROBE_INTERVAL = 50ms;
+ // The player's own buffering leaves the cache dry too, so wait this long after it.
+ constexpr auto SRC_UNDERRUN_COOLDOWN = 5000ms;
++// Demuxed this far past the clock, playback has its own runway whatever the cache says.
++constexpr double SRC_DEMUXED_AHEAD = 10.0;
+ } // unnamed namespace
+ 
+ CacheInfo CVideoPlayer::GetCachingTimes()
+@@ -2374,6 +2376,11 @@ bool CVideoPlayer::TryEnterSourceUnderru
+   if (!m_processInfo->GetVideoCodecBuffersData())
+     return false;
+ 
++  // A start reads the cache as empty because the demuxer has just taken all of it.
++  if (m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
++      m_CurrentVideo.dts - m_clock.GetClock() > DVD_SEC_TO_TIME(SRC_DEMUXED_AHEAD))
++    return false;
++
+   // Reading the status takes the cache's locks and clears its slow-source flag.
+   if (!m_srcUnderrunProbe.IsTimePast())
+     return false;
