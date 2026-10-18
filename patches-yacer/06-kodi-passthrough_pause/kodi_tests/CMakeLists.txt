@@ -114,3 +114,81 @@ yacer_add_test(
   SOURCES TestPlayerPrerollWiring.cpp
   INCLUDES ${CMAKE_CURRENT_BINARY_DIR}
 )
+
+# Stand-ins for the codec's collaborators that say nothing about how it stamps
+# TrueHD, written here because a patch group holds no subdirectories: process
+# information that asks for IEC (the MAT path) unless a test sets raw, empty
+# stream hints and codec options, and no settings, so dialogue-normalisation
+# defeat is off. The codec, parser and MAT packer are the real ones.
+set(truehd_shims "${CMAKE_CURRENT_BINARY_DIR}/truehd_shims")
+file(WRITE "${truehd_shims}/cores/VideoPlayer/Process/ProcessInfo.h" "#pragma once
+// IEC (the MAT path) unless a test asks for raw passthrough.
+class CProcessInfo
+{
+public:
+  bool raw = false;
+  bool WantsRawPassthrough() const { return raw; }
+};
+")
+file(WRITE "${truehd_shims}/DVDStreamInfo.h" "#pragma once
+struct CDVDStreamInfo
+{
+  int profile = 0;
+  int bitspersample = 24;
+};
+")
+file(WRITE "${truehd_shims}/DVDCodecs/DVDCodecs.h" "#pragma once
+class CDVDCodecOptions
+{
+};
+")
+file(WRITE "${truehd_shims}/utils/Variant.h" "#pragma once
+class CVariant
+{
+public:
+  int asInteger() const { return 0; }
+};
+")
+file(WRITE "${truehd_shims}/settings/Settings.h" "#pragma once
+#include \"utils/Variant.h\"
+#include <vector>
+class CSettings
+{
+public:
+  static constexpr const char* SETTING_COREELEC_AUDIO_DIALNORMDEFEAT = \"unused\";
+  std::vector<CVariant> GetList(const char*) const { return {}; }
+};
+")
+file(WRITE "${truehd_shims}/settings/SettingsComponent.h" "#pragma once
+#include \"settings/Settings.h\"
+class CSettingsComponent
+{
+public:
+  CSettings* GetSettings() { return nullptr; }
+};
+")
+file(WRITE "${truehd_shims}/ServiceBroker.h" "#pragma once
+#include \"settings/SettingsComponent.h\"
+class CServiceBroker
+{
+public:
+  static CSettingsComponent* GetSettingsComponent() { return nullptr; }
+};
+")
+
+# The real codec, parser and MAT packer, with libavutil's crc.c for the major
+# header's checksum: a timestamp test against an imitation of any of them
+# would prove nothing about what reaches the receiver.
+yacer_add_test(
+  NAME TrueHDTimeline
+  STANDARD 20
+  SOURCES TestTrueHDTimeline.cpp
+  KODI_SOURCES xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+               xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp
+               xbmc/cores/AudioEngine/Utils/PackerMAT.cpp
+               xbmc/cores/AudioEngine/Utils/AEChannelInfo.cpp
+               xbmc/utils/BitstreamReader.cpp
+               .yacer-src/libavutil/crc.c
+  INCLUDES ${truehd_shims} ${YACER_SHIMS}
+           ${KODI_SOURCE}/xbmc/platform/posix
+)

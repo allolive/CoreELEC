@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 21:00:00 -0400
+Subject: [PATCH] DVDAudioCodecPassthrough: stamp TrueHD from the access units
+ it carries
+
+After a reset - a seek, a resume, the start - the codec took its PTS from
+the first demux packet it was given, before the parser had found a major
+sync. The parser then dropped the minor access units ahead of the first
+major, and the first MAT frame went out labelled with the dropped data's
+time: 10 ms early for 12 skipped units, 80 ms for 96. The next frame then
+jumped by the skipped time plus a MAT frame, and the audio engine took the
+jump as a sync error: it padded silence after the seek, which with a
+receiver re-locking TrueHD is an audible cut.
+
+Each access unit now takes the PTS of the demux packet its first byte came
+in (a demux PTS belongs to the first unit starting in its packet): the
+codec keeps where each packet's PTS starts in the parser's input, and a
+unit's start is what the parser has consumed less what it still holds and
+the unit itself. A unit starting in a packet without a PTS follows the last
+by one unit's duration (40 samples of 48 or 44.1 kHz, whatever the rate).
+
+MAT is a timeline: every frame holds the same span (20 ms, 21.77 ms at
+44.1 kHz and its multiples), padding standing in for any gap, so frame k
+starts k spans after the first unit the packer took. The packer says when it
+has taken one since its last reset (Started()), which is also when it
+re-initialises on a seek of its own. RAW passthrough takes the PTS of the
+first unit of each 24-unit group.
+
+Every MAT frame then sits on the first accepted major's timeline, in all six
+rates, with 0, 12 or 96 skipped units, a split first major, packets without
+a PTS, several units per packet and a reset (kodi_tests/TestTrueHDTimeline).
+Other formats are unchanged.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/AudioEngine/Utils/PackerMAT.h b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
+index c4aafc8..41e5c53 100644
+--- a/xbmc/cores/AudioEngine/Utils/PackerMAT.h
++++ b/xbmc/cores/AudioEngine/Utils/PackerMAT.h
+@@ -32,6 +32,8 @@ public:
+   bool PackTrueHD(const uint8_t* data, int size);
+   std::vector<uint8_t> GetOutputFrame();
+   void Reset();
++  //! An access unit has been taken since the last reset: the MAT timeline has an origin
++  bool Started() const { return m_state.prevFrametimeValid; }
+ 
+ private:
+   struct MATState
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+index f852726..cee71c7 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp
+@@ -133,6 +133,7 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+   {
+     m_dataSize = m_bufferSize;
+     unsigned int consumed = m_parser.AddData(m_backlogBuffer, m_backlogSize, &m_buffer, &m_dataSize);
++    m_parsedBytes += consumed;
+     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+     if (consumed != m_backlogSize)
+     {
+@@ -144,6 +145,17 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+   unsigned char *pData(const_cast<uint8_t*>(packet.pData));
+   int iSize(packet.iSize);
+ 
++  if (pData && iSize > 0)
++  {
++    if (packet.pts != DVD_NOPTS_VALUE)
++    {
++      m_ptsMarks.push_back({m_inputBytes, packet.pts});
++      if (m_ptsMarks.size() > 256)
++        m_ptsMarks.pop_front();
++    }
++    m_inputBytes += iSize;
++  }
++
+   if (pData)
+   {
+     if (m_currentPts == DVD_NOPTS_VALUE)
+@@ -171,6 +183,7 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+ 
+     m_dataSize = m_bufferSize;
+     int used = m_parser.AddData(pData, iSize, &m_buffer, &m_dataSize);
++    m_parsedBytes += used;
+     m_bufferSize = std::max(m_bufferSize, m_dataSize);
+ 
+     if (used != iSize)
+@@ -198,6 +211,9 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+   if (!m_dataSize)
+     return true;
+ 
++  if (m_parser.GetStreamInfo().m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
++    StampTrueHD();
++
+   m_format.m_dataFormat = AE_FMT_RAW;
+   m_format.m_streamInfo = m_parser.GetStreamInfo();
+   m_format.m_sampleRate = m_parser.GetSampleRate();
+@@ -221,14 +237,30 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+ 
+     if (m_deviceIsRAW) // RAW
+     {
++      if (m_trueHDoffset == 0)
++        m_rawGroupPts = m_unitPts;
+       m_dataSize = PackTrueHD();
++      if (m_dataSize && m_rawGroupPts != DVD_NOPTS_VALUE)
++        m_currentPts = m_rawGroupPts;
+     }
+     else // IEC
+     {
+-      if (m_packerMAT->PackTrueHD(m_buffer, m_dataSize))
++      // MAT is a timeline: each frame holds the same span, padding standing in for
++      // any gap, so a frame starts its span after the first access unit taken
++      const bool started = m_packerMAT->Started();
++      const bool packed = m_packerMAT->PackTrueHD(m_buffer, m_dataSize);
++      if (!started && m_packerMAT->Started())
++      {
++        m_matOrigin = m_unitPts;
++        m_matFrames = 0;
++      }
++      if (packed)
+       {
+         m_trueHDBuffer = m_packerMAT->GetOutputFrame();
+         m_dataSize = TRUEHD_BUF_SIZE;
++        if (m_matOrigin != DVD_NOPTS_VALUE)
++          m_currentPts = m_matOrigin + m_matFrames * 24 * TrueHDUnitDuration();
++        m_matFrames++;
+       }
+       else
+         m_dataSize = 0;
+@@ -238,6 +270,33 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
+   return true;
+ }
+ 
++// The access unit just parsed takes the PTS of the packet its first byte came in:
++// a demux PTS belongs to the first unit that starts in its packet. A unit that
++// starts in no packet with a PTS follows the last one by a unit's duration.
++void CDVDAudioCodecPassthrough::StampTrueHD()
++{
++  const uint64_t held = static_cast<uint64_t>(m_parser.GetBufferSize()) + m_dataSize;
++  const uint64_t start = m_parsedBytes > held ? m_parsedBytes - held : 0;
++  bool marked = false;
++  while (!m_ptsMarks.empty() && m_ptsMarks.front().offset <= start)
++  {
++    m_unitPts = m_ptsMarks.front().pts;
++    m_ptsMarks.pop_front();
++    marked = true;
++  }
++  if (!marked && m_unitPts != DVD_NOPTS_VALUE)
++    m_unitPts += TrueHDUnitDuration();
++}
++
++// 40 samples of the family's base rate whatever the rate itself: 1/1200 s, or
++// 40/44100 s for 44.1 kHz and its multiples
++double CDVDAudioCodecPassthrough::TrueHDUnitDuration() const
++{
++  const unsigned int rate = m_parser.GetSampleRate();
++  const double base = rate && rate % 44100 == 0 ? 44100.0 : 48000.0;
++  return 40.0 * DVD_TIME_BASE / base;
++}
++
+ unsigned int CDVDAudioCodecPassthrough::PackTrueHD()
+ {
+   unsigned int dataSize{0};
+@@ -301,6 +360,13 @@ void CDVDAudioCodecPassthrough::Reset()
+   m_backlogSize = 0;
+   m_currentPts = DVD_NOPTS_VALUE;
+   m_nextPts = DVD_NOPTS_VALUE;
++  m_ptsMarks.clear();
++  m_inputBytes = 0;
++  m_parsedBytes = 0;
++  m_unitPts = DVD_NOPTS_VALUE;
++  m_matOrigin = DVD_NOPTS_VALUE;
++  m_matFrames = 0;
++  m_rawGroupPts = DVD_NOPTS_VALUE;
+   m_parser.Reset();
+   if (m_packerMAT)
+     m_packerMAT->Reset();
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.h b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.h
+index 3d45e52..7652bf0 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.h
+@@ -14,6 +14,8 @@
+ #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
+ #include "cores/AudioEngine/Utils/AEStreamInfo.h"
+ 
++#include <cstdint>
++#include <deque>
+ #include <list>
+ #include <memory>
+ #include <vector>
+@@ -40,6 +42,8 @@ public:
+ private:
+   int GetData(uint8_t** dst);
+   unsigned int PackTrueHD();
++  void StampTrueHD();
++  double TrueHDUnitDuration() const;
+   CDVDStreamInfo m_hints;
+   CAEStreamParser m_parser;
+   uint8_t* m_buffer = nullptr;
+@@ -59,4 +63,19 @@ private:
+   unsigned int m_trueHDoffset = 0;
+   unsigned int m_trueHDframes = 0;
+   bool m_deviceIsRAW{false};
++
++  // Where each demux PTS starts in the parser's input, so an access unit takes the
++  // PTS of the packet its first byte came in, not of whatever arrived first
++  struct PtsMark
++  {
++    uint64_t offset;
++    double pts;
++  };
++  std::deque<PtsMark> m_ptsMarks;
++  uint64_t m_inputBytes = 0; //!< bytes handed to the parser, the backlog included
++  uint64_t m_parsedBytes = 0; //!< bytes the parser has consumed
++  double m_unitPts = DVD_NOPTS_VALUE; //!< PTS of the last access unit parsed
++  double m_matOrigin = DVD_NOPTS_VALUE; //!< PTS of the first access unit on the MAT timeline
++  unsigned int m_matFrames = 0; //!< MAT frames taken since that origin
++  double m_rawGroupPts = DVD_NOPTS_VALUE; //!< PTS of the first access unit of a RAW group
+ };

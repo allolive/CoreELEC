@@ -31,3 +31,13 @@ The [September 30 validation](../../tests/validation/passthrough-resume-20260930
 records the installed-image results and the remaining buffering and resume-delay
 issues; this handoff change does not claim instantaneous playback after every
 control sequence.
+
+TrueHD's timestamps start on the first major-sync access unit the parser
+keeps (13): each unit takes the PTS of the packet its first byte came in and
+each MAT frame sits a whole number of frames after the first unit the packer
+took, so a seek, a resume or the start no longer labels the first frame with
+the minor units dropped ahead of the major (up to 80 ms early, then a jump the
+audio engine took as a sync error). `kodi_tests/TestTrueHDTimeline.cpp` runs
+the real codec, parser and MAT packer over six rates, dropped units, a split
+major, packets without a PTS, several units per packet, RAW and a reset, and
+fails on the tree without 13.
