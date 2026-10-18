@@ -16,7 +16,9 @@ another table entry is as near to, on top of the round-down rule.
 Neither PLL is audio-only (both appear in the vclk, vdec, hcodec, vpu, vapb,
 sd_emmc and gen parent lists here), so a trim is refused with -EBUSY while any
 clock in this provider is parented on the PLL. Clearing a trim is always
-allowed. Not yet exercised on hardware.
+allowed. On an S6 (S905X5): 2 steps took hifi_pll from 491520000 to
+491534760 Hz (+30.0 ppm), 40 steps gave +600 ppm, only audio clocks hang off
+it, and LPCM played through TDM to HDMI followed the trim.
 --- a/drivers/clk/meson/s6.c
 +++ b/drivers/clk/meson/s6.c
 @@ -13,6 +13,10 @@

@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 04:00:00 -0400
+Subject: [PATCH] AML: schedule a start with the pipeline measured before, not
+ the buffer count
+
+Until the pipeline is measured after a mode change the window system
+answered nothing and CGraphicContext fell back to (buffers + 1) / rate:
+four refreshes with the default three buffers. The pipeline measures
+two. The renderer chose its frames two refreshes early, and when the
+measurement landed 150 ms into the picture it waited two refreshes for
+the clock to catch up: two repeated frames at every start.
+
+Answer with the count last measured at the same refresh rate, or before
+any has been the count measured at such rates - two refreshes at film
+and TV rates, three at the HFR rates 3D plays at - so the schedule is the
+measured one from the first frame and the measurement confirms it
+instead of moving it.
+The clock alignment done before the audio is put on the clock reads the
+same figure, so it aims with it too. The genlock placement still waits
+for the measurement.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -94,11 +94,11 @@
+   const bool needsAlign = requested != m_alignDone;
+ 
+   // Nothing to aim with until the pipeline has been measured: until then
+-  // GetDisplayLatency() is CGraphicContext's buffer-count estimate, which is a
+-  // whole frame or more out, and aiming with it would step the clock by that
+-  // error. Only a refresh-period change clears it, which is the one event that
+-  // makes the measured path wrong.
+-  if (CAMLLatencyStore::GetInstance().Get() < 0.0f)
++  // GetDisplayLatency() is an expectation, which can be a whole refresh or
++  // more out, and aiming with it would place the picture by that error. Only
++  // a refresh-period change clears it, which is the one event that makes the
++  // measured path wrong.
++  if (!CAMLLatencyStore::GetInstance().IsMeasured())
+     return;
+ 
+   // Whole-number ratios only, so pulldown, where there is no fixed phase, is
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -416,6 +416,7 @@
+   {
+     m_period = period;
+     CAMLLatencyStore::GetInstance().Forget();
++    CAMLLatencyStore::GetInstance().Expect(rate);
+     m_lastN = 0;
+     Rearm();
+   }
+@@ -480,6 +481,7 @@
+         if (!m_settled && (m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
+         {
+           CAMLLatencyStore::GetInstance().Set(static_cast<float>(n * 1000.0 / rate));
++          CAMLLatencyStore::GetInstance().Remember(rate, static_cast<unsigned int>(n));
+           CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: pipeline {} refreshes, {:.1f}ms", n,
+                     n * 1000.0 / rate);
+           m_lastN = n;
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -7,9 +7,11 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <atomic>
+ #include <cstdint>
+ #include <optional>
++#include <utility>
+ 
+ class CDVDClock;
+ 
+@@ -30,10 +32,46 @@
+     return store;
+   }
+ 
+-  //! \brief Milliseconds, or negative while unknown, which is what
+-  //! CWinSystemBase returns to ask for the buffer-count estimate instead.
+-  float Get() const { return m_latencyMs.load(std::memory_order_relaxed); }
++  //! \brief Milliseconds: the measured figure, else the one expected at this
++  //! refresh rate, else negative, which is what CWinSystemBase returns to ask
++  //! for the buffer-count estimate instead.
++  float Get() const
++  {
++    const float measured = m_latencyMs.load(std::memory_order_relaxed);
++    return measured >= 0.0f ? measured : m_expectedMs.load(std::memory_order_relaxed);
++  }
++  bool IsMeasured() const { return m_latencyMs.load(std::memory_order_relaxed) >= 0.0f; }
+   void Set(float ms) { m_latencyMs.store(ms, std::memory_order_relaxed); }
++
++  //! \brief Until it is measured, the pipeline is taken to cost what it last
++  //! measured at this rate, else what it measures at such rates: two
++  //! refreshes at film and TV rates, three at the HFR rates 3D plays at. The
++  //! buffer-count estimate is four with the default three buffers, so the
++  //! renderer scheduled a start two refreshes early and repeated two frames
++  //! when the measurement landed. Both are called from the polling thread only.
++  void Expect(double rate)
++  {
++    unsigned int refreshes = rate > 75.0 ? 3 : 2;
++    for (const auto& [rateKey, count] : m_counts)
++      if (rateKey == Key(rate))
++        refreshes = count;
++    m_expectedMs.store(static_cast<float>(refreshes * 1000.0 / rate), std::memory_order_relaxed);
++  }
++  void Remember(double rate, unsigned int refreshes)
++  {
++    // The next start at this rate expects it even without a rate change.
++    m_expectedMs.store(static_cast<float>(refreshes * 1000.0 / rate), std::memory_order_relaxed);
++    for (auto& slot : m_counts)
++    {
++      if (slot.first == Key(rate) || slot.first == 0)
++      {
++        slot = {Key(rate), refreshes};
++        return;
++      }
++    }
++    m_counts[m_nextSlot] = {Key(rate), refreshes};
++    m_nextSlot = (m_nextSlot + 1) % m_counts.size();
++  }
+   void Forget()
+   {
+     m_latencyMs.store(-1.0f, std::memory_order_relaxed);
+@@ -49,6 +87,11 @@
+   CAMLLatencyStore() = default;
+   std::atomic<float> m_latencyMs{-1.0f};
+   std::atomic<float> m_alignmentMs{0.0f};
++  std::atomic<float> m_expectedMs{-1.0f};
++
++  static int Key(double rate) { return static_cast<int>(rate * 100.0 + 0.5); }
++  std::array<std::pair<int, unsigned int>, 4> m_counts{};
++  size_t m_nextSlot = 0;
+ };
+ 
+ //! \brief Counts the refreshes between handing a frame over and it appearing.
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -735,13 +735,14 @@
+ 
+ DEBUG_INFO_RENDER CWinSystemAmlogic::GetDebugInfo()
+ {
+-  const float pipeline = CAMLLatencyStore::GetInstance().Get();
++  const CAMLLatencyStore& store = CAMLLatencyStore::GetInstance();
++  const float pipeline = store.Get();
+ 
+   DEBUG_INFO_RENDER info;
+   info.videoOutput = StringUtils::Format(
+       "AML pipeline: {} | align: {:+.2f}ms | vblank phase: {:+.2f}ms",
+-      pipeline < 0.0f ? std::string("measuring") : StringUtils::Format("{:.1f}ms", pipeline),
+-      CAMLLatencyStore::GetInstance().GetAlignment(),
++      store.IsMeasured() ? StringUtils::Format("{:.1f}ms", pipeline) : std::string("measuring"),
++      store.GetAlignment(),
+       m_vblankPhaseMs.load(std::memory_order_relaxed));
+   return info;
+ }

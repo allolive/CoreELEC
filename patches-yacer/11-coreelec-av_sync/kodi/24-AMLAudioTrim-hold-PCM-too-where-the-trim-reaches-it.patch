@@ -1,0 +1,215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:20:00 -0400
+Subject: [PATCH] AMLAudioTrim: hold PCM too where the trim reaches it
+
+The rate loop was kept to passthrough because on g12a/g12b/sm1 the trim
+moves mpll0, which clocks only the bitstream: PCM goes out on another
+clock, and there the loop moved its whole range without PCM answering.
+
+On S6 and S7D the trim moves the HIFI PLL, and that PLL also clocks the
+TDM output to HDMI (mclk_b/mclk_c beside spdifout/spdifout_b). Measured on
+an S6 playing LPCM: +40 steps put hifi_pll at +600 ppm and Kodi had to step
+its clock +50 ms every 70 s, all one way. So there PCM is held by the
+same loop, against the same lead, instead of drifting until Kodi's clock
+feedback steps the picture by 50 ms. Kodi's correction stays as it is for
+the jumps a drift never makes.
+
+One per-SoC table gives both the trim node and whether it reaches PCM
+(CAMLAudioTrim::ReachesPcm()), so the two cannot disagree. The flag that
+gives the trim back on the way out is m_trimEngaged, as it no longer means
+passthrough. The setting loses "passthrough" from its name, and its help
+says where it reaches PCM.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 96e8166..7f30851 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -9158,28 +9158,28 @@ msgstr ""
+ #. Setting to trim the audio clock so sound and picture stay aligned
+ #: system/settings/settings.xml
+ msgctxt "#60020"
+-msgid "Audio passthrough A/V sync"
++msgid "Audio A/V sync"
+ msgstr ""
+ 
+-#. Help text of setting with label #60020 "Audio passthrough A/V sync"
++#. Help text of setting with label #60020 "Audio A/V sync"
+ #: system/settings/settings.xml
+ msgctxt "#60021"
+-msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. Has no effect on PCM output."
++msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. On S905X5 boxes it holds PCM output too; on older ones only passthrough."
+ msgstr ""
+ 
+-#. Option for setting #60020 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio A/V sync"
+ #: system/settings/settings.xml
+ msgctxt "#60022"
+ msgid "Light"
+ msgstr ""
+ 
+-#. Option for setting #60020 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio A/V sync"
+ #: system/settings/settings.xml
+ msgctxt "#60023"
+ msgid "Medium"
+ msgstr ""
+ 
+-#. Option for setting #60020 "Audio passthrough A/V sync"
++#. Option for setting #60020 "Audio A/V sync"
+ #: system/settings/settings.xml
+ msgctxt "#60024"
+ msgid "Strong"
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+index 76a6e30..a62fdd3 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -29,20 +29,34 @@ constexpr const char* ENABLE_PATH = "/storage/.kodi/userdata/aml-audio-trim";
+ //! other or unidentified SoC keeps the g12a node, as before. Chosen by SoC and
+ //! not by which node exists, because a kernel with both drivers built in
+ //! registers both nodes whether or not their driver ever probed.
+-const char* TrimPath()
++//!
++//! The HIFI PLL also clocks the TDM output to HDMI, so there PCM follows the
++//! trim too; mpll0 clocks only the bitstream.
++struct TrimNode
++{
++  const char* path;
++  bool reachesPcm;
++};
++
++const TrimNode& Node()
+ {
+-  static const char* const path = []() -> const char* {
++  static const TrimNode node = []() -> TrimNode {
+     switch (aml_get_cpufamily_id())
+     {
+       case AML_S7D:
+-        return "/sys/module/amlogic_clk_soc_s7d/parameters/audio_sdm_trim";
++        return {"/sys/module/amlogic_clk_soc_s7d/parameters/audio_sdm_trim", true};
+       case AML_S6:
+-        return "/sys/module/amlogic_clk_soc_s6/parameters/audio_sdm_trim";
++        return {"/sys/module/amlogic_clk_soc_s6/parameters/audio_sdm_trim", true};
+       default:
+-        return "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
++        return {"/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim", false};
+     }
+   }();
+-  return path;
++  return node;
++}
++
++const char* TrimPath()
++{
++  return Node().path;
+ }
+ 
+ //! The g12a driver's mpll0 ignores the field's low bit and rounds up, so a step
+@@ -232,6 +246,11 @@ bool CAMLAudioTrim::Supported()
+   }
+ }
+ 
++bool CAMLAudioTrim::ReachesPcm()
++{
++  return Node().reachesPcm;
++}
++
+ bool CAMLAudioTrim::WriteLevel(int level)
+ {
+   try
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+index a6e7afd..705f1b5 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -18,7 +18,9 @@
+ //! divider happens to give. Measured on g12b at 23.976 it is 20ppm slow, which
+ //! is 72ms of lip sync an hour, and in passthrough nothing downstream can take
+ //! it out: a bitstream cannot be resampled, so the audio engine's only move is a
+-//! whole IEC frame, three orders of magnitude coarser than the error.
++//! whole IEC frame, three orders of magnitude coarser than the error. On S6 and
++//! S7D the trim moves the HIFI PLL instead, which paces PCM output as well, so
++//! PCM is held there too rather than left to the player's clock steps.
+ //!
+ //! So the rate is corrected where it is made. The kernel exposes the divider's
+ //! sigma-delta field a step at a time; a step is far larger than the error, so
+@@ -46,6 +48,9 @@ public:
+   //! \brief Whether this kernel carries the trim knob at all.
+   static bool Supported();
+ 
++  //! \brief Whether the trimmed clock also paces PCM output, not only a bitstream.
++  static bool ReachesPcm();
++
+   //! \brief Called once per presented frame. Paces itself.
+   //! \param error audio ahead of the master clock in DVD time units, or nullopt
+   //! when nothing measured it this frame. Must be the unscaled figure: this is a
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 8f46303..6f44d68 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2781,7 +2781,7 @@ void CAMLCodec::CloseDecoder()
+   }
+   dumpfile_close(am_private);
+   m_opened = false;
+-  m_trimWasPassthrough = false;
++  m_trimEngaged = false;
+ 
+   // After m_opened, so a frame still queued in the renderer cannot tick this
+   // back to life: the measured path belongs to this decoder, and whatever plays
+@@ -3313,25 +3313,27 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
+   CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(), audioError,
+                                     m_processInfo.IsRenderClockSync());
+ 
+-  // Only where the knob reaches. The trim moves mpll0, which clocks the framing a
+-  // bitstream goes out in; samples take another path entirely, and on this box
+-  // the loop measured a real drift there, moved its level across its whole range
+-  // and saw nothing answer - standing down correctly, but only after several
+-  // minutes of sixty parts per million applied to a clock that never heard it. The engine
+-  // can resample samples in any case, so there was nothing here to win.
++  // Only where the knob reaches. On g12a/g12b/sm1 the trim moves mpll0, which
++  // clocks the framing a bitstream goes out in; samples take another path
++  // entirely, and there the loop measured a real drift, moved its level across
++  // its whole range and saw nothing answer - standing down correctly, but only
++  // after several minutes of sixty parts per million applied to a clock that
++  // never heard it. On S6 and S7D it moves the HIFI PLL, which clocks the PCM
++  // output to HDMI as well, so PCM is held the same way there; Kodi's clock steps
++  // are left for the jumps a drift never makes.
+   //
+   // Given back once on the way out rather than on every frame after it: the
+   // release is what clears a stand-down, and repeating it would erase the loop's
+   // memory of having given up as fast as it formed.
+-  const bool passthrough = m_processInfo.GetAudioPassthrough();
+-  if (!passthrough)
++  const bool trimmed = m_processInfo.GetAudioPassthrough() || CAMLAudioTrim::ReachesPcm();
++  if (!trimmed)
+   {
+-    if (m_trimWasPassthrough)
++    if (m_trimEngaged)
+       CAMLAudioTrim::GetInstance().Release();
+-    m_trimWasPassthrough = false;
++    m_trimEngaged = false;
+     return;
+   }
+-  m_trimWasPassthrough = true;
++  m_trimEngaged = true;
+ 
+   // Where the viewer asked the audio to sit, rather than on top of the picture.
+   // Kodi's audio offset does not touch the audio at all: SetAVDelay feeds
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index 16afe2c..0f94697 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -146,9 +146,9 @@ private:
+ 
+   DllLibAmCodec   *m_dll;
+   std::atomic<bool> m_opened;
+-  //! Whether the audio was a bitstream last frame, so the trim is given back
+-  //! once on the way out rather than on every frame after it.
+-  bool             m_trimWasPassthrough{false};
++  //! Whether the trim loop ran last frame, so the trim is given back once on
++  //! the way out rather than on every frame after it.
++  bool             m_trimEngaged{false};
+   double           m_lastAudioOffset{0.0};
+   bool             m_offsetStoodDown{false};
+   bool             m_drain = false;

@@ -1,0 +1,282 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 03:00:00 -0400
+Subject: [PATCH] VideoPlayer: a pause stops the picture where the sound stops
+
+A pause the resume is not prepared behind (an MVC film, a struggling
+source) paused the audio stream with the clock. Pausing the only stream
+flushes the engine and the sink, so the audio already queued there, some
+170 ms on TrueHD, was never heard; the resume went on after it, found
+the audio that far ahead of the frozen clock and filled the gap with
+silence: an audible cut after every pause.
+
+Stop feeding the audio at once instead and leave the stream running, so
+the engine plays out what it holds. The sink reports where the audio
+being heard is, from the end of what was written and its delay now; once
+that holds still the queue has played out, and the clock and the picture
+are stopped there and the stream paused with nothing left to flush,
+within a second at most. A resume before then cancels the pending stop;
+a flush stops the clock at once. The picture freezes that much after the
+key, and the resume continues the sound exactly where it stopped.
+
+Shared code: the clock and the pause are CVideoPlayer's, and the audio
+position is the sink's; the touch is one accessor on the audio player
+interface and the deferral itself.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
++++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+@@ -35,6 +35,7 @@
+   m_sampleRate = 0;
+   m_bPaused = true;
+   m_playingPts = DVD_NOPTS_VALUE; //silence coverity uninitialized warning, is set elsewhere
++  m_writtenEndPts = DVD_NOPTS_VALUE;
+   m_timeOfPts = 0.0; //silence coverity uninitialized warning, is set elsewhere
+   m_syncError = 0.0;
+   m_syncErrorTime = 0;
+@@ -92,6 +93,7 @@
+   m_iBitsPerSample = 0;
+   m_bPassthrough = false;
+   m_bPaused = true;
++  m_writtenEndPts = DVD_NOPTS_VALUE;
+   m_playingPts = DVD_NOPTS_VALUE;
+ 
+   // The measurement belonged to the stream that just went away. Left standing,
+@@ -199,7 +201,8 @@
+     lock.lock();
+   } while (!m_bAbort);
+ 
+-  m_playingPts = audioframe.pts + audioframe.duration - GetDelay();
++  m_writtenEndPts = audioframe.pts + audioframe.duration;
++  m_playingPts = m_writtenEndPts - GetDelay();
+   m_timeOfPts = m_pClock->GetAbsoluteClock();
+ 
+   return total - frames;
+@@ -266,6 +269,7 @@
+     m_pAudioStream->Flush();
+     CLog::Log(LOGDEBUG,"CDVDAudio::Flush - flush audio stream");
+   }
++  m_writtenEndPts = DVD_NOPTS_VALUE;
+   m_playingPts = DVD_NOPTS_VALUE;
+   m_syncError = 0.0;
+   m_syncErrorRaw = 0.0;
+@@ -330,6 +334,14 @@
+   return m_pAudioStream->GetMaxDelay();
+ }
+ 
++double CAudioSinkAE::GetHeardPts()
++{
++  std::unique_lock lock(m_critSection);
++  if (m_writtenEndPts == DVD_NOPTS_VALUE || !m_pAudioStream)
++    return DVD_NOPTS_VALUE;
++  return m_writtenEndPts - GetDelay();
++}
++
+ double CAudioSinkAE::GetPlayingPts()
+ {
+   if (m_playingPts == DVD_NOPTS_VALUE)
+--- a/xbmc/cores/VideoPlayer/AudioSinkAE.h
++++ b/xbmc/cores/VideoPlayer/AudioSinkAE.h
+@@ -42,6 +42,10 @@
+   void Destroy(bool finish);
+   unsigned int AddPackets(const DVDAudioFrame &audioframe);
+   double GetPlayingPts();
++  //! Where the audio being heard is, from the end of what was written and the
++  //! sink delay now. Unlike GetPlayingPts it holds still once a paused stream's
++  //! queued audio has played out.
++  double GetHeardPts();
+   double GetCacheTime();
+   double GetCacheTotal(); // returns total time a stream can buffer
+   double GetMaxDelay(); // returns total time of audio in AE for the stream
+@@ -112,6 +116,7 @@
+   IAE::StreamPtr m_pAudioStream;
+   double m_playingPts;
+   double m_timeOfPts;
++  double m_writtenEndPts;
+   double m_syncError;
+   double m_syncErrorRaw{0.0};
+   AESyncObservation m_syncObservation;
+--- a/xbmc/cores/VideoPlayer/IVideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/IVideoPlayer.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "DVDClock.h"
++#include "Interface/TimingConstants.h"
+ 
+ #include <string>
+ #include <utility>
+@@ -136,6 +137,8 @@
+   virtual std::string GetPlayerInfo() = 0;
+   virtual int GetAudioChannels() = 0;
+   virtual double GetCurrentPts() = 0;
++  //! Where the audio being heard is now, or DVD_NOPTS_VALUE where not known.
++  virtual double GetHeardPts() { return DVD_NOPTS_VALUE; }
+   bool IsStalled() const override = 0;
+   virtual bool IsPassthrough() const = 0;
+   virtual float GetDynamicRangeAmplification() const = 0;
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
+@@ -65,6 +65,7 @@
+     std::unique_lock lock(m_info_section);
+     return m_info.pts;
+   }
++  double GetHeardPts() override { return m_audioSink.GetHeardPts(); }
+ 
+   bool IsStalled() const override { return m_stalled;  }
+   bool IsPassthrough() const override;
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2509,8 +2509,64 @@
+   return true;
+ }
+ 
++void CVideoPlayer::FinishDeferredPause(bool now)
++{
++  if (!m_pauseDeferred)
++    return;
++
++  const double absolute = m_clock.GetAbsoluteClock();
++  if (!now && absolute - m_pauseDeferStart < DVD_SEC_TO_TIME(1) &&
++      absolute - m_pauseDeferLastPoll < DVD_MSEC_TO_TIME(10))
++    return;
++  m_pauseDeferLastPoll = absolute;
++  const double heard = m_VideoPlayerAudio->GetHeardPts();
++  if (!now && absolute - m_pauseDeferStart < DVD_SEC_TO_TIME(1))
++  {
++    if (heard != DVD_NOPTS_VALUE &&
++        (m_pauseDeferLastHeard == DVD_NOPTS_VALUE ||
++         heard > m_pauseDeferLastHeard + DVD_MSEC_TO_TIME(1)))
++    {
++      m_pauseDeferLastHeard = heard;
++      m_pauseDeferLastAdvance = absolute;
++    }
++    // The sink delay moves a period at a time, so still for a while before
++    // the queue counts as played out.
++    if (absolute - m_pauseDeferLastAdvance < DVD_MSEC_TO_TIME(80))
++      return;
++  }
++
++  m_pauseDeferred = false;
++  // The picture stops where the sound did.
++  if (!now && heard != DVD_NOPTS_VALUE && std::abs(heard - m_clock.GetClock()) < DVD_MSEC_TO_TIME(500))
++    m_clock.Discontinuity(heard);
++  m_clock.SetSpeed(DVD_PLAYSPEED_PAUSE);
++  m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_PAUSE);
++  // Nothing is left in the engine for the pause to flush.
++  m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_PAUSE);
++  m_VideoPlayerAudio->SendMessage(
++      std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost || m_startAudioHeld), 1);
++  CLog::Log(LOGDEBUG, "CVideoPlayer::Pause - clock stopped {}ms after the audio, at {:.3f}",
++            DVD_TIME_TO_MSEC(absolute - m_pauseDeferStart), m_clock.GetClock() / DVD_TIME_BASE);
++}
++
++void CVideoPlayer::CancelDeferredPause()
++{
++  if (!std::exchange(m_pauseDeferred, false))
++    return;
++  m_VideoPlayerAudio->SendMessage(
++      std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost || m_startAudioHeld), 1);
++}
++
+ void CVideoPlayer::HandlePlaySpeed()
+ {
++  if (m_pauseDeferred)
++  {
++    if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
++      FinishDeferredPause(false);
++    else
++      CancelDeferredPause();
++  }
++
+   // Audio preparation has its own clock anchor and output ordering. Ordinary
+   // startup would pull that clock to the later video target or resume both
+   // stream players while the target picture is deliberately held.
+@@ -3927,6 +3983,12 @@
+       if (m_resumeGate.IsHolding() && speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo())
+         continue;
+ 
++      // A resume before a deferred pause took effect: nothing was paused, so
++      // it is no resume to prepare.
++      const bool pauseCancelled = m_pauseDeferred && speed != DVD_PLAYSPEED_PAUSE;
++      if (pauseCancelled)
++        CancelDeferredPause();
++
+       const bool resumingArmed = m_resumePreroll.Armed() && !msg->IsTempo() &&
+                                  speed == DVD_PLAYSPEED_NORMAL &&
+                                  notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED;
+@@ -3941,7 +4003,7 @@
+ 
+       const bool deferResume =
+           notification == CDVDMsgPlayerSetSpeed::Notification::RESUMED &&
+-          speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo() &&
++          speed == DVD_PLAYSPEED_NORMAL && !msg->IsTempo() && !pauseCancelled &&
+           m_playSpeed == DVD_PLAYSPEED_PAUSE && m_CurrentAudio.id >= 0 &&
+           m_CurrentVideo.id >= 0 && m_State.canseek && m_State.canpause && m_pInputStream &&
+           m_pInputStream->IsStreamType(DVDSTREAM_TYPE_FILE) && !m_pInputStream->IsRealtime() &&
+@@ -4058,9 +4120,35 @@
+ 
+       m_srcUnderrunHold = false;
+       m_caching = CACHESTATE_DONE;
+-      m_clock.SetSpeed(speed);
+-      m_VideoPlayerAudio->SetSpeed(speed);
+-      m_VideoPlayerVideo->SetSpeed(speed);
++
++      // A pause the resume will not be prepared behind (an MVC film, a source
++      // that is struggling) paused the audio stream at once, and pausing the
++      // only stream flushes the engine: the audio already queued in it was
++      // never heard, the resume went on after it, and the gap was filled with
++      // silence. Stop feeding the audio instead, let the engine play out what
++      // it has, and stop the clock and the picture where it ends.
++      const bool deferPause = speed == DVD_PLAYSPEED_PAUSE &&
++                              m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL &&
++                              notification == CDVDMsgPlayerSetSpeed::Notification::PAUSED &&
++                              m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 &&
++                              !m_clock.IsPaused() && !m_displayLost && !m_startAudioHeld &&
++                              !(sourceReady && CanPrepareResumePreroll());
++      if (deferPause)
++      {
++        m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true),
++                                        1);
++        m_pauseDeferred = true;
++        m_pauseDeferStart = m_clock.GetAbsoluteClock();
++        m_pauseDeferLastHeard = DVD_NOPTS_VALUE;
++        m_pauseDeferLastAdvance = m_pauseDeferStart;
++        m_pauseDeferLastPoll = 0.0;
++      }
++      else
++      {
++        m_clock.SetSpeed(speed);
++        m_VideoPlayerAudio->SetSpeed(speed);
++        m_VideoPlayerVideo->SetSpeed(speed);
++      }
+       m_streamPlayerSpeed = speed;
+ 
+       // The picture is frozen from here until the viewer resumes. Prepare the
+@@ -6081,6 +6169,7 @@
+ 
+ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+ {
++  FinishDeferredPause(true);
+   if (m_startAudioHeld)
+     ReleaseStartHold("a seek");
+   m_syncStartPtsWait.reset();
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -657,6 +657,15 @@
+   //! the audio of the file's first start is held, its packets queued, until
+   //! the preparation takes them from the first one
+   bool m_startAudioHeld = false;
++  // A pause that will not be prepared stops feeding the audio at once but the
++  // clock only once the audio already queued has been heard.
++  bool m_pauseDeferred = false;
++  double m_pauseDeferStart = 0.0;
++  double m_pauseDeferLastHeard = DVD_NOPTS_VALUE;
++  double m_pauseDeferLastAdvance = 0.0;
++  double m_pauseDeferLastPoll = 0.0;
++  void FinishDeferredPause(bool now);
++  void CancelDeferredPause();
+   double m_startAudioFirstPts = DVD_NOPTS_VALUE;
+   bool m_resumeAudioCommitPending = false;
+   int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;

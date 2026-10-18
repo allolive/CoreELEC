@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 02:45:00 -0400
+Subject: [PATCH] RenderManager: present the prepared picture when it is due,
+ not a refresh early
+
+A frame due within a refresh may be flipped early. The picture a start or
+resume was prepared on went out that way: one refresh before its time,
+then the next frame waited for its own slot, and the prepared picture was
+on screen twice - one repeated frame at every start and resume.
+
+Present the prepared picture only once it is due.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -1520,7 +1520,9 @@ void CRenderManager::PrepareNextRender()
+ 
+     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
+   }
+-  else if (!combined && renderPts > (nextFramePts - frametime))
++  // Never for the picture a start or resume was prepared on: flipped a refresh
++  // early it is shown twice while the next one waits for its own slot.
++  else if (!combined && !firstPrerollPicture && renderPts > (nextFramePts - frametime))
+   {
+     m_lateframes = 0;
+     m_presentstep = PRESENT_FLIP;

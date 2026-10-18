@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 23:30:00 -0400
+Subject: [PATCH] AMLLatency: log the lead sample by sample after a start
+
+The lead - how far the audio leads the picture at the box output - is the
+one figure a start or resume is judged by: a clock step moves its two
+halves in opposite directions and cancels in it. The report gives it once
+a minute as an average, which hides where a start landed and how the trim
+walked it out.
+
+For 30 s after the matcher re-arms (a start, a seek, a resume), log every
+2 s the lead, its audio and picture halves, and the filtered value the
+trim acts on. Nothing else changes.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -52,6 +52,11 @@ constexpr double TIME_BETWEEN_REPORTS =
+ //! rather than the last sample.
+ constexpr double LEAD_TAU = 5.0 * DVD_TIME_BASE;
+ 
++// How long after a start or resume the lead is logged sample by sample, and how
++// often: the minute report averages away exactly the part a start is judged by.
++constexpr double LEAD_LOG_WINDOW = 30.0 * DVD_TIME_BASE;
++constexpr double LEAD_LOG_EVERY = 2.0 * DVD_TIME_BASE;
++
+ //! A step this big is not the loop moving the figure - at the most it may ever
+ //! ask for, it moves it a hundred times slower than this per sample. Set below a
+ //! refresh period so a swallowed one is caught, and well above the ripple.
+@@ -657,6 +662,8 @@ void CAMLLatency::Update(
+ 
+       if (!m_haveLead)
+       {
++        m_leadLogUntil = absolute + LEAD_LOG_WINDOW;
++        m_leadLogAt = absolute - LEAD_LOG_EVERY;
+         m_leadFilt = lead;
+         m_haveLead = true;
+         m_leadOdd = 0.0;
+@@ -698,6 +705,24 @@ void CAMLLatency::Update(
+         }
+       }
+       m_leadAt = absolute;
++
++      if (absolute < m_leadLogUntil && absolute - m_leadLogAt >= LEAD_LOG_EVERY)
++      {
++        m_leadLogAt = absolute;
++        // Unsettled, the frame on screen and the one waited for are printed too:
++        // the two tell a picture that is off from a timestamp base that is.
++        if (m_settled)
++          CLog::Log(LOGDEBUG, LOGVIDEO,
++                    "CAMLLatency: lead {:+.2f}ms (audio {:+.2f}, picture {:+.2f}), filtered {:+.2f}ms",
++                    lead / 1000.0, audioSyncError / 1000.0, alignment / 1000.0,
++                    m_leadFilt / 1000.0);
++        else
++          CLog::Log(LOGDEBUG, LOGVIDEO,
++                    "CAMLLatency: lead {:+.2f}ms (audio {:+.2f}, picture {:+.2f}) unsettled: "
++                    "clock {:.3f}s, on screen {:.3f}s, waiting for {:.3f}s",
++                    lead / 1000.0, audioSyncError / 1000.0, alignment / 1000.0,
++                    clockNow / DVD_TIME_BASE, shownUs / DVD_TIME_BASE, m_key / 90000.0);
++      }
+     }
+ 
+     if (absolute - m_since >= TIME_BETWEEN_REPORTS)
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -198,6 +198,8 @@ private:
+   double m_leadOdd{0.0};     //!< how long the figure has disagreed with the filter
+   double m_leadAt{0.0};      //!< when that was last advanced
+   bool m_haveLead{false};
++  double m_leadLogUntil{0.0}; //!< end of the per-sample log after a start
++  double m_leadLogAt{0.0};
+   double m_driftAlign{0.0};  //!< the same at the previous report
+   double m_driftWalkUs{0.0};
+   int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check

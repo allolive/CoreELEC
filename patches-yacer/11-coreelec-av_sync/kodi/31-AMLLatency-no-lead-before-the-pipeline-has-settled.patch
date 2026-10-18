@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 01:20:00 -0400
+Subject: [PATCH] AMLLatency: no lead before the pipeline has settled
+
+The lead sums the audio error and the picture's alignment, read from the
+timestamp the kernel reports on screen. Before the matcher has seen that
+timestamp equal the one handed over, nothing says the two share a base:
+on one start the kernel's ran a constant 622 ms behind the player's, the
+matcher never settled, and the lead read -615 ms for the whole title.
+The audio rate trim walked the audio towards it at full slew.
+
+Hand the trim no lead until the pipeline has settled. The per-sample log
+still prints what it reads.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -102,7 +102,11 @@ public:
+   //! will fix, and so the part the audio rate has to walk out.
+   std::optional<double> Lead() const
+   {
+-    if (!m_haveLead)
++    // Not before the pipeline has settled: until the frame on screen has been
++    // matched to the one handed over, a timestamp base the kernel and the player
++    // disagree on reads as the picture being frames off, and the trim would walk
++    // the audio towards it.
++    if (!m_haveLead || !m_settled)
+       return std::nullopt;
+     return m_leadFilt;
+   }

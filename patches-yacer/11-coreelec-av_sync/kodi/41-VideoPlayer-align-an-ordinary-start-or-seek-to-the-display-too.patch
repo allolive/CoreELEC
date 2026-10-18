@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 07:30:00 -0400
+Subject: [PATCH] VideoPlayer: align an ordinary start or seek to the display
+ too
+
+11_32 takes the display's phase out of the clock before a prepared start
+or resume puts the audio on it. A seek, and a start that falls back to
+the ordinary path, put both streams on the clock without it: the first
+picture landed up to half a refresh off (13.8 ms measured after a seek),
+the genlock placed it twice in the first second, each time repeating a
+frame, and the trim then walked the audio after the picture.
+
+Do the same alignment where the ordinary sync puts the streams on the
+clock.
+
+Shared code: the ordinary sync is CVideoPlayer's; the phase comes from
+the platform through the same CProcessInfo accessor as 11_32.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2850,6 +2850,20 @@
+         clock = m_CurrentVideo.starttime - m_CurrentVideo.cachetotal;
+       }
+ 
++      // As a prepared start does: take out where the first picture would land in
++      // the display's refresh while nothing is on the clock yet, or the picture
++      // is placed afterwards, a frame repeated or dropped each time.
++      if (m_CurrentVideo.id >= 0 && m_CurrentVideo.starttime != DVD_NOPTS_VALUE)
++      {
++        if (const auto phase =
++                m_processInfo->GetPresentationPhase(clock, m_CurrentVideo.starttime))
++        {
++          clock -= *phase;
++          CLog::Log(LOGDEBUG, "VideoPlayer::Sync - clock aligned to the display by {:+.2f}ms",
++                    -*phase / 1000.0);
++        }
++      }
++
+       m_syncStartPtsWait.reset();
+       m_clock.Discontinuity(clock);
+       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;

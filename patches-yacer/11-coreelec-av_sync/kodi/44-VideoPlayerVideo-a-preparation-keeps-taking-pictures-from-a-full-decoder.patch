@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 11:30:00 -0400
+Subject: [PATCH] VideoPlayerVideo: a preparation keeps taking pictures from a
+ full decoder
+
+A preparation runs at speed 0. The video thread asks the decoder for a
+picture after each packet it hands over, and on a queue timeout only
+when not paused. Once the decoder's input is full the packet is refused,
+so nothing asks any more: the decoder's pictures stay with it until it
+has no buffer left, its input never drains, and the preparation waits
+for a target picture that cannot come until it times out.
+
+The MVC decoder fills its 10 MB stream buffer within a second when the
+source reads fast and hands out about 17 pictures before it does, short
+of a start target 0.84 s in: every 3D start fell back after five seconds.
+
+While the gate is armed and has no candidate yet, ask on the timeout
+too. The gate drops pictures before the target, which returns them to
+the decoder, and stops the asking once it holds one. Nor does a source
+that runs dry meanwhile turn the last dropped picture into a still frame
+with a made-up timestamp, which the gate would take as its target.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+@@ -390,7 +390,8 @@
+       // don't ask for a new frame if we can't deliver it to renderer
+       else if ((m_speed != DVD_PLAYSPEED_PAUSE ||
+                 m_processInfo.IsFrameAdvance() ||
+-                m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
++                m_syncState != IDVDStreamPlayer::SYNC_INSYNC ||
++                PrerollSeeking()) && !m_paused)
+       {
+         if (ProcessDecoderOutput(frametime, pts))
+         {
+@@ -403,6 +404,11 @@
+       if (iPriority)
+         continue;
+ 
++      // A preparation's picture is the one the gate picks from the decoder:
++      // none is made up from a dropped one while the source catches up.
++      if (PrerollSeeking())
++        continue;
++
+       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
+       if (!m_stalled)
+       {
+@@ -988,6 +994,15 @@
+   }
+ }
+ 
++bool CVideoPlayerVideo::PrerollSeeking()
++{
++  // A preparation runs paused and takes pictures up to its target only as the
++  // decoder hands them out: a decoder whose input is full gives none until asked.
++  const CVideoPrerollGate::Snapshot gate = m_renderManager.GetVideoPreroll();
++  return gate.holding && gate.armed && !gate.ready && !gate.failed &&
++         gate.generation == m_videoPrerollGeneration;
++}
++
+ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
+ {
+   m_bAbortOutput = false;
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.h
+@@ -98,6 +98,7 @@
+   void Process() override;
+ 
+   bool ProcessDecoderOutput(double &frametime, double &pts);
++  bool PrerollSeeking();
+   void UpdatePlayerInfo();
+   void SendMessageBack(const std::shared_ptr<CDVDMsg>& pMsg, int priority = 0);
+   MsgQueueReturnCode GetMessage(std::shared_ptr<CDVDMsg>& pMsg,

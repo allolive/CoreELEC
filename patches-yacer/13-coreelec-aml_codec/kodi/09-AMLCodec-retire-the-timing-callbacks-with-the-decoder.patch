@@ -24,7 +24,7 @@ index 8f89d86b43..8b16a4aee2 100644
 +    std::lock_guard<std::mutex> lock(m_timingMutex);
 +    // A CAMLCodec can be reopened directly and the trim flag belongs to the
 +    // renderer callbacks: clear it while they still observe it as closed.
-+    m_trimWasPassthrough = false;
++    m_trimEngaged = false;
 +    m_opened.store(true, std::memory_order_release);
 +  }
  
@@ -35,7 +35,7 @@ index 8f89d86b43..8b16a4aee2 100644
    }
    dumpfile_close(am_private);
 -  m_opened = false;
-   m_trimWasPassthrough = false;
+   m_trimEngaged = false;
  
 -  // After m_opened, so a frame still queued in the renderer cannot tick this
 -  // back to life: the measured path belongs to this decoder, and whatever plays

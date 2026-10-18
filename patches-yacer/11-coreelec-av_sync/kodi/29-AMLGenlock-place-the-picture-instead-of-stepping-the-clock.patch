@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 00:30:00 -0400
+Subject: [PATCH] AMLGenlock: place the picture instead of stepping the clock
+
+The genlock puts the frames' timestamps in the middle of the refresh, so
+jitter at the decision boundary cannot show one frame twice and drop the
+next. It did that by stepping the master clock, a second into playback,
+by up to half a refresh. The clock is what the audio is synchronised to:
+a step in it moved the audio against the clock by the same amount, which
+the audio paths then took out with a step or a skip of their own.
+
+Keep the alignment and make it a placement instead: the renderer already
+subtracts the windowing system's frame latency adjustment from its display
+latency, and the Amlogic windowing now adds the genlock's placement to its
+vblank phase there. The frames land where a clock step would have put
+them; the clock, and the audio on it, do not move. What the placement
+shifts the picture against the audio, at most half a refresh, is the
+audio rate trim's to walk out. The phase is read without the placement,
+so it is set, not accumulated, and a mode change clears it; a reading on
+the half-period fold takes the equivalent nearest the current placement
+rather than moving the picture a whole frame.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -45,12 +45,11 @@ void CAMLGenlock::Update(double displayF
+   if (period != m_period)
+   {
+     m_period = period;
++    s_placementMs.store(0.0f, std::memory_order_relaxed);
+     Restart();
+   }
+ 
+-  // A step in the clock voids it too. Ours is not one: the read below is retaken
+-  // after a correction, so the alignment does not see its own work and ask for
+-  // itself again.
++  // A step in the clock voids it too: whatever moved it moved the frames.
+   // Two locked reads instead of one unlocked pair: GetClock(double&) writes
+   // m_systemAdjust outside m_critSection, and this runs on the renderer thread.
+   // The skew between them is nanoseconds; a step is milliseconds.
+@@ -104,7 +103,9 @@ void CAMLGenlock::Update(double displayF
+   // Aim at zero: a frame should be painted when its timestamp says, once the
+   // latency the renderer schedules it with is taken into account. Only the
+   // position within one period matters, so fold into the half period either
+-  // side.
++  // side. Measured without the placement, which moves which frame is handed
++  // over by whole periods only, so the reading is the phase the placement has
++  // to take and does not move once it has.
+   // Aim half a period off when the display shows each frame more than once.
+   // There the renderer flips from its early branch, whose threshold is a whole
+   // period below the late one, so aiming at zero puts both of them exactly on a
+@@ -115,38 +116,29 @@ void CAMLGenlock::Update(double displayF
+ 
+   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLGenlock: phase {:+.2f}ms", offset / 1000.0);
+ 
+-  if (std::abs(offset) > PHASE_NOISE)
++  // A reading on the fold at half a period can come back from the other side on
++  // the next trigger; the same phase a period away from the current placement
++  // is taken instead of moving the picture a whole frame.
++  double place = offset;
++  const double current = static_cast<double>(s_placementMs.load(std::memory_order_relaxed)) * 1000.0;
++  if (place - current > period / 2.0)
++    place -= period;
++  else if (current - place > period / 2.0)
++    place += period;
++  if (std::abs(place) > period)
++    place = offset;
++
++  const float placement = static_cast<float>(place / 1000.0);
++  if (std::abs(placement - s_placementMs.load(std::memory_order_relaxed)) >
++      static_cast<float>(PHASE_NOISE / 1000.0))
+   {
+-    // While the vsync adjust is running ErrorAdjust quantises anything this
+-    // small to a whole frame or to nothing, so leave the alignment owed.
+-    if (clock.GetVsyncAdjust() != 0.0)
+-      return;
+-
+-    // Not corrected past the audio loop's own dead band. A step that large can
+-    // by itself push the audio error over the threshold, and the correction
+-    // that answers it comes back here as another step - which would settle into
+-    // a standing oscillation rather than an alignment. Refusing leaves it owed,
+-    // which is the same thing this does for every other reason it cannot act.
+-    if (std::abs(offset) >= DVD_MSEC_TO_TIME(processInfo.GetMaxPassthroughOffSyncDuration()))
+-      return;
+-
+-    // ErrorAdjust holds the clock lock across the read and the write, and
+-    // returns zero if it declines while the player is slewing the clock.
+-    const double applied = clock.ErrorAdjust(-offset, "CAMLGenlock");
+-    if (applied == 0.0)
+-      return;
+-
+-    // An alignment that could not be made when it was asked for is still owed,
+-    // so this can land well into a title rather than only at the start. It is a
+-    // step in the clock like any other, and reads as drift if left in.
+-    CAMLLatency::GetInstance().NoteClockDisturbed();
++    s_placementMs.store(placement, std::memory_order_relaxed);
++    CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLGenlock: picture placed {:+.2f}ms, clock untouched",
++              placement);
+ 
+-    // The step just made is this class's own, so it must not come back round as
+-    // a reason to align again. Carried into the baseline rather than dropping
+-    // it: ErrorAdjust returns exactly what it applied, and dropping the baseline
+-    // would blind the detector for a frame - which is precisely when the audio
+-    // loop's own correction tends to land, and it would go unseen.
+-    m_lastClock += applied;
++    // The picture moved against the audio, which the drift baseline would
++    // otherwise read as the audio having drifted.
++    CAMLLatency::GetInstance().NoteClockDisturbed();
+   }
+ 
+   m_alignDone = requested;
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+@@ -15,7 +15,7 @@
+ class CDVDClock;
+ class CProcessInfo;
+ 
+-//! \brief Aligns the phase of the player's clock to the display's frames.
++//! \brief Aligns the display's frames to the player's clock.
+ //!
+ //! The renderer picks the frame to show at each vsync by comparing the master
+ //! clock against the frame's timestamp. Where those timestamps fall inside the
+@@ -24,9 +24,13 @@ class CProcessInfo;
+ //! every matched rate: the renderer takes the clock sync over from
+ //! CRenderManager through TakeClockSync(), so its own stays off.
+ //!
+-//! The phase only, never the rate, once per trigger. The move is at most half a
+-//! refresh period, which is also the most it shifts video against audio - and
+-//! under a whole period, so the renderer absorbs it without adding or dropping.
++//! The phase only, never the rate, once per trigger, and never by the clock: the
++//! correction is a placement the renderer subtracts from its display latency
++//! through the windowing system's frame latency adjustment. The clock is what
++//! the audio is synchronised to, and a step in it is a skip in one or the other;
++//! moving the picture instead leaves the audio alone, and what the placement
++//! shifts video against audio - at most half a refresh period - is the audio
++//! rate trim's to walk out.
+ //!
+ //! Aligning once is not enough on its own. The audio loop steps the master clock
+ //! whenever its own error passes its dead band, which at a start happens a second
+@@ -62,7 +66,13 @@ public:
+   //! differencing over the gap would read the whole of it as a step.
+   void Forget() { m_haveClock = false; }
+ 
++  //! \brief The placement in milliseconds, for the windowing system's frame
++  //! latency adjustment. Read on the render thread.
++  static float Placement() { return s_placementMs.load(std::memory_order_relaxed); }
++
+ private:
++  static inline std::atomic<float> s_placementMs{0.0f};
++
+   std::atomic<uint32_t> m_alignRequests{1};
+ 
+   //! \brief The clock against the reference it is derived from, so that a step
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -43,6 +43,7 @@
+ #include "threads/SingleLock.h"
+ 
+ #include "cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h"
++#include "cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h"
+ #include "platform/linux/SysfsPath.h"
+ 
+ #include <linux/fb.h>
+@@ -653,10 +654,12 @@ float CWinSystemAmlogic::GetFrameLatency
+   // pass takes, and wrapping a whole refresh when that approaches one, which
+   // costs a frame. Any other thread, which has no relationship to the vblank,
+   // is served the cached one rather than taking a DRM read of its own.
++  // The genlock's placement rides on top: it moves which frame is shown at a
++  // clock time the way a step in the clock would, without the step.
+   if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
+-    return SampleFrameLatency();
++    return SampleFrameLatency() + CAMLGenlock::Placement();
+ 
+-  return m_frameLatencyMs.load(std::memory_order_relaxed);
++  return m_frameLatencyMs.load(std::memory_order_relaxed) + CAMLGenlock::Placement();
+ }
+ 
+ float CWinSystemAmlogic::SampleFrameLatency()

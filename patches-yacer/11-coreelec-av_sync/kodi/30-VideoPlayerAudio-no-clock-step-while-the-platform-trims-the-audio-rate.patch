@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 00:30:00 -0400
+Subject: [PATCH] VideoPlayerAudio: no clock step while the platform trims the
+ audio rate
+
+The player steps the master clock when the audio error passes its
+threshold, or once to take out what a passthrough engine leaves inside
+its band. A step in the clock is a skip in the picture or the audio.
+Where the Amlogic audio rate trim holds audio to the picture, that error
+is the trim's to walk out by rate, and the step only fought it.
+
+The AML codec publishes, through CProcessInfo, whether the trim is
+holding (its knob is there, its offset loop is on, it has a lead to aim
+at and it has not stood down), and the audio player clears it whenever a stream opens.
+While it is, the player leaves the clock alone unless the measured error
+is past 40 ms: a start leaves at most half a frame, and anything larger
+would take the trim minutes. Before playback runs nothing changes: the
+start and resume preparation set the clock.
+
+Shared code: the step is taken in CVideoPlayerAudio, and only CProcessInfo
+reaches it from the codec; the touch is one generic flag and one gate.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -198,6 +198,12 @@ CAMLAudioTrim::~CAMLAudioTrim()
+   }
+ }
+ 
++bool CAMLAudioTrim::Holding()
++{
++  std::lock_guard<std::mutex> lock(m_mutex);
++  return m_checked && m_present && m_haveSlew && m_haveLead && !m_stopped;
++}
++
+ bool CAMLAudioTrim::Armed()
+ {
+   try
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -73,6 +73,11 @@ public:
+   //! is still the right one.
+   void Forget();
+ 
++  //! \brief Whether the loop is holding audio to the picture: the knob is there,
++  //! the offset loop is switched on, it has a lead to aim at and it has not
++  //! stood down.
++  bool Holding();
++
+   ~CAMLAudioTrim();
+ 
+ private:
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3331,9 +3331,11 @@ void CAMLCodec::LatencyTick(uint64_t omx
+     if (m_trimEngaged)
+       CAMLAudioTrim::GetInstance().Release();
+     m_trimEngaged = false;
++    m_processInfo.SetAudioRateTrimmed(false);
+     return;
+   }
+   m_trimEngaged = true;
++  m_processInfo.SetAudioRateTrimmed(CAMLAudioTrim::GetInstance().Holding());
+ 
+   // Where the viewer asked the audio to sit, rather than on top of the picture.
+   // Kodi's audio offset does not touch the audio at all: SetAVDelay feeds
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+@@ -103,6 +103,10 @@ public:
+   //! knob it has can reach this stream at all needs to know which.
+   void SetAudioPassthrough(bool passthrough) { m_audioPassthrough.store(passthrough); }
+   bool GetAudioPassthrough() const { return m_audioPassthrough.load(); }
++  // A platform loop trims the audio rate against the picture, so the player
++  // leaves the clock alone once playback runs.
++  void SetAudioRateTrimmed(bool trimmed) { m_audioRateTrimmed.store(trimmed); }
++  bool GetAudioRateTrimmed() const { return m_audioRateTrimmed.load(); }
+ 
+   virtual bool AllowDTSHDDecode();
+   virtual bool WantsRawPassthrough() { return false; }
+@@ -204,6 +208,7 @@ protected:
+   int m_audioQueueDataLevel = 0;
+   std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
+   std::atomic<bool> m_audioPassthrough{false};
++  std::atomic<bool> m_audioRateTrimmed{false};
+   CCriticalSection m_audioCodecSection;
+ 
+   // player subtitle info
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -120,6 +120,10 @@ void CVideoPlayerAudio::OpenStream(CDVDS
+   /* store our stream hints */
+   m_streaminfo = hints;
+ 
++  // Untrimmed until the platform says otherwise: whatever trimmed the last
++  // stream may not be decoding this one.
++  m_processInfo.SetAudioRateTrimmed(false);
++
+   /* update codec information from what codec gave out, if any */
+   int channelsFromCodec   = m_pAudioCodec->GetFormat().m_channelLayout.Count();
+   int samplerateFromCodec = m_pAudioCodec->GetFormat().m_sampleRate;
+@@ -828,7 +832,19 @@ bool CVideoPlayerAudio::ProcessDecoderOu
+                          m_pClock->GetVsyncAdjust() == 0.0 && m_pClock->GetSpeedAdjust() == 0.0 &&
+                          m_rawAcquisition.WithinMagnitude(errorRaw);
+ 
+-    if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
++    // Where the platform trims the audio rate against the picture, the clock is
++    // left alone once playback runs: a step in it shows as a skip, and the trim
++    // takes the error out without one. A start leaves at most half a frame for
++    // it; an error past that, which the trim would need minutes for, still moves
++    // the clock. Judged on the measured error, not the engine's shrunken report.
++    constexpr double TRIMMED_STEP_MS = 40.0;
++    const double errorNow = m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated()
++                                ? m_audioSink.GetSyncErrorRaw()
++                                : syncerror;
++    const bool trimHolds = m_processInfo.GetAudioRateTrimmed() &&
++                           std::abs(errorNow) < DVD_MSEC_TO_TIME(TRIMMED_STEP_MS);
++    if (!trimHolds &&
++        (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs)))
+     {
+       // Decided on the error the engine reports, but corrected by the one it
+       // measured. For TrueHD passthrough those are not the same number: the

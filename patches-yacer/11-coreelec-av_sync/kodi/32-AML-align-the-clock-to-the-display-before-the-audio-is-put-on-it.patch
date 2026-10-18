@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 02:00:00 -0400
+Subject: [PATCH] AML: align the clock to the display before the audio is put
+ on it
+
+The genlock places the picture in the middle of the refresh once the first
+frames are up. Moving frames that are already running shows one of them
+twice: every start and resume repeated a frame about half a second in.
+The placement also became most of the start's audio-against-picture
+error, up to half a refresh for the trim to walk out.
+
+A prepared start or resume puts the audio on the clock before the first
+picture, and until then the clock can be moved freely. Take the phase
+the target frame would land at out of it there: the AML codec offers the
+genlock's phase through CProcessInfo, the player subtracts it from the
+clock it starts the audio on, and the engine then syncs the audio to that
+clock. The frames land in the middle of the refresh from the first one,
+no placement is owed afterwards, and what is left of the error is the
+engine's own. The phase is read against the display
+latency the renderer schedules with, measured or not yet, so a start is
+aligned as well as a resume.
+
+Shared code: the clock is set in CVideoPlayer, which reaches the codec
+only through CProcessInfo; the touch is one generic callback and its use.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -30,6 +30,32 @@ constexpr double CLOCK_STEPPED = DVD_MSE
+ 
+ } // unnamed namespace
+ 
++std::optional<double> CAMLGenlock::Phase(double displayFps,
++                                         double clockNow,
++                                         CProcessInfo& processInfo,
++                                         StreamHdrType hdrType,
++                                         double framePts)
++{
++  // Not gated on the pipeline being measured, unlike Update(): the renderer
++  // decides frames with the display latency it has, measured or estimated, and
++  // this reads the same one, so the phase it gives is the one frames land at.
++  const double period = displayFps > 0.0 ? DVD_TIME_BASE / displayFps : 0.0;
++  const double refreshes = aml_refreshes_per_frame();
++  if (period <= 0.0 || refreshes <= 0.0)
++    return std::nullopt;
++
++  const std::optional<double> sinceFrameStart = aml_since_frame_start_us(2.0 * period);
++  if (!sinceFrameStart)
++    return std::nullopt;
++
++  // The same aim as Update(), for a clock that has not been set yet.
++  const double latency =
++      aml_render_display_latency(hdrType, processInfo.GetVideoSettings().m_AudioDelay);
++  return std::remainder(clockNow - *sinceFrameStart + latency - framePts -
++                            (refreshes == 1.0 ? 0.0 : period / 2.0),
++                        period);
++}
++
+ void CAMLGenlock::Update(double displayFps,
+                          CDVDClock& clock,
+                          CProcessInfo& processInfo,
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.h
+@@ -11,6 +11,7 @@
+ 
+ #include <atomic>
+ #include <cstdint>
++#include <optional>
+ 
+ class CDVDClock;
+ class CProcessInfo;
+@@ -70,6 +71,19 @@ public:
+   //! latency adjustment. Read on the render thread.
+   static float Placement() { return s_placementMs.load(std::memory_order_relaxed); }
+ 
++  //! \brief The phase a frame would land at if the clock read \p clockNow now, in
++  //! master clock units, or nullopt where frames have no fixed phase. Taking
++  //! it out of the clock before the audio is put on it lands the frames in the
++  //! middle of the refresh with nothing left to place afterwards.
++  static std::optional<double> Phase(double displayFps,
++                                     double clockNow,
++                                     CProcessInfo& processInfo,
++                                     StreamHdrType hdrType,
++                                     double framePts);
++
++  //! \brief Drop the placement: the clock has just been set so that none is owed.
++  static void ResetPlacement() { s_placementMs.store(0.0f, std::memory_order_relaxed); }
++
+ private:
+   static inline std::atomic<float> s_placementMs{0.0f};
+ 
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2214,11 +2214,27 @@ CAMLCodec::CAMLCodec(CProcessInfo &proce
+   am_private->vcodec.cntl_handle        = -1;
+   am_private->vcodec.sub_handle         = -1;
+   am_private->vcodec.audio_utils_handle = -1;
++
++  // The player sets the clock for a start before any frame reaches here, so it
++  // asks for the phase through the process info rather than waiting for one.
++  m_processInfo.SetPresentationPhase(
++      [this](double clockNow, double framePts) -> std::optional<double>
++      {
++        if (!m_opened)
++          return std::nullopt;
++        const auto phase = CAMLGenlock::Phase(static_cast<double>(aml_resolution_rate()),
++                                              clockNow, m_processInfo, m_hints.hdrType, framePts);
++        // The player takes it out of the clock, so no placement is owed after it.
++        if (phase)
++          CAMLGenlock::ResetPlacement();
++        return phase;
++      });
+ }
+ 
+ 
+ CAMLCodec::~CAMLCodec()
+ {
++  m_processInfo.SetPresentationPhase(nullptr);
+   delete am_private;
+   am_private = NULL;
+   delete m_dll, m_dll = NULL;
+--- a/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
++++ b/xbmc/cores/VideoPlayer/Process/ProcessInfo.h
+@@ -15,7 +15,10 @@
+ #include "threads/CriticalSection.h"
+ 
+ #include <atomic>
++#include <functional>
+ #include <list>
++#include <mutex>
++#include <optional>
+ #include <map>
+ #include <string>
+ 
+@@ -107,6 +110,21 @@ public:
+   // leaves the clock alone once playback runs.
+   void SetAudioRateTrimmed(bool trimmed) { m_audioRateTrimmed.store(trimmed); }
+   bool GetAudioRateTrimmed() const { return m_audioRateTrimmed.load(); }
++  // Where in the display's refresh a frame would land for a given clock, from a
++  // platform that can say; the player takes it out of the clock at a start.
++  using PresentationPhase = std::function<std::optional<double>(double clock, double pts)>;
++  void SetPresentationPhase(PresentationPhase phase)
++  {
++    std::unique_lock lock(m_presentationPhaseLock);
++    m_presentationPhase = std::move(phase);
++  }
++  std::optional<double> GetPresentationPhase(double clock, double pts) const
++  {
++    std::unique_lock lock(m_presentationPhaseLock);
++    if (!m_presentationPhase)
++      return std::nullopt;
++    return m_presentationPhase(clock, pts);
++  }
+ 
+   virtual bool AllowDTSHDDecode();
+   virtual bool WantsRawPassthrough() { return false; }
+@@ -209,6 +227,8 @@ protected:
+   std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
+   std::atomic<bool> m_audioPassthrough{false};
+   std::atomic<bool> m_audioRateTrimmed{false};
++  mutable std::mutex m_presentationPhaseLock;
++  PresentationPhase m_presentationPhase;
+   CCriticalSection m_audioCodecSection;
+ 
+   // player subtitle info
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -4864,15 +4864,25 @@ bool CVideoPlayer::PollResumePreroll()
+   const auto decision = m_resumePreroll.Poll(now);
+   if (decision.action == CPlaybackPreroll::Action::StartAudio)
+   {
+-    m_clock.Discontinuity(decision.clockPts);
++    // The audio is about to be put on this clock, so this is the last moment a
++    // move of it costs nothing: take out where the target frame would land in
++    // the display's refresh, and the picture needs no placement afterwards.
++    double clockPts = decision.clockPts;
++    if (const auto phase = m_processInfo->GetPresentationPhase(clockPts, decision.targetPts))
++    {
++      clockPts -= *phase;
++      CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - clock aligned to the display by {:+.2f}ms",
++                -*phase / 1000.0);
++    }
++    m_clock.Discontinuity(clockPts);
+     m_clock.SetSpeed(DVD_PLAYSPEED_NORMAL);
+     m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
+     m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
+     m_VideoPlayerAudio->SendMessage(
+-        std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, decision.clockPts), 1);
++        std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clockPts), 1);
+     m_VideoPlayerAudio->SetSpeed(DVD_PLAYSPEED_NORMAL);
+     CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - audio generation={} clock={:.3f} target={:.3f}",
+-              decision.generation, decision.clockPts / DVD_TIME_BASE,
++              decision.generation, clockPts / DVD_TIME_BASE,
+               decision.targetPts / DVD_TIME_BASE);
+     return true;
+   }

@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 02:20:00 -0400
+Subject: [PATCH] VideoPlayerVideo: output a waiting picture before asking for
+ the next
+
+A prepared start or resume retains its first picture in m_picture until
+the preroll releases it. The release is followed by a resync, a priority
+message; the next message is an ordinary packet, and its path asks the
+decoder for the next picture straight into m_picture. The retained one
+was released as dropped, never shown: the picture after it went out in
+its slot, a frame early, and was then shown twice while the clock caught
+up - one repeated frame at every start and resume.
+
+Output a picture still waiting in m_picture before the decoder is asked
+for the next one.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+@@ -682,6 +682,17 @@ void CVideoPlayerVideo::UpdatePlayerInfo
+ 
+ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
+ {
++  // A picture still waiting to be output goes first: asking the decoder for the
++  // next one overwrites it, and the codec releases what it held as dropped. The
++  // hold that retained it lets only priority messages through, but the resync
++  // that follows its release is one, and the packet after it lands here.
++  if (m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer)
++  {
++    m_outputSate = OutputPicture(&m_picture);
++    if (m_outputSate == OUTPUT_AGAIN)
++      return true;
++  }
++
+   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
+ 
+   if (decoderState == CDVDVideoCodec::VC_BUFFER)

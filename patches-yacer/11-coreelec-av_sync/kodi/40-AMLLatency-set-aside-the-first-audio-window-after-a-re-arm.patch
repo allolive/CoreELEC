@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 07:15:00 -0400
+Subject: [PATCH] AMLLatency: set aside the first audio window after a re-arm
+
+With the engine's first correction aimed at zero (11_39), a TrueHD
+start hands over its picture in sync, but the first lead read 6-14 ms
+late and the audio trim ramped towards it for two seconds before the
+next reading (+0.3 ms) turned it round. That first window spans the
+correction while it is still queued in the engine, where a pause or a
+dropped frame counts as a whole frame.
+
+Wait for the next window after a re-arm before the lead is formed, for
+at most 1.5 s.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -57,6 +57,10 @@
+ constexpr double LEAD_LOG_WINDOW = 30.0 * DVD_TIME_BASE;
+ constexpr double LEAD_LOG_EVERY = 2.0 * DVD_TIME_BASE;
+ 
++// The longest the first audio window after a re-arm is set aside for: ActiveAE
++// publishes a new one every second.
++constexpr double AUDIO_FIRST_WINDOW = 1.5 * DVD_TIME_BASE;
++
+ //! A step this big is not the loop moving the figure - at the most it may ever
+ //! ask for, it moves it a hundred times slower than this per sample. Set below a
+ //! refresh period so a swallowed one is caught, and well above the ripple.
+@@ -139,6 +143,8 @@
+   m_leadSum = 0.0;
+   m_haveLead = false;
+   m_leadOdd = 0.0;
++  m_audioWindowSkip = true;
++  m_audioFirstWindow = DVD_NOPTS_VALUE;
+   m_cadenceSeq = 0;
+   m_ratioIsOne = false;
+   m_classArmed = false;
+@@ -642,6 +648,22 @@
+     // same refreshes and can be subtracted. The reading behind it only changes
+     // about once a second - ActiveAE averages over that interval - so this is a
+     // time weighting of those, and the spread is theirs, not this loop's.
++    // The first window after a resync spans the engine's own start correction
++    // while it is still queued, where a pause or a dropped frame is counted as a
++    // whole frame, and reads up to one out. The audio loop would chase it.
++    if (m_audioWindowSkip && audioSyncError != DVD_NOPTS_VALUE)
++    {
++      if (m_audioFirstWindow == DVD_NOPTS_VALUE)
++      {
++        m_audioFirstWindow = audioSyncError;
++        m_audioSkipUntil = absolute + AUDIO_FIRST_WINDOW;
++      }
++      if (audioSyncError != m_audioFirstWindow || absolute >= m_audioSkipUntil)
++        m_audioWindowSkip = false;
++      else
++        audioSyncError = DVD_NOPTS_VALUE;
++    }
++
+     if (audioSyncError != DVD_NOPTS_VALUE)
+     {
+       if (m_audioReports == 0)
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -243,6 +243,9 @@
+   double m_leadOdd{0.0};     //!< how long the figure has disagreed with the filter
+   double m_leadAt{0.0};      //!< when that was last advanced
+   bool m_haveLead{false};
++  bool m_audioWindowSkip{false}; //!< armed by Rearm()
++  double m_audioFirstWindow{0.0};
++  double m_audioSkipUntil{0.0};
+   double m_leadLogUntil{0.0}; //!< end of the per-sample log after a start
+   double m_leadLogAt{0.0};
+   double m_driftAlign{0.0};  //!< the same at the previous report

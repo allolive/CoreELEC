@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 04:30:00 -0400
+Subject: [PATCH] VideoPlayer: log where the audio is when the prepared picture
+ is handed over
+
+One PCM resume in about sixteen left the audio 60 ms behind the clock
+after the engine had reported it in sync, and the clock was stepped a
+second into the picture. Log where the audio being heard is against
+the clock at the hand-over, from the sink's own delay, so the next one
+shows whether it was already off when the picture went out.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -4882,8 +4882,11 @@
+       }
+       if (video.released && video.submitted && !m_resumeAudioCommitPending)
+       {
+-        CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - submitted generation={} target={:.6f}",
+-                  m_resumePictureGeneration, video.firstPts / DVD_TIME_BASE);
++        const double heard = m_VideoPlayerAudio->GetHeardPts();
++        CLog::Log(LOGDEBUG,
++                  "CVideoPlayer::Preroll - submitted generation={} target={:.6f} heard {:+.1f}ms",
++                  m_resumePictureGeneration, video.firstPts / DVD_TIME_BASE,
++                  heard == DVD_NOPTS_VALUE ? 0.0 : (heard - m_clock.GetClock()) / 1000.0);
+         m_resumePictureGeneration = 0;
+         m_resumePrerollTarget.reset();
+         m_resumePrerollReleaseTime = 0.0;
