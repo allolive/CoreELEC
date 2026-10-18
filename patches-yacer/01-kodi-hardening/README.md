@@ -5,5 +5,6 @@ unreadable input rather than trusting it, and its threads should not outlive
 what they use. A disc's title change should not hold the player up either:
 stop, pause and seek keep working while the old title plays out, and the
 time shown is the picture's. Writing the log file waits on storage, so a
-thread of its own does it rather than every thread that logs. No Amlogic
-in any of it, so it is all upstreamable.
+thread of its own does it rather than every thread that logs. When the
+audio engine's sync empties a buffer, the sink must not fill the time with
+silence. No Amlogic in any of it, so it is all upstreamable.

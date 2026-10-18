@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 05:30:00 -0400
+Subject: [PATCH] ActiveAESink: a buffer with nothing to write still reports
+ the sink delay
+
+When ActiveAE corrects a stream that is behind, it skips samples out of
+the front buffer, or drops a whole frame in passthrough, and can leave
+that buffer empty. The empty buffer still goes to the sink.
+OutputSamples() writes nothing for it and returns a delay it never read:
+zero. The sink sets its next timeout to half the returned delay, times
+out at once, and fills the gap with a buffer of silence - 50 ms of PCM,
+one pause burst in passthrough. The skip is put straight back as a cut,
+and the engine, which has already declared the stream in sync, finds it
+that far behind again a second later, so the player steps the clock.
+It happens whenever the next buffer has not reached the sink yet, which
+on an Amlogic box was every third or fourth correction of a stream that
+started behind after a seek. In passthrough the zero delay is also
+published to the engine's stats as the sink delay.
+
+Read the delay before writing, so an empty buffer reports the sink as
+it is.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+@@ -1154,6 +1154,12 @@
+ 
+   int framesOrPackets;
+ 
++  // A buffer the sync has emptied writes nothing, and the delay returned sets
++  // the next timeout: left unread it is zero, and the sink fills that timeout
++  // with a buffer of silence, putting back the time the skip took out.
++  if (frames == 0)
++    m_sink->GetDelay(status);
++
+   while (frames > 0)
+   {
+     maxFrames = std::min(frames, m_sinkFormat.m_frames);
