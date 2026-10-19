@@ -97,3 +97,6 @@ trim swung it hundreds of ppm within seconds.
 
 Patch 46 gives the offset loop a budget of 3 ms from one start, resume or seek
 to the next; past it an offset is left to the picture.
+
+Patch 48 resumes a source-underrun hold through the prepared resume, so the
+audio the caching pause flushed is not replaced with silence.

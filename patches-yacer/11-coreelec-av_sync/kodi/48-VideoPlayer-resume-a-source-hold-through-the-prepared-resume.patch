@@ -1,0 +1,132 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] VideoPlayer: resume a source hold through the prepared resume
+
+A source-underrun hold pauses through the caching pause, which pauses
+the only audio stream and so flushes the engine: 0.3 to 0.6 s of
+passthrough audio queued there was never heard. Released bare, the
+engine found the audio that far ahead of the clock and filled the gap
+with silence, 280 to 340 ms on a 4K title after an 80 s outage. Letting
+the engine play out first does not help: on passthrough it does not
+drain while it is not fed.
+
+Release a hold that recovered through the preroll a viewer's resume
+takes after a pause it could not prepare: a new picture hold at the
+clock where the hold stopped, a seek back by the lead-in, and the
+picture and the sound released together from there. No pause or resume
+callback fires: the hold is the player's, not the viewer's. The skin
+keeps showing buffering until the preroll hands over. Anything the
+preroll cannot do - not eligible, no lead, a seek that fails, a viewer
+pause, seek or stop - ends in the flush that ends the hold, and
+playback goes on as it did before.
+
+Shared code: the hold and the resume preroll both live in CVideoPlayer.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2662,8 +2662,11 @@
+     {
+       CLog::Log(LOGINFO, "CVideoPlayer::{} - source cache back to {:.1f}s - playing",
+                 __FUNCTION__, std::max(0.0, cache.forwardTime));
+-      m_srcUnderrunResuming = recovered;
+-      SetCaching(CACHESTATE_INIT);
++      if (!recovered || !ResumeFromUnderrunHold())
++      {
++        m_srcUnderrunResuming = recovered;
++        SetCaching(CACHESTATE_INIT);
++      }
+     }
+   }
+   else if (m_caching == CACHESTATE_FULL)
+@@ -4503,6 +4506,7 @@
+     m_VideoPlayerVideo->SetSpeed(DVD_PLAYSPEED_NORMAL);
+     m_streamPlayerSpeed = DVD_PLAYSPEED_NORMAL;
+     m_caching = CACHESTATE_DONE;
++    m_underrunPreroll = false;
+     m_syncTimer.Set(3000ms);
+     m_startPrerollFrom.reset();
+     AnnounceStreamsReady();
+@@ -4901,6 +4905,39 @@
+ // A new output generation whose next picture the renderer holds (the first at
+ // or after holdPts), for a preparation aiming at target. The generation is
+ // taken only if the hold is.
++// Released through the preroll a viewer's resume takes. Pausing the only audio
++// stream flushed the engine when the hold began, and resumed bare, the engine
++// filled what it had lost with silence. Sought back to where it stopped and
++// prerolled, the picture and the sound go on together from there.
++bool CVideoPlayer::ResumeFromUnderrunHold()
++{
++  if (!CanPrepareResumePreroll() || HoldForDisplayChange() || m_resumePictureGeneration != 0 ||
++      m_resumeGate.IsHolding() || m_resumePreroll.Active() ||
++      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) > 0 ||
++      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) > 0 ||
++      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SETSPEED) > 0 ||
++      m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) > 0)
++    return false;
++
++  const double target = m_clock.GetClock();
++  if (!std::isfinite(target) || target < 0.0 ||
++      !ResumePrerollHasLead(target, m_renderManager.GetVideoPrerollLead()) ||
++      !TakeNewResumeHold(target))
++    return false;
++
++  // Reads go on for the preroll; the caching state stays as the hold left it
++  // until the preroll hands over, so the skin still says buffering.
++  m_srcUnderrunHold = false;
++  m_srcUnderrunResuming = false;
++  m_resumePrerollPaused = false;
++  m_underrunPreroll = true;
++  CLog::Log(LOGDEBUG, "CVideoPlayer::Preroll - resuming a source hold at {:.3f}",
++            target / DVD_TIME_BASE);
++  // A preroll that cannot be prepared recovers by a flush, which leaves the hold.
++  BeginResumePreroll(false);
++  return true;
++}
++
+ bool CVideoPlayer::TakeNewResumeHold(double target, double holdPts)
+ {
+   const uint64_t generation = m_resumeGate.OutputGeneration() + 1;
+@@ -5128,10 +5165,13 @@
+       state = CACHESTATE_INIT;
+ 
+     // A flush that lands back on CACHESTATE_FULL would return below with the hold
+-    // ended but the player still paused, because the state did not change.
+-    if (wasSourceUnderrunHold && state == CACHESTATE_FULL)
++    // ended but the player still paused, because the state did not change. The
++    // same for one that ends a hold's preroll.
++    if ((wasSourceUnderrunHold || m_underrunPreroll) && state == CACHESTATE_FULL)
+       state = CACHESTATE_INIT;
+   }
++  if (state != CACHESTATE_FULL)
++    m_underrunPreroll = false;
+ 
+   if(m_caching == state)
+     return;
+@@ -7568,7 +7608,7 @@
+   }
+ 
+   // Skins show the wheel only above zero, and an underrun starts there.
+-  if (m_srcUnderrunHold)
++  if (m_srcUnderrunHold || m_underrunPreroll)
+     state.cache_level = std::max(state.cache_level, 0.01);
+ 
+   XFILE::SCacheStatus status;
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -517,6 +517,7 @@
+   void RecoverResumePreroll(const char* reason);
+   void StartHeldAudio();
+   void ReleaseStartHold(const char* reason);
++  bool ResumeFromUnderrunHold();
+   bool TakeNewResumeHold(double target, double holdPts = DVD_NOPTS_VALUE);
+   void EndStartPreroll();
+   void AnnounceStreamsReady();
+@@ -609,6 +610,7 @@
+   XbmcThreads::EndTime<> m_cachingTimer;
+   bool m_srcUnderrunHold{false};
+   bool m_srcUnderrunResuming{false};
++  bool m_underrunPreroll{false}; //!< a source hold is being resumed through the preroll
+   CacheInfo m_srcCache{};
+   XbmcThreads::EndTime<> m_srcUnderrunCooldown;
+   XbmcThreads::EndTime<> m_srcUnderrunProbe;

@@ -11,14 +11,17 @@ for 180 ms, 1.7 s into the film; the audio queued in the sink ran past
 the stopped clock and the engine's correction after it dropped a frame.
 
 Skip the hold while the last demuxed video packet is more than 10 s past
-the clock. A source that really has gone away still gets its hold, once
-the demuxed runway has come down to that.
+the clock and the audio still has more than 2 s queued: a codec that
+buffers its own video takes tens of seconds of it while the audio queue
+holds a few, and on a stalled share the audio ran dry with the video
+still far ahead. A source that really has gone away still gets its hold,
+once either runway has come down that far.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -2289,6 +2289,8 @@ constexpr double SRC_UNDERRUN_WATCH = 2.
+@@ -2291,6 +2291,8 @@
  constexpr auto SRC_PROBE_INTERVAL = 50ms;
  // The player's own buffering leaves the cache dry too, so wait this long after it.
  constexpr auto SRC_UNDERRUN_COOLDOWN = 5000ms;
@@ -27,13 +30,18 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  } // unnamed namespace
  
  CacheInfo CVideoPlayer::GetCachingTimes()
-@@ -2374,6 +2376,11 @@ bool CVideoPlayer::TryEnterSourceUnderru
+@@ -2380,6 +2382,16 @@
    if (!m_processInfo->GetVideoCodecBuffersData())
      return false;
  
 +  // A start reads the cache as empty because the demuxer has just taken all of it.
++  // Not on the video alone: a codec that buffers its own takes tens of seconds of
++  // it while the audio queue holds a few, and that runs dry first.
 +  if (m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
-+      m_CurrentVideo.dts - m_clock.GetClock() > DVD_SEC_TO_TIME(SRC_DEMUXED_AHEAD))
++      m_CurrentVideo.dts - m_clock.GetClock() > DVD_SEC_TO_TIME(SRC_DEMUXED_AHEAD) &&
++      (m_CurrentAudio.id < 0 ||
++       (m_CurrentAudio.dts != DVD_NOPTS_VALUE &&
++        m_CurrentAudio.dts - m_clock.GetClock() > DVD_SEC_TO_TIME(SRC_UNDERRUN_WATCH))))
 +    return false;
 +
    // Reading the status takes the cache's locks and clears its slow-source flag.

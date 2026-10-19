@@ -1,0 +1,70 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] VideoPlayer: don't read a dry cache with the film demuxed ahead
+
+With 4K the demuxer runs far ahead of the picture: 73 s ahead when the
+share went away in a test. The cache ran dry long before the queues did,
+the next read waited on the source, and FFmpeg retries a stall for as
+long as it lasts, so the player thread sat in that read for 75 s. The
+underrun hold is decided on that thread, so it came only when the share
+was back, after the queued minute had played out and the picture and
+the sound had both run dry for three seconds.
+
+Do not read while the cache is dry and more than a second is demuxed
+ahead of the clock, in the audio as well as the video: the codec takes
+tens of seconds of 4K video while the audio queue holds a few. Nothing is lost: what is queued plays on, the loop
+keeps running, and the hold is taken once the queues run short, as 10
+allows. Starts and seeks read as before: nothing is demuxed ahead there.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1882,7 +1882,7 @@
+     // Read nothing while buffering on a dry source: a read that stalls mid-element can
+     // end demuxing until the next seek. The hold ends on the cache refilling, which is
+     // measured without reading.
+-    if (m_srcUnderrunHold)
++    if (m_srcUnderrunHold || SourceDryWithFilmAhead())
+     {
+       CThread::Sleep(10ms);
+       continue;
+@@ -2356,6 +2356,29 @@
+   return info;
+ }
+ 
++// A dry cache with the film demuxed well ahead is read for nothing: the read
++// waits on the source, and FFmpeg retries a stall for as long as it lasts, so the
++// player thread sat in one for 75 s while the queued minute played out, and the
++// hold, decided on that thread, came after the picture and the sound had run dry.
++// Nothing is lost by not reading: what is queued plays on, and the hold is taken
++// once it runs short.
++bool CVideoPlayer::SourceDryWithFilmAhead()
++{
++  const CacheInfo& cache = m_srcCache;
++  if (!cache.valid || cache.endCached || cache.endOfInput || cache.forwardTime < 0.0 ||
++      cache.forwardTime > SRC_EMPTY_TIME)
++    return false;
++
++  // Both runways: the video one can be tens of seconds while the audio's is gone.
++  const double clock = m_clock.GetClock();
++  const auto ahead = [clock](const CCurrentStream& stream)
++  {
++    return stream.id < 0 || (stream.dts != DVD_NOPTS_VALUE &&
++                             stream.dts - clock > DVD_SEC_TO_TIME(SRC_UNDERRUN_TIME));
++  };
++  return m_CurrentVideo.id >= 0 && ahead(m_CurrentVideo) && ahead(m_CurrentAudio);
++}
++
+ bool CVideoPlayer::TryEnterSourceUnderrunHold()
+ {
+   if (m_pInputStream->IsRealtime() || m_pInputStream->IsEOF())
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -486,6 +486,7 @@
+ 
+   double GetQueueTime();
+   CacheInfo GetCachingTimes();
++  bool SourceDryWithFilmAhead();
+ 
+   void FlushBuffers(double pts, bool accurate, bool sync);
+ 
