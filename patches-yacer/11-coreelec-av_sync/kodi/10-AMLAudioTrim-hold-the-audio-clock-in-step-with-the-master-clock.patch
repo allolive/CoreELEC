@@ -74,7 +74,7 @@ index adb94b272d..981d19a09d 100755
 +        <setting id="coreelec.amlogic.audiolead" type="integer" label="60020" help="60021">
 +          <requirement>HAVE_AMCODEC</requirement>
 +          <level>2</level>
-+          <default>600</default>
++          <default>50</default>
 +          <constraints>
 +            <options>
 +              <option label="351">0</option>

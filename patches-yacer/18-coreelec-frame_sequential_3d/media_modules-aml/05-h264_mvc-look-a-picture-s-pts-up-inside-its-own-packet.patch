@@ -1,0 +1,55 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] h264_mvc: look a picture's pts up inside its own packet
+
+Now and then two neighbouring MVC pictures come out carrying each
+other's pts: on one film, 35.827 then 35.786, in about one play in
+seven, at the same pair. Kodi checks the pts of each packet in at its
+start, in decode order, correctly. The firmware reports where each
+displayed picture's data starts; for the B picture of that pair it
+reported a position 65 bytes short of its packet (elsewhere within a
+few bytes), inside the reference picture's packet before it. The lookup
+gave the B picture the reference's pts, and the reference, looked up
+after it in display order, took the B picture's.
+
+Look the pts up 256 bytes past the reported position: past the
+shortfall seen, and far inside any coded picture, so a position the
+firmware gets exactly or a few bytes either way still lands in its own
+packet.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
++++ b/drivers/frame_provider/decoder/h264_mvc/vh264_mvc.c
+@@ -404,6 +404,13 @@
+ 	vfbuf_ref(view, id);
+ }
+ 
++/*
++ * How far into a picture's packet its pts is looked up, in bytes. More than
++ * the firmware's position is seen to fall short (65), far less than any coded
++ * picture (tens of kilobytes).
++ */
++#define MVC_PTS_LOOKUP_INTO 256
++
+ /* a free slot, else a STALE one, else -1 */
+ static int vf_slot_take(void)
+ {
+@@ -1248,9 +1255,17 @@
+ 					pr_info
+ 					("error case, invalid stream offset\n");
+ 				}
++				/*
++				 * Looked up a little into the picture's own packet:
++				 * the firmware now and then reports a position some
++				 * tens of bytes before it, inside the previous
++				 * packet, whose pts that picture then takes while the
++				 * previous one, looked up next, takes this one's.
++				 */
+ 				if (pts_lookup_offset_us64
+ 					(PTS_TYPE_VIDEO,
+-					 vfpool_idx[slot].stream_offset, &pts,
++					 vfpool_idx[slot].stream_offset + MVC_PTS_LOOKUP_INTO,
++					 &pts,
+ 					 &frame_size,
+ 					 0x10000, &pts_us64) == 0)
+ 					pts_valid = 1;

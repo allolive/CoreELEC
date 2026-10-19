@@ -264,14 +264,16 @@ TEST(AMLGenlock, LeavesPulldownAlone)
   EXPECT_EQ(g_world.corrections, 0);
 }
 
-TEST(AMLGenlock, AimsHalfAPeriodOffWhenFramesRepeat)
+// Just past the early branch's threshold, where a frame lands close to on time
+// and clear of the fold at the threshold itself.
+TEST(AMLGenlock, AimsJustPastTheEarlyThresholdWhenFramesRepeat)
 {
   Reset(48.0);
   g_world.refreshesPerFrame = 2.0;
   CAMLGenlock genlock;
   genlock.Restart();
-  Frame(genlock, 48.0, 2000.0);
-  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(2000.0 - Period(48.0) / 2.0));
+  Frame(genlock, 48.0, 6000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(6000.0 - 1500.0));
 }
 
 TEST(AMLGenlock, PlacesThePictureWhileTheVsyncAdjustIsRunning)

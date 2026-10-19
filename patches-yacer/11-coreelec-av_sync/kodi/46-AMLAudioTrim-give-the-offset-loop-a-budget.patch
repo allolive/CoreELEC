@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 08:00:00 -0400
+Subject: [PATCH] AMLAudioTrim: give the offset loop a budget
+
+The receiver behind the TV recovers its sample clock from the trimmed
+one, and dropped the sound once the trim had walked four or five
+milliseconds of offset one way. 11_45 and the ceiling bound how fast the
+offset loop moves the clock; nothing bounded how far. A 10 ms offset at
+50 ppm is walked out in a few minutes and still that far.
+
+Count what the offset loop has moved since the last start, resume or
+seek, and past 3 ms stop moving it further: what is left is the
+picture's to correct, and is logged once. Moving back is always allowed,
+and the drift loop is untouched. The drift measurement subtracts the aim
+actually applied, so an offset held back is not read as a rate the clock
+failed to reach.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -98,6 +98,13 @@
+ //! is ignoring rather than in the middle of it.
+ constexpr double OFFSET_DEADBAND = DVD_MSEC_TO_TIME(0.15);
+ 
++//! How far the offset loop may move the audio in all, from one start, resume
++//! or seek to the next. The receiver behind the TV recovers its clock from this
++//! one and dropped the sound once a trim had walked four or five milliseconds
++//! one way; an offset larger than this is the picture's to correct, not the
++//! clock's.
++constexpr double OFFSET_BUDGET = DVD_MSEC_TO_TIME(3.0);
++
+ //! How long the error is averaged before a slope is taken from it. A minute of
+ //! means differ by ~0.02ms while a minute of drift is ~1.2ms, so fifteen seconds
+ //! still leaves the slope several times its own noise.
+@@ -324,6 +331,9 @@
+   m_lastSampleAt = 0.0;
+   m_bucketSum = 0.0;
+   m_slopeCount = 0;
++  m_offsetMoved = 0.0;
++  m_budgetSpent = false;
++  m_aimApplied = 0.0;
+ }
+ 
+ void CAMLAudioTrim::Forget()
+@@ -364,7 +374,7 @@
+   return std::clamp(-m_lead / OFFSET_TAU, -m_slew, m_slew);
+ }
+ 
+-double CAMLAudioTrim::Feedforward() const
++double CAMLAudioTrim::Feedforward(double aim) const
+ {
+   // What the aim is worth in levels, computed rather than integrated toward.
+   // The step was measured on this hardware at 15.05ppm per sigma-delta unit -
+@@ -379,7 +389,7 @@
+   // outright, the rate is there within a few ticks and the offset decays on
+   // OFFSET_TAU as intended, with the integrator left doing what it is good at -
+   // taking out the part this got wrong.
+-  return Aim() / STEP_RATE;
++  return aim / STEP_RATE;
+ }
+ 
+ //! The cap, in parts per million, or nullopt for a file that is not there or
+@@ -432,7 +442,9 @@
+   // audio running fast, which wants a lower level. The sign is the measured one:
+   // raising the level was seen to raise the rate on this hardware, whatever the
+   // divider arithmetic suggests about which way round that ought to be.
+-  const double aim = Aim();
++  // The aim as last applied, so an offset held back by its budget is not
++  // mistaken for a rate the clock failed to reach.
++  const double aim = m_aimApplied;
+ 
+   // Widened by whatever the level is allowed to command. This test is here to
+   // throw out readings no clock could have produced, and once the loop may ask
+@@ -708,7 +720,21 @@
+   // Sigma-delta: the fraction the level cannot express is carried and paid off
+   // by the next slot that can, so the average over a few slots is the wanted
+   // level even though every slot is a whole one.
+-  const double wanted = std::clamp(m_want + Feedforward(), -m_levelMax, m_levelMax);
++  // What the offset loop asks for this slot, as long as it stays inside its
++  // budget; past that it is no longer moved further, only back.
++  double aim = Aim();
++  const double moved = m_offsetMoved + aim * DITHER;
++  if (std::abs(moved) > OFFSET_BUDGET && std::abs(moved) > std::abs(m_offsetMoved))
++  {
++    if (!m_budgetSpent)
++      CLog::Log(LOGINFO, "CAMLAudioTrim: offset budget spent, {:+.1f}ms left standing",
++                m_lead / 1000.0);
++    m_budgetSpent = true;
++    aim = 0.0;
++  }
++  m_offsetMoved += aim * DITHER;
++  m_aimApplied = aim;
++  const double wanted = std::clamp(m_want + Feedforward(aim), -m_levelMax, m_levelMax);
+   m_level = std::clamp(wanted, m_level - MAX_LEVEL_STEP, m_level + MAX_LEVEL_STEP);
+   const double target = m_level + m_dither;
+ 
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -94,7 +94,7 @@
+   //! \brief The aim expressed as levels, applied without being integrated
+   //! toward. The plant gain is known to better than a percent, so the level a
+   //! rate needs is arithmetic, not something to be discovered.
+-  double Feedforward() const;
++  double Feedforward(double aim) const;
+ 
+   std::optional<double> ReadSlew() const;
+   void ForgetLocked();
+@@ -138,6 +138,9 @@
+ 
+   double m_lead{0.0};         //!< audio ahead of picture at the output
+   bool m_haveLead{false};
++  double m_offsetMoved{0.0};  //!< offset the loop has moved since the last resync
++  bool m_budgetSpent{false};  //!< OFFSET_BUDGET reached, said once
++  double m_aimApplied{0.0};   //!< the offset rate last put out, after the budget
+ 
+   double m_slew{0.0};         //!< the largest rate error the offset may ask for
+   std::optional<double> m_slewSeen; //!< the previous read, to confirm a change

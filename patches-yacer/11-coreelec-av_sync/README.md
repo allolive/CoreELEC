@@ -94,3 +94,6 @@ full, which otherwise stops handing them out while the player is paused.
 
 Patch 45 moves the audio clock slowly: the receiver dropped the sound when the
 trim swung it hundreds of ppm within seconds.
+
+Patch 46 gives the offset loop a budget of 3 ms from one start, resume or seek
+to the next; past it an offset is left to the picture.

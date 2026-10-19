@@ -1,30 +1,36 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: allolive <160342668+allolive@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 20:00:00 -0400
-Subject: [PATCH] AML: 3D, take a whole-refresh picture offset out at each
- start
+Subject: [PATCH] AML: 3D, take the picture offset out from the first
+ picture
 
-In frame-sequential 3D a frame spans four refreshes and the picture
-settled a whole refresh off: +10.4 ms at 96 Hz after a start, +21 after a
-resume. The genlock places the picture inside one refresh and cannot see
-a whole one; where it aims, half a refresh early, sits on the fold, and
-which side a start lands on is decided at the start - so a correction
-kept from one start to the next pulled the following one off instead.
-Left to the audio trim, walking 10 to 21 ms out made the TV's eARC drop
-the sound.
+In frame-sequential 3D a frame spans four refreshes and the renderer
+flips it from its early branch, a whole refresh before it is due. The
+genlock aimed that decision half a refresh past the threshold, and the
+picture lands as far into its refresh as the decision sits: every start
+and resume came out half a refresh off, plus one whole refresh, 15.8 ms
+at 96 Hz on two films, starts and resumes alike. The genlock places
+inside one refresh and cannot reach the whole one; left to the audio
+trim, walking it out made the TV's eARC drop the sound.
 
-Once the pipeline count has settled, an alignment that stays a whole
-number of refreshes off for about two seconds is taken out of the frame
-latency, clock and audio untouched, once per start or resume and never
-kept for the next. More than two refreshes is no placement and is left
-alone. The latency tweak and the audio delay move the picture on purpose
-and are left out of the reading.
+Aim the decision 1.5 ms past the threshold instead, clear of the fold
+there and close to on time, and take the whole refresh out of the frame
+latency from the first picture while frame-sequential 3D is on, clock
+and audio untouched. Taking out a refresh and a half instead put the
+decision on the fold, and starts landed a refresh either side.
+
+As a backstop, once the pipeline count has settled, an alignment that
+stays a whole number of refreshes off for about two seconds is taken out
+of the frame latency too, once per start or resume and never kept for
+the next. More than two refreshes is no placement and is left alone. The
+latency tweak and the audio delay move the picture on purpose and are
+left out of the reading.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -3548,6 +3548,11 @@
+@@ -3551,6 +3551,11 @@
  
    const double audioError = m_processInfo.GetAudioSyncError();
  
@@ -139,17 +145,75 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    bool MayWarn();
 --- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
-@@ -886,9 +886,11 @@
+@@ -885,10 +885,18 @@
+   // is served the cached one rather than taking a DRM read of its own.
    // The genlock's placement rides on top: it moves which frame is shown at a
    // clock time the way a step in the clock would, without the step.
++  // Frame-sequential 3D lands a refresh after where the genlock aims, on every
++  // start and resume alike, so it is taken out from the first picture rather
++  // than measured after it. A whole one: anything else moves the decision the
++  // genlock placed onto the fold.
++  const double fs3d = m_amlDisplay ? m_amlDisplay->aml_display_fs3d_vsync_rate() : 0.0;
++  const float fs3dMs = fs3d > 0.0 ? static_cast<float>(-1000.0 / fs3d) : 0.0f;
    if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
 -    return SampleFrameLatency() + CAMLGenlock::Placement();
 +    return SampleFrameLatency() + CAMLGenlock::Placement() +
-+           CAMLLatencyStore::GetInstance().GetShift();
++           CAMLLatencyStore::GetInstance().GetShift() + fs3dMs;
  
 -  return m_frameLatencyMs.load(std::memory_order_relaxed) + CAMLGenlock::Placement();
 +  return m_frameLatencyMs.load(std::memory_order_relaxed) + CAMLGenlock::Placement() +
-+         CAMLLatencyStore::GetInstance().GetShift();
++         CAMLLatencyStore::GetInstance().GetShift() + fs3dMs;
  }
  
  float CWinSystemAmlogic::SampleFrameLatency()
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
+@@ -28,6 +28,19 @@
+ // smallest dead band the audio loop can be set to is 20ms.
+ constexpr double CLOCK_STEPPED = DVD_MSEC_TO_TIME(10.0);
+ 
++// Where the display shows each frame more than once the renderer flips from its
++// early branch, whose threshold is a whole period below the late one, and the
++// picture lands as far into its refresh as that decision sits. Aimed just past
++// the threshold: clear of the fold at it, where which refresh a frame lands on
++// is a toss, and a millisecond and a half from on time rather than half a
++// period. The whole refreshes behind it the frame latency takes out.
++constexpr double REPEAT_AIM = DVD_MSEC_TO_TIME(1.5);
++
++double Aim(double refreshes)
++{
++  return refreshes == 1.0 ? 0.0 : REPEAT_AIM;
++}
++
+ } // unnamed namespace
+ 
+ std::optional<double> CAMLGenlock::Phase(double displayFps,
+@@ -51,8 +64,7 @@
+   // The same aim as Update(), for a clock that has not been set yet.
+   const double latency =
+       aml_render_display_latency(hdrType, processInfo.GetVideoSettings().m_AudioDelay);
+-  return std::remainder(clockNow - *sinceFrameStart + latency - framePts -
+-                            (refreshes == 1.0 ? 0.0 : period / 2.0),
++  return std::remainder(clockNow - *sinceFrameStart + latency - framePts - Aim(refreshes),
+                         period);
+ }
+ 
+@@ -131,14 +143,10 @@
+   // position within one period matters, so fold into the half period either
+   // side. Measured without the placement, which moves which frame is handed
+   // over by whole periods only, so the reading is the phase the placement has
+-  // to take and does not move once it has.
+-  // Aim half a period off when the display shows each frame more than once.
+-  // There the renderer flips from its early branch, whose threshold is a whole
+-  // period below the late one, so aiming at zero puts both of them exactly on a
+-  // vblank; half a period leaves each of them half a period of slack.
+-  const double offset = std::remainder(clockAtRead - *sinceFrameStart + latency - framePts -
+-                                           (refreshes == 1.0 ? 0.0 : period / 2.0),
+-                                       period);
++  // to take and does not move once it has. Off zero where frames repeat:
++  // see REPEAT_AIM.
++  const double offset = std::remainder(
++      clockAtRead - *sinceFrameStart + latency - framePts - Aim(refreshes), period);
+ 
+   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLGenlock: phase {:+.2f}ms", offset / 1000.0);
+ 

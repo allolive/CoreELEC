@@ -69,8 +69,8 @@ diff --git a/system/settings/settings.xml b/system/settings/settings.xml
 index 752f788c00..e8c149f3ee 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4281,6 +4281,25 @@
-           </dependencies>
+@@ -4278,6 +4278,25 @@
+           </constraints>
            <control type="list" format="string" />
          </setting>
 +        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="60050" help="60051">

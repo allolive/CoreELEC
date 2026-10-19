@@ -41,6 +41,9 @@ The decoder patch (media_modules-aml):
   the display no longer blocks the next one or leaks a buffer after a restart.
 - 03 reports a 720p picture as 720 lines high, not 736.
 - 04 publishes a picture only once both its views are decoded.
+- 05 looks a picture's pts up a little inside its own packet: the firmware
+  now and then reports a position just before it, and two neighbouring
+  pictures then came out with each other's timestamps.
 
 The Kodi patches:
 - Adds the stereoscopic mode HFR VRR, offered where the platform supports it

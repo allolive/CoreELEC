@@ -19,7 +19,10 @@ clock. The frames land in the middle of the refresh from the first one,
 no placement is owed afterwards, and what is left of the error is the
 engine's own. The phase is read against the display
 latency the renderer schedules with, measured or not yet, so a start is
-aligned as well as a resume.
+aligned as well as a resume. It is read at the display's refresh, as the
+genlock reads it: in frame-sequential 3D the resolution's rate is a
+quarter of it, and aiming half a frame off instead of half a refresh
+left every 3D start and resume one or two refreshes late.
 
 Shared code: the clock is set in CVideoPlayer, which reaches the codec
 only through CProcessInfo; the touch is one generic callback and its use.
@@ -28,7 +31,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLGenlock.cpp
-@@ -30,6 +30,32 @@ constexpr double CLOCK_STEPPED = DVD_MSE
+@@ -30,6 +30,32 @@
  
  } // unnamed namespace
  
@@ -71,7 +74,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
  class CDVDClock;
  class CProcessInfo;
-@@ -70,6 +71,19 @@ public:
+@@ -70,6 +71,19 @@
    //! latency adjustment. Read on the render thread.
    static float Placement() { return s_placementMs.load(std::memory_order_relaxed); }
  
@@ -93,7 +96,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2214,11 +2214,27 @@ CAMLCodec::CAMLCodec(CProcessInfo &proce
+@@ -2214,11 +2214,30 @@
    am_private->vcodec.cntl_handle        = -1;
    am_private->vcodec.sub_handle         = -1;
    am_private->vcodec.audio_utils_handle = -1;
@@ -105,8 +108,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +      {
 +        if (!m_opened)
 +          return std::nullopt;
-+        const auto phase = CAMLGenlock::Phase(static_cast<double>(aml_resolution_rate()),
-+                                              clockNow, m_processInfo, m_hints.hdrType, framePts);
++        // The refresh the frames land on, as the genlock reads it: in
++        // frame-sequential 3D that is four times the resolution's rate.
++        const auto phase =
++            CAMLGenlock::Phase(static_cast<double>(CServiceBroker::GetWinSystem()->GetVsyncRate()),
++                               clockNow, m_processInfo, m_hints.hdrType, framePts);
 +        // The player takes it out of the clock, so no placement is owed after it.
 +        if (phase)
 +          CAMLGenlock::ResetPlacement();
@@ -134,7 +140,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  #include <map>
  #include <string>
  
-@@ -107,6 +110,21 @@ public:
+@@ -107,6 +110,21 @@
    // leaves the clock alone once playback runs.
    void SetAudioRateTrimmed(bool trimmed) { m_audioRateTrimmed.store(trimmed); }
    bool GetAudioRateTrimmed() const { return m_audioRateTrimmed.load(); }
@@ -156,7 +162,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    virtual bool AllowDTSHDDecode();
    virtual bool WantsRawPassthrough() { return false; }
-@@ -209,6 +227,8 @@ protected:
+@@ -209,6 +227,8 @@
    std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
    std::atomic<bool> m_audioPassthrough{false};
    std::atomic<bool> m_audioRateTrimmed{false};
@@ -167,7 +173,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    // player subtitle info
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -4864,15 +4864,25 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4885,15 +4885,25 @@
    const auto decision = m_resumePreroll.Poll(now);
    if (decision.action == CPlaybackPreroll::Action::StartAudio)
    {
