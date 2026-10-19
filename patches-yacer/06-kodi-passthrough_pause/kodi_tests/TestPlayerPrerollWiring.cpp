@@ -227,7 +227,6 @@ struct CVideoPlayer
   bool startEligible = true;
   int streamsAnnounced = 0;
   int m_playSpeed = 0, m_streamPlayerSpeed = 0, m_caching = 0;
-  bool m_underrunPreroll = false;
   enum
   {
     CACHESTATE_DONE
@@ -330,15 +329,6 @@ TEST(PlayerPrerollWiring, ReadinessDoesNotReleaseAudioBeforePlayerAcceptsIt)
   EXPECT_TRUE(player.audio.CanProcessOutput());
   EXPECT_FALSE(player.audio.correctionsSuppressed);
   EXPECT_FALSE(player.m_resumePreroll.Active());
-}
-TEST(PlayerPrerollWiring, TheHandoffEndsTheResumeOfASourceHold)
-{
-  CVideoPlayer player;
-  ASSERT_NO_FATAL_FAILURE(Prepare(player));
-  player.m_underrunPreroll = true;
-  player.HandleAudioPrerollStatus(Ready(player));
-  EXPECT_FALSE(player.m_underrunPreroll);
-  EXPECT_EQ(CVideoPlayer::CACHESTATE_DONE, player.m_caching);
 }
 TEST(PlayerPrerollWiring, AnAudioFailureBeforeCommitRecoversTheVideoHandoff)
 {
