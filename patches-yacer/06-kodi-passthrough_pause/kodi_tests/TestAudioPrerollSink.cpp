@@ -25,6 +25,7 @@
 #include "ServiceBroker.h"
 
 #include <memory>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -170,8 +171,13 @@ protected:
     ON_CALL(*stream, GetSpace()).WillByDefault(Return(MAX_IEC61937_PACKET));
     ON_CALL(*stream, AddData(_, _, _, _))
         .WillByDefault(
-            [this](const uint8_t* const*, unsigned int, unsigned int frames, IAEStream::ExtData*) {
+            [this](const uint8_t* const*, unsigned int offset, unsigned int frames,
+                   IAEStream::ExtData*) {
               ++writes;
+              writeOffset = offset;
+              writeFrames = frames;
+              if (stalled)
+                return 0u;
               if (!shortWrite)
                 return frames;
               // Part of it once, then nothing more - which is what a stream
@@ -193,8 +199,29 @@ protected:
     return frame;
   }
 
+  // What a PCM preroll offers: decoded float frames, none of them out yet.
+  DVDAudioFrame PCMFrame() const
+  {
+    DVDAudioFrame frame{};
+    frame.passthrough = false;
+    frame.nb_frames = 1024;
+    frame.framesOut = 0;
+    frame.format.m_dataFormat = AE_FMT_FLOAT;
+    return frame;
+  }
+
   // Built the way production builds it: the stream comes from the engine.
-  std::unique_ptr<CAudioSinkAE> MakeSink()
+  std::unique_ptr<CAudioSinkAE> MakeSink(const DVDAudioFrame& format)
+  {
+    ExpectStream();
+    auto sink = std::make_unique<CAudioSinkAE>(&clock);
+    EXPECT_TRUE(sink->Create(format, AV_CODEC_ID_TRUEHD, false)) << "sink creation failed";
+    return sink;
+  }
+
+  std::unique_ptr<CAudioSinkAE> MakeSink() { return MakeSink(WholePacket()); }
+
+  void ExpectStream()
   {
     EXPECT_CALL(engine, MakeStream(_, _, _))
         .WillOnce([this](AEAudioFormat&, unsigned int, IAEClockCallback*) {
@@ -202,16 +229,23 @@ protected:
           // which is the mock - so the fixture keeps ownership of it.
           return IAE::StreamPtr(stream.get(), IAEStreamDeleter(engine));
         });
-    auto sink = std::make_unique<CAudioSinkAE>(&clock);
-    EXPECT_TRUE(sink->Create(WholePacket(), AV_CODEC_ID_TRUEHD, false)) << "sink creation failed";
-    return sink;
+  }
+
+  // Waiting on a stream that takes nothing gives up at once.
+  void Stall()
+  {
+    stalled = true;
+    EXPECT_CALL(*stream, GetDelay()).WillRepeatedly(Return(-2.0));
   }
 
   CDVDClock clock;
   NiceMock<MockEngine> engine;
   std::unique_ptr<NiceMock<MockStream>> stream{std::make_unique<NiceMock<MockStream>>()};
   unsigned int writes{0};
+  unsigned int writeOffset{0};
+  unsigned int writeFrames{0};
   bool shortWrite{false};
+  bool stalled{false};
 };
 
 TEST_F(PrerollSink, WithNoRoomNothingIsWrittenAndTheCallerIsToldToWait)
@@ -324,4 +358,77 @@ TEST_F(PrerollSink, WithNoStreamAtAllTheSinkSaysSoRatherThanFailing)
 
   EXPECT_EQ(Result::Unavailable, sink.AddPrerollPacket(frame, written));
 }
+
+TEST_F(PrerollSink, APCMFrameGoesInAsFarAsTheEngineHasRoom)
+{
+  EXPECT_CALL(*stream, GetFrameSize()).WillRepeatedly(Return(8));
+  EXPECT_CALL(*stream, GetSpace()).WillRepeatedly(Return(100 * 8 + 5));
+
+  auto sink = MakeSink(PCMFrame());
+  auto frame = PCMFrame();
+  unsigned int written = 0;
+
+  EXPECT_EQ(Result::Written, sink->AddPrerollPacket(frame, written));
+  EXPECT_EQ(100u, written);
+  EXPECT_EQ(1u, writes);
+  EXPECT_EQ(0u, writeOffset);
+  EXPECT_EQ(100u, writeFrames);
+}
+
+TEST_F(PrerollSink, APCMFrameCarriesOnFromWhatIsAlreadyOut)
+{
+  EXPECT_CALL(*stream, GetFrameSize()).WillRepeatedly(Return(8));
+  EXPECT_CALL(*stream, GetSpace()).WillRepeatedly(Return(100 * 8));
+
+  auto sink = MakeSink(PCMFrame());
+  auto frame = PCMFrame();
+  frame.framesOut = 1000;
+  unsigned int written = 0;
+
+  EXPECT_EQ(Result::Written, sink->AddPrerollPacket(frame, written));
+  EXPECT_EQ(24u, written) << "more than the frame had left went in";
+  EXPECT_EQ(1000u, writeOffset);
+  EXPECT_EQ(24u, writeFrames);
+}
+
+TEST_F(PrerollSink, WithLessThanOnePCMFrameOfRoomTheCallerIsToldToWait)
+{
+  EXPECT_CALL(*stream, GetFrameSize()).WillRepeatedly(Return(8));
+  EXPECT_CALL(*stream, GetSpace()).WillRepeatedly(Return(7));
+  EXPECT_CALL(*stream, AddData(_, _, _, _)).Times(0);
+
+  auto sink = MakeSink(PCMFrame());
+  auto frame = PCMFrame();
+  unsigned int written = 9;
+
+  EXPECT_EQ(Result::Deferred, sink->AddPrerollPacket(frame, written));
+  EXPECT_EQ(0u, written);
+}
+
+TEST_F(PrerollSink, APCMFrameWithNothingLeftIsNotAPrerollPacket)
+{
+  EXPECT_CALL(*stream, GetFrameSize()).WillRepeatedly(Return(8));
+
+  auto sink = MakeSink(PCMFrame());
+  auto frame = PCMFrame();
+  frame.framesOut = frame.nb_frames;
+  unsigned int written = 9;
+
+  EXPECT_EQ(Result::InvalidFormat, sink->AddPrerollPacket(frame, written));
+  EXPECT_EQ(0u, written);
+  EXPECT_EQ(0u, writes);
+}
+
+TEST_F(PrerollSink, APCMStreamWithoutAFrameSizeTakesNoPrerollPacket)
+{
+  EXPECT_CALL(*stream, GetFrameSize()).WillRepeatedly(Return(0));
+
+  auto sink = MakeSink(PCMFrame());
+  auto frame = PCMFrame();
+  unsigned int written = 9;
+
+  EXPECT_EQ(Result::InvalidFormat, sink->AddPrerollPacket(frame, written));
+  EXPECT_EQ(0u, writes);
+}
+
 } // namespace

@@ -1,0 +1,89 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] amlvideo: take back only the frame QBUF names
+
+QBUF took back every frame dequeued before the one it names, with the
+named frame's flag. A caller that returns frames from more than one
+thread hands them back out of order: Kodi's renderer shows or drops the
+frames in its queue while its video thread drops the ones a start or a
+seek does not want. A drop that came first took a frame the renderer
+still held back to the decoder; the renderer's own QBUF of it then
+matched nothing and sent every frame out at that moment to the screen
+at once, so the picture ran up to 0.66 s ahead of the sound for the rest
+of the film.
+
+Take back the named frame only, turning the queue round once so the
+rest keep their order. An index that is not out - a decoder reset has
+already taken it back - is left alone, as before. Turning the queue
+makes QBUF a second producer beside DQBUF, so it holds vf_mutex as
+DQBUF does; the put and the notifications run after it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/media/video_processor/video_dev/amlvideo.c
++++ b/drivers/media/video_processor/video_dev/amlvideo.c
+@@ -534,31 +534,44 @@
+ 
+ static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
+ {
+-	u32 index;
+-	struct vframe_s *vf;
++	struct vframe_s *vf, *named = NULL;
+ 	struct vivi_dev *dev = video_drvdata(file);
++	int n;
+ 
+-	while ((vf = vfq_pop(&dev->q_omx)))
+-	{
+-		index = (u32)vf->pts_us64;
+-		if ((p->flags & V4L2_BUF_FLAG_DONE))
+-		{
+-			vf_put(vf, dev->vf_receiver_name);
+-			vf_notify_provider(dev->vf_receiver_name,
+-					   VFRAME_EVENT_RECEIVER_PUT, NULL);
+-		} else {
+-			vfq_push(&dev->q_ready, vf);
+-			ATRACE_COUNTER(dev->v4l2_dev.name, vfq_level(&dev->q_ready));
+-			vf_notify_receiver(dev->vf_provider_name,
+-					   VFRAME_EVENT_PROVIDER_VFRAME_READY,
+-					   NULL);
+-		}
+-
+-		ATRACE_COUNTER(dev->v4l2_dev.name, vfq_level(&dev->q_omx));
+-
+-		if (p->index == index)
++	/*
++	 * Take back the frame named and only that one: the others out are still
++	 * held by the caller, and one released ahead of an older frame must not
++	 * take that frame with it. The queue is turned round once to keep the
++	 * order of the rest, which makes this a second producer beside dqbuf, so
++	 * under its lock.
++	 */
++	mutex_lock(&dev->vf_mutex);
++	for (n = vfq_level(&dev->q_omx); n > 0; n--) {
++		vf = vfq_pop(&dev->q_omx);
++		if (!vf)
+ 			break;
++		if (!named && p->index == (u32)vf->pts_us64)
++			named = vf;
++		else
++			vfq_push(&dev->q_omx, vf);
++	}
++	if (named && !(p->flags & V4L2_BUF_FLAG_DONE))
++		vfq_push(&dev->q_ready, named);
++	mutex_unlock(&dev->vf_mutex);
++
++	/* not out any more: a decoder reset has already taken it back */
++	if (!named)
++		return 0;
++	if (p->flags & V4L2_BUF_FLAG_DONE) {
++		vf_put(named, dev->vf_receiver_name);
++		vf_notify_provider(dev->vf_receiver_name,
++				   VFRAME_EVENT_RECEIVER_PUT, NULL);
++	} else {
++		ATRACE_COUNTER(dev->v4l2_dev.name, vfq_level(&dev->q_ready));
++		vf_notify_receiver(dev->vf_provider_name,
++				   VFRAME_EVENT_PROVIDER_VFRAME_READY, NULL);
+ 	}
++	ATRACE_COUNTER(dev->v4l2_dev.name, vfq_level(&dev->q_omx));
+ 	return 0;
+ }
+ 

@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 17:00:00 -0400
+Subject: [PATCH] AML: MVC, put back the timestamps of two pictures handed out
+ swapped
+
+After a restart - a seek, a prepared resume - the MVC decoder now and
+then hands out two pictures with each other's timestamps (30.489 s, then
+30.447 s). The pictures come in display order; only the labels are in
+decode order. Shown as labelled, the first goes out a frame late and the
+second steps the film back.
+
+Hold one picture back on MVC streams; when the next carries a timestamp
+one frame earlier, put the two labels back (with the buffer's copy, the
+subtitle depth and the seek preroll's drop they set), and send both out
+in the order they came. A picture older than one already out,
+which nothing can mend, goes as a drop; a second or more older is a
+timestamp discontinuity and starts the order again. It costs one picture
+of latency in the codec; what is held goes out at the end of the stream
+and is dropped on a flush.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -114,6 +114,7 @@
+   // close open decoder if necessary
+   if (m_opened)
+     Close();
++  m_mvc = false;
+ 
+   m_hints = hints;
+   m_hints.pClock = hints.pClock;
+@@ -242,6 +243,7 @@
+           m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
+       {
+         m_pFormatName = "am-h264mvc";
++        m_mvc = true;
+         if (m_hints.codec_tag == MKTAG('M', 'V', 'C', '1'))
+         {
+           m_mvcParamsWait = MvcParamsWaitLimit(m_hints);
+@@ -507,6 +509,7 @@
+     m_metadataToken = 0;
+   }
+ 
++  m_held.Reset();
+   m_videoBufferPool = nullptr;
+ 
+   if (m_Codec)
+@@ -953,6 +956,8 @@
+ 
+ void CDVDVideoCodecAmlogic::ResetStream()
+ {
++  m_held.Reset();
++  m_lastOut = DVD_NOPTS_VALUE;
+   if (m_Codec)
+     m_Codec->Reset();
+ 
+@@ -1000,7 +1005,10 @@
+ 
+   VCReturn retVal = m_Codec->GetPicture(&m_videobuffer);
+   if (retVal == VC_FLUSHED)
++  {
+     m_timedOut = true;
++    m_held.Reset();
++  }
+ 
+   if (retVal == VC_PICTURE)
+   {
+@@ -1051,7 +1059,91 @@
+     }
+   }
+ 
+-  return retVal;
++  return m_mvc ? Reorder(pVideoPicture, retVal) : retVal;
++}
++
++// The MVC decoder hands its pictures out in display order, but now and then -
++// after a restart most - two of them carry each other's timestamps, the later
++// one first. One picture is held back, and when the next carries a timestamp
++// a frame earlier than it the two labels are put back; the pictures themselves
++// still go out in the order they came.
++CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::Reorder(VideoPicture* pVideoPicture,
++                                                        VCReturn retVal)
++{
++  const bool draining = (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) != 0;
++  if (retVal != VC_PICTURE)
++  {
++    // what is held is owed before the end of the stream
++    if (draining && m_held.videoBuffer &&
++        (retVal == VC_EOF || retVal == VC_BUFFER || retVal == VC_NONE))
++    {
++      pVideoPicture->CopyRef(m_held);
++      m_held.Reset();
++      DropLate(pVideoPicture);
++      return VC_PICTURE;
++    }
++    return retVal;
++  }
++
++  if (!m_held.videoBuffer)
++  {
++    if (draining)
++    {
++      DropLate(pVideoPicture);
++      return VC_PICTURE;
++    }
++    m_held.CopyRef(*pVideoPicture);
++    pVideoPicture->videoBuffer->Release();
++    pVideoPicture->videoBuffer = nullptr;
++    return VC_BUFFER;
++  }
++
++  // a neighbour's label, not an older picture: that one DropLate deals with
++  const double frame = m_hints.fpsrate > 0
++                           ? static_cast<double>(DVD_TIME_BASE) * m_hints.fpsscale / m_hints.fpsrate
++                           : DVD_TIME_BASE / 24.0;
++  if (pVideoPicture->pts != DVD_NOPTS_VALUE && m_held.pts != DVD_NOPTS_VALUE &&
++      pVideoPicture->pts < m_held.pts && m_held.pts - pVideoPicture->pts < 1.5 * frame)
++  {
++    CLog::Log(LOGDEBUG, LOGVIDEO, "{}: timestamps {:.3f} and {:.3f} put back in order",
++              __MODULE_NAME__, m_held.pts / DVD_TIME_BASE, pVideoPicture->pts / DVD_TIME_BASE);
++    std::swap(m_held.pts, pVideoPicture->pts);
++    std::swap(m_held.m_3dSubtitleDepth, pVideoPicture->m_3dSubtitleDepth);
++    // the seek preroll judged the label, so its verdict goes with it
++    if ((m_held.iFlags ^ pVideoPicture->iFlags) & DVP_FLAG_DROPPED)
++    {
++      m_held.iFlags ^= DVP_FLAG_DROPPED;
++      pVideoPicture->iFlags ^= DVP_FLAG_DROPPED;
++    }
++    auto* heldBuffer = static_cast<CAMLVideoBuffer*>(m_held.videoBuffer);
++    auto* newBuffer = static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer);
++    std::swap(heldBuffer->m_omxPts, newBuffer->m_omxPts);
++  }
++
++  VideoPicture out;
++  out.CopyRef(m_held);
++  m_held.CopyRef(*pVideoPicture);
++  pVideoPicture->CopyRef(out);
++  DropLate(pVideoPicture);
++  return VC_PICTURE;
++}
++
++// What the labels cannot mend - a picture older than one already out - goes as a
++// drop: shown, it would step the film back. One a second or more older is a
++// timestamp discontinuity, and starts the order again.
++void CDVDVideoCodecAmlogic::DropLate(VideoPicture* pVideoPicture)
++{
++  if (pVideoPicture->pts == DVD_NOPTS_VALUE)
++    return;
++  if (m_lastOut != DVD_NOPTS_VALUE && pVideoPicture->pts < m_lastOut &&
++      m_lastOut - pVideoPicture->pts < DVD_TIME_BASE)
++  {
++    CLog::Log(LOGDEBUG, LOGVIDEO, "{}: picture {:.3f} dropped, {:.3f} already out",
++              __MODULE_NAME__, pVideoPicture->pts / DVD_TIME_BASE, m_lastOut / DVD_TIME_BASE);
++    pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
++  }
++  else
++    m_lastOut = pVideoPicture->pts;
+ }
+ 
+ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -101,6 +101,12 @@
+ 
+   const char     *m_pFormatName;
+   VideoPicture m_videobuffer;
++  //! MVC: one picture held back, so two swapped timestamps can be put back.
++  bool m_mvc{false};
++  VideoPicture m_held;
++  double m_lastOut{DVD_NOPTS_VALUE};
++  VCReturn Reorder(VideoPicture* pVideoPicture, VCReturn retVal);
++  void DropLate(VideoPicture* pVideoPicture);
+   bool            m_opened;
+   int             m_codecControlFlags;
+   CDVDStreamInfo  m_hints;

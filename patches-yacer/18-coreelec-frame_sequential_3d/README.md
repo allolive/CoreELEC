@@ -74,9 +74,6 @@ The Kodi patches:
 - 09 gives Blu-ray PG subtitles the disc's own depth, frame by frame (MVC
   "1 plane + offset"), each picture by its own pts; the disc's depth replaces
   the subtitle depth setting, which covers subtitles without it.
-- 10 does not prepare a resume behind a pause on MVC: the AML codec says a
-  flush of it is costly (each one re-creates the MVC decoder), so the add-on's
-  pause and resume are plain speed changes.
 - 11 consumes an empty packet instead of handing it back forever.
 - 12 starts the Blu-ray second view where the first starts, after a seek too.
 - 13-17 make the AML decoder recover on its own: one NAL walker for the
@@ -117,7 +114,8 @@ The Kodi patches:
 - 42 lets each film move its subtitles closer or further in 3D, on top of the
   disc's or the configured depth, from the subtitle settings; kept with its 3D depth.
 
-- 43 drops a picture the MVC decoder hands out after a later one (a swapped
-  pair, or an old picture after a resume) rather than stepping the film back.
-- 44 takes a whole-refresh picture offset into the frame latency where a frame
-  spans several refreshes, so 3D lands in sync from its first picture.
+- 43 puts back the timestamps of two pictures the MVC decoder hands out
+  swapped after a restart, holding one picture back; one older than a picture
+  already out goes as a drop rather than stepping the film back.
+- 44 takes a whole-refresh 3D picture offset out of the frame latency at each
+  start and resume, once settled, clock and audio untouched.

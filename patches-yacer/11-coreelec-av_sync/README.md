@@ -89,7 +89,8 @@ correction while it is still queued, so the audio trim does not chase it.
 Patch 41 does the display alignment of patch 32 for a seek and an ordinary
 start too.
 
-Patch 43 lets a preparation wait for a dry source instead of timing out.
-
 Patch 44 lets a preparation keep taking pictures from a decoder whose input is
 full, which otherwise stops handing them out while the player is paused.
+
+Patch 45 moves the audio clock slowly: the receiver dropped the sound when the
+trim swung it hundreds of ppm within seconds.

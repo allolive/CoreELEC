@@ -24,7 +24,10 @@ pieces = [body(player, 'void CVideoPlayer::CancelResumePreroll('),
           body(player, 'void CVideoPlayer::HandleAudioPrerollStatus('),
           body(player, 'bool CVideoPlayer::PollResumePreroll('),
           body(player, 'double CVideoPlayer::ResumePrerollLeadIn('),
-          body(player, 'bool CVideoPlayer::ResumePrerollHasLead(')]
+          body(player, 'bool CVideoPlayer::ResumePrerollHasLead('),
+          body(player, 'void CVideoPlayer::FinishDeferredPause('),
+          body(player, 'void CVideoPlayer::ReleaseStartHold('),
+          body(player, 'void CVideoPlayer::EndStartPreroll(')]
 flush = body(player, 'void CVideoPlayer::FlushBuffers(')
 pieces.append(flush[:flush.index('  double startpts;')] + '  (void)sync;\n}')
 commands = body(audio, '    else if (pMsg->IsType(CDVDMsg::AUDIO_PREROLL))')

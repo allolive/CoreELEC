@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 19:00:00 -0400
+Subject: [PATCH] AMLAudioTrim: move the audio clock slowly
+
+The receiver recovers its sample clock from mpll0. A 3D start that lands
+a refresh off (10 to 21 ms) had the offset loop ask for its full ceiling
+at once, and the level went 0 to -40 - 600 ppm - in five seconds, a step
+a quarter second: the sound dropped and came back while it did. The
+level could already move only one step a tick; that bounds a jump, not a
+swing.
+
+Move the level the dither works around at most half a level a second,
+15 ppm a second. The dither's own one-level pulses are unchanged; an
+offset takes longer to walk out, without the receiver losing it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -162,6 +162,13 @@
+ //! leaves - a step's worth of rate for this long - is microseconds.
+ constexpr double DITHER = 0.25 * DVD_TIME_BASE;
+ 
++//! How far the level the dither works around may move per slot: half a level a
++//! second, 15 parts per million a second. The receiver recovers its sample clock
++//! from this one, and asked to follow a few hundred ppm within seconds - a 3D
++//! start a refresh off - it dropped the sound and came back; a slow change it
++//! follows.
++constexpr double MAX_LEVEL_STEP = 0.5 * DITHER / DVD_TIME_BASE;
++
+ //! Given up after this many writes the clock would not take. Something else owns
+ //! it, and asking four times a second forever helps nobody.
+ constexpr unsigned int MAX_REFUSED = 5;
+@@ -336,6 +343,7 @@
+ 
+   m_want = 0.0;
+   m_dither = 0.0;
++  m_level = 0.0;
+ 
+   // A refusal or a stand-down belongs to the playback that provoked it. One
+   // stream the knob could not reach, or a handful of writes refused while the
+@@ -516,6 +524,7 @@
+               drift * 1e6, m_clamped);
+     m_want = 0.0;
+     m_dither = 0.0;
++    m_level = 0.0;
+     if (m_everWrote && m_applied != 0)
+       WriteLevel(0);
+     m_stopped = true;
+@@ -590,6 +599,7 @@
+       WriteLevel(0);
+       m_want = 0.0;
+       m_dither = 0.0;
++      m_level = 0.0;
+     }
+     m_lastDither = now;
+     return;
+@@ -698,8 +708,9 @@
+   // Sigma-delta: the fraction the level cannot express is carried and paid off
+   // by the next slot that can, so the average over a few slots is the wanted
+   // level even though every slot is a whole one.
+-  const double target =
+-      std::clamp(m_want + Feedforward(), -m_levelMax, m_levelMax) + m_dither;
++  const double wanted = std::clamp(m_want + Feedforward(), -m_levelMax, m_levelMax);
++  m_level = std::clamp(wanted, m_level - MAX_LEVEL_STEP, m_level + MAX_LEVEL_STEP);
++  const double target = m_level + m_dither;
+ 
+   // Clamped after rounding as well as before: the carried fraction can take a
+   // level already at the limit half a step past it, and the kernel refuses the
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -109,6 +109,7 @@
+   int m_applied{0};           //!< what the register was last set to
+   double m_want{0.0};         //!< the level the loop wants, in steps, fractional
+   double m_dither{0.0};       //!< carries the fraction between dither slots
++  double m_level{0.0};        //!< the wanted level, moved at most MAX_LEVEL_STEP a slot
+ 
+   double m_bucketStart{0.0};
+   double m_lastSampleAt{0.0}; //!< when a sample was last taken, to spot a gap  //!< when the current averaging bucket opened

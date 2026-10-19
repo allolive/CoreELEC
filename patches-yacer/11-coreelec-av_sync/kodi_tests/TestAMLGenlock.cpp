@@ -1,9 +1,9 @@
 /*
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *
- *  The display genlock: it steps the master clock once, where playback is
- *  already discontinuous, so that frames land on a vblank instead of halfway
- *  between two. Every collaborator it reads - the clock, the process info and
+ *  The display genlock: once, where playback is already discontinuous, it
+ *  places the picture so that frames land on a vblank instead of halfway
+ *  between two, and leaves the master clock alone. Every collaborator it reads - the clock, the process info and
  *  the three AML helpers - is an ordinary non-virtual function, so the test
  *  binary defines them. That is a link seam, not a mock: no mocking framework
  *  can hook a non-virtual call, and none is needed.
@@ -29,7 +29,7 @@
 namespace
 {
 // What the seams below answer. A test sets these, calls Update, and reads
-// back what the genlock asked the clock to do.
+// back the placement and anything the genlock asked the clock to do.
 struct World
 {
   double clock = 0.0;
@@ -52,6 +52,7 @@ void Reset(double displayFps = 24.0)
 {
   g_world = World{};
   g_world.videoFps = static_cast<float>(displayFps);
+  CAMLGenlock::ResetPlacement();
   // A measured pipeline, so the genlock has something to aim with.
   CAMLLatencyStore::GetInstance().Set(50.0f);
 }
@@ -158,44 +159,58 @@ double aml_render_display_latency(StreamHdrType, float)
 
 namespace
 {
-// Drive one frame. The phase the genlock sees is
-// clock - sinceFrameStart + latency - framePts, folded into one period.
-void Frame(CAMLGenlock& genlock, double displayFps, double phaseUs)
+// Present one frame with the clock as it stands.
+void Present(CAMLGenlock& genlock, double displayFps)
 {
   CDVDClock clock;
   TestProcessInfo processInfo;
-  g_world.clock = phaseUs;
   genlock.Update(displayFps, clock, processInfo, StreamHdrType::HDR_TYPE_NONE, 0.0);
+}
+
+// Drive one frame. The phase the genlock sees is
+// clock - sinceFrameStart + latency - framePts, folded into one period.
+// Setting the clock without its reference is a step when it moves it 10ms.
+void Frame(CAMLGenlock& genlock, double displayFps, double phaseUs)
+{
+  g_world.clock = phaseUs;
+  Present(genlock, displayFps);
+}
+
+float Ms(double us)
+{
+  return static_cast<float>(us / 1000.0);
 }
 } // namespace
 
-TEST(AMLGenlock, AlignsTheClockWhenAnAlignmentIsOwed)
+TEST(AMLGenlock, PlacesThePictureWhenAnAlignmentIsOwed)
 {
   Reset();
-  g_world.applyResult = -2000.0;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
 
-  ASSERT_EQ(g_world.corrections, 1);
-  // It asks for the phase to be removed, not added.
-  EXPECT_DOUBLE_EQ(g_world.lastCorrection, -2000.0);
+  // The phase itself: the windowing system adds it to the frame latency the
+  // renderer subtracts, which moves the picture as stepping the clock back by
+  // it would have.
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+  EXPECT_EQ(g_world.corrections, 0) << "the clock the audio is on is never stepped";
+  EXPECT_DOUBLE_EQ(g_world.clock, 2000.0);
 }
 
 TEST(AMLGenlock, LeavesARunningPictureAlone)
 {
   Reset();
-  g_world.applyResult = -2000.0;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
-  ASSERT_EQ(g_world.corrections, 1);
+  ASSERT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
 
   // Nothing asked for another alignment, and the display and the clock do not
-  // walk apart while playing. Stepping the clock under a smooth picture is the
-  // one thing this must never do.
-  Frame(genlock, 24.0, 2000.0);
-  EXPECT_EQ(g_world.corrections, 1);
+  // walk apart while playing: a different reading now is not acted on.
+  g_world.sinceFrameStart = 5000.0;
+  Present(genlock, 24.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+  EXPECT_EQ(g_world.corrections, 0);
 }
 
 TEST(AMLGenlock, IgnoresPhaseInsideTheNoiseFloor)
@@ -205,7 +220,18 @@ TEST(AMLGenlock, IgnoresPhaseInsideTheNoiseFloor)
   genlock.Restart();
   // Under half a millisecond is a measurement, not a misalignment.
   Frame(genlock, 24.0, 200.0);
-  EXPECT_EQ(g_world.corrections, 0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 0.0f);
+
+  // The same against a placement already made: it is not moved by noise.
+  genlock.Restart();
+  Frame(genlock, 24.0, 2000.0);
+  ASSERT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+  genlock.Restart();
+  Frame(genlock, 24.0, 2400.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+  genlock.Restart();
+  Frame(genlock, 24.0, 2600.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.6f);
 }
 
 TEST(AMLGenlock, StandsDownUntilThePipelineHasBeenMeasured)
@@ -215,9 +241,13 @@ TEST(AMLGenlock, StandsDownUntilThePipelineHasBeenMeasured)
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
-  // Aiming with the buffer-count estimate would step the clock by its error.
-  EXPECT_EQ(g_world.corrections, 0);
+  // Aiming with the buffer-count estimate would place the picture by its error.
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 0.0f);
+
+  // Still owed once the measurement is in.
   CAMLLatencyStore::GetInstance().Set(50.0f);
+  Frame(genlock, 24.0, 2000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
 }
 
 TEST(AMLGenlock, LeavesPulldownAlone)
@@ -230,91 +260,166 @@ TEST(AMLGenlock, LeavesPulldownAlone)
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 60.0, 2000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 0.0f);
   EXPECT_EQ(g_world.corrections, 0);
 }
 
-TEST(AMLGenlock, WaitsWhileTheVsyncAdjustIsRunning)
+TEST(AMLGenlock, AimsHalfAPeriodOffWhenFramesRepeat)
+{
+  Reset(48.0);
+  g_world.refreshesPerFrame = 2.0;
+  CAMLGenlock genlock;
+  genlock.Restart();
+  Frame(genlock, 48.0, 2000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(2000.0 - Period(48.0) / 2.0));
+}
+
+TEST(AMLGenlock, PlacesThePictureWhileTheVsyncAdjustIsRunning)
 {
   Reset();
   g_world.vsyncAdjust = 1.0;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
-  // ErrorAdjust quantises a step this small to a frame or to nothing while the
-  // adjust is running, so the alignment is left owed instead.
+  // No clock step for the adjust to quantise, so nothing to wait for.
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
   EXPECT_EQ(g_world.corrections, 0);
 }
 
-TEST(AMLGenlock, KeepsTheAlignmentOwedWhenTheClockDeclines)
+TEST(AMLGenlock, KeepsTheAlignmentOwedWithoutAVblankReading)
 {
   Reset();
-  g_world.applyResult = 0.0; // the clock refused
+  g_world.sinceFrameStart = std::nullopt;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
-  ASSERT_EQ(g_world.corrections, 1);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 0.0f);
 
-  // Still owed, so the next frame tries again rather than giving up.
+  // Still owed, so the next frame with a reading places the picture.
+  g_world.sinceFrameStart = 0.0;
   Frame(genlock, 24.0, 2000.0);
-  EXPECT_EQ(g_world.corrections, 2);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
 }
 
 TEST(AMLGenlock, AsksAgainWhenTheDisplayRateChanges)
 {
   Reset();
-  g_world.applyResult = -2000.0;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, 2000.0);
-  ASSERT_EQ(g_world.corrections, 1);
+  ASSERT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
 
-  // A mode change voids the earlier alignment without anybody asking.
+  // A mode change voids the earlier placement at once, before a reading.
+  g_world.sinceFrameStart = std::nullopt;
   Frame(genlock, 50.0, 2000.0);
-  EXPECT_EQ(g_world.corrections, 2);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 0.0f);
+
+  // And realigns without anybody asking.
+  g_world.sinceFrameStart = 0.0;
+  Frame(genlock, 50.0, 3000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 3.0f);
 }
 
-// The dead band exists so that a correction cannot itself push the audio loop
-// past its own threshold and start a standing oscillation. The phase is taken
-// modulo the period, so it can never exceed half a period - which means the
-// guard can only ever be reached where half a period is itself larger than the
-// smallest dead band the audio loop allows. At 24p it is; at 25Hz and above it
-// is not, and there no correction can be large enough to need it.
-TEST(AMLGenlock, RefusesACorrectionAsLargeAsTheAudioDeadBand)
+TEST(AMLGenlock, AsksAgainWhenSomebodyStepsTheClock)
 {
   Reset();
-  g_world.maxOffSyncMs = 20;
-  g_world.applyResult = -1.0;
   CAMLGenlock genlock;
   genlock.Restart();
-  // Half a period at 24p is 20.83ms, so a phase beyond the 20ms dead band is
-  // reachable here and nowhere above it.
-  Frame(genlock, 24.0, DVD_MSEC_TO_TIME(20.5));
+  Frame(genlock, 24.0, 2000.0);
+  ASSERT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+
+  // Under the step threshold is arithmetic, not a step.
+  Frame(genlock, 24.0, 7000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 2.0f);
+
+  // The audio loop moved the clock 30ms: the frames moved with it.
+  Frame(genlock, 24.0, 37000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(37000.0 - Period(24.0)));
   EXPECT_EQ(g_world.corrections, 0);
 }
 
-TEST(AMLGenlock, CorrectsJustInsideTheAudioDeadBand)
+TEST(AMLGenlock, TakesThePlacementNearestTheCurrentOneOnTheFold)
+{
+  Reset();
+  CAMLGenlock genlock;
+  genlock.Restart();
+  Frame(genlock, 24.0, -DVD_MSEC_TO_TIME(20.5));
+  ASSERT_FLOAT_EQ(CAMLGenlock::Placement(), -20.5f);
+
+  // Just past half a period the other way is the same phase a period away;
+  // taking it as read would move the picture a whole frame.
+  genlock.Restart();
+  Frame(genlock, 24.0, DVD_MSEC_TO_TIME(20.6));
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(DVD_MSEC_TO_TIME(20.6) - Period(24.0)));
+}
+
+// The audio loop's dead band bounded the old clock step, so that the step could
+// not push the audio error past its own threshold and start an oscillation. A
+// placement moves no clock, so it is not bounded by the dead band at all.
+TEST(AMLGenlock, PlacesBeyondTheAudioDeadBand)
 {
   Reset();
   g_world.maxOffSyncMs = 20;
-  g_world.applyResult = -1.0;
+  CAMLGenlock genlock;
+  genlock.Restart();
+  // Half a period at 24p is 20.83ms, so a phase beyond the 20ms dead band is
+  // reachable here.
+  Frame(genlock, 24.0, DVD_MSEC_TO_TIME(20.5));
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 20.5f);
+  EXPECT_EQ(g_world.corrections, 0);
+}
+
+TEST(AMLGenlock, PlacesJustInsideTheAudioDeadBand)
+{
+  Reset();
+  g_world.maxOffSyncMs = 20;
   CAMLGenlock genlock;
   genlock.Restart();
   Frame(genlock, 24.0, DVD_MSEC_TO_TIME(19.5));
-  EXPECT_EQ(g_world.corrections, 1);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), 19.5f);
+  EXPECT_EQ(g_world.corrections, 0);
 }
 
-// Records the arithmetic rather than the code: the phase is bounded by half a
-// period, so at every refresh rate at or above 25Hz it is smaller than the
-// smallest dead band and the guard above is unreachable by construction.
-TEST(AMLGenlock, PhaseCannotReachTheDeadBandAtOrdinaryRefreshRates)
+// What the placement shifts the picture against the audio is the audio rate
+// trim's to walk out, and it is never more than half a refresh period.
+TEST(AMLGenlock, PlacementNeverExceedsHalfAPeriod)
 {
-  for (double rate : {60.0, 59.94, 50.0, 30.0})
+  for (double rate : {60.0, 59.94, 50.0, 30.0, 24.0, 23.976})
   {
-    const double halfPeriodMs = Period(rate) / 2.0 / 1000.0;
-    EXPECT_LT(halfPeriodMs, 20.0) << rate << "Hz";
+    Reset(rate);
+    CAMLGenlock genlock;
+    genlock.Restart();
+    Frame(genlock, rate, 0.6 * Period(rate));
+    EXPECT_NEAR(CAMLGenlock::Placement(), Ms(-0.4 * Period(rate)), 1e-3) << rate << "Hz";
+    EXPECT_LE(std::abs(CAMLGenlock::Placement()), Ms(Period(rate) / 2.0)) << rate << "Hz";
   }
-  // At 24p it is reachable, which is why the guard is there at all.
-  EXPECT_GT(Period(24.0) / 2.0 / 1000.0, 20.0);
+}
+
+TEST(AMLGenlock, PhaseIsWhatAnAlignmentWouldPlace)
+{
+  Reset();
+  g_world.latency = 7000.0;
+  g_world.sinceFrameStart = 1000.0;
+  TestProcessInfo processInfo;
+  const auto phase =
+      CAMLGenlock::Phase(24.0, 2000.0, processInfo, StreamHdrType::HDR_TYPE_NONE, 3000.0);
+  ASSERT_TRUE(phase);
+  EXPECT_DOUBLE_EQ(*phase, 5000.0);
+
+  CAMLGenlock genlock;
+  genlock.Restart();
+  g_world.clock = 2000.0;
+  CDVDClock clock;
+  genlock.Update(24.0, clock, processInfo, StreamHdrType::HDR_TYPE_NONE, 3000.0);
+  EXPECT_FLOAT_EQ(CAMLGenlock::Placement(), Ms(*phase));
+
+  g_world.sinceFrameStart = std::nullopt;
+  EXPECT_FALSE(CAMLGenlock::Phase(24.0, 2000.0, processInfo, StreamHdrType::HDR_TYPE_NONE, 0.0));
+  g_world.sinceFrameStart = 0.0;
+  g_world.refreshesPerFrame = 0.0;
+  EXPECT_FALSE(CAMLGenlock::Phase(24.0, 2000.0, processInfo, StreamHdrType::HDR_TYPE_NONE, 0.0));
+  g_world.refreshesPerFrame = 1.0;
+  EXPECT_FALSE(CAMLGenlock::Phase(0.0, 2000.0, processInfo, StreamHdrType::HDR_TYPE_NONE, 0.0));
 }
 
 // CRenderManager hands over its refreshes per frame; only a whole number of

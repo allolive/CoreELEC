@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 20:00:00 -0400
+Subject: [PATCH] AML: 3D, take a whole-refresh picture offset out at each
+ start
+
+In frame-sequential 3D a frame spans four refreshes and the picture
+settled a whole refresh off: +10.4 ms at 96 Hz after a start, +21 after a
+resume. The genlock places the picture inside one refresh and cannot see
+a whole one; where it aims, half a refresh early, sits on the fold, and
+which side a start lands on is decided at the start - so a correction
+kept from one start to the next pulled the following one off instead.
+Left to the audio trim, walking 10 to 21 ms out made the TV's eARC drop
+the sound.
+
+Once the pipeline count has settled, an alignment that stays a whole
+number of refreshes off for about two seconds is taken out of the frame
+latency, clock and audio untouched, once per start or resume and never
+kept for the next. More than two refreshes is no placement and is left
+alone. The latency tweak and the audio delay move the picture on purpose
+and are left out of the reading.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3548,6 +3548,11 @@
+ 
+   const double audioError = m_processInfo.GetAudioSyncError();
+ 
++  // What the latency tweak and the audio delay move the picture by on purpose:
++  // frames handed over that much earlier land that much early.
++  CAMLLatencyStore::GetInstance().SetIntendedAlignment(
++      aml_render_chosen_offset(m_hints.hdrType, m_processInfo.GetVideoSettings().m_AudioDelay));
++
+   CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(), audioError,
+                                     m_processInfo.IsRenderClockSync());
+ 
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.cpp
+@@ -116,6 +116,42 @@
+   m_rearm.store(true, std::memory_order_relaxed);
+ }
+ 
++void CAMLLatency::TrackRefreshShift(double alignment)
++{
++  // Seen this many frames running before it is believed: about two seconds.
++  constexpr unsigned int SHIFT_AFTER_FRAMES = 48;
++  // More than this is no placement to mend.
++  constexpr int MAX_SHIFT_REFRESHES = 2;
++
++  // Settled only: until then the count itself can be a refresh out. And only
++  // where a frame spans whole refreshes: elsewhere a refresh is a frame.
++  const int k = m_period > 0.0 ? static_cast<int>(std::lround(alignment / m_period)) : 0;
++  if (!m_settled || m_shiftDone || aml_refreshes_per_frame() < 2.0 || k == 0 ||
++      std::abs(k) > MAX_SHIFT_REFRESHES || std::abs(alignment - k * m_period) > m_period / 4.0)
++  {
++    m_shiftRun = 0;
++    return;
++  }
++  if (k != m_shiftRefreshes)
++  {
++    m_shiftRefreshes = k;
++    m_shiftRun = 0;
++  }
++  if (++m_shiftRun < SHIFT_AFTER_FRAMES)
++    return;
++
++  m_shiftDone = true;
++  // Frame latency moves the picture the same way as itself: a picture late by
++  // k refreshes needs k less. Which way a start lands is decided at the start -
++  // the placement sits on the fold half a refresh off - so nothing is kept for
++  // the next one.
++  CAMLLatencyStore::GetInstance().SetShift(static_cast<float>(-k * m_period / 1000.0));
++  // The picture moves against the audio, as a placement does.
++  NoteClockDisturbed();
++  CLog::Log(LOGINFO, "CAMLLatency: picture {} refresh(es) late, frame latency now {:+.1f}ms over it",
++            k, CAMLLatencyStore::GetInstance().GetShift());
++}
++
+ void CAMLLatency::Forget()
+ {
+   // The published value goes now: the caller may be closing the decoder, and no
+@@ -130,6 +166,9 @@
+ 
+ void CAMLLatency::Rearm()
+ {
++  CAMLLatencyStore::GetInstance().SetShift(0.0f);
++  m_shiftDone = false;
++  m_shiftRun = 0;
+   m_candidate = 0;
+   m_agreed = 0;
+   m_settled = false;
+@@ -626,6 +665,7 @@
+                              static_cast<double>(RDMA_COMMIT_VBLANKS) * m_period;
+     CAMLLatencyStore::GetInstance().SetAlignment(static_cast<float>(alignment / 1000.0));
+     m_lastAlign = alignment;
++    TrackRefreshShift(alignment - CAMLLatencyStore::GetInstance().GetIntendedAlignment());
+ 
+     if (m_reports == 0)
+     {
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h
+@@ -83,8 +83,21 @@
+   float GetAlignment() const { return m_alignmentMs.load(std::memory_order_relaxed); }
+   void SetAlignment(float ms) { m_alignmentMs.store(ms, std::memory_order_relaxed); }
+ 
++  //! \brief Whole refreshes taken out of the frame latency, in milliseconds,
++  //! where a frame spans several and the picture settled that far off: no
++  //! placement inside one refresh reaches it. Set per start, never remembered.
++  float GetShift() const { return m_shiftMs.load(std::memory_order_relaxed); }
++  void SetShift(float ms) { m_shiftMs.store(ms, std::memory_order_relaxed); }
++
++  //! \brief The part of the alignment that is meant: the latency tweak and the
++  //! audio delay move the picture on purpose, in master clock units.
++  double GetIntendedAlignment() const { return m_intendedUs.load(std::memory_order_relaxed); }
++  void SetIntendedAlignment(double us) { m_intendedUs.store(us, std::memory_order_relaxed); }
++
+ private:
+   CAMLLatencyStore() = default;
++  std::atomic<float> m_shiftMs{0.0f};
++  std::atomic<double> m_intendedUs{0.0};
+   std::atomic<float> m_latencyMs{-1.0f};
+   std::atomic<float> m_alignmentMs{0.0f};
+   std::atomic<float> m_expectedMs{-1.0f};
+@@ -174,6 +187,13 @@
+ private:
+   void Rearm();
+ 
++  //! \brief Takes a steady whole-refresh alignment out of the frame latency,
++  //! once per start, where a frame spans several refreshes.
++  void TrackRefreshShift(double alignment);
++  int m_shiftRefreshes{0};
++  unsigned int m_shiftRun{0};
++  bool m_shiftDone{false};
++
+   //! \brief Whether a warning may be emitted now. Capped in number and spaced in
+   //! time: each one is a synchronous log flush on the frame loop.
+   bool MayWarn();
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -886,9 +886,11 @@
+   // The genlock's placement rides on top: it moves which frame is shown at a
+   // clock time the way a step in the clock would, without the step.
+   if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
+-    return SampleFrameLatency() + CAMLGenlock::Placement();
++    return SampleFrameLatency() + CAMLGenlock::Placement() +
++           CAMLLatencyStore::GetInstance().GetShift();
+ 
+-  return m_frameLatencyMs.load(std::memory_order_relaxed) + CAMLGenlock::Placement();
++  return m_frameLatencyMs.load(std::memory_order_relaxed) + CAMLGenlock::Placement() +
++         CAMLLatencyStore::GetInstance().GetShift();
+ }
+ 
+ float CWinSystemAmlogic::SampleFrameLatency()
