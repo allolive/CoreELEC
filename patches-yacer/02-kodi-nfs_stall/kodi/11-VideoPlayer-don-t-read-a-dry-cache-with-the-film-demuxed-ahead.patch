@@ -13,7 +13,10 @@ Do not read while the cache is dry and more than a second is demuxed
 ahead of the clock, in the audio as well as the video: the codec takes
 tens of seconds of 4K video while the audio queue holds a few. Nothing is lost: what is queued plays on, the loop
 keeps running, and the hold is taken once the queues run short, as 10
-allows. Starts and seeks read as before: nothing is demuxed ahead there.
+allows. Only while playing on, with both streams in sync and no preroll
+under way: a start, a seek or a resume bursts the demuxer ahead of a
+cache that is still filling, and holding its reads back timed out every
+other start of a 4K episode after the one before it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
@@ -28,7 +31,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      {
        CThread::Sleep(10ms);
        continue;
-@@ -2356,6 +2356,29 @@
+@@ -2356,6 +2356,36 @@
    return info;
  }
  
@@ -40,6 +43,13 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +// once it runs short.
 +bool CVideoPlayer::SourceDryWithFilmAhead()
 +{
++  // Playing on only: a start, a seek or a resume bursts the demuxer ahead of a
++  // cache that is still filling, and what it prepares needs the reads.
++  if (m_caching != CACHESTATE_DONE ||
++      m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC ||
++      (m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_INSYNC))
++    return false;
++
 +  const CacheInfo& cache = m_srcCache;
 +  if (!cache.valid || cache.endCached || cache.endOfInput || cache.forwardTime < 0.0 ||
 +      cache.forwardTime > SRC_EMPTY_TIME)
