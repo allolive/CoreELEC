@@ -1,0 +1,23 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] AdvancedSettings: name half and full over-under 3D as top-bottom
+
+The top-bottom name pattern knew only "tab" and "htab", so a film named
+"Half-OU", "H-OU" or "HOU" - the usual names for over-under - played as
+2D with its two halves stacked, while its side-by-side neighbour was
+found. Take "ou" as well, alone or after "h", "half" or "full". It only
+counts where the 3D pattern matched too, so ".Ou." in a title without a
+3D token is not read as 3D.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/settings/AdvancedSettings.cpp
++++ b/xbmc/settings/AdvancedSettings.cpp
+@@ -532,7 +532,7 @@
+ 
+   m_stereoscopicregex_3d = "[-. _]3d[-. _]";
+   m_stereoscopicregex_sbs = "[-. _]h?sbs[-. _]";
+-  m_stereoscopicregex_tab = "[-. _]h?tab[-. _]";
++  m_stereoscopicregex_tab = "[-. _](h|half|full)?[-. _]?(tab|ou)[-. _]";
+   m_stereoscopicregex_mvc = "[-. _]h?mvc[-. _]";
+ 
+   m_logLevelHint = m_logLevel = LOG_LEVEL_NORMAL;
