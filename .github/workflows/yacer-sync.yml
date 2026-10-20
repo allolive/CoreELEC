@@ -6,16 +6,16 @@
 #
 # Our builds do not follow the mirror. They build the CoreELEC commit named in
 # coreelec.pin on the yacer branch, and that pin moves only once our patches are
-# known to work on the new upstream: every stack applies, the native tests pass
-# and a full build succeeds. Until then a build of ours keeps using the last
-# CoreELEC that worked, instead of failing because upstream moved under it.
+# known to work on the new upstream: every stack applies and the native tests
+# pass. Until then a build of ours keeps using the last CoreELEC that worked,
+# instead of failing because upstream moved under it. Nothing is built here: a
+# compile break shows in the next build, local or started by hand.
 #
 #   watch     mirror upstream; is its tip a new candidate for the pin?
 #   apply     lay our files over the candidate and apply every package's
 #             patch stack to its pinned source - minutes, not hours
 #   tests     the native tests against the candidate (yacer-tests.yml)
-#   build     a full build of the candidate, from the build cache; when it
-#             succeeds it moves the pin and publishes (yacer-build.yml, promote)
+#   pin       both passed: commit the pin move to yacer
 #
 # A failure anywhere leaves the pin where it is; the next watch tries again.
 name: YACER upstream sync
@@ -84,18 +84,6 @@ jobs:
             exit 0
           fi
 
-          # One validation at a time: a pin candidate or a continued build that is
-          # still queued or running would be duplicated, or would race this one to
-          # the pin. Try again tomorrow.
-          busy=$(gh run list --repo "${{ github.repository }}" --workflow yacer-build.yml \
-                   --event workflow_dispatch --limit 20 --json status \
-                   --jq '[.[] | select(.status != "completed")] | length')
-          if [ "$busy" != "0" ]; then
-            echo "a dispatched build is still queued or running - candidate ${CAND:0:10} waits" \
-              | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
           # The candidate must be in this repository for the later checkouts, and
           # must stay there: the mirror moves on tomorrow, and a build chain can
           # outlive a day.
@@ -154,17 +142,49 @@ jobs:
       mirror: ${{ needs.watch.outputs.candidate }}
       yacer: ${{ needs.watch.outputs.yacer }}
 
-  build:
-    name: build the candidate
+  pin:
+    name: move the pin
     needs: [watch, apply, tests]
     runs-on: ubuntu-24.04
     steps:
-      - name: Start a promoting build
+      - name: Commit the pin move to yacer
         env:
           GH_TOKEN: ${{ github.token }}
-          CAND: ${{ needs.watch.outputs.candidate }}
-          YA: ${{ needs.watch.outputs.yacer }}
+          REPO: ${{ github.repository }}
+          CE_SHA: ${{ needs.watch.outputs.candidate }}
+          YA_SHA: ${{ needs.watch.outputs.yacer }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh workflow run yacer-build.yml --repo "${{ github.repository }}" --ref yacer \
-            -f mirror="$CAND" -f yacer="$YA" -f promote=true
-          echo "build of ${CAND:0:10} started; the pin moves when it succeeds" | tee -a "$GITHUB_STEP_SUMMARY"
+          subject=$(gh api "repos/$REPO/commits/$CE_SHA" --jq '.commit.message | split("\n")[0]')
+          blob=$(gh api "repos/$REPO/git/blobs" -f content="$CE_SHA"$'\n' -f encoding=utf-8 --jq .sha)
+          base=$(gh api "repos/$REPO/git/commits/$YA_SHA" --jq .tree.sha)
+          tree=$(jq -n --arg base "$base" --arg blob "$blob" \
+                   '{base_tree: $base, tree: [{path: "coreelec.pin", mode: "100644", type: "blob", sha: $blob}]}' \
+                 | gh api "repos/$REPO/git/trees" --input - --jq .sha)
+          msg=$(printf 'ci: move the CoreELEC pin to %s\n\n%s\n\nPatch stacks and native tests checked against yacer %s:\n%s\n' \
+                  "${CE_SHA:0:10}" "$subject" "${YA_SHA:0:10}" "$RUN_URL")
+          commit=$(jq -n --arg msg "$msg" --arg tree "$tree" --arg parent "$YA_SHA" \
+                     '{message: $msg, tree: $tree, parents: [$parent]}' \
+                   | gh api "repos/$REPO/git/commits" --input - --jq .sha)
+          # the tag first: a pin must never name a commit nothing keeps
+          if ! gh api "repos/$REPO/git/ref/tags/coreelec-pin/$CE_SHA" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/coreelec-pin/$CE_SHA" -f sha="$CE_SHA" >/dev/null \
+              || { echo "::error::could not tag ${CE_SHA:0:10} - the pin stays"; exit 1; }
+          fi
+          if ! gh api -X PATCH "repos/$REPO/git/refs/heads/yacer" -f sha="$commit" -F force=false >/dev/null; then
+            tip=$(gh api "repos/$REPO/git/ref/heads/yacer" --jq .object.sha 2>/dev/null || true)
+            if [ -n "$tip" ] && [ "$tip" != "$YA_SHA" ]; then
+              echo "::error::yacer moved to ${tip:0:10} during this check of ${YA_SHA:0:10} - the pin"
+              echo "         stays, and the next watch checks the new yacer instead"
+            else
+              echo "::error::GitHub refused to move yacer to the pin commit (protection or a ruleset?)"
+            fi
+            exit 1
+          fi
+          # the pin tag keeps it now
+          gh api -X DELETE "repos/$REPO/git/refs/tags/coreelec-candidate/$CE_SHA" >/dev/null 2>&1 || true
+          # the change list names the pinned commit; a push by this token starts
+          # no run of its own
+          gh workflow run yacer-docs.yml --repo "$REPO" --ref yacer \
+            || echo "::warning::could not refresh the change list page"
+          echo "pin moved to ${CE_SHA:0:10} in yacer ${commit:0:10}" | tee -a "$GITHUB_STEP_SUMMARY"

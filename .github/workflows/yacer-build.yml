@@ -1,21 +1,15 @@
 # YACER - Yet Another CoreELEC Repo
 #
-# Builds the Amlogic-no.aarch64 update .tar on every push. The build
-# cross-compiles to aarch64 on an x86_64 runner, so no ARM runner is needed.
+# Builds the Amlogic-no.aarch64 update .tar when asked: a release is started by
+# hand (Actions > YACER build > Run workflow), never by a push, and a pull
+# request with the `build` label gets a check build that publishes nothing. The
+# build cross-compiles to aarch64 on an x86_64 runner, so no ARM runner is
+# needed.
 # 'make release' produces the update tar without the per-device .img.gz files,
 # which keeps the runner disk and the job time down.
 name: YACER build
 
 on:
-  push:
-    branches: [ yacer ]
-    paths-ignore:
-      - '**.md'
-      - '.github/workflows/yacer-feed.yml'
-      - '.github/workflows/yacer-docs.yml'
-      - 'scripts/yacer-changes.py'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/FUNDING.yml'
   workflow_dispatch:
     inputs:
       clean_cache:
