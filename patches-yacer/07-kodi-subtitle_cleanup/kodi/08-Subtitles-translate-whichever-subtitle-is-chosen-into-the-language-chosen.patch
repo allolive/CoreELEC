@@ -35,10 +35,10 @@ offered, so the list is the video's own tracks.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 2993aa70..cf3e892a 100644
+index b726a80..c8ccf9b 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25537,13 +25537,13 @@ msgstr ""
+@@ -25519,13 +25519,13 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Translate subtitles"
  #: system/settings/settings.xml
  msgctxt "#60061"
@@ -55,7 +55,7 @@ index 2993aa70..cf3e892a 100644
  msgstr ""
  
  #. Label of setting "Player -> Subtitles -> AI provider"
-@@ -25756,6 +25756,12 @@ msgctxt "#60097"
+@@ -25738,6 +25738,12 @@ msgctxt "#60097"
  msgid "[B]What it does[/B][CR]A language model translates the subtitles of a video that has none in your language, and can correct what an OCR misread. Each film sends its subtitle lines, a few at a time - about 150 to 200 requests - with the video's title and its characters' names.[CR][CR][B]Free to try[/B] (as of October 2026: free offers change, check the provider's page)[CR]- Google Gemini: a free key at aistudio.google.com/apikey, no card. Its Flash Lite models allow a few films a day.[CR]- NVIDIA: a free developer account at build.nvidia.com. A limit per minute, not per day; meant for trying models out.[CR]- OpenRouter: the models whose name ends in \":free\". Few requests a day until credit is bought.[CR]- Your own server: free and private, on a computer of your network that runs llama.cpp, Ollama or vLLM. It has to be on.[CR][CR][B]Paid[/B][CR]OpenAI, Anthropic, and the paid models of the others: a few cents a film with a small model.[CR][CR][B]Choosing a model[/B][CR]Small, fast models are the ones for subtitles: Flash Lite, mini, Haiku. Choose a \"Newest\" entry - Newest gemini-flash-lite - and the next release is used when it comes out, with nothing to change here. A large model or one that reasons first is slower, not better for a subtitle.[CR][CR][B]Checking it[/B][CR]Test the connection translates one line. It should answer within a few seconds; it says so when the model is too slow for a film. When a free limit is reached during a film, a notification says so and the rest of the subtitle stays as it is.[CR][CR][B]Privacy[/B][CR]Free offers may keep what is sent to improve their models. Only subtitle lines, the title and character names are sent."
  msgstr ""
  
@@ -69,7 +69,7 @@ index 2993aa70..cf3e892a 100644
  #: system/settings/settings.xml
  msgctxt "#60100"
 diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
-index 7f1cc2e9..95e7e3e9 100644
+index 8242829..48502f2 100644
 --- a/xbmc/GUIInfoManager.cpp
 +++ b/xbmc/GUIInfoManager.cpp
 @@ -3190,6 +3190,14 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
@@ -105,7 +105,7 @@ index 7f1cc2e9..95e7e3e9 100644
      {"subtitlelanguageex",    VIDEOPLAYER_SUBTITLE_LANG_EX},
      {"subtitlecodec",         VIDEOPLAYER_SUBTITLE_CODEC},
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
-index 4ee5ee90..8fee6d2c 100644
+index 4ee5ee9..97cdaa5 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 @@ -24,6 +24,7 @@
@@ -124,7 +124,7 @@ index 4ee5ee90..8fee6d2c 100644
  #include <map>
  #include <mutex>
  #include <utility>
-@@ -963,34 +965,199 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
+@@ -963,34 +965,201 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
      guide->Open();
    }
  }
@@ -147,6 +147,7 @@ index 4ee5ee90..8fee6d2c 100644
 +  };
 +  std::optional<Open> open; //!< the track open translated
 +  std::string track; //!< the language of the subtitle open, translated or not
++  bool reopen{false}; //!< the subtitle open is to be opened again, in the target chosen
 +};
 +
 +Translation& GetTranslation()
@@ -267,6 +268,7 @@ index 4ee5ee90..8fee6d2c 100644
 +    const auto next = now == offered.end() ? offered.begin() : now + 1;
 +    translation.target = next == offered.end() ? std::string() : *next;
 +    translation.chosen = true;
++    translation.reopen = true;
 +    Keep(translation.video, translation.target);
 +  }
 +  // the subtitle open is opened again, to be read in the language chosen
@@ -344,7 +346,7 @@ index 4ee5ee90..8fee6d2c 100644
  }
  
  int CTranslatedEntry::Index(const CSelectionStreams& streams)
-@@ -1001,48 +1168,71 @@ int CTranslatedEntry::Index(const CSelectionStreams& streams)
+@@ -1001,48 +1170,79 @@ int CTranslatedEntry::Index(const CSelectionStreams& streams)
  const SelectionStream* CTranslatedEntry::Default(const CSelectionStreams& streams,
                                                   bool reset,
                                                   bool defaultSettings,
@@ -363,6 +365,13 @@ index 4ee5ee90..8fee6d2c 100644
 -  m_selected = m_offer && entry == Index(streams);
 -  return m_selected ? m_offer->sourceIndex : entry;
 +  return entry;
++}
++
++bool CTranslatedEntry::Reopen() const
++{
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  return translation.reopen;
  }
  
  void CTranslatedEntry::Opened(bool ok)
@@ -386,6 +395,7 @@ index 4ee5ee90..8fee6d2c 100644
 +  std::unique_lock guard(translation.lock);
 +  translation.open.reset();
 +  translation.track.clear();
++  translation.reopen = false;
 +  const int index = streams.TypeIndexOf(StreamType::SUBTITLE, source, demuxerId, id);
 +  if (index < 0)
      return {};
@@ -435,7 +445,7 @@ index 4ee5ee90..8fee6d2c 100644
  }
  } // namespace KODI::SUBTITLES::AI
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
-index 1a4c4b9d..62ac3d69 100644
+index 1a4c4b9..7b8a878 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 @@ -98,9 +98,25 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
@@ -467,7 +477,7 @@ index 1a4c4b9d..62ac3d69 100644
   */
  class CTranslatedEntry
  {
-@@ -108,46 +124,38 @@ public:
+@@ -108,46 +124,40 @@ public:
    using Reads = std::function<bool(const KODI::UTILS::CLanguageTag&)>;
  
    /*!
@@ -506,6 +516,8 @@ index 1a4c4b9d..62ac3d69 100644
 +  //! The viewer chooses an entry: the track to open for it, which is that entry.
    int Select(int entry, const CSelectionStreams& streams);
 -  //! Whether the track chosen opened.
++  //! Whether the track open is to be opened again although selected: the target changed.
++  bool Reopen() const;
 +  //! Whether the track opened.
    void Opened(bool ok);
    //! The language a subtitle stream being opened is to be read in, or empty.
@@ -529,8 +541,22 @@ index 1a4c4b9d..62ac3d69 100644
  };
  
  /*!
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 1f3fa26..20b0a22 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -3826,7 +3826,8 @@ void CVideoPlayer::HandleMessages()
+             CloseStream(m_CurrentSubtitle, false);
+           }
+         }
+-        else if (!st.IsCurrent(m_CurrentSubtitle) || m_CurrentSubtitle.demuxDisabled)
++        else if (!st.IsCurrent(m_CurrentSubtitle) || m_CurrentSubtitle.demuxDisabled ||
++                 m_translatedSubtitle.Reopen())
+         {
+ #if defined(HAVE_LIBBLURAY)
+           if (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer &&
 diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-index e3e3128c..20d35948 100644
+index 4f7b5e8..b20b1b8 100644
 --- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
 +++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
 @@ -102,7 +102,8 @@ constexpr uint32_t PLAYER_IS_LIVE                    = 87;
@@ -544,7 +570,7 @@ index e3e3128c..20d35948 100644
  constexpr uint32_t WEATHER_TEMPERATURE               = 101;
  constexpr uint32_t WEATHER_LOCATION                  = 102;
 diff --git a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
-index d8f06234..3000abdc 100644
+index d8f0623..3000abd 100644
 --- a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
 +++ b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
 @@ -17,6 +17,7 @@
@@ -566,7 +592,7 @@ index d8f06234..3000abdc 100644
        if (m_appPlayer->IsPlayingVideo())
        {
 diff --git a/xbmc/interfaces/builtins/PlayerBuiltins.cpp b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
-index 4c54beb0..5ea81248 100644
+index 4c54beb..5ea8124 100644
 --- a/xbmc/interfaces/builtins/PlayerBuiltins.cpp
 +++ b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
 @@ -20,6 +20,7 @@
