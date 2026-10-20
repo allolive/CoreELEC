@@ -75,10 +75,10 @@ The help of "Realign with the video" says so.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 93394fa..64b3bda 100644
+index de09c23..a69ab24 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25687,7 +25687,7 @@ msgstr ""
+@@ -25669,7 +25669,7 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Realign with the video"
  #: system/settings/settings.xml
  msgctxt "#60101"
@@ -114,7 +114,7 @@ index ba4092e..7c4af3b 100644
              SubtitleRevision.h
              SubtitleTranslation.h
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index dbe1484..7eb6db3 100644
+index 303c352..df45e30 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 @@ -9,9 +9,14 @@
@@ -216,7 +216,7 @@ index dbe1484..7eb6db3 100644
 +}
 +
  //! What a video and a subtitle file were found to need, kept for the session: the subtitle is
- //! opened again each time the viewer picks it, or seeks back past a title.
+ //! opened again each time the viewer picks it after another, or seeks back past a title.
  std::mutex g_fitsLock;
 @@ -149,43 +217,71 @@ void CCueStage::Realign()
      if (const auto it = g_fits.find(key); it != g_fits.end())
