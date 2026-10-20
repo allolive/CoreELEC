@@ -65,6 +65,15 @@ before. The cues are handed in under one lock, so the repair and the
 worker get them one at a time from either thread, and a seek waits for
 the one in hand.
 
+A picture reaches the reader from whichever path reads it first, so
+the lines come back out of time order after a seek or a language
+change. Each line now ends the one before it in time and is ended by
+the one after, whichever arrived first, rather than only the line shown
+last; a line shown late is still not ended before it can be read. A
+PGS picture carries no end, only the farthest time there is, which
+kept a line passed over that way on screen for good: an end more than
+an hour away now counts as none.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
@@ -745,10 +754,10 @@ index 1614602..2c994e7 100644
   * \brief Hands cues to a model's work on a thread of its own, a few at a time, and each result to
   * deliver with the cue's times, on that thread, in the order of the cues.
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-index 5716ec9..18114a6 100644
+index 5716ec9..36675a6 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-@@ -8,50 +8,27 @@
+@@ -8,50 +8,31 @@
  
  #include "SubtitlePictureCodec.h"
  
@@ -790,6 +799,10 @@ index 5716ec9..18114a6 100644
 -//! aside, before it is taken not to see the track as the player does.
 -constexpr double MISSED = 2.0 * DVD_TIME_BASE;
 -//! The same subtitle from both paths starts within this.
++//! An end this far after the start is PGS's: none.
++constexpr double FOREVER = 3600.0 * DVD_TIME_BASE;
++//! How many of the subtitles shown last are kept to end or be ended by one handed on late.
++constexpr size_t SHOWN = 64;
 +//! Where a subtitle is shown is kept by its start, to the nearest this.
  constexpr double SAME = 0.01 * DVD_TIME_BASE;
 -//! How much faster than playback the read-ahead reads: past that it would take the network and
@@ -801,7 +814,17 @@ index 5716ec9..18114a6 100644
  int64_t Slot(double start)
  {
    return std::llround(start / SAME);
-@@ -81,158 +58,6 @@ std::optional<PICTURES::CReader::Item> Collect(CDVDOverlayCodecFFmpeg& codec)
+@@ -74,165 +55,15 @@ std::optional<PICTURES::CReader::Item> Collect(CDVDOverlayCodecFFmpeg& codec)
+       cleared = true;
+   }
+   if (std::optional<PICTURES::Picture> picture = PICTURES::FromOverlays(shown))
+-    return PICTURES::CReader::Item{std::move(*picture), start, stop > start ? stop : 0};
++    // PGS gives no end, only the farthest time there is: the next subtitle ends it
++    return PICTURES::CReader::Item{std::move(*picture), start,
++                                   stop > start && stop - start < FOREVER ? stop : 0};
+   if (cleared)
+     return PICTURES::CReader::Item{{}, start, 0};
+   return std::nullopt;
  }
  } // namespace
  
@@ -960,7 +983,7 @@ index 5716ec9..18114a6 100644
  CSubtitlePictureCodec::CSubtitlePictureCodec() : CDVDOverlayCodec("Subtitle Picture Reader")
  {
  }
-@@ -266,7 +91,22 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+@@ -266,7 +97,22 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
        hints, true, [this](const std::string& text, double start, double stop)
        { Show(text, start, stop); }, false);
    if (!hints.video.empty())
@@ -984,7 +1007,7 @@ index 5716ec9..18114a6 100644
    return Initialize();
  }
  
-@@ -274,27 +114,20 @@ void CSubtitlePictureCodec::Hand(PICTURES::CReader::Item item, unsigned int gene
+@@ -274,27 +120,20 @@ void CSubtitlePictureCodec::Hand(PICTURES::CReader::Item item, unsigned int gene
  {
    {
      std::unique_lock guard(m_seenLock);
@@ -1021,7 +1044,7 @@ index 5716ec9..18114a6 100644
    }
    if (!item.picture.grey.empty())
      CLog::Log(LOGDEBUG, "Subtitle pictures: one at {:.1f} s, {:.1f} s ahead of playback, {}",
-@@ -308,7 +141,7 @@ OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
+@@ -308,7 +147,7 @@ OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
  {
    if (m_asPictures)
      return m_pictures->Decode(pPacket);
@@ -1030,7 +1053,71 @@ index 5716ec9..18114a6 100644
      m_ahead.reset();
    if (m_pictures->Decode(pPacket) == OverlayMessage::OC_OVERLAY)
      if (std::optional<PICTURES::CReader::Item> subtitle = Collect(*m_pictures))
-@@ -366,10 +199,8 @@ void CSubtitlePictureCodec::Flush()
+@@ -325,13 +164,29 @@ OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
+ 
+ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
+ {
+-  // as the player ends a picture: where the next starts or clears, or at its own end before -
+-  // PGS gives none, only the farthest time there is
+-  if (m_prevSubId != NO_SUBTITLE_ID && m_prevStop > start && start > m_prevStart)
+-    ChangeSubtitleStopTime(m_prevSubId, m_cues.Ending(start));
+-  m_prevSubId = NO_SUBTITLE_ID;
++  std::unique_lock guard(m_seenLock);
++  // a subtitle ends the one before it in time and is ended by the one after, whichever came
++  // first: the read-ahead and the player hand them on as each reads them, not in order
++  const auto next = m_shown.upper_bound(start);
++  if (next != m_shown.begin())
++  {
++    Shown& before = std::prev(next)->second;
++    if (before.id != NO_SUBTITLE_ID && before.stop > start && start > std::prev(next)->first)
++    {
++      before.stop = std::max(start, before.readable);
++      ChangeSubtitleStopTime(before.id, before.stop);
++    }
++  }
++  if (next != m_shown.end() && (stop <= start || stop > next->first))
++    stop = next->first;
++  if (m_shown.size() >= SHOWN)
++    m_shown.erase(m_shown.begin());
+   if (text.empty())
++  {
++    // a picture at the same time stays
++    m_shown.try_emplace(start, Shown{NO_SUBTITLE_ID, start, start});
+     return;
++  }
+   CLog::Log(LOGDEBUG, "Subtitle pictures: line at {:.1f} s ready {:.1f} s ahead of it",
+             start / DVD_TIME_BASE, (start - KODI::SUBTITLES::AI::PlaybackTime()) / DVD_TIME_BASE);
+   if (stop <= start)
+@@ -339,22 +194,18 @@ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
+   // read off a picture, it carries no tags: every character of it shows as itself, where the
+   // picture was - bottom centre, as any text subtitle, needs no tag
+   int place = KODI::SUBTITLES::MODEL::BOTTOM_CENTRE;
++  if (const auto it = m_places.find(Slot(start)); it != m_places.end())
+   {
+-    std::unique_lock guard(m_seenLock);
+-    if (const auto it = m_places.find(Slot(start)); it != m_places.end())
+-    {
+-      place = it->second;
+-      m_places.erase(it); // each line is shown once
+-    }
++    place = it->second;
++    m_places.erase(it); // each line is shown once
+   }
+   text = (place != KODI::SUBTITLES::MODEL::BOTTOM_CENTRE ? "{\\an" + std::to_string(place) + "}"
+                                                          : "") +
+          KODI::SUBTITLES::MODEL::AssText(text);
+-  // the line after ends this one by its own start, not where it is shown from
+-  m_prevStart = start;
++  // kept by its own start, not where it is shown from, and not ended before it can be read
++  const double at = start;
+   m_cues.Late(start, stop);
+-  m_prevSubId = AddSubtitle(text, start, stop);
+-  m_prevStop = stop;
++  m_shown[at] = {AddSubtitle(text, start, stop), stop, m_cues.Ending(start)};
+ }
+ 
+ void CSubtitlePictureCodec::Reset()
+@@ -366,17 +217,18 @@ void CSubtitlePictureCodec::Flush()
  {
    {
      std::unique_lock guard(m_seenLock);
@@ -1042,8 +1129,19 @@ index 5716ec9..18114a6 100644
    }
    if (m_ahead)
      m_ahead->Seek();
+   m_pictures->Flush();
+   m_reader->Flush();
+   m_cues.Flush();
+-  m_prevSubId = NO_SUBTITLE_ID;
++  {
++    std::unique_lock guard(m_seenLock);
++    m_shown.clear();
++  }
+   m_overlay.reset();
+   FlushSubtitles();
+ }
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h
-index 2b9c248..2f72eee 100644
+index 2b9c248..257b8ca 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.h
 @@ -13,11 +13,9 @@
@@ -1067,7 +1165,7 @@ index 2b9c248..2f72eee 100644
    void Show(std::string text, double start, double stop);
    /*!
     * \brief A subtitle to read, from either path, once.
-@@ -52,14 +48,12 @@ private:
+@@ -52,19 +48,21 @@ private:
  
    std::unique_ptr<CDVDOverlayCodecFFmpeg> m_pictures;
    std::unique_ptr<KODI::SUBTITLES::PICTURES::CReader> m_reader;
@@ -1085,4 +1183,16 @@ index 2b9c248..2f72eee 100644
 -  std::atomic<bool> m_aheadWrong{false}; //!< the read-ahead missed what the player read
    bool m_asPictures{false}; //!< the model reads no pictures: they are shown as they are
    std::shared_ptr<CDVDOverlay> m_overlay;
-   int m_prevSubId{-1}; //!< the line shown last, which the next one ends
+-  int m_prevSubId{-1}; //!< the line shown last, which the next one ends
+-  double m_prevStart{0};
+-  double m_prevStop{0};
++  struct Shown
++  {
++    int id; //!< NO_SUBTITLE_ID for a clear
++    double stop;
++    double readable; //!< the soonest it may end: shown late, it is read first
++  };
++  std::map<double, Shown> m_shown; //!< the subtitles shown last, by their own start
+   //! last, so whatever delivers its cues stops before anything it delivers to goes
+   KODI::SUBTITLES::CCueStage m_cues;
+ };
