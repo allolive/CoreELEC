@@ -1,0 +1,619 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: read and translate a picture subtitle in one
+ request
+
+A subtitle made of pictures opened to be translated took two requests
+a batch: the model read the pictures, then the cue stage's worker sent
+the text it read to the model again to translate it. A local model
+reads three or four lines in ten seconds that way, less than dense
+dialogue is spoken.
+
+When the track is opened to be translated (hints.translateTo), the
+reader now asks for both at once: the image of the stacked pictures,
+with what the video is, its characters, the lines read before (context
+only, dropped at a seek), and to answer each numbered row with what it
+reads, " => ", and its translation. The context is the one the
+translation worker is given, now built by AI::TranslationContext() for
+both.
+
+An answer is used when every row comes back numbered once with both
+halves. A row whose translation is its own text again - case and
+spacing aside, the model answering in the source language - or is far
+longer than it (the check a translated line gets) goes to the cue
+stage as it was read, to be translated there: the first half is the
+reading, with no further request. Each other row's translation is laid
+on two lines as a translated line is.
+
+An answer of no use - a row left out or without its two halves, a
+remark, a refusal, an error from the provider - or none in time has
+the same image asked again to be read only, and the text read goes
+through the cue stage as before: repaired, then translated by its
+worker. A line is never lost to the combined request. A request
+dropped by a seek or the stream closing is not asked again. After
+three answers of no use in a row, or two requests with no answer in
+time (a model too slow to do both within the provider's silence), the
+reader stops asking for both and only reads.
+
+A line read and translated at once is not repaired: the repair fixes
+the mistakes of OCR in the source language - its dictionaries are that
+language's - and the model reading the picture makes none of those; on
+a translation it would only do harm. Its ad removal does not apply to
+those lines either. A line read only, or left untranslated, is
+repaired as before.
+
+Translated lines reach the screen the way the others do: the cue
+stage's new Pass() hands them to its worker, which delivers them in
+their turn among the cues it translates, untouched, and drops them at
+a seek like any other (CCueWorker::Pass; the queue keeps a batch of
+cues worked on already apart from one to work on). What the model read
+of them joins the worker's lines before, as the lines it translates
+itself do, so a line translated after them has them as context. They
+go through the codec's Show(): escaped for libass, placed where the
+picture was, moved when late, and logged "line at X s ready Y s ahead
+of it".
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 0a8f60a..7ba3b0b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -1012,13 +1012,13 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+   const Provider& provider = *model;
+   if (!hints.translateTo.empty())
+   {
+-    TRANSLATION::Context context =
+-        ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo);
+-    context.tags = tags;
+-    return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+-                                               TRANSLATION::Translation(std::move(context)),
+-                                               std::move(deliver), std::move(now), ahead,
+-                                               silence / 4);
++    TRANSLATION::Heard heard;
++    auto worker = std::make_unique<MODEL::CCueWorker>(
++        std::make_unique<CChat>(provider, silence),
++        TRANSLATION::Translation(TranslationContext(hints, tags), &heard), std::move(deliver),
++        std::move(now), ahead, silence / 4);
++    worker->Heard(std::move(heard));
++    return worker;
+   }
+   const std::optional<REVISION::Mode> mode = RepairMode();
+   if (!mode)
+@@ -1030,6 +1030,13 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                              silence / 4);
+ }
+ 
++TRANSLATION::Context TranslationContext(const CDVDStreamInfo& hints, bool tags)
++{
++  TRANSLATION::Context context = ContextFor(TRANSLATION::CodeOf(hints.language), hints.translateTo);
++  context.tags = tags;
++  return context;
++}
++
+ double PlaybackTime()
+ {
+   const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 79a362e..97f1628 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -104,6 +104,13 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               bool& doubts,
+                                               bool tags = true);
+ 
++/*!
++ * \brief What the model is told about a subtitle stream opened to be translated
++ * (hints.translateTo): its language and the one it goes into, the video's title and characters.
++ * \param tags whether the cues can carry tags: text read off pictures carries none
++ */
++TRANSLATION::Context TranslationContext(const CDVDStreamInfo& hints, bool tags);
++
+ //! Where playback is, in the time base of the cues of a subtitle file.
+ double PlaybackTime();
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index fd2d5f4..8a1ef88 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -687,6 +687,17 @@ void CCueStage::Submit(std::string text, double start, double stop)
+     m_out(text, start, stop);
+ }
+ 
++void CCueStage::Pass(const std::string& text,
++                     double start,
++                     double stop,
++                     const std::string& source)
++{
++  if (m_worker)
++    m_worker->Pass(text, start, stop, source);
++  else
++    m_out(text, start, stop);
++}
++
+ void CCueStage::Flush()
+ {
+   if (m_worker)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index 151d33b..77294ed 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -71,6 +71,9 @@ public:
+   //! A cue as read, which reaches deliver - from the language model's thread when it works on
+   //! the cues.
+   void Submit(std::string text, double start, double stop);
++  //! A cue translated already, as the model read it off a picture: neither repaired nor worked
++  //! on again, delivered in its turn among the cues submitted. source is what the model read.
++  void Pass(const std::string& text, double start, double stop, const std::string& source);
+   void Flush();
+   //! Whether a "" cue means there is nothing to show, rather than an empty cue.
+   bool Removes() const { return m_removes; }
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index d3b4f8d..9a867a9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -211,6 +211,20 @@ void CCueWorker::Submit(const std::string& text,
+                         double start,
+                         double stop,
+                         std::vector<std::string> notes)
++{
++  Queue({text, std::move(notes)}, start, stop, false);
++}
++
++void CCueWorker::Pass(const std::string& text,
++                      double start,
++                      double stop,
++                      const std::string& source)
++{
++  Queue({text, source.empty() ? std::vector<std::string>() : std::vector<std::string>{source}},
++        start, stop, true);
++}
++
++void CCueWorker::Queue(Item item, double start, double stop, bool done)
+ {
+   unsigned generation;
+   {
+@@ -219,7 +233,7 @@ void CCueWorker::Submit(const std::string& text,
+   }
+   {
+     std::unique_lock lock(m_queueLock);
+-    m_queue.push_back({{text, std::move(notes)}, start, stop, generation});
++    m_queue.push_back({std::move(item), start, stop, generation, done});
+   }
+   m_wake.notify_one();
+ }
+@@ -256,7 +270,11 @@ std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
+     if (ahead != m_queue.end())
+       first = ahead - m_queue.begin();
+   }
+-  const size_t last = first + std::min(m_queue.size() - first, m_size);
++  // the cues worked on already go apart from those to work on
++  const bool done = m_queue[first].done;
++  size_t last = first;
++  while (last < m_queue.size() && m_queue[last].done == done && (done || last - first < m_size))
++    ++last;
+   std::vector<Cue> batch(std::make_move_iterator(m_queue.begin() + first),
+                          std::make_move_iterator(m_queue.begin() + last));
+   m_queue.erase(m_queue.begin() + first, m_queue.begin() + last);
+@@ -282,6 +300,26 @@ void CCueWorker::Run()
+     if (batch.empty())
+       return;
+ 
++    if (batch.front().done)
++    {
++      size_t lost = 0;
++      for (const Cue& cue : batch)
++      {
++        std::unique_lock lock(m_deliverLock);
++        if (cue.generation != m_generation)
++          ++lost;
++        else
++        {
++          m_deliver(cue.item.text, cue.start, cue.stop);
++          if (m_heard && !cue.item.notes.empty())
++            m_heard(cue.item.notes.front());
++        }
++      }
++      if (lost)
++        m_chat->Note(std::to_string(lost) + " lines dropped by a seek while they waited");
++      continue;
++    }
++
+     std::vector<Item> items;
+     for (const Cue& cue : batch)
+       items.push_back(cue.item);
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index c387442..1614602 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -146,6 +146,13 @@ public:
+               double start,
+               double stop,
+               std::vector<std::string> notes = {});
++  /*!
++   * \brief A cue already worked on: delivered as it is, in its turn among the others.
++   * \param source the text it was made from, for the work's lines before (see Heard), or empty
++   */
++  void Pass(const std::string& text, double start, double stop, const std::string& source = {});
++  //! Where the source of a cue passed goes once it is delivered: set before the first cue.
++  void Heard(std::function<void(const std::string& source)> heard) { m_heard = std::move(heard); }
+   //! Drop every cue not yet delivered, ending the request for them: none is delivered once this
+   //! returns (after a seek).
+   void Flush();
+@@ -157,10 +164,12 @@ private:
+     double start;
+     double stop;
+     unsigned generation;
++    bool done{false}; //!< worked on already: only delivered
+   };
+ 
+   //! Where a cue ends: its start for one the next ends.
+   static double End(const Cue& cue) { return cue.stop > cue.start ? cue.stop : cue.start; }
++  void Queue(Item item, double start, double stop, bool done);
+   void Run();
+   std::vector<Cue> NextBatch();
+ 
+@@ -168,6 +177,7 @@ private:
+   Work m_work;
+   Deliver m_deliver;
+   Now m_now;
++  std::function<void(const std::string& source)> m_heard;
+   const bool m_ahead;
+   const std::chrono::milliseconds m_quick;
+   size_t m_size{BATCH}; //!< how many cues the next request carries at most
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+index a4a2aaf..5716ec9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+@@ -249,10 +249,19 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+   m_pictures = std::make_unique<CDVDOverlayCodecFFmpeg>();
+   if (!m_pictures->Open(hints, options))
+     return false;
++  // read and translated in one request; what is only read is translated by the cue stage
+   m_reader = std::make_unique<PICTURES::CReader>(
+       KODI::SUBTITLES::AI::LanguageName(KODI::SUBTITLES::TRANSLATION::CodeOf(hints.language)),
+-      [this](std::string text, double start, double stop)
+-      { m_cues.Submit(std::move(text), start, stop); });
++      [this](std::string text, double start, double stop, std::string source)
++      {
++        if (!source.empty())
++          m_cues.Pass(text, start, stop, source);
++        else
++          m_cues.Submit(std::move(text), start, stop);
++      },
++      hints.translateTo.empty()
++          ? std::nullopt
++          : std::make_optional(KODI::SUBTITLES::AI::TranslationContext(hints, false)));
+   m_cues.Open(
+       hints, true, [this](const std::string& text, double start, double stop)
+       { Show(text, start, stop); }, false);
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+index 1b97aff..15aa33c 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+@@ -38,6 +38,9 @@ constexpr size_t BATCH = 8;
+ constexpr auto GATHER = std::chrono::milliseconds(300);
+ //! Batches refused, or answered unread, in a row before the model is taken to read no pictures.
+ constexpr int REFUSALS = 3;
++//! Requests to read and translate at once with no answer in time, in a row, before the model is
++//! taken to be too slow for them: it only reads.
++constexpr int SLOW = 2;
+ //! Ink darker than this is text.
+ constexpr uint8_t INK = 128;
+ constexpr int MARGIN = 6;
+@@ -344,9 +347,12 @@ std::string Png(const Picture& picture)
+   return png;
+ }
+ 
+-CReader::CReader(std::string language, Deliver deliver)
++CReader::CReader(std::string language,
++                 Deliver deliver,
++                 std::optional<TRANSLATION::Context> translate)
+   : m_language(std::move(language)),
+     m_deliver(std::move(deliver)),
++    m_translate(std::move(translate)),
+     m_ask(std::make_unique<AI::CPictureAsk>()),
+     m_thread([this] { Run(); })
+ {
+@@ -385,6 +391,10 @@ void CReader::Flush()
+ void CReader::Run()
+ {
+   int refused = 0;
++  int apart = 0; //!< batches in a row read only once asked to translate them too
++  int slow = 0; //!< and asked so with no answer in time
++  std::deque<std::string> before; //!< the lines translated last, for context
++  unsigned int beforeGeneration = 0;
+   m_ask->Wake();
+   std::unique_lock lock(m_lock);
+   while (true)
+@@ -410,12 +420,68 @@ void CReader::Run()
+     for (const Item& item : batch)
+       if (!item.picture.grey.empty())
+         pictures.push_back(Scaled(item.picture, LINE_HEIGHT));
+-    const std::string png = pictures.empty() ? std::string() : Png(Stack(pictures));
++    std::string png = pictures.empty() ? std::string() : Png(Stack(pictures));
+     std::string error;
+-    const std::optional<std::string> answer =
+-        png.empty() ? std::nullopt : m_ask->Ask(Prompt(pictures.size(), m_language), png, error);
+-    const std::vector<std::string> texts =
+-        answer ? MODEL::ReadNumbered(*answer, pictures.size()) : std::vector<std::string>{};
++    std::optional<std::string> answer;
++    std::vector<std::string> texts;
++    std::vector<std::string> sources; //!< what the model read, for a text it translated
++    bool unusable = false; //!< asked to translate too, the model answered of no use
++    if (m_translate && !png.empty())
++    {
++      if (generation != beforeGeneration)
++        before.clear();
++      beforeGeneration = generation;
++      // read and translated in one request; a row left untranslated goes to the translation as
++      // read, and an answer of no use - or none in time - is asked again to be read alone
++      answer = m_ask->Ask(TRANSLATION::PicturePrompt(*m_translate, before, pictures.size()), png,
++                          error);
++      if (const auto rows = answer ? TRANSLATION::ReadPictureAnswer(*answer, pictures.size())
++                                   : std::nullopt)
++      {
++        apart = 0;
++        slow = 0;
++        for (const TRANSLATION::PictureRow& row : *rows)
++        {
++          texts.push_back(row.translation.empty() ? row.source
++                                                  : TRANSLATION::Wrap(row.translation));
++          sources.push_back(row.translation.empty() ? std::string() : row.source);
++          before.push_back(row.source);
++          if (before.size() > TRANSLATION::BEFORE)
++            before.pop_front();
++        }
++      }
++      else if (answer || !error.empty())
++      {
++        CLog::Log(LOGDEBUG, "Subtitle pictures: {} not read and translated at once: {}: read alone",
++                  pictures.size(), answer ? "an answer of no use" : error);
++        if (!answer && error == "no answer" && ++slow >= SLOW)
++        {
++          CLog::Log(LOGINFO, "Subtitle pictures: the model does not read and translate them at "
++                             "once in time: read, then translated");
++          m_translate.reset();
++        }
++        unusable = answer.has_value();
++        error.clear();
++        answer.reset();
++        lock.lock();
++        if (generation != m_generation)
++          png.clear();
++        lock.unlock();
++      }
++      else
++        png.clear();
++    }
++    if (texts.empty() && !png.empty())
++    {
++      answer = m_ask->Ask(Prompt(pictures.size(), m_language), png, error);
++      texts = answer ? MODEL::ReadNumbered(*answer, pictures.size()) : std::vector<std::string>{};
++      if (m_translate && unusable && !texts.empty() && ++apart >= REFUSALS)
++      {
++        CLog::Log(LOGINFO, "Subtitle pictures: the model does not read and translate them at "
++                           "once: read, then translated");
++        m_translate.reset();
++      }
++    }
+     // a provider that does not answer says nothing of whether its model reads pictures
+     if (!texts.empty())
+       refused = 0;
+@@ -433,9 +499,10 @@ void CReader::Run()
+       continue;
+     for (size_t i = 0, picture = 0; i < batch.size(); ++i)
+       if (batch[i].picture.grey.empty())
+-        m_deliver({}, batch[i].start, batch[i].start);
++        m_deliver({}, batch[i].start, batch[i].start, {});
+       else if (const size_t read = picture++; read < texts.size() && !texts[read].empty())
+-        m_deliver(texts[read], batch[i].start, batch[i].stop);
++        m_deliver(texts[read], batch[i].start, batch[i].stop,
++                  read < sources.size() ? sources[read] : std::string());
+   }
+ }
+ } // namespace KODI::SUBTITLES::PICTURES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+index 46b8388..b50fccc 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "SubtitleModel.h"
++#include "SubtitleTranslation.h"
+ 
+ #include <atomic>
+ #include <condition_variable>
+@@ -81,14 +82,20 @@ public:
+     double stop; //!< its own end, or 0 for none
+   };
+   //! A picture's text, with its times, as soon as it is read, and "" for a clear, in the order
+-  //! they came: from the reader's thread, never after Flush returns.
+-  using Deliver = std::function<void(std::string text, double start, double stop)>;
++  //! they came: from the reader's thread, never after Flush returns. source is what the model
++  //! read when the text is its translation, else empty.
++  using Deliver =
++      std::function<void(std::string text, double start, double stop, std::string source)>;
+ 
+   /*!
+    * \param language the pictures' language, by name in English ("Spanish"), or empty
+    * \param deliver where what is read goes; a picture not read goes nowhere
++   * \param translate what the model is told to translate the pictures as it reads them, or none
++   * to have them read only
+    */
+-  CReader(std::string language, Deliver deliver);
++  CReader(std::string language,
++          Deliver deliver,
++          std::optional<TRANSLATION::Context> translate = std::nullopt);
+   ~CReader();
+ 
+   void Add(Item item);
+@@ -102,6 +109,7 @@ private:
+ 
+   const std::string m_language;
+   const Deliver m_deliver;
++  std::optional<TRANSLATION::Context> m_translate; //!< the reader's thread's once it runs
+   std::unique_ptr<AI::CPictureAsk> m_ask;
+   std::mutex m_lock;
+   std::condition_variable m_wake;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+index bd3e7f6..1f1ec2f 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+@@ -11,6 +11,7 @@
+ #include "SubtitleCleanup.h"
+ 
+ #include <algorithm>
++#include <memory>
+ 
+ namespace KODI::SUBTITLES::TRANSLATION
+ {
+@@ -109,6 +110,70 @@ std::vector<std::string> ReadTranslation(const std::string& answer,
+   return out;
+ }
+ 
++std::string PicturePrompt(const Context& context,
++                          const std::deque<std::string>& before,
++                          size_t count)
++{
++  const std::string n = std::to_string(count);
++  return MODEL::Preamble(context.title, context.cast, before) + "\nThis image holds " + n + " " +
++         (context.from.empty() ? "" : context.from + " ") +
++         "film subtitles, one per numbered row. Transcribe each exactly as written, keeping "
++         "punctuation, accents and capitals, joining a row's lines with a single space; then "
++         "translate it into natural spoken " +
++         context.to +
++         " that reads well as a subtitle, keeping its meaning, its tone and its register, and "
++         "names as they are. Answer with one line per row, numbered 1) to " +
++         n + "), each the row as written, then \" => \", then its " + context.to +
++         " translation, and nothing else.";
++}
++
++namespace
++{
++std::string Trimmed(const std::string& text)
++{
++  const size_t first = text.find_first_not_of(" \t");
++  return first == std::string::npos ? std::string()
++                                    : text.substr(first, text.find_last_not_of(" \t") + 1 - first);
++}
++
++//! The same words, whatever their case and spacing: a line the model did not translate.
++bool Same(const std::string& a, const std::string& b)
++{
++  const auto folded = [](const std::string& text)
++  {
++    std::wstring out;
++    for (const wchar_t c : CLEANUP::ToWide(text))
++      if (c != L' ' && c != L'\t')
++        out.push_back(CLEANUP::Small(c));
++    return out;
++  };
++  return folded(a) == folded(b);
++}
++} // namespace
++
++std::optional<std::vector<PictureRow>> ReadPictureAnswer(const std::string& answer, size_t count)
++{
++  const std::vector<std::string> lines = MODEL::ReadNumbered(answer, count);
++  if (lines.empty())
++    return std::nullopt;
++  std::vector<PictureRow> rows;
++  for (const std::string& line : lines)
++  {
++    const size_t arrow = line.find("=>");
++    if (arrow == std::string::npos)
++      return std::nullopt;
++    PictureRow row{Trimmed(line.substr(0, arrow)), Trimmed(line.substr(arrow + 2))};
++    if (row.source.empty())
++      return std::nullopt;
++    // left in its own language, or run on: a model that runs on invents
++    if (Same(row.source, row.translation) ||
++        ReadTranslation("1. " + row.translation, {row.source}).empty())
++      row.translation.clear();
++    rows.push_back(std::move(row));
++  }
++  return rows;
++}
++
+ std::optional<std::vector<std::string>> TranslateLines(MODEL::IChat& chat,
+                                                        const Context& context,
+                                                        const std::deque<std::string>& before,
+@@ -185,11 +250,20 @@ Layout LayOut(const std::string& text, bool tags)
+ }
+ } // namespace
+ 
+-MODEL::Work Translation(Context context)
++MODEL::Work Translation(Context context, Heard* heard)
+ {
+-  return [context = std::move(context), before = std::deque<std::string>()](
+-             MODEL::IChat& chat, const std::vector<MODEL::Item>& cues) mutable
++  auto lines = std::make_shared<std::deque<std::string>>();
++  if (heard)
++    *heard = [lines](const std::string& source)
++    {
++      lines->push_back(source);
++      if (lines->size() > BEFORE)
++        lines->pop_front();
++    };
++  return [context = std::move(context), lines](MODEL::IChat& chat,
++                                               const std::vector<MODEL::Item>& cues)
+   {
++    std::deque<std::string>& before = *lines;
+     std::vector<Layout> layouts;
+     std::vector<std::string> sources;
+     std::vector<bool> shouted;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+index 0302f4f..3edf7aa 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.h
+@@ -11,6 +11,7 @@
+ #include "SubtitleModel.h"
+ 
+ #include <deque>
++#include <functional>
+ #include <optional>
+ #include <string>
+ #include <vector>
+@@ -77,6 +78,26 @@ std::string UserPrompt(const Context& context,
+ std::vector<std::string> ReadTranslation(const std::string& answer,
+                                          const std::vector<std::string>& sources);
+ 
++/*!
++ * \brief The request for subtitle pictures, stacked in one image a numbered row each, read and
++ * translated at once: what the video is, the lines before for context only, and how to answer -
++ * each row as written, then its translation.
++ */
++std::string PicturePrompt(const Context& context,
++                          const std::deque<std::string>& before,
++                          size_t count);
++
++//! A row of the answer to PicturePrompt: what the model read, and its translation.
++struct PictureRow
++{
++  std::string source;
++  std::string translation; //!< empty when of no use: the same as the source, or far longer
++};
++
++//! The rows of an answer to PicturePrompt (see MODEL::ReadNumbered); none unless every row gives
++//! what the model read.
++std::optional<std::vector<PictureRow>> ReadPictureAnswer(const std::string& answer, size_t count);
++
+ /*!
+  * \brief The lines translated: all in one request, and line by line when the answer does not
+  * keep to the numbering. A line no answer gives is empty. Nothing when the provider fails.
+@@ -96,5 +117,11 @@ constexpr size_t BEFORE = 6;
+  * as names. A cue with nothing to translate, or that the provider did not answer for, comes
+  * back "".
+  */
+-MODEL::Work Translation(Context context);
++//! A line shown translated without the work, taken as one of the lines before the next request.
++using Heard = std::function<void(const std::string& source)>;
++
++/*!
++ * \param heard set to where the lines translated elsewhere go, when given
++ */
++MODEL::Work Translation(Context context, Heard* heard = nullptr);
+ } // namespace KODI::SUBTITLES::TRANSLATION

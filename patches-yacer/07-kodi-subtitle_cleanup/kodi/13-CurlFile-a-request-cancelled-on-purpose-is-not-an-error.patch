@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] CurlFile: a request cancelled on purpose is not an error
+
+CCurlFile::Cancel() lets another thread end a transfer: it sets the
+read state's m_cancelled, FillBuffer() then returns no data, and
+Open() sees no HTTP response. Open() logged that at LOGERROR as
+"Failed with code 0", the same as a server that cannot be reached, so
+every request its caller chose to end - a subtitle translation dropped
+by a seek, say - left an error in the log.
+
+When m_cancelled is set, the same line is now logged at LOGDEBUG. A
+failure with no cancellation is logged as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/filesystem/CurlFile.cpp b/xbmc/filesystem/CurlFile.cpp
+index be9e0c2..41421c7 100644
+--- a/xbmc/filesystem/CurlFile.cpp
++++ b/xbmc/filesystem/CurlFile.cpp
+@@ -1179,8 +1179,9 @@ bool CCurlFile::Open(const CURL& url)
+       ReadLine(error.data(), 4095);
+     }
+ 
+-    CLog::Log(LOGERROR, "CCurlFile::{} - <{}> Failed with code {}:\n{}", __FUNCTION__,
+-              redactPath, m_httpresponse, error);
++    CLog::Log(m_state->m_cancelled ? LOGDEBUG : LOGERROR,
++              "CCurlFile::{} - <{}> Failed with code {}:\n{}", __FUNCTION__, redactPath,
++              m_httpresponse, error);
+ 
+     return false;
+   }

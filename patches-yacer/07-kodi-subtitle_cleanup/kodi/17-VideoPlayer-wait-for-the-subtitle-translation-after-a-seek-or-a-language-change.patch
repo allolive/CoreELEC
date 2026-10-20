@@ -1,0 +1,431 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] VideoPlayer: wait for the subtitle translation after a seek
+ or a language change
+
+After a seek, a subtitle opened to be translated, or the translation
+turned to another language (which opens the subtitle again and seeks
+back to where playback is), playback went on as soon as the video and
+audio were ready, and the first lines of the translation came late:
+shown when they arrived, not when they were due.
+
+Playback now stays in its buffering, with Kodi's busy wheel and a
+"Translating subtitles..." notification, until the translation is 15 s
+ahead of it or translated as far as its cues are known
+(MODEL::CLead::Check), for at most 30 s after the last seek or opening
+it waits for; then it goes on and lines still to come are shown late,
+as before. Switching the subtitle off, or to another track, ends the
+wait: the gate no longer applies, or the lead it waited for is closed
+with its stream. MODEL::CTranslationWait says when a wait starts, goes
+on, ends or gives up, and is tested natively; AI::HoldForTranslation
+logs each (how long, how far ahead) and tells the start. One wait is
+told once: it goes on however seldom the player asks (before the start
+sync it does not), and is taken for over only once not asked about for
+30 s.
+
+A subtitle file beside the video is opened again without the seek back
+an embedded subtitle gets, so playback would not stop to wait: turning
+its translation to another language (AI::NextTranslation) seeks to
+where playback is as well.
+
+The wait is CVideoPlayer::HoldForSubtitleTranslation(), asked first
+thing in SetCaching where the player leaves its buffering
+(CACHESTATE_INIT or FULL to PLAY or DONE), before any of SetCaching's
+own bookkeeping, so a refused call changes nothing. It never pauses
+playback that runs: a pause in the middle of the film would cut the
+sound of a passthrough stream. A lead is waited for only soon after
+its stream opened or a seek moved it, so buffering later in the film
+for a stalled source does not wait for the translation either. It is
+not taken for a player stopping, at the end of the input (the streams
+no longer inited), while the last title plays out before the next,
+for a realtime input (live TV, timeshift), in a disc menu or a still
+picture, or when no subtitle is shown.
+
+The player passes its own clock, as it shows the cues (see Process):
+for a stream's cues the clock moved by the subtitle delay, for a
+file's that plus the title's time offset - its display time would be
+off on a disc and across EDL cuts. The clock is put where playback
+goes only as the streams are put on it: until then the player waits
+if a lead may still be waited for, and decides once the start sync
+has placed the clock. The start of a film asks at the position it
+starts from, since the clock is only placed later. The subtitle side
+never asks the player.
+
+While playback waits, the player's buffers are full and it reads
+nothing: the read-ahead catching up after a seek reads at full speed
+then, at twice playback's pace only once playback runs, or 15 s of
+cues would take most of the wait to read. The wheel is the one Estuary
+shows above a cache level of zero, set while the wait holds.
+
+A film's start is out of its buffering before its streams start: the
+speed request Prepare() queues sets the caching states done directly,
+so SetCaching was never asked. When the start sync is about to place
+the clock and the translation is waited for at that position, the
+player goes back into its buffering (CACHESTATE_INIT, the stream
+players paused, as after a seek) and SetCaching holds it there.
+
+Shared code: the player's buffering state lives only in
+CVideoPlayer::SetCaching and UpdatePlayState, its start sync only in
+HandlePlaySpeed.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index a5f143b..5876942 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -25708,6 +25708,12 @@ msgctxt "#60102"
+ msgid "Automatic"
+ msgstr ""
+ 
++#. Notification when playback waits for the subtitle translation to be ahead of it
++#: xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++msgctxt "#60103"
++msgid "Translating subtitles..."
++msgstr ""
++
+ #empty strings from id 39218 to 39899
+ 
+ #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 7ba3b0b..92dff7d 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -50,6 +50,7 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <cmath>
+ #include <condition_variable>
+ #include <cstdlib>
+ #include <iterator>
+@@ -1052,6 +1053,57 @@ double ShowingTime()
+                 : 0.0;
+ }
+ 
++namespace
++{
++std::string Ahead(double lead)
++{
++  return std::isinf(lead) ? "all" : StringUtils::Format("{:.1f} s", lead / DVD_TIME_BASE);
++}
++} // namespace
++
++bool HoldForTranslation(double stream, double file)
++{
++  using Wait = MODEL::CTranslationWait;
++  const Wait::Answer answer = Wait::Ask(stream, file);
++  switch (answer.turn)
++  {
++    case Wait::Turn::STARTS:
++      CLog::Log(LOGINFO, "Subtitle translation: playback waits at {:.1f} s, the translation {} ahead",
++                stream / DVD_TIME_BASE, Ahead(answer.lead));
++      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info, Localized(287),
++                                            Localized(60103), TOAST_DISPLAY_TIME, false);
++      return true;
++    case Wait::Turn::WAITS:
++      return true;
++    case Wait::Turn::ENDS:
++      CLog::Log(LOGINFO,
++                "Subtitle translation: playback goes on after waiting {:.1f} s, the translation "
++                "{} ahead",
++                answer.waited, Ahead(answer.lead));
++      return false;
++    case Wait::Turn::GIVES_UP:
++      CLog::Log(LOGINFO,
++                "Subtitle translation: playback goes on after waiting {:.1f} s, {} s after the "
++                "seek, the translation {} ahead: lines may come late",
++                answer.waited, std::chrono::duration_cast<std::chrono::seconds>(Wait::CAP).count(),
++                Ahead(answer.lead));
++      return false;
++    case Wait::Turn::GO:
++      break;
++  }
++  return false;
++}
++
++bool HoldingForTranslation()
++{
++  return MODEL::CTranslationWait::Waiting();
++}
++
++bool TranslationAwaited()
++{
++  return MODEL::CLead::Awaited();
++}
++
+ CAiSettings& CAiSettings::GetInstance()
+ {
+   static CAiSettings instance;
+@@ -1258,6 +1310,7 @@ void NextTranslation()
+ {
+   const std::vector<std::string> languages = TranslationLanguages();
+   std::optional<Kept> kept;
++  bool translated = false; // into another language, not turned off
+   {
+     Translation& translation = GetTranslation();
+     std::unique_lock guard(translation.lock);
+@@ -1269,7 +1322,9 @@ void NextTranslation()
+                  [&translation](const std::string& code) { return code != translation.track; });
+     const auto now = std::find(offered.begin(), offered.end(), translation.target);
+     const auto next = now == offered.end() ? offered.begin() : now + 1;
++    const std::string before = translation.target;
+     translation.target = next == offered.end() ? std::string() : *next;
++    translated = !translation.target.empty() && translation.target != before;
+     translation.chosen = true;
+     kept = Keep(translation);
+   }
+@@ -1279,7 +1334,15 @@ void NextTranslation()
+   const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+   if (player && player->IsPlayingVideo())
+     if (const int subtitle = player->GetSubtitle(); subtitle >= 0)
++    {
+       player->SetSubtitle(subtitle);
++      // a file beside the video is opened again without the seek back an embedded subtitle
++      // gets: one makes playback wait for its translation all the same
++      SubtitleStreamInfo info;
++      player->GetSubtitleStreamInfo(subtitle, info);
++      if (translated && info.isExternal)
++        player->SeekTime(player->GetTime());
++    }
+ }
+ 
+ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 97f1628..bc6ac34 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -117,6 +117,17 @@ double PlaybackTime();
+ //! Where playback is in the times a subtitle line is shown at: moved by the subtitle delay.
+ double ShowingTime();
+ 
++/*!
++ * \brief Whether playback, about to go on after a seek or a subtitle opening, waits for the
++ * subtitle translation to be ahead of it (MODEL::CTranslationWait), told with a notification.
++ * \param stream where playback is in a stream's cue times, file in a file's (MODEL::CLead::Check)
++ */
++bool HoldForTranslation(double stream, double file);
++//! Whether playback waits for the subtitle translation.
++bool HoldingForTranslation();
++//! Whether HoldForTranslation may yet make playback wait (MODEL::CLead::Awaited).
++bool TranslationAwaited();
++
+ /*!
+  * \brief The language the playing video's subtitles are translated into, as the subtitle dialog
+  * shows it: "Off", a language's name, or empty when no translation can be chosen - "AI translate
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 06fa043..a8efbb7 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -342,8 +342,10 @@ void CReadAhead::State::Read()
+         CLog::Log(LOGDEBUG, "{}: read a minute ahead of {:.1f} s: no further until a seek",
+                   m_name, target / DVD_TIME_BASE);
+       }
+-      if (caughtUp ||
+-          (reached > 0 && (reached > AI::PlaybackTime() + READ_AHEAD || read > allowed)))
++      // playback waiting for the translation reads nothing: catching up goes at full speed then
++      const bool paced = whole || !AI::HoldingForTranslation();
++      if (caughtUp || (reached > 0 && (reached > AI::PlaybackTime() + READ_AHEAD ||
++                                       (paced && read > allowed))))
+       {
+         Wait(guard, 500ms);
+         continue;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index 66edb3f..9b701f8 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -367,6 +367,13 @@ CLead::State CLead::Check(double stream, double file, Clock::time_point at)
+   return state;
+ }
+ 
++bool CLead::Awaited(Clock::time_point at)
++{
++  std::unique_lock lock(LeadLock());
++  return std::any_of(Leads().begin(), Leads().end(), [at](const CLead* lead)
++                     { return !lead->m_settled && at <= lead->m_until; });
++}
++
+ void CLead::GiveUp()
+ {
+   std::unique_lock lock(LeadLock());
+@@ -374,6 +381,47 @@ void CLead::GiveUp()
+     lead->m_settled = true;
+ }
+ 
++namespace
++{
++std::mutex g_waitLock;
++std::optional<CLead::Clock::time_point> g_waitSince;
++CLead::Clock::time_point g_waitAsked;
++} // namespace
++
++CTranslationWait::Answer CTranslationWait::Ask(double stream, double file, Clock::time_point now)
++{
++  std::unique_lock lock(g_waitLock);
++  // one wait, told once: asked about seldom (before the start sync) it goes on
++  if (g_waitSince && now - g_waitAsked > CAP)
++    g_waitSince.reset();
++  g_waitAsked = now;
++  const CLead::State state = CLead::Check(stream, file, now);
++  const double waited =
++      g_waitSince ? std::chrono::duration<double>(now - *g_waitSince).count() : 0.0;
++  if (state.ready)
++  {
++    const Turn turn = g_waitSince ? Turn::ENDS : Turn::GO;
++    g_waitSince.reset();
++    return {turn, state.lead, waited};
++  }
++  if (now - state.moved >= CAP)
++  {
++    CLead::GiveUp();
++    g_waitSince.reset();
++    return {Turn::GIVES_UP, state.lead, waited};
++  }
++  if (g_waitSince)
++    return {Turn::WAITS, state.lead, waited};
++  g_waitSince = now;
++  return {Turn::STARTS, state.lead, 0.0};
++}
++
++bool CTranslationWait::Waiting(Clock::time_point now)
++{
++  std::unique_lock lock(g_waitLock);
++  return g_waitSince && now - g_waitAsked <= GONE;
++}
++
+ // -- the thread ----------------------------------------------------------------------------------
+ 
+ CCueWorker::CCueWorker(std::unique_ptr<IChat> chat,
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index 7f0afc5..86b0861 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -217,6 +217,8 @@ public:
+   static State Check(double stream, double file, Clock::time_point at = Clock::now());
+   //! The wait gave up: none is waited for again until it moves.
+   static void GiveUp();
++  //! Whether Check() may yet wait for one: asked before playback knows where it goes.
++  static bool Awaited(Clock::time_point at = Clock::now());
+ 
+ private:
+   double Ahead(double now, bool& ready) const;
+@@ -232,6 +234,38 @@ private:
+   Clock::time_point m_until; //!< waited for until then, unless asked about
+ };
+ 
++/*!
++ * \brief Playback waiting for the translation (CLead::Check) as it leaves its buffering: when the
++ * wait starts, ends, or gives up - CAP after the last lead waited for moved.
++ */
++class CTranslationWait
++{
++public:
++  using Clock = CLead::Clock;
++  static constexpr Clock::duration CAP = std::chrono::seconds(30);
++  //! A wait not asked about this long no longer counts as waiting (Waiting()); one not asked
++  //! about for CAP ended some other way.
++  static constexpr Clock::duration GONE = std::chrono::seconds(5);
++
++  enum class Turn
++  {
++    GO,
++    STARTS,
++    WAITS,
++    ENDS,
++    GIVES_UP,
++  };
++  struct Answer
++  {
++    Turn turn;
++    double lead; //!< how far ahead the translation is
++    double waited; //!< seconds since the wait started
++  };
++  //! Whether playback waits, asked as it is about to go on: where it is, as CLead::Check takes it.
++  static Answer Ask(double stream, double file, Clock::time_point now = Clock::now());
++  static bool Waiting(Clock::time_point now = Clock::now());
++};
++
+ /*!
+  * \brief Hands cues to a model's work on a thread of its own, a few at a time, and each result to
+  * deliver with the cue's times, on that thread, in the order of the cues.
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 5a61098..05a8ced 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2825,6 +2825,12 @@ void CVideoPlayer::HandlePlaySpeed()
+       }
+ 
+       m_syncStartPtsWait.reset();
++      // A film's start is already out of its buffering (the speed request Prepare queues): one
++      // whose subtitle translation is waited for goes back into it, the stream players paused,
++      // for SetCaching to hold.
++      if (!m_State.streamsReady && m_caching == CACHESTATE_DONE &&
++          HoldForSubtitleTranslation(clock))
++        SetCaching(CACHESTATE_INIT);
+       m_clock.Discontinuity(clock);
+       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
+       m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
+@@ -4760,6 +4766,11 @@ bool CVideoPlayer::PollResumePreroll()
+ 
+ void CVideoPlayer::SetCaching(ECacheState state)
+ {
++  if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) &&
++      (m_caching == CACHESTATE_INIT || m_caching == CACHESTATE_FULL) &&
++      HoldForSubtitleTranslation())
++    return;
++
+   // Any move off CACHESTATE_FULL ends a source-underrun hold, a seek included.
+   const bool wasSourceUnderrunHold = m_srcUnderrunHold;
+   if (state != CACHESTATE_FULL)
+@@ -7209,6 +7220,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+   else
+     state.cache_bytes = 0;
+ 
++  if (state.caching && SUBTITLES::AI::HoldingForTranslation())
++    state.cache_level = std::max(state.cache_level, 0.01);
++
+   state.timestamp = m_clock.GetAbsoluteClock();
+ 
+   if (state.timeMax <= 0)
+@@ -7512,6 +7526,26 @@ void CVideoPlayer::UpdateContent()
+   m_content.m_programs = m_programs;
+ }
+ 
++bool CVideoPlayer::HoldForSubtitleTranslation(std::optional<double> at)
++{
++  // after a seek or a subtitle opening, the translation gets ahead first; not at the end of the
++  // input, when the streams are no longer inited
++  if (m_bAbortRequest || !(m_CurrentVideo.inited || m_CurrentAudio.inited) ||
++      m_nextStream.Pending() || !m_pInputStream || m_pInputStream->IsRealtime() ||
++      IsInMenuInternal() || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES) ||
++      !m_VideoPlayerVideo->IsSubtitleEnabled())
++    return false;
++  // the clock is put where playback goes only as the streams are put on it: until then, whether
++  // the translation may be waited for
++  if (!at &&
++      ((m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC) ||
++       (m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_INSYNC)))
++    return SUBTITLES::AI::TranslationAwaited();
++  // the times the player shows a stream's cues and a file's at (see Process)
++  const double stream = at.value_or(m_clock.GetClock()) - m_VideoPlayerVideo->GetSubtitleDelay();
++  return SUBTITLES::AI::HoldForTranslation(stream, stream + m_State.time_offset);
++}
++
+ void CVideoPlayer::UpdateTranslatedSubtitle()
+ {
+   const SelectionStream& as = m_SelectionStreams.Get(StreamType::AUDIO, GetAudioStream());
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index c2767c2..8f95271 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -557,6 +557,9 @@ protected:
+   virtual void UpdateContent();
+   void UpdateContentState();
+   void UpdateTranslatedSubtitle();
++  //! Whether playback, about to leave its buffering, waits for the subtitle translation.
++  //! at: the stream-clock position playback is about to start from, before the clock is placed
++  bool HoldForSubtitleTranslation(std::optional<double> at = {});
+ 
+   void UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update);
+   int GetPreviousChapter();

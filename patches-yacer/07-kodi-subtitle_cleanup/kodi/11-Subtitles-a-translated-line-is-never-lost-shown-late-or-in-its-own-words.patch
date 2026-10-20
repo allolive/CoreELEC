@@ -1,0 +1,629 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: a translated line is never lost - shown late or in
+ its own words
+
+A local model can translate more slowly than dense dialogue is spoken.
+A cue whose translation came back after its start was still added with
+its own start and stop, so it showed only for what was left of its
+window, or not at all. A request that failed delivered empty text, so
+its lines vanished, and the worker then waited ten seconds before the
+next request.
+
+A failed request is now asked again at once, unless the cues it is for
+are all over. A request that still fails, or was not asked again
+because its cues were over, makes the next one wait the ten seconds as
+before; a request a seek dropped does not. The lines of a request that
+failed are not kept as context for the next, so a request asked again
+does not see them twice.
+
+When the request still fails, each cue of it is delivered as it came -
+its own text, repaired if the repair is on - instead of empty, and a
+cue the model's answer left out, or only partly translated, is shown in
+its own words too. Each such request logs one warning with the number
+of lines shown untranslated. A cue with nothing to translate in it (only
+tags) is still delivered empty, to end the cue before it.
+
+A translated line of a stream delivered after its start is shown from
+now, up for at least two seconds or to its own stop if that is later.
+"Now" is the playback time moved by the subtitle delay, which is the
+time libass is asked to render at: the video's time minus the player's
+subtitle delay. The worker is given the same time, so a stream's
+request is not asked again for cues already over either; a cue with no
+end of its own, which the next one ends, counts as over from its start.
+A stream's cues still go to the model in the order they came: moved
+behind newer ones, a late line would come long after its end, or after
+the line that follows it. Only a file, known ahead of playback, has its
+cues still to come go before those playback is past. A line more than
+ten seconds after its end is left at its own times: it belongs to
+another scene by then.
+
+Late lines are chained rather than piled up: a late line ends the late
+line before it at its own start, but no sooner than two seconds after
+that one was shown, so at most two are on screen at once. Every other
+place that ends the line before - a clear in a picture track, the next
+line of a text track at the same place, an empty cue, an open-ended
+line - also keeps a late line up those two seconds. A picture track
+still ends a line by the next one's own start, compared with this
+one's own start rather than where it was shown from, so a late line is
+not left up for the twenty seconds an unended picture gets.
+
+A subtitle file's lines are not moved: the file is translated ahead of
+playback from where it is, and a moved line would keep its moved times
+for good and show at the wrong moment after a seek back. Nor is it done
+for a disc, a TV channel or a recording, whose playback time counts
+from a start of their own rather than the streams' time stamps; a
+stream from an input stream add-on that reports its own start time
+(VideoPlayer's GetTimes path) has the same mismatch, cannot be told
+from here, and gets no late handling in effect - "now" is behind every
+line. So does a video with EDL cuts past its first cut: the player's
+time leaves out what is cut and the streams' time stamps do not, so the
+late handling, and the check for cues already over, quietly stop there.
+
+The cues the worker drops - by a seek, while waiting or during their
+request, or because the subtitle closes, whether in a request or still
+queued - are now logged, as is a line come too late to be shown and a
+picture read ahead before a seek. The worker reaches nothing of Kodi's,
+so it logs through the chat, which gains a Note() the provider's chat
+writes to the log.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
+index 9bc02b8..490ad75 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
+@@ -86,14 +86,14 @@ void CDVDOverlayCodecText::Show(std::string text, double PTSStartTime, double PT
+     // nothing left to show, but a line waiting for its end still takes it from this one
+     if (m_changePrevStopTime)
+     {
+-      ChangeSubtitleStopTime(m_prevSubId, PTSStartTime);
++      ChangeSubtitleStopTime(m_prevSubId, m_cues.Ending(PTSStartTime));
+       m_changePrevStopTime = false;
+     }
+     return;
+   }
+   if (const auto end = m_cues.Time(PTSStartTime, PTSStopTime, text);
+       end && m_prevSubId != NO_SUBTITLE_ID && !m_changePrevStopTime)
+-    ChangeSubtitleStopTime(m_prevSubId, *end);
++    ChangeSubtitleStopTime(m_prevSubId, m_cues.Ending(*end));
+ 
+   CDVDSubtitleTagSami TagConv;
+ 
+@@ -109,7 +109,7 @@ void CDVDOverlayCodecText::Show(std::string text, double PTSStartTime, double PT
+     {
+       if (m_changePrevStopTime)
+       {
+-        ChangeSubtitleStopTime(m_prevSubId, PTSStartTime);
++        ChangeSubtitleStopTime(m_prevSubId, m_cues.Ending(PTSStartTime));
+         m_changePrevStopTime = false;
+       }
+ 
+@@ -117,6 +117,9 @@ void CDVDOverlayCodecText::Show(std::string text, double PTSStartTime, double PT
+       m_changePrevStopTime = true;
+     }
+ 
++    if (const auto end = m_cues.Late(PTSStartTime, PTSStopTime);
++        end && m_prevSubId != NO_SUBTITLE_ID)
++      ChangeSubtitleStopTime(m_prevSubId, *end);
+     m_prevSubId = AddSubtitle(text, PTSStartTime, PTSStopTime);
+   }
+   else
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index a9dad73..212a6fc 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -18,6 +18,7 @@
+ #include "application/ApplicationPlayer.h"
+ #include "cores/VideoPlayer/DVDStreamInfo.h"
+ #include "cores/VideoPlayer/Interface/StreamInfo.h"
++#include "cores/VideoPlayer/Interface/TimingConstants.h"
+ #include "cores/VideoPlayer/VideoPlayer.h"
+ #include "dialogs/GUIDialogBusy.h"
+ #include "dialogs/GUIDialogKaiToast.h"
+@@ -487,6 +488,11 @@ public:
+     return m_aborts != m_batch;
+   }
+ 
++  void Note(const std::string& what, bool warning) override
++  {
++    CLog::Log(warning ? LOGWARNING : LOGDEBUG, "Subtitle AI: {}", what);
++  }
++
+   struct Reply
+   {
+     std::optional<std::string> text;
+@@ -993,6 +999,7 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+                                               MODEL::CCueWorker::Now now,
++                                              bool ahead,
+                                               bool& doubts,
+                                               bool tags)
+ {
+@@ -1010,7 +1017,7 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+     context.tags = tags;
+     return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+                                                TRANSLATION::Translation(std::move(context)),
+-                                               std::move(deliver), std::move(now));
++                                               std::move(deliver), std::move(now), ahead);
+   }
+   const std::optional<REVISION::Mode> mode = RepairMode();
+   if (!mode)
+@@ -1018,7 +1025,7 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+   doubts = *mode == REVISION::Mode::DOUBTS;
+   return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+                                              REVISION::Revision(RevisionContext(language), *mode),
+-                                             std::move(deliver), std::move(now));
++                                             std::move(deliver), std::move(now), ahead);
+ }
+ 
+ double PlaybackTime()
+@@ -1028,6 +1035,14 @@ double PlaybackTime()
+   return player ? static_cast<double>(player->GetTime()) * 1000.0 : 0.0;
+ }
+ 
++double ShowingTime()
++{
++  const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
++  return player ? PlaybackTime() + static_cast<double>(player->GetVideoSettings().m_SubtitleDelay) *
++                                       DVD_TIME_BASE
++                : 0.0;
++}
++
+ CAiSettings& CAiSettings::GetInstance()
+ {
+   static CAiSettings instance;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+index 55ff4fe..79a362e 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
+@@ -90,7 +90,8 @@ std::string LanguageName(const std::string& code);
+  * \param silence how long a request may go without a word: as long as its cues can wait
+  * \param deliver where each cue goes, translated or corrected, with its times; "" when there is
+  * nothing to show for it, which still ends a cue left open before it
+- * \param now where playback is, for a file known whole; empty for a track read as it plays
++ * \param now where playback is, or empty
++ * \param ahead whether the cues are a file's, known whole: worked on from where playback is
+  * \param doubts set to whether the work wants the words the repair doubts with each cue
+  * \param tags whether the cues can carry tags: text read off pictures carries none
+  */
+@@ -99,12 +100,16 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+                                               std::chrono::seconds silence,
+                                               MODEL::CCueWorker::Deliver deliver,
+                                               MODEL::CCueWorker::Now now,
++                                              bool ahead,
+                                               bool& doubts,
+                                               bool tags = true);
+ 
+ //! Where playback is, in the time base of the cues of a subtitle file.
+ double PlaybackTime();
+ 
++//! Where playback is in the times a subtitle line is shown at: moved by the subtitle delay.
++double ShowingTime();
++
+ /*!
+  * \brief The language the playing video's subtitles are translated into, as the subtitle dialog
+  * shows it: "Off", a language's name, or empty when no translation can be chosen - "AI translate
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index a300a0f..fd2d5f4 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -60,12 +60,24 @@ constexpr size_t REFIT = 2;
+ //! the voice activity model, from its add-on
+ constexpr const char* SPEECH_ADDON = "script.module.subtitlespeech.allolive";
+ constexpr const char* SPEECH_WEIGHTS = "silero_vad_16k.bin";
++//! a translated line that comes after its start is up at least this long, to be read...
++constexpr double LATE_SHOWN = 2.0 * DVD_TIME_BASE;
++//! ...unless it comes later than this after its end: it belongs to another scene then
++constexpr double LATE_GONE = 10.0 * DVD_TIME_BASE;
+ 
+ double Seconds(double time)
+ {
+   return time / DVD_TIME_BASE;
+ }
+ 
++//! Whether playback counts a video's time from a start of its own rather than its streams' time
++//! stamps: a disc, or a TV channel or recording.
++bool OwnTime(const std::string& video)
++{
++  return URIUtils::IsDiscImage(video) || URIUtils::IsOpticalMediaFile(video) ||
++         URIUtils::IsBlurayPath(video) || URIUtils::IsDiscPath(video) || URIUtils::IsPVR(video);
++}
++
+ //! The stretches of a film of so many, in the order they are read: each pass halfway between
+ //! the ones before.
+ std::vector<size_t> SpreadOrder(size_t stretches)
+@@ -235,11 +247,15 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+   }
+   // the provider's corrections need the repair's rules; a translation does not. A track inside
+   // the video is read seconds before its cues are shown.
++  m_late = !hints.translateTo.empty() && !OwnTime(hints.video);
++  m_lateStart.reset();
+   if (!hints.translateTo.empty() || m_cleaner)
+     m_worker = AI::MakeWorker(hints, language,
+                               std::chrono::seconds(hints.translateTo.empty() ? 15 : 30),
+-                              m_deliver, {}, m_doubts, tags);
++                              m_deliver, m_late ? AI::ShowingTime : MODEL::CCueWorker::Now(),
++                              false, m_doubts, tags);
+   m_removes = m_cleaner || m_worker;
++  m_late = m_late && m_worker;
+ }
+ 
+ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+@@ -263,8 +279,9 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+   // the whole file is known: it is worked on from where playback is, ahead of it
+   const std::string language = CLEANUP::LanguageOfPath(file);
+   m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_out, AI::PlaybackTime,
+-                            m_doubts);
++                            true, m_doubts);
+   m_removes = m_worker != nullptr;
++  m_late = false;
+   CLEANUP::Options repair;
+   if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
+   {
+@@ -675,6 +692,41 @@ void CCueStage::Flush()
+   if (m_worker)
+     m_worker->Flush();
+   m_prevLengthened = false;
++  m_lateStart.reset();
++}
++
++std::optional<double> CCueStage::Late(double& start, double& stop)
++{
++  const std::optional<double> before = m_lateStart;
++  m_lateStart.reset();
++  if (!m_late)
++    return {};
++  const double now = AI::ShowingTime();
++  if (start >= now)
++    return {};
++  // an end before the start is one the next line gives
++  const bool ended = stop >= start;
++  if (ended && now > stop + LATE_GONE)
++  {
++    CLog::Log(LOGDEBUG,
++              "Subtitle translation: line at {:.1f} s came {:.1f} s after its end: not shown",
++              Seconds(start), Seconds(now - stop));
++    return {};
++  }
++  CLog::Log(LOGDEBUG, "Subtitle translation: line at {:.1f} s shown {:.1f} s late", Seconds(start),
++            Seconds(now - start));
++  start = now;
++  if (ended)
++    stop = std::max(stop, now + LATE_SHOWN);
++  m_lateStart = now;
++  if (!before)
++    return {};
++  return std::max(now, *before + LATE_SHOWN);
++}
++
++double CCueStage::Ending(double end) const
++{
++  return m_lateStart ? std::max(end, *m_lateStart + LATE_SHOWN) : end;
+ }
+ 
+ std::optional<double> CCueStage::Time(double start, double& stop, const std::string& text)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index d99ed2b..151d33b 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -79,6 +79,15 @@ public:
+    * \return where the cue before it is to end, when it runs into this one
+    */
+   std::optional<double> Time(double start, double& stop, const std::string& text);
++  /*!
++   * \brief Time a translated line of a stream about to be shown after its start: from now, for
++   * long enough to be read. One come long after its end is left as it is.
++   * \return where the line before is to end, when it was shown late too
++   */
++  std::optional<double> Late(double& start, double& stop);
++  //! Where the line before is to end, asked to end at end: no sooner than it can be read, when
++  //! it was shown late.
++  double Ending(double end) const;
+ 
+   //! Whether the subtitle files of the playing video are realigned: as the setting says, until
+   //! turned the other way while it plays.
+@@ -153,6 +162,8 @@ private:
+   bool m_prevLengthened{false};
+   //! set once the worker is in place: its thread asks it, so it never changes under it
+   bool m_removes{false};
++  bool m_late{false}; //!< the lines are translated, and can come after their start
++  std::optional<double> m_lateStart; //!< where the line before was shown from, when late
+   //! last, so its thread stops before anything it delivers to goes
+   std::unique_ptr<MODEL::CCueWorker> m_worker;
+   std::thread m_realign;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index fead3ab..6c6aca4 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -178,11 +178,13 @@ std::vector<std::string> ReadNumbered(const std::string& answer, size_t count)
+ 
+ // -- the thread ----------------------------------------------------------------------------------
+ 
+-CCueWorker::CCueWorker(std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now)
++CCueWorker::CCueWorker(
++    std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now, bool ahead)
+   : m_chat(std::move(chat)),
+     m_work(std::move(work)),
+     m_deliver(std::move(deliver)),
+     m_now(std::move(now)),
++    m_ahead(ahead),
+     m_thread([this] { Run(); })
+ {
+ }
+@@ -196,6 +198,8 @@ CCueWorker::~CCueWorker()
+   m_wake.notify_all();
+   m_chat->Cancel();
+   m_thread.join();
++  if (!m_queue.empty())
++    m_chat->Note(std::to_string(m_queue.size()) + " lines dropped: the subtitle is closing");
+ }
+ 
+ void CCueWorker::Submit(const std::string& text,
+@@ -217,8 +221,10 @@ void CCueWorker::Submit(const std::string& text,
+ 
+ void CCueWorker::Flush()
+ {
++  size_t waiting;
+   {
+     std::unique_lock lock(m_queueLock);
++    waiting = m_queue.size();
+     m_queue.clear();
+   }
+   {
+@@ -226,6 +232,8 @@ void CCueWorker::Flush()
+     ++m_generation;
+   }
+   m_chat->Abort();
++  if (waiting)
++    m_chat->Note(std::to_string(waiting) + " lines dropped by a seek while they waited");
+ }
+ 
+ std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
+@@ -236,11 +244,11 @@ std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
+     return {};
+   // a file known whole goes from where playback is; what is behind it comes last
+   size_t first = 0;
+-  if (m_now)
++  if (m_ahead && m_now)
+   {
+     const double now = m_now();
+     const auto ahead = std::find_if(m_queue.begin(), m_queue.end(),
+-                                    [now](const Cue& cue) { return cue.stop >= now; });
++                                    [now](const Cue& cue) { return End(cue) >= now; });
+     if (ahead != m_queue.end())
+       first = ahead - m_queue.begin();
+   }
+@@ -254,6 +262,16 @@ std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
+ void CCueWorker::Run()
+ {
+   using namespace std::chrono_literals;
++  const auto dropped = [this](const Cue& cue)
++  {
++    std::unique_lock lock(m_deliverLock);
++    return cue.generation != m_generation;
++  };
++  const auto closing = [this]
++  {
++    std::unique_lock lock(m_queueLock);
++    return m_stop;
++  };
+   while (true)
+   {
+     const std::vector<Cue> batch = NextBatch();
+@@ -265,31 +283,52 @@ void CCueWorker::Run()
+       items.push_back(cue.item);
+     // a seek between taking the batch and beginning it already dropped it
+     m_chat->Begin();
++    if (dropped(batch.front()))
+     {
+-      std::unique_lock lock(m_deliverLock);
+-      if (batch.front().generation != m_generation)
+-        continue;
++      m_chat->Note(std::to_string(batch.size()) + " lines dropped by a seek before their request");
++      continue;
+     }
+-    const Outcome outcome = m_work(*m_chat, items);
++    Outcome outcome = m_work(*m_chat, items);
++    // a request that fails is asked again at once, for cues not yet over
++    bool again = false;
++    if (outcome.failed && !closing() && !dropped(batch.front()) &&
++        !(m_now && std::all_of(batch.begin(), batch.end(),
++                               [now = m_now()](const Cue& cue) { return End(cue) < now; })))
+     {
+-      // closing: nothing more is delivered
+-      std::unique_lock lock(m_queueLock);
+-      if (m_stop)
+-        return;
++      again = true;
++      m_chat->Note(std::to_string(batch.size()) + " lines asked again: the request failed");
++      outcome = m_work(*m_chat, items);
+     }
+-
+-    for (size_t c = 0; c < batch.size() && c < outcome.cues.size(); ++c)
++    if (closing())
+     {
+-      std::unique_lock lock(m_deliverLock);
+-      if (batch[c].generation == m_generation)
+-        m_deliver(outcome.cues[c], batch[c].start, batch[c].stop);
++      m_chat->Note(std::to_string(batch.size()) + " lines dropped: the subtitle is closing");
++      return;
+     }
+-    bool dropped;
++
++    // a cue the work has nothing for shows as it came
++    size_t lost = 0;
++    size_t asIs = 0;
++    for (size_t c = 0; c < batch.size(); ++c)
+     {
++      const bool done = !outcome.failed && c < outcome.cues.size();
++      const std::string& text = done ? outcome.cues[c] : batch[c].item.text;
+       std::unique_lock lock(m_deliverLock);
+-      dropped = batch.front().generation != m_generation;
++      if (batch[c].generation != m_generation)
++      {
++        ++lost;
++        continue;
++      }
++      if (!done && !text.empty())
++        ++asIs;
++      m_deliver(text, batch[c].start, batch[c].stop);
+     }
+-    if (outcome.failed && !dropped)
++    if (lost)
++      m_chat->Note(std::to_string(lost) + " lines dropped by a seek during their request");
++    if (asIs)
++      m_chat->Note(std::to_string(asIs) + " lines shown as they came: the request failed" +
++                       (again ? " twice" : ""),
++                   true);
++    if (outcome.failed && !dropped(batch.front()))
+     {
+       // the provider is down or refuses: the next request waits a little rather than hammer it
+       std::unique_lock lock(m_queueLock);
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index f523992..fd8af16 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -44,10 +44,12 @@ public:
+   //! Whether the batch begun last was aborted: a missing answer then says nothing of the
+   //! provider.
+   virtual bool Aborted() const { return false; }
++  //! A line for the log: the work reaches nothing of Kodi's, the chat does.
++  virtual void Note(const std::string& /*what*/, bool /*warning*/ = false) {}
+ };
+ 
+ //! What became of a batch of cues: each one's text, "" when there is nothing to show for it;
+-//! failed when the provider did not answer.
++//! failed when the provider did not answer - asked again, the cues then show as they came.
+ struct Outcome
+ {
+   std::vector<std::string> cues;
+@@ -114,13 +116,19 @@ class CCueWorker
+ {
+ public:
+   using Deliver = std::function<void(const std::string& text, double start, double stop)>;
+-  //! Where playback is, in the cues' time base: a file known whole is worked from there.
++  //! Where playback is, in the cues' time base: a request that failed is not asked again for
++  //! cues already over, and a file known whole is worked from there.
+   using Now = std::function<double()>;
+ 
+   //! How many cues a request carries at most.
+   static constexpr size_t BATCH = 8;
+ 
+-  CCueWorker(std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now = {});
++  /*!
++   * \param ahead whether the cues are known ahead of playback, a file's: those still to come go
++   * before those playback is past. A stream's go in the order they came.
++   */
++  CCueWorker(
++      std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now = {}, bool ahead = false);
+   ~CCueWorker();
+   CCueWorker(const CCueWorker&) = delete;
+   CCueWorker& operator=(const CCueWorker&) = delete;
+@@ -143,6 +151,8 @@ private:
+     unsigned generation;
+   };
+ 
++  //! Where a cue ends: its start for one the next ends.
++  static double End(const Cue& cue) { return cue.stop > cue.start ? cue.stop : cue.start; }
+   void Run();
+   std::vector<Cue> NextBatch();
+ 
+@@ -150,6 +160,7 @@ private:
+   Work m_work;
+   Deliver m_deliver;
+   Now m_now;
++  const bool m_ahead;
+   std::mutex m_queueLock;
+   std::condition_variable m_wake;
+   std::deque<Cue> m_queue;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+index f1b3e61..a4a2aaf 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+@@ -266,7 +266,11 @@ void CSubtitlePictureCodec::Hand(PICTURES::CReader::Item item, unsigned int gene
+   {
+     std::unique_lock guard(m_seenLock);
+     if (generation && generation != m_generation)
++    {
++      CLog::Log(LOGDEBUG, "Subtitle pictures: one at {:.1f} s read ahead before a seek, dropped",
++                item.start / DVD_TIME_BASE);
+       return;
++    }
+     // each once, whichever path reads it first; a clear apart from a picture at the same time
+     const int64_t key = Slot(item.start) * 2 + (item.picture.grey.empty() ? 1 : 0);
+     if (!m_seen.insert(key).second)
+@@ -315,7 +319,7 @@ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
+   // as the player ends a picture: where the next starts or clears, or at its own end before -
+   // PGS gives none, only the farthest time there is
+   if (m_prevSubId != NO_SUBTITLE_ID && m_prevStop > start && start > m_prevStart)
+-    ChangeSubtitleStopTime(m_prevSubId, start);
++    ChangeSubtitleStopTime(m_prevSubId, m_cues.Ending(start));
+   m_prevSubId = NO_SUBTITLE_ID;
+   if (text.empty())
+     return;
+@@ -337,8 +341,10 @@ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
+   text = (place != KODI::SUBTITLES::MODEL::BOTTOM_CENTRE ? "{\\an" + std::to_string(place) + "}"
+                                                          : "") +
+          KODI::SUBTITLES::MODEL::AssText(text);
+-  m_prevSubId = AddSubtitle(text, start, stop);
++  // the line after ends this one by its own start, not where it is shown from
+   m_prevStart = start;
++  m_cues.Late(start, stop);
++  m_prevSubId = AddSubtitle(text, start, stop);
+   m_prevStop = stop;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+index 3a5d623..bd3e7f6 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleTranslation.cpp
+@@ -210,14 +210,15 @@ MODEL::Work Translation(Context context)
+     const std::optional<std::vector<std::string>> translated =
+         sources.empty() ? std::make_optional(std::vector<std::string>())
+                         : TranslateLines(chat, context, before, sources);
+-    // the lines before a seek are no context for those after it
+-    for (const std::string& source : chat.Aborted() ? std::vector<std::string>() : sources)
++    // the lines before a seek are no context for those after it, nor are those asked again
++    for (const std::string& source :
++         chat.Aborted() || !translated ? std::vector<std::string>() : sources)
+     {
+       before.push_back(source);
+       if (before.size() > BEFORE)
+         before.pop_front();
+     }
+-    // the provider is down or refuses: these cues show nothing, but still end the cue before
++    // the provider is down or refuses: the worker asks again, then shows the cues as they came
+     MODEL::Outcome outcome;
+     outcome.cues.resize(cues.size());
+     outcome.failed = !translated;
+@@ -225,6 +226,7 @@ MODEL::Work Translation(Context context)
+       return outcome;
+ 
+     size_t at = 0;
++    size_t asIs = 0;
+     for (size_t c = 0; c < cues.size(); ++c)
+     {
+       std::string out;
+@@ -242,9 +244,18 @@ MODEL::Work Translation(Context context)
+         }
+         out += layouts[c].dialogue ? (out.empty() ? "- " : "\n- ") + line : line;
+       }
+-      if (complete && !layouts[c].lines.empty())
++      if (layouts[c].lines.empty())
++        continue;
++      if (complete)
+         outcome.cues[c] = layouts[c].dialogue ? out : Wrap(out);
++      else
++      {
++        outcome.cues[c] = cues[c].text;
++        ++asIs;
++      }
+     }
++    if (asIs)
++      chat.Note(std::to_string(asIs) + " lines shown as they came: the model left them out", true);
+     return outcome;
+   };
+ }
