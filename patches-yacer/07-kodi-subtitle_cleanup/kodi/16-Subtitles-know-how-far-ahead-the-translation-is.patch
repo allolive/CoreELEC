@@ -691,10 +691,10 @@ index 2c994e7..7f0afc5 100644
    const std::chrono::milliseconds m_quick;
    size_t m_size{BATCH}; //!< how many cues the next request carries at most
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-index 36675a6..19e93e6 100644
+index 7111410..953dda5 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-@@ -80,6 +80,9 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+@@ -82,6 +82,9 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
    m_pictures = std::make_unique<CDVDOverlayCodecFFmpeg>();
    if (!m_pictures->Open(hints, options))
      return false;
@@ -704,7 +704,7 @@ index 36675a6..19e93e6 100644
    // read and translated in one request; what is only read is translated by the cue stage
    m_reader = std::make_unique<PICTURES::CReader>(
        KODI::SUBTITLES::AI::LanguageName(KODI::SUBTITLES::TRANSLATION::CodeOf(hints.language)),
-@@ -92,10 +95,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+@@ -94,10 +97,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
        },
        hints.translateTo.empty()
            ? std::nullopt
@@ -717,7 +717,7 @@ index 36675a6..19e93e6 100644
    if (!hints.video.empty())
    {
      // the read-ahead's own decoder, used on its thread only
-@@ -111,7 +112,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+@@ -113,7 +114,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
                if (std::optional<PICTURES::CReader::Item> subtitle = Collect(*m_aheadPictures))
                  Hand(std::move(*subtitle), generation);
            },
@@ -727,7 +727,7 @@ index 36675a6..19e93e6 100644
    }
    return Initialize();
  }
-@@ -215,6 +217,7 @@ void CSubtitlePictureCodec::Reset()
+@@ -229,6 +231,7 @@ void CSubtitlePictureCodec::Reset()
  
  void CSubtitlePictureCodec::Flush()
  {
