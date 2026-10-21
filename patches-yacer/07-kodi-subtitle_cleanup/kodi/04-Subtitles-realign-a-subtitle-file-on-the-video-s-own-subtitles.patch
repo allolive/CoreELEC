@@ -48,10 +48,10 @@ Player > Subtitles > Repair gains "Realign with the video", on.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 9edbb96..de09c23 100644
+index 9bc0e4b..66673e5 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25660,6 +25660,18 @@ msgctxt "#60093"
+@@ -25672,6 +25672,18 @@ msgctxt "#60093"
  msgid "Every line"
  msgstr ""
  
@@ -67,14 +67,14 @@ index 9edbb96..de09c23 100644
 +msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language, and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 16bb755..8b0770f 100755
+index 5f6dd4d..280dc1d 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -938,6 +938,14 @@
+@@ -959,6 +959,14 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -927,10 +927,10 @@ index 0000000..2b0eb67
 +std::optional<bool> PgsShows(const uint8_t* data, size_t size);
 +} // namespace KODI::SUBTITLES::TIMING
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 89c7f4a..9dd8416 100644
+index fdd227e..57a685c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -5448,8 +5448,11 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5483,8 +5483,11 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
    }
  
    if (current.type == StreamType::SUBTITLE)

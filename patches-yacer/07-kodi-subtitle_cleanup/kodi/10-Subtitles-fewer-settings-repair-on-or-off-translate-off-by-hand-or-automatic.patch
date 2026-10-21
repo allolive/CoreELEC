@@ -33,10 +33,10 @@ go when this is folded into the patches that added them.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index d38f184..c5f9dfe 100644
+index c3ecd89..b61808f 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25483,49 +25483,13 @@ msgstr ""
+@@ -25477,49 +25477,13 @@ msgstr ""
  #. Label of setting "Player -> Subtitles -> Repair text subtitles"
  #: system/settings/settings.xml
  msgctxt "#60010"
@@ -88,7 +88,7 @@ index d38f184..c5f9dfe 100644
  msgstr ""
  
  #. Label of setting "Player -> Subtitles -> Translate subtitles"
-@@ -25537,7 +25501,7 @@ msgstr ""
+@@ -25531,7 +25495,7 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Translate subtitles"
  #: system/settings/settings.xml
  msgctxt "#60061"
@@ -97,7 +97,7 @@ index d38f184..c5f9dfe 100644
  msgstr ""
  
  #. Name of a subtitle in the subtitle list, translated into one language from another: "French (translated from English)"
-@@ -25708,30 +25672,6 @@ msgctxt "#60089"
+@@ -25702,30 +25666,6 @@ msgctxt "#60089"
  msgid "{0:s} is gone: now using {1:s}"
  msgstr ""
  
@@ -128,7 +128,7 @@ index d38f184..c5f9dfe 100644
  #. Option of setting "Player -> Subtitles -> AI provider"
  #: system/settings/settings.xml
  msgctxt "#60094"
-@@ -25762,6 +25702,12 @@ msgctxt "#60098"
+@@ -25756,6 +25696,12 @@ msgctxt "#60098"
  msgid "Translate to"
  msgstr ""
  
@@ -141,7 +141,7 @@ index d38f184..c5f9dfe 100644
  #. Label of setting "Player -> Subtitles -> Realign with the video"
  #: system/settings/settings.xml
  msgctxt "#60100"
-@@ -25774,6 +25720,12 @@ msgctxt "#60101"
+@@ -25768,6 +25714,12 @@ msgctxt "#60101"
  msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language - or, when the video has none, with where someone speaks in its sound - and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
  msgstr ""
  
@@ -151,14 +151,14 @@ index d38f184..c5f9dfe 100644
 +msgid "Automatic"
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 389823f..0e7b04a 100755
+index 6f4dc01..fb6fb49 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -919,36 +919,6 @@
+@@ -929,36 +929,6 @@
            <default>true</default>
            <control type="toggle" />
          </setting>
@@ -195,7 +195,7 @@ index 389823f..0e7b04a 100755
          <setting id="subtitles.realign" type="boolean" parent="subtitles.repair" label="60100" help="60101">
            <level>1</level>
            <default>true</default>
-@@ -957,30 +927,21 @@
+@@ -967,30 +937,21 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -231,7 +231,7 @@ index 389823f..0e7b04a 100755
            <level>1</level>
            <control type="button" format="action" />
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
-index 5d0ae3e..f23d554 100644
+index 3d85267..a9dad73 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 @@ -870,8 +870,8 @@ Provider CurrentProvider()
@@ -264,7 +264,7 @@ index 5d0ae3e..f23d554 100644
  }
  
  REVISION::Context RevisionContext(const std::string& language)
-@@ -1253,18 +1253,37 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
+@@ -1290,18 +1290,37 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
        return;
      translating = translation.open.has_value();
    }
@@ -314,7 +314,7 @@ index 5d0ae3e..f23d554 100644
    // a provider that does not answer starts nothing - but a translation being shown stays
    const bool starts = source && (translating || Available());
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
-index 2dfa804..464a577 100644
+index 6f3f926..55ff4fe 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 @@ -53,6 +53,11 @@ constexpr int GOOGLE = 4;
@@ -416,7 +416,7 @@ index 8619446..f6e3646 100644
  {
  public:
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index 702d66a..8ee446a 100644
+index 0978ee7..a300a0f 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 @@ -228,6 +228,7 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo

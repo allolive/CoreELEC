@@ -75,10 +75,10 @@ Image subtitles cannot be translated.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 0646e8b..17ddbb2 100644
+index c9ba386..8bd1c11 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25510,6 +25510,132 @@ msgctxt "#60017"
+@@ -25522,6 +25522,132 @@ msgctxt "#60017"
  msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
  msgstr ""
  
@@ -208,14 +208,14 @@ index 0646e8b..17ddbb2 100644
 +msgid "The provider lists no model."
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 9779396..e38608b 100755
+index 9d219b9..7fab3de 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -938,6 +938,60 @@
+@@ -959,6 +959,60 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -2240,7 +2240,7 @@ index 0000000..2a6752f
 +MODEL::Work Translation(Context context);
 +} // namespace KODI::SUBTITLES::TRANSLATION
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 1b41fc7..89c7f4a 100644
+index 78688bc..fdd227e 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 @@ -1153,8 +1153,18 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
@@ -2274,7 +2274,7 @@ index 1b41fc7..89c7f4a 100644
      {
        m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
        m_SelectionStreams.Update(m_pInputStream, m_pDemuxer.get());
-@@ -3799,7 +3812,9 @@ void CVideoPlayer::HandleMessages()
+@@ -3834,7 +3847,9 @@ void CVideoPlayer::HandleMessages()
      {
        auto pMsg2 = std::static_pointer_cast<CDVDMsgPlayerSetSubtitleStream>(pMsg);
  
@@ -2285,7 +2285,7 @@ index 1b41fc7..89c7f4a 100644
        if(st.source != STREAM_SOURCE_NONE)
        {
          if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
-@@ -3811,7 +3826,10 @@ void CVideoPlayer::HandleMessages()
+@@ -3846,7 +3861,10 @@ void CVideoPlayer::HandleMessages()
              CloseStream(m_CurrentSubtitle, false);
            }
          }
@@ -2297,7 +2297,7 @@ index 1b41fc7..89c7f4a 100644
          {
  #if defined(HAVE_LIBBLURAY)
            if (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer &&
-@@ -3826,7 +3844,8 @@ void CVideoPlayer::HandleMessages()
+@@ -3861,7 +3879,8 @@ void CVideoPlayer::HandleMessages()
  #endif
            // a stream disabled in the demuxer is only enabled again by a reopen
            CloseStream(m_CurrentSubtitle, false);
@@ -2307,7 +2307,7 @@ index 1b41fc7..89c7f4a 100644
  
            // For embedded subtitles the demuxer is ahead of playback (AV buffers
            // are full), so the subtitle packets for the current playback time have
-@@ -5391,6 +5410,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5426,6 +5445,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
  
      hint.Clear();
      hint.filename = m_SelectionStreams.Get(current.type, index).filename;
@@ -2316,7 +2316,7 @@ index 1b41fc7..89c7f4a 100644
      hint.fpsscale = m_CurrentVideo.hint.fpsscale;
      hint.fpsrate  = m_CurrentVideo.hint.fpsrate;
    }
-@@ -5426,6 +5447,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5461,6 +5482,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
      hint.Assign(*stream, false);
    }
  
@@ -2327,7 +2327,7 @@ index 1b41fc7..89c7f4a 100644
    bool res;
    switch(current.type)
    {
-@@ -7446,9 +7471,20 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDeta
+@@ -7481,9 +7506,20 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDeta
  
  void CVideoPlayer::UpdateContent()
  {
@@ -2348,7 +2348,7 @@ index 1b41fc7..89c7f4a 100644
  }
  
  void CVideoPlayer::UpdateContentState()
-@@ -7462,6 +7498,8 @@ void CVideoPlayer::UpdateContentState()
+@@ -7497,6 +7533,8 @@ void CVideoPlayer::UpdateContentState()
    m_content.m_subtitleIndex =
        m_SelectionStreams.TypeIndexOf(StreamType::SUBTITLE, m_CurrentSubtitle.source,
                                       m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
@@ -2357,7 +2357,7 @@ index 1b41fc7..89c7f4a 100644
  
    if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) && m_content.m_videoIndex == -1 &&
        m_content.m_audioIndex == -1)
-@@ -7651,6 +7689,9 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
+@@ -7686,6 +7724,9 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
      return;
    }
  
@@ -2367,7 +2367,7 @@ index 1b41fc7..89c7f4a 100644
    const SelectionStream& s = m_content.m_selectionStreams.Get(StreamType::SUBTITLE, index);
    info.name = s.name;
  
-@@ -7676,7 +7717,8 @@ void CVideoPlayer::SetSubtitle(int iStream)
+@@ -7711,7 +7752,8 @@ void CVideoPlayer::SetSubtitle(int iStream)
  int CVideoPlayer::GetSubtitleCount() const
  {
    std::unique_lock lock(m_content.m_section);
@@ -2378,7 +2378,7 @@ index 1b41fc7..89c7f4a 100644
  
  int CVideoPlayer::GetSubtitle()
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index 060c985..5a06049 100644
+index 2aa29f4..5fbaeec 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
 @@ -24,6 +24,7 @@
@@ -2389,7 +2389,7 @@ index 060c985..5a06049 100644
  #include "cores/VideoPlayer/Interface/TimingConstants.h"
  #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
  #include "guilib/DispResource.h"
-@@ -554,6 +555,7 @@ protected:
+@@ -555,6 +556,7 @@ protected:
  
    virtual void UpdateContent();
    void UpdateContentState();
@@ -2397,7 +2397,7 @@ index 060c985..5a06049 100644
  
    void UpdateFileItemStreamDetails(CFileItem& item, UpdateStreamDetails update);
    int GetPreviousChapter();
-@@ -619,6 +621,7 @@ protected:
+@@ -620,6 +622,7 @@ protected:
  
    CSelectionStreams m_SelectionStreams;
    std::vector<ProgramInfo> m_programs;
@@ -2405,7 +2405,7 @@ index 060c985..5a06049 100644
  
    struct SContent
    {
-@@ -628,6 +631,7 @@ protected:
+@@ -629,6 +632,7 @@ protected:
      int m_videoIndex{-1};
      int m_audioIndex{-1};
      int m_subtitleIndex{-1};
