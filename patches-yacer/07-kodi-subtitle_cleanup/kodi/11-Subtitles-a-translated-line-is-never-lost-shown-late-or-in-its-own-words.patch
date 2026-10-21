@@ -26,7 +26,9 @@ of lines shown untranslated. A cue with nothing to translate in it (only
 tags) is still delivered empty, to end the cue before it.
 
 A translated line of a stream delivered after its start is shown from
-now, up for at least two seconds or to its own stop if that is later.
+the next picture, up for at least two seconds or to its own stop if
+that is later; on a paused picture - playback waiting for the
+translation - it appears as playback goes on, not over the still.
 "Now" is the playback time moved by the subtitle delay, which is the
 time libass is asked to render at: the video's time minus the player's
 subtitle delay. The worker is given the same time, so a stream's
@@ -207,13 +209,15 @@ index 55ff4fe..79a362e 100644
   * \brief The language the playing video's subtitles are translated into, as the subtitle dialog
   * shows it: "Off", a language's name, or empty when no translation can be chosen - "AI translate
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index a300a0f..fd2d5f4 100644
+index a300a0f..6d280aa 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-@@ -60,12 +60,24 @@ constexpr size_t REFIT = 2;
+@@ -60,12 +60,26 @@ constexpr size_t REFIT = 2;
  //! the voice activity model, from its add-on
  constexpr const char* SPEECH_ADDON = "script.module.subtitlespeech.allolive";
  constexpr const char* SPEECH_WEIGHTS = "silero_vad_16k.bin";
++//! how soon after now a line that comes late is shown
++constexpr double LATE_FROM = 0.04 * DVD_TIME_BASE;
 +//! a translated line that comes after its start is up at least this long, to be read...
 +constexpr double LATE_SHOWN = 2.0 * DVD_TIME_BASE;
 +//! ...unless it comes later than this after its end: it belongs to another scene then
@@ -235,7 +239,7 @@ index a300a0f..fd2d5f4 100644
  //! The stretches of a film of so many, in the order they are read: each pass halfway between
  //! the ones before.
  std::vector<size_t> SpreadOrder(size_t stretches)
-@@ -235,11 +247,15 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+@@ -235,11 +249,15 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
    }
    // the provider's corrections need the repair's rules; a translation does not. A track inside
    // the video is read seconds before its cues are shown.
@@ -252,7 +256,7 @@ index a300a0f..fd2d5f4 100644
  }
  
  void CCueStage::OpenFile(const CDVDStreamInfo& hints,
-@@ -263,8 +279,9 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+@@ -263,8 +281,9 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
    // the whole file is known: it is worked on from where playback is, ahead of it
    const std::string language = CLEANUP::LanguageOfPath(file);
    m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_out, AI::PlaybackTime,
@@ -263,7 +267,7 @@ index a300a0f..fd2d5f4 100644
    CLEANUP::Options repair;
    if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
    {
-@@ -675,6 +692,41 @@ void CCueStage::Flush()
+@@ -675,6 +694,42 @@ void CCueStage::Flush()
    if (m_worker)
      m_worker->Flush();
    m_prevLengthened = false;
@@ -290,13 +294,14 @@ index a300a0f..fd2d5f4 100644
 +  }
 +  CLog::Log(LOGDEBUG, "Subtitle translation: line at {:.1f} s shown {:.1f} s late", Seconds(start),
 +            Seconds(now - start));
-+  start = now;
++  // from the next picture: on a paused one, a line that comes stays hidden until it plays
++  start = now + LATE_FROM;
 +  if (ended)
-+    stop = std::max(stop, now + LATE_SHOWN);
-+  m_lateStart = now;
++    stop = std::max(stop, start + LATE_SHOWN);
++  m_lateStart = start;
 +  if (!before)
 +    return {};
-+  return std::max(now, *before + LATE_SHOWN);
++  return std::max(start, *before + LATE_SHOWN);
 +}
 +
 +double CCueStage::Ending(double end) const

@@ -215,10 +215,10 @@ index 97f1628..bc6ac34 100644
   * \brief The language the playing video's subtitles are translated into, as the subtitle dialog
   * shows it: "Off", a language's name, or empty when no translation can be chosen - "AI translate
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index 06fa043..a8efbb7 100644
+index 52bf577..4032578 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-@@ -342,8 +342,10 @@ void CReadAhead::State::Read()
+@@ -344,8 +344,10 @@ void CReadAhead::State::Read()
          CLog::Log(LOGDEBUG, "{}: read a minute ahead of {:.1f} s: no further until a seek",
                    m_name, target / DVD_TIME_BASE);
        }

@@ -98,10 +98,10 @@ index 90c0d37..9291b71 100644
  private:
    //! last, so whatever delivers its cues stops before anything it delivers to goes
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index 12ff8c0..06fa043 100644
+index 0bb05c5..52bf577 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-@@ -153,6 +153,7 @@ bool OnLocked()
+@@ -155,6 +155,7 @@ bool OnLocked()
  struct CReadAhead::State
  {
    void Run();
@@ -109,7 +109,7 @@ index 12ff8c0..06fa043 100644
    //! Wait as long as this, or until closed or moved again.
    void Wait(std::unique_lock<std::mutex>& guard, std::chrono::milliseconds time)
    {
-@@ -177,6 +178,7 @@ struct CReadAhead::State
+@@ -179,6 +180,7 @@ struct CReadAhead::State
    const MODEL::CAheadMatch* m_match; //!< reached only through Call
    Packet m_packet;
    Restart m_restart;
@@ -117,7 +117,7 @@ index 12ff8c0..06fa043 100644
    std::mutex m_lock;
    std::condition_variable m_wake;
    std::shared_ptr<CDVDInputStream> m_input; //!< the video read, to abort
-@@ -192,7 +194,8 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
+@@ -194,7 +196,8 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
                         const MODEL::CAheadMatch& match,
                         Packet packet,
                         Restart restart,
@@ -127,7 +127,7 @@ index 12ff8c0..06fa043 100644
    : m_state(std::make_shared<State>())
  {
    m_state->m_video = hints.video;
-@@ -203,6 +206,9 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
+@@ -205,6 +208,9 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
    m_state->m_match = &match;
    m_state->m_packet = std::move(packet);
    m_state->m_restart = std::move(restart);
@@ -137,7 +137,7 @@ index 12ff8c0..06fa043 100644
    std::thread([state = m_state] { state->Run(); }).detach();
  }
  
-@@ -231,6 +237,13 @@ void CReadAhead::Seek()
+@@ -233,6 +239,13 @@ void CReadAhead::Seek()
  }
  
  void CReadAhead::State::Run()
@@ -151,7 +151,7 @@ index 12ff8c0..06fa043 100644
  {
    using namespace std::chrono_literals;
    CFileItem item(m_video, false);
-@@ -281,6 +294,7 @@ void CReadAhead::State::Run()
+@@ -283,6 +296,7 @@ void CReadAhead::State::Run()
    double from = 0; //!< and where it was after the last seek
    auto since = std::chrono::steady_clock::now();
    unsigned int generation = 0;
@@ -159,7 +159,7 @@ index 12ff8c0..06fa043 100644
    bool caughtUp = false;
    int failures = 0;
    while (true)
-@@ -302,6 +316,7 @@ void CReadAhead::State::Run()
+@@ -304,6 +318,7 @@ void CReadAhead::State::Run()
          guard.unlock();
          if (!Call([&] { generation = m_match->Generation(); }))
            break;
@@ -167,7 +167,7 @@ index 12ff8c0..06fa043 100644
          target = AI::PlaybackTime();
          // from a little before, the subtitle shown then included
          demux->SeekTime(std::max(0.0, target / 1000.0 - 5000.0), true);
-@@ -355,6 +370,8 @@ void CReadAhead::State::Run()
+@@ -357,6 +372,8 @@ void CReadAhead::State::Run()
          continue;
        }
        // the end, or nothing yet: until a seek
@@ -176,7 +176,7 @@ index 12ff8c0..06fa043 100644
        Wait(guard, 1s);
        continue;
      }
-@@ -368,6 +385,8 @@ void CReadAhead::State::Run()
+@@ -370,6 +387,8 @@ void CReadAhead::State::Run()
      bool open = true;
      if (packet->iStreamId == track->uniqueId)
        open = Call([&] { m_packet(packet, generation); });
@@ -185,7 +185,7 @@ index 12ff8c0..06fa043 100644
      CDVDDemuxUtils::FreeDemuxPacket(packet);
      bool missed = false;
      if (!open || !Call([&] { missed = m_match->Missed(); }) || missed)
-@@ -440,6 +459,9 @@ void CCueStage::Stop()
+@@ -442,6 +461,9 @@ void CCueStage::Stop()
      std::unique_lock lock(g_filesLock);
      std::erase(g_files, this);
    }
@@ -195,7 +195,7 @@ index 12ff8c0..06fa043 100644
    std::unique_lock turn(m_turnLock);
    m_parsed = false;
    m_abort = true;
-@@ -496,6 +518,11 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+@@ -498,6 +520,11 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
    m_removes = m_cleaner || m_worker;
    m_translates = !hints.translateTo.empty() && m_worker;
    m_late = m_late && m_worker;
@@ -207,7 +207,7 @@ index 12ff8c0..06fa043 100644
  }
  
  void CCueStage::OpenFile(const CDVDStreamInfo& hints,
-@@ -523,6 +550,11 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+@@ -525,6 +552,11 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
    m_removes = m_worker != nullptr;
    m_translates = false;
    m_late = false;
@@ -219,7 +219,7 @@ index 12ff8c0..06fa043 100644
    CLEANUP::Options repair;
    if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
    {
-@@ -939,6 +971,12 @@ void CCueStage::Pass(const std::string& text,
+@@ -941,6 +973,12 @@ void CCueStage::Pass(const std::string& text,
      m_out(text, start, stop);
  }
  
@@ -691,7 +691,7 @@ index 2c994e7..7f0afc5 100644
    const std::chrono::milliseconds m_quick;
    size_t m_size{BATCH}; //!< how many cues the next request carries at most
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-index 7111410..953dda5 100644
+index 10928b5..d6c7517 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 @@ -82,6 +82,9 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
@@ -727,7 +727,7 @@ index 7111410..953dda5 100644
    }
    return Initialize();
  }
-@@ -229,6 +231,7 @@ void CSubtitlePictureCodec::Reset()
+@@ -241,6 +243,7 @@ void CSubtitlePictureCodec::Reset()
  
  void CSubtitlePictureCodec::Flush()
  {

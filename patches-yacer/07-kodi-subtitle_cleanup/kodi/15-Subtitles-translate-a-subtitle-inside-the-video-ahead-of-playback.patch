@@ -275,7 +275,7 @@ index a815e81..577ed3e 100644
    bool m_changePrevStopTime{false};
    AVCodecID m_codecId{AV_CODEC_ID_NONE};
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index 8a1ef88..12ff8c0 100644
+index fd81fec..0bb05c5 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 @@ -35,6 +35,8 @@
@@ -301,10 +301,10 @@ index 8a1ef88..12ff8c0 100644
 +constexpr double CATCH_UP_PACE = 2.0;
 +//! reads that fail in a row, each tried again from where the reading was, before it stops
 +constexpr int READ_RETRIES = 3;
+ //! how soon after now a line that comes late is shown
+ constexpr double LATE_FROM = 0.04 * DVD_TIME_BASE;
  //! a translated line that comes after its start is up at least this long, to be read...
- constexpr double LATE_SHOWN = 2.0 * DVD_TIME_BASE;
- //! ...unless it comes later than this after its end: it belongs to another scene then
-@@ -138,6 +150,233 @@ bool OnLocked()
+@@ -140,6 +152,233 @@ bool OnLocked()
  }
  } // namespace
  
@@ -538,7 +538,7 @@ index 8a1ef88..12ff8c0 100644
  CCueStage::CCueStage() = default;
  
  CCueStage::~CCueStage()
-@@ -255,6 +494,7 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+@@ -257,6 +496,7 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
                                m_deliver, m_late ? AI::ShowingTime : MODEL::CCueWorker::Now(),
                                false, m_doubts, tags);
    m_removes = m_cleaner || m_worker;
@@ -546,7 +546,7 @@ index 8a1ef88..12ff8c0 100644
    m_late = m_late && m_worker;
  }
  
-@@ -281,6 +521,7 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+@@ -283,6 +523,7 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
    m_worker = AI::MakeWorker(hints, language, std::chrono::seconds(60), m_out, AI::PlaybackTime,
                              true, m_doubts);
    m_removes = m_worker != nullptr;
@@ -756,7 +756,7 @@ index 1614602..2c994e7 100644
   * \brief Hands cues to a model's work on a thread of its own, a few at a time, and each result to
   * deliver with the cue's times, on that thread, in the order of the cues.
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
-index 5716ec9..7111410 100644
+index 5716ec9..10928b5 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
 @@ -8,50 +8,33 @@
@@ -1057,7 +1057,7 @@ index 5716ec9..7111410 100644
      m_ahead.reset();
    if (m_pictures->Decode(pPacket) == OverlayMessage::OC_OVERLAY)
      if (std::optional<PICTURES::CReader::Item> subtitle = Collect(*m_pictures))
-@@ -325,13 +166,41 @@ OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
+@@ -325,13 +166,47 @@ OverlayMessage CSubtitlePictureCodec::Decode(DemuxPacket* pPacket)
  
  void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
  {
@@ -1081,15 +1081,21 @@ index 5716ec9..7111410 100644
 +  if (passed)
 +    CLog::Log(LOGDEBUG, "Subtitle pictures: line at {:.1f} s came after the next: not shown",
 +              start / DVD_TIME_BASE);
-+  else if (next != m_shown.begin())
++  // a line come late itself takes its place, where it is shown from; an end come late leaves it
++  // to be read
++  std::optional<double> replaced;
++  if (!passed && next != m_shown.begin())
 +  {
 +    Shown& before = std::prev(next)->second;
 +    if (before.id != NO_SUBTITLE_ID && before.stop > start && start > std::prev(next)->first)
 +    {
-+      // a line come late itself takes its place at once; an end come late leaves it to be read
-+      before.stop = !text.empty() && start < now ? std::min(before.stop, now)
-+                                                 : std::max(start, before.readable);
-+      ChangeSubtitleStopTime(before.id, before.stop);
++      if (!text.empty() && start < now)
++        replaced = std::prev(next)->first;
++      else
++      {
++        before.stop = std::max(start, before.readable);
++        ChangeSubtitleStopTime(before.id, before.stop);
++      }
 +    }
 +  }
 +  if (next != m_shown.end() && (stop <= start || stop > next->first))
@@ -1105,7 +1111,7 @@ index 5716ec9..7111410 100644
    CLog::Log(LOGDEBUG, "Subtitle pictures: line at {:.1f} s ready {:.1f} s ahead of it",
              start / DVD_TIME_BASE, (start - KODI::SUBTITLES::AI::PlaybackTime()) / DVD_TIME_BASE);
    if (stop <= start)
-@@ -339,22 +208,18 @@ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
+@@ -339,22 +214,24 @@ void CSubtitlePictureCodec::Show(std::string text, double start, double stop)
    // read off a picture, it carries no tags: every character of it shows as itself, where the
    // picture was - bottom centre, as any text subtitle, needs no tag
    int place = KODI::SUBTITLES::MODEL::BOTTOM_CENTRE;
@@ -1130,11 +1136,17 @@ index 5716ec9..7111410 100644
    m_cues.Late(start, stop);
 -  m_prevSubId = AddSubtitle(text, start, stop);
 -  m_prevStop = stop;
++  if (const auto it = replaced ? m_shown.find(*replaced) : m_shown.end();
++      it != m_shown.end() && it->second.stop > start)
++  {
++    it->second.stop = start;
++    ChangeSubtitleStopTime(it->second.id, start);
++  }
 +  m_shown[at] = {AddSubtitle(text, start, stop), stop, m_cues.Ending(start)};
  }
  
  void CSubtitlePictureCodec::Reset()
-@@ -366,17 +231,18 @@ void CSubtitlePictureCodec::Flush()
+@@ -366,17 +243,18 @@ void CSubtitlePictureCodec::Flush()
  {
    {
      std::unique_lock guard(m_seenLock);

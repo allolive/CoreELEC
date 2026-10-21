@@ -114,10 +114,10 @@ index 79a362e..97f1628 100644
  double PlaybackTime();
  
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index fd2d5f4..8a1ef88 100644
+index 6d280aa..fd81fec 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-@@ -687,6 +687,17 @@ void CCueStage::Submit(std::string text, double start, double stop)
+@@ -689,6 +689,17 @@ void CCueStage::Submit(std::string text, double start, double stop)
      m_out(text, start, stop);
  }
  
