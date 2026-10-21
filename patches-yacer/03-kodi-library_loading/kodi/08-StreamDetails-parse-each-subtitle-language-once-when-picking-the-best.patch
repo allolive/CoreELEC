@@ -21,12 +21,12 @@ as they were are Kodi's, and change with the move upstream.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/utils/StreamDetails.cpp b/xbmc/utils/StreamDetails.cpp
-index 8b2f63d353..f8d0d29fc4 100644
+index de64691..a2a6cc0 100644
 --- a/xbmc/utils/StreamDetails.cpp
 +++ b/xbmc/utils/StreamDetails.cpp
-@@ -19,9 +19,28 @@
- #include <algorithm>
+@@ -20,9 +20,28 @@
  #include <cmath>
+ #include <mutex>
  #include <ranges>
 +#include <type_traits>
  
@@ -53,7 +53,7 @@ index 8b2f63d353..f8d0d29fc4 100644
  CStreamDetail::Source CStreamDetail::GetSource() const
  {
    return m_source;
-@@ -217,16 +236,10 @@ bool CStreamDetailSubtitle::IsWorseThan(const CStreamDetail& that) const
+@@ -218,16 +237,10 @@ bool CStreamDetailSubtitle::IsWorseThan(const CStreamDetail& that) const
    if (that.m_eType != CStreamDetail::SUBTITLE)
      return true;
  
@@ -74,7 +74,7 @@ index 8b2f63d353..f8d0d29fc4 100644
  }
  
  CStreamDetailVideo& CStreamDetailVideo::operator=(const CStreamDetailVideo& that)
-@@ -763,6 +776,10 @@ void CStreamDetails::DetermineBestStreams(void)
+@@ -796,6 +809,10 @@ void CStreamDetails::DetermineBestStreams(void)
    m_pBestAudio = NULL;
    m_pBestSubtitle = NULL;
  
@@ -85,7 +85,7 @@ index 8b2f63d353..f8d0d29fc4 100644
    for (const auto &iter : m_vecItems)
    {
      const CStreamDetail **champion;
-@@ -775,8 +792,17 @@ void CStreamDetails::DetermineBestStreams(void)
+@@ -808,8 +825,17 @@ void CStreamDetails::DetermineBestStreams(void)
        champion = (const CStreamDetail **)&m_pBestAudio;
        break;
      case CStreamDetail::SUBTITLE:

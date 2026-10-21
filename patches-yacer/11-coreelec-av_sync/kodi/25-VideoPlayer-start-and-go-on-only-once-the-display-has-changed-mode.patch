@@ -23,7 +23,7 @@ refresh rate change is queued.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 48151fd..26550d3 100644
+index 52a1cdf..568c400 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
 @@ -9191,6 +9191,18 @@ msgctxt "#60025"
@@ -46,10 +46,10 @@ index 48151fd..26550d3 100644
  #: xbmc/video/VideoDatabase.cpp
  msgctxt "#15011"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index 02d41fe..452b566 100755
+index 6bbb2de..8c032d5 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -4261,6 +4261,19 @@
+@@ -4250,6 +4250,19 @@
          </setting>
        </group>
        <group id="2" label="60025">
@@ -93,10 +93,10 @@ index cea0240..71f1992 100644
    float m_newTempo;
    float m_speed;
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index 6e88957..ca62e37 100644
+index fc99cb3..a2ef36f 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -1778,10 +1778,20 @@ void CVideoPlayer::Process()
+@@ -1777,10 +1777,20 @@ void CVideoPlayer::Process()
      // check display lost
      if (m_displayLost)
      {
@@ -121,7 +121,7 @@ index 6e88957..ca62e37 100644
      }
  
      // check if in an edit (cut or commercial break) that should be automatically skipped
-@@ -4702,8 +4712,40 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4766,8 +4776,40 @@ bool CVideoPlayer::PollResumePreroll()
    return false;
  }
  
@@ -159,10 +159,10 @@ index 6e88957..ca62e37 100644
 +      (m_caching == CACHESTATE_INIT || m_caching == CACHESTATE_FULL) && HoldForDisplayChange())
 +    return;
 +
-   // Any move off CACHESTATE_FULL ends a source-underrun hold, a seek included.
-   const bool wasSourceUnderrunHold = m_srcUnderrunHold;
-   if (state != CACHESTATE_FULL)
-@@ -7380,6 +7422,8 @@ void CVideoPlayer::UpdateVideoRender(bool video)
+   if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) &&
+       (m_caching == CACHESTATE_INIT || m_caching == CACHESTATE_FULL) &&
+       HoldForSubtitleTranslation())
+@@ -7454,6 +7496,8 @@ void CVideoPlayer::UpdateVideoRender(bool video)
  void CVideoPlayer::OnLostDisplay()
  {
    CLog::Log(LOGINFO, "VideoPlayer: OnLostDisplay received");
@@ -171,7 +171,7 @@ index 6e88957..ca62e37 100644
    if (m_VideoPlayerAudio->IsInited())
      m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, true), 1);
    if (m_VideoPlayerVideo->IsInited())
-@@ -7396,6 +7440,21 @@ void CVideoPlayer::OnResetDisplay()
+@@ -7470,6 +7514,21 @@ void CVideoPlayer::OnResetDisplay()
      return;
  
    CLog::Log(LOGINFO, "VideoPlayer: OnResetDisplay received");
@@ -194,10 +194,10 @@ index 6e88957..ca62e37 100644
    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
    m_clock.Pause(false);
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
-index a263248..bbee472 100644
+index f8a6a6a..ef9aa03 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -398,6 +398,9 @@ public:
+@@ -405,6 +405,9 @@ public:
    // IDispResource interface
    void OnLostDisplay() override;
    void OnResetDisplay() override;
@@ -207,7 +207,7 @@ index a263248..bbee472 100644
  
    bool IsCaching() const override;
    int GetCacheLevel() const override;
-@@ -723,6 +726,11 @@ protected:
+@@ -734,6 +737,11 @@ protected:
    bool m_updateStreamDetails{false};
  
    std::atomic<bool> m_displayLost;
@@ -262,10 +262,10 @@ index 4ea46d9..9edcaf3 100644
    bool m_renderedDebugOverlay = false;
    bool m_renderDebug = false;
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 3a0e7a7..3510e11 100644
+index dceda3b..10ab89a 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -488,6 +488,7 @@ public:
+@@ -487,6 +487,7 @@ public:
    static constexpr auto SETTING_COREELEC_AMLOGIC_SDR2DV = "coreelec.amlogic.sdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_HDR2DV = "coreelec.amlogic.hdr2dv";
    static constexpr auto SETTING_COREELEC_AMLOGIC_AUDIOLEAD = "coreelec.amlogic.audiolead";

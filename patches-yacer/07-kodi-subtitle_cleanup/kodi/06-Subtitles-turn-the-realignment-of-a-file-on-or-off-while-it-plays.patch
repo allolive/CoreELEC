@@ -23,7 +23,7 @@ a PlayerControl parameter, so neither moves the numbering of Kodi's own.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
-index 953df32..7f1cc2e 100644
+index 23a5721..8242829 100644
 --- a/xbmc/GUIInfoManager.cpp
 +++ b/xbmc/GUIInfoManager.cpp
 @@ -3183,6 +3183,13 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
@@ -58,11 +58,11 @@ index 953df32..7f1cc2e 100644
      {"subtitlelanguageex",    VIDEOPLAYER_SUBTITLE_LANG_EX},
      {"subtitlecodec",         VIDEOPLAYER_SUBTITLE_CODEC},
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index 7eb6db3..af32c7a 100644
+index df45e30..06d561f 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 @@ -111,6 +111,19 @@ bool LoadDetector(TIMING::CSpeechDetector& detector)
- //! opened again each time the viewer picks it, or seeks back past a title.
+ //! opened again each time the viewer picks it after another, or seeks back past a title.
  std::mutex g_fitsLock;
  std::map<std::pair<std::string, std::string>, std::optional<TIMING::Fit>> g_fits;
 +
@@ -264,7 +264,7 @@ index 689c9b9..a7f0ec4 100644
    std::mutex m_outLock;
    std::mutex m_inputLock;
 diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-index 34f3031..e3e3128 100644
+index 3cd3e08..4f7b5e8 100644
 --- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
 +++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
 @@ -449,7 +449,7 @@ constexpr uint32_t VISUALISATION_PRESET              = 411;

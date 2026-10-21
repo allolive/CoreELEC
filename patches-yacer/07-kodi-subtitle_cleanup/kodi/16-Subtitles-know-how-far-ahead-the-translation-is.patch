@@ -1,0 +1,854 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: know how far ahead the translation is
+
+Nothing said how far ahead of playback a subtitle being translated
+was. After a seek, a new track or a language change, playback went on
+at once and the first lines came late, moved to when they arrived.
+
+MODEL::CLead counts it, one per subtitle stream opened to be
+translated (a stream only repaired has none): the cues handed in and
+not yet shown, by a ticket each, and how far ahead the cues are known -
+all of them for a file, as far as the read-ahead has read for a track
+read ahead, the last cue received for a stream read as it plays. Every
+path that takes a cue gives its ticket back when the cue is shown or
+dropped: the worker after delivering it, at a flush, when a seek drops
+it from a request or from the cues put back after a larger request
+failed, and when it closes; the picture reader likewise, from when a
+picture is handed to it until its text goes to the cue stage (which
+takes its own ticket first) or is not read. A lead closes with its
+stream, so a closed track never holds the next.
+
+CLead::Check(stream, file) says whether playback may go on: every lead
+is 15 s ahead of playback - its first cue not yet shown, and how far
+it is known, past that - or translated as far as it is known; the
+translation gains on playback once it runs, so no more is waited for.
+Each is counted on the clock its cues are shown by: a stream's on the
+player's clock, a file's on that clock moved by the title's start (a
+disc's time offset), both moved by the subtitle delay, as the player
+shows them. A cue over already is not waited for: a file's are worked
+on from where playback is. A seek starts a lead again; for a stream
+its cues are dropped and how far it is read is not known until the
+read-ahead says so, with the seek it read after, so what it read
+before is not taken. A read-ahead that reads on after a failed read
+was taken for the end is no longer at its end. A read-ahead that stops
+leaves the stream known as it is read. A stream with no read-ahead
+knows no cue ahead of the player's demuxer: after a seek it is ready
+at once, and is waited for only for the cues already read - by design,
+there is nothing further to wait for.
+
+A lead is waited for only soon after it opens or a seek moves it (20 s,
+and for as long as it is asked about after that), and not again once
+found ready or given up on (GiveUp()), so a stall later in the film
+does not wait for the translation; Check() says when the last lead
+waited for moved. All leads share one lock, taken for nothing else.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
+index e050176..fdcfcd6 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayCodecText.cpp
+@@ -70,7 +70,7 @@ bool CDVDOverlayCodecText::Open(CDVDStreamInfo& hints, CDVDCodecOptions& options
+           Read(packet, text, start, stop);
+           Hand(std::move(text), start, stop, generation);
+         },
+-        nullptr, KODI::SUBTITLES::CReadAhead::Mode::CATCH_UP);
++        nullptr, KODI::SUBTITLES::CReadAhead::Mode::CATCH_UP, m_cues.Lead());
+ 
+   return Initialize();
+ }
+@@ -202,6 +202,7 @@ void CDVDOverlayCodecText::Reset()
+ 
+ void CDVDOverlayCodecText::Flush()
+ {
++  m_cues.Seek();
+   {
+     std::unique_lock guard(m_handLock);
+     m_match.Seek();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+index 67dc18b..ea28660 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.cpp
+@@ -18,6 +18,12 @@ CDVDSubtitleParserSubrip::CDVDSubtitleParserSubrip(std::unique_ptr<CDVDSubtitleS
+ {
+ }
+ 
++void CDVDSubtitleParserSubrip::Reset()
++{
++  m_cues.Seek();
++  CDVDSubtitleParserText::Reset();
++}
++
+ bool CDVDSubtitleParserSubrip::Open(CDVDStreamInfo& hints)
+ {
+   if (!CDVDSubtitleParserText::Open())
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
+index 90c0d37..9291b71 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitleParserSubrip.h
+@@ -22,6 +22,8 @@ public:
+   ~CDVDSubtitleParserSubrip() = default;
+ 
+   bool Open(CDVDStreamInfo& hints) override;
++  //! A seek too: the translation is waited for again.
++  void Reset() override;
+ 
+ private:
+   //! last, so whatever delivers its cues stops before anything it delivers to goes
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+index 0bb05c5..52bf577 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
+@@ -155,6 +155,7 @@ bool OnLocked()
+ struct CReadAhead::State
+ {
+   void Run();
++  void Read();
+   //! Wait as long as this, or until closed or moved again.
+   void Wait(std::unique_lock<std::mutex>& guard, std::chrono::milliseconds time)
+   {
+@@ -179,6 +180,7 @@ struct CReadAhead::State
+   const MODEL::CAheadMatch* m_match; //!< reached only through Call
+   Packet m_packet;
+   Restart m_restart;
++  std::shared_ptr<MODEL::CLead> m_lead;
+   std::mutex m_lock;
+   std::condition_variable m_wake;
+   std::shared_ptr<CDVDInputStream> m_input; //!< the video read, to abort
+@@ -194,7 +196,8 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
+                        const MODEL::CAheadMatch& match,
+                        Packet packet,
+                        Restart restart,
+-                       Mode mode)
++                       Mode mode,
++                       std::shared_ptr<MODEL::CLead> lead)
+   : m_state(std::make_shared<State>())
+ {
+   m_state->m_video = hints.video;
+@@ -205,6 +208,9 @@ CReadAhead::CReadAhead(const CDVDStreamInfo& hints,
+   m_state->m_match = &match;
+   m_state->m_packet = std::move(packet);
+   m_state->m_restart = std::move(restart);
++  m_state->m_lead = std::move(lead);
++  if (m_state->m_lead)
++    m_state->m_lead->ReadAhead();
+   std::thread([state = m_state] { state->Run(); }).detach();
+ }
+ 
+@@ -233,6 +239,13 @@ void CReadAhead::Seek()
+ }
+ 
+ void CReadAhead::State::Run()
++{
++  Read();
++  if (m_lead)
++    m_lead->Unread();
++}
++
++void CReadAhead::State::Read()
+ {
+   using namespace std::chrono_literals;
+   CFileItem item(m_video, false);
+@@ -283,6 +296,7 @@ void CReadAhead::State::Run()
+   double from = 0; //!< and where it was after the last seek
+   auto since = std::chrono::steady_clock::now();
+   unsigned int generation = 0;
++  unsigned int leadGeneration = 0;
+   bool caughtUp = false;
+   int failures = 0;
+   while (true)
+@@ -304,6 +318,7 @@ void CReadAhead::State::Run()
+         guard.unlock();
+         if (!Call([&] { generation = m_match->Generation(); }))
+           break;
++        leadGeneration = m_lead ? m_lead->Generation() : 0;
+         target = AI::PlaybackTime();
+         // from a little before, the subtitle shown then included
+         demux->SeekTime(std::max(0.0, target / 1000.0 - 5000.0), true);
+@@ -357,6 +372,8 @@ void CReadAhead::State::Run()
+         continue;
+       }
+       // the end, or nothing yet: until a seek
++      if (m_lead && input->IsEOF())
++        m_lead->Ended(leadGeneration);
+       Wait(guard, 1s);
+       continue;
+     }
+@@ -370,6 +387,8 @@ void CReadAhead::State::Run()
+     bool open = true;
+     if (packet->iStreamId == track->uniqueId)
+       open = Call([&] { m_packet(packet, generation); });
++    if (m_lead && reached > 0)
++      m_lead->Reached(reached, leadGeneration);
+     CDVDDemuxUtils::FreeDemuxPacket(packet);
+     bool missed = false;
+     if (!open || !Call([&] { missed = m_match->Missed(); }) || missed)
+@@ -442,6 +461,9 @@ void CCueStage::Stop()
+     std::unique_lock lock(g_filesLock);
+     std::erase(g_files, this);
+   }
++  if (m_lead)
++    m_lead->Close();
++  m_lead.reset();
+   std::unique_lock turn(m_turnLock);
+   m_parsed = false;
+   m_abort = true;
+@@ -498,6 +520,11 @@ void CCueStage::Open(const CDVDStreamInfo& hints, bool text, Deliver deliver, bo
+   m_removes = m_cleaner || m_worker;
+   m_translates = !hints.translateTo.empty() && m_worker;
+   m_late = m_late && m_worker;
++  if (m_translates)
++  {
++    m_lead = std::make_shared<MODEL::CLead>(MODEL::CLead::Known::AS_READ);
++    m_worker->Track(m_lead);
++  }
+ }
+ 
+ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+@@ -525,6 +552,11 @@ void CCueStage::OpenFile(const CDVDStreamInfo& hints,
+   m_removes = m_worker != nullptr;
+   m_translates = false;
+   m_late = false;
++  if (!hints.translateTo.empty() && m_worker)
++  {
++    m_lead = std::make_shared<MODEL::CLead>(MODEL::CLead::Known::WHOLE);
++    m_worker->Track(m_lead);
++  }
+   CLEANUP::Options repair;
+   if (m_doubts && CLEANUP::CurrentOptions(repair) && repair.fixOcr)
+   {
+@@ -941,6 +973,12 @@ void CCueStage::Pass(const std::string& text,
+     m_out(text, start, stop);
+ }
+ 
++void CCueStage::Seek()
++{
++  if (m_lead)
++    m_lead->Seek();
++}
++
+ void CCueStage::Flush()
+ {
+   if (m_worker)
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+index 8fd3bca..08830c9 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.h
+@@ -54,13 +54,15 @@ public:
+   /*!
+    * \param name how the log names the subtitle ("Subtitle pictures")
+    * \param match whose seeks the packets are read after, and which says when to stop
++   * \param lead told how far the track is read, or none
+    */
+   CReadAhead(const CDVDStreamInfo& hints,
+              std::string name,
+              const MODEL::CAheadMatch& match,
+              Packet packet,
+              Restart restart,
+-             Mode mode);
++             Mode mode,
++             std::shared_ptr<MODEL::CLead> lead);
+   ~CReadAhead();
+   CReadAhead(const CReadAhead&) = delete;
+   CReadAhead& operator=(const CReadAhead&) = delete;
+@@ -117,7 +119,11 @@ public:
+   //! A cue translated already, as the model read it off a picture: neither repaired nor worked
+   //! on again, delivered in its turn among the cues submitted. source is what the model read.
+   void Pass(const std::string& text, double start, double stop, const std::string& source);
++  //! A seek, before the read-ahead's: the translation is waited for again.
++  void Seek();
+   void Flush();
++  //! How far ahead the translation is, when the cues are translated.
++  const std::shared_ptr<MODEL::CLead>& Lead() const { return m_lead; }
+   //! Whether a "" cue means there is nothing to show, rather than an empty cue.
+   bool Removes() const { return m_removes; }
+   /*!
+@@ -211,6 +217,7 @@ private:
+   bool m_translates{false}; //!< a worker translates the cues
+   bool m_late{false}; //!< the lines are translated, and can come after their start
+   std::optional<double> m_lateStart; //!< where the line before was shown from, when late
++  std::shared_ptr<MODEL::CLead> m_lead; //!< when the cues are translated
+   //! last, so its thread stops before anything it delivers to goes
+   std::unique_ptr<MODEL::CCueWorker> m_worker;
+   std::thread m_realign;
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index b163697..66edb3f 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -12,6 +12,7 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstring>
++#include <limits>
+ #include <regex>
+ 
+ namespace KODI::SUBTITLES::MODEL
+@@ -204,6 +205,175 @@ void CAheadMatch::Seek()
+   m_aheadUpTo = 0;
+ }
+ 
++// -- the lead ------------------------------------------------------------------------------------
++
++namespace
++{
++std::mutex& LeadLock()
++{
++  static std::mutex lock;
++  return lock;
++}
++
++//! the leads open, under LeadLock
++std::vector<CLead*>& Leads()
++{
++  static std::vector<CLead*> leads;
++  return leads;
++}
++
++uint64_t g_ticket{0}; //!< the last ticket given, under LeadLock
++
++constexpr double NONE = std::numeric_limits<double>::infinity();
++} // namespace
++
++CLead::CLead(Known known, Clock::time_point at)
++  : m_known(known),
++    m_horizon(known == Known::WHOLE ? NONE : -NONE),
++    m_moved(at),
++    m_until(at + FRESH)
++{
++  std::unique_lock lock(LeadLock());
++  Leads().push_back(this);
++}
++
++CLead::~CLead()
++{
++  Close();
++}
++
++void CLead::Close()
++{
++  std::unique_lock lock(LeadLock());
++  m_closed = true;
++  m_pending.clear();
++  std::vector<CLead*>& leads = Leads();
++  leads.erase(std::remove(leads.begin(), leads.end(), this), leads.end());
++}
++
++uint64_t CLead::Add(double start, double stop)
++{
++  std::unique_lock lock(LeadLock());
++  if (m_closed)
++    return 0;
++  m_pending[++g_ticket] = {start, stop > start ? stop : start};
++  if (m_known == Known::AS_READ)
++    m_horizon = std::max(m_horizon, start);
++  return g_ticket;
++}
++
++void CLead::Done(uint64_t ticket)
++{
++  if (!ticket)
++    return;
++  std::unique_lock lock(LeadLock());
++  m_pending.erase(ticket);
++}
++
++void CLead::Seek(Clock::time_point at)
++{
++  std::unique_lock lock(LeadLock());
++  ++m_generation;
++  m_settled = false;
++  m_moved = at;
++  m_until = at + FRESH;
++  // a file's cues stay: they are worked on from wherever playback is
++  if (m_known == Known::WHOLE)
++    return;
++  m_pending.clear();
++  m_horizon = -NONE;
++  m_ended = false;
++}
++
++unsigned int CLead::Generation() const
++{
++  std::unique_lock lock(LeadLock());
++  return m_generation;
++}
++
++void CLead::ReadAhead()
++{
++  std::unique_lock lock(LeadLock());
++  m_known = Known::AHEAD;
++  m_horizon = -NONE;
++  m_ended = false;
++}
++
++void CLead::Reached(double time, unsigned int generation)
++{
++  std::unique_lock lock(LeadLock());
++  if (m_known != Known::AHEAD || generation != m_generation)
++    return;
++  m_horizon = std::max(m_horizon, time);
++  // read on: a failed read was taken for the end
++  m_ended = false;
++}
++
++void CLead::Ended(unsigned int generation)
++{
++  std::unique_lock lock(LeadLock());
++  if (m_known == Known::AHEAD && generation == m_generation)
++    m_ended = true;
++}
++
++void CLead::Unread()
++{
++  std::unique_lock lock(LeadLock());
++  if (m_known != Known::AHEAD)
++    return;
++  m_known = Known::AS_READ;
++  m_horizon = -NONE;
++  for (const auto& [ticket, cue] : m_pending)
++    m_horizon = std::max(m_horizon, cue.first);
++}
++
++double CLead::Ahead(double now, bool& ready) const
++{
++  // a cue over already is not waited for: a file's are worked on from where playback is
++  double first = NONE;
++  for (const auto& [ticket, cue] : m_pending)
++    if (cue.second >= now)
++      first = std::min(first, cue.first);
++  const bool whole = m_known != Known::AHEAD || m_ended;
++  const double lead = std::min(first, whole ? NONE : m_horizon) - now;
++  ready = lead >= READY || (first == NONE && whole);
++  // a stream read as it plays: as far as its cues are known
++  return m_known == Known::AS_READ ? std::min(first, m_horizon) - now : lead;
++}
++
++CLead::State CLead::Check(double stream, double file, Clock::time_point at)
++{
++  std::unique_lock lock(LeadLock());
++  State state{true, NONE, {}};
++  for (CLead* lead : Leads())
++  {
++    if (lead->m_settled || at > lead->m_until)
++    {
++      lead->m_settled = true;
++      continue;
++    }
++    bool ready;
++    state.lead =
++        std::min(state.lead, lead->Ahead(lead->m_known == Known::WHOLE ? file : stream, ready));
++    if (ready)
++    {
++      lead->m_settled = true;
++      continue;
++    }
++    state.ready = false;
++    state.moved = std::max(state.moved, lead->m_moved);
++    lead->m_until = std::max(lead->m_until, at + KEEP);
++  }
++  return state;
++}
++
++void CLead::GiveUp()
++{
++  std::unique_lock lock(LeadLock());
++  for (CLead* lead : Leads())
++    lead->m_settled = true;
++}
++
+ // -- the thread ----------------------------------------------------------------------------------
+ 
+ CCueWorker::CCueWorker(std::unique_ptr<IChat> chat,
+@@ -233,6 +403,8 @@ CCueWorker::~CCueWorker()
+   m_thread.join();
+   if (!m_queue.empty())
+     m_chat->Note(std::to_string(m_queue.size()) + " lines dropped: the subtitle is closing");
++  for (const Cue& cue : m_queue)
++    Release(cue);
+ }
+ 
+ void CCueWorker::Submit(const std::string& text,
+@@ -254,6 +426,7 @@ void CCueWorker::Pass(const std::string& text,
+ 
+ void CCueWorker::Queue(Item item, double start, double stop, bool done)
+ {
++  const uint64_t ticket = m_lead ? m_lead->Add(start, stop) : 0;
+   unsigned generation;
+   {
+     std::unique_lock lock(m_deliverLock);
+@@ -261,22 +434,30 @@ void CCueWorker::Queue(Item item, double start, double stop, bool done)
+   }
+   {
+     std::unique_lock lock(m_queueLock);
+-    m_queue.push_back({std::move(item), start, stop, generation, done});
++    m_queue.push_back({std::move(item), start, stop, generation, done, ticket});
+   }
+   m_wake.notify_one();
+ }
+ 
++void CCueWorker::Release(const Cue& cue)
++{
++  if (m_lead)
++    m_lead->Done(cue.ticket);
++}
++
+ void CCueWorker::Flush()
+ {
+-  size_t waiting;
++  std::deque<Cue> dropped;
+   {
+     // no cue handed back to the queue survives it
+     std::unique_lock lock(m_queueLock);
+-    waiting = m_queue.size();
+-    m_queue.clear();
++    dropped.swap(m_queue);
+     std::unique_lock deliver(m_deliverLock);
+     ++m_generation;
+   }
++  const size_t waiting = dropped.size();
++  for (const Cue& cue : dropped)
++    Release(cue);
+   m_chat->Abort();
+   if (waiting)
+     m_chat->Note(std::to_string(waiting) + " lines dropped by a seek while they waited");
+@@ -327,6 +508,17 @@ void CCueWorker::Run()
+     std::vector<Cue> batch = NextBatch();
+     if (batch.empty())
+       return;
++    // each cue taken leaves the lead once delivered or dropped, however the batch ends
++    struct Leave
++    {
++      CCueWorker& worker;
++      const std::vector<Cue>& cues;
++      ~Leave()
++      {
++        for (const Cue& cue : cues)
++          worker.Release(cue);
++      }
++    } leave{*this, batch};
+ 
+     if (batch.front().done)
+     {
+@@ -389,8 +581,12 @@ void CCueWorker::Run()
+           m_queue.insert(m_queue.begin(), std::make_move_iterator(batch.begin() + BATCH),
+                          std::make_move_iterator(batch.end()));
+         else
++        {
++          for (size_t c = BATCH; c < batch.size(); ++c)
++            Release(batch[c]);
+           m_chat->Note(std::to_string(batch.size() - BATCH) +
+                        " lines dropped by a seek during their request");
++        }
+         batch.resize(BATCH);
+         items.resize(BATCH);
+       }
+@@ -427,7 +623,11 @@ void CCueWorker::Run()
+       m_chat->Note(std::to_string(asIs) + " lines shown as they came: the request failed" +
+                        (again ? " twice" : ""),
+                    true);
+-    if (outcome.failed && !dropped(batch.front()))
++    const bool wait = outcome.failed && !dropped(batch.front());
++    for (const Cue& cue : batch)
++      Release(cue);
++    batch.clear();
++    if (wait)
+     {
+       // the provider is down or refuses: the next request waits a little rather than hammer it
+       std::unique_lock lock(m_queueLock);
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index 2c994e7..7f0afc5 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -14,6 +14,7 @@
+ #include <cstdint>
+ #include <deque>
+ #include <functional>
++#include <map>
+ #include <memory>
+ #include <mutex>
+ #include <optional>
+@@ -149,6 +150,88 @@ private:
+   std::atomic<bool> m_missed{false};
+ };
+ 
++/*!
++ * \brief How far ahead of playback the translation of an open subtitle stream is: the cues handed
++ * in and not yet shown, and how far ahead its cues are known. Times are the cues' (microseconds).
++ * Check() sees every one open; the player asks it before it goes on after a seek or a stream
++ * opening. Its lock is taken for nothing else.
++ */
++class CLead
++{
++public:
++  using Clock = std::chrono::steady_clock;
++
++  //! How far ahead its cues are known.
++  enum class Known
++  {
++    WHOLE, //!< a file's: all of them
++    AHEAD, //!< as far as a read-ahead has read
++    AS_READ, //!< as the player reads them
++  };
++
++  //! How far ahead of playback the translation is for playback to go on.
++  static constexpr double READY = 15.0 * 1000000.0;
++  //! A lead is waited for only this soon after it opens or a seek moves it, and the wait goes on
++  //! only while it is asked about.
++  static constexpr Clock::duration FRESH = std::chrono::seconds(20);
++  static constexpr Clock::duration KEEP = std::chrono::seconds(2);
++
++  explicit CLead(Known known, Clock::time_point at = Clock::now());
++  ~CLead();
++  CLead(const CLead&) = delete;
++  CLead& operator=(const CLead&) = delete;
++
++  //! A cue handed in to be translated; the ticket Done() takes.
++  uint64_t Add(double start, double stop);
++  //! The cue is shown, or dropped.
++  void Done(uint64_t ticket);
++  //! Playback moved: waited for again; a stream's cues are dropped, and how far they are known
++  //! is not known again until the read-ahead says.
++  void Seek(Clock::time_point at = Clock::now());
++  //! Which seek: what a read-ahead says before seeing the last one is not taken.
++  unsigned int Generation() const;
++  //! A read-ahead reads the track.
++  void ReadAhead();
++  //! It has read up to there, after the seek generation.
++  void Reached(double time, unsigned int generation);
++  //! It has read to the end, after the seek generation.
++  void Ended(unsigned int generation);
++  //! It stopped: the cues are known as the player reads them.
++  void Unread();
++  //! The stream closes: Check() no longer sees it.
++  void Close();
++
++  struct State
++  {
++    bool ready{true}; //!< playback may go on
++    double lead; //!< how far ahead the translation is, least of those asked about
++    Clock::time_point moved; //!< when the last of those waited for opened or moved
++  };
++  /*!
++   * \brief Whether playback may go on: every lead waited for is READY ahead of playback, or
++   * translated as far as its cues are known. One found ready, or no longer fresh, is not waited
++   * for again until it moves.
++   * \param stream where playback is in a stream's cue times, file in a file's: both moved by
++   * the subtitle delay as the player shows the cues
++   */
++  static State Check(double stream, double file, Clock::time_point at = Clock::now());
++  //! The wait gave up: none is waited for again until it moves.
++  static void GiveUp();
++
++private:
++  double Ahead(double now, bool& ready) const;
++
++  Known m_known;
++  std::map<uint64_t, std::pair<double, double>> m_pending; //!< by ticket: start, end
++  double m_horizon; //!< as far as its cues are known
++  bool m_ended{false};
++  unsigned int m_generation{0};
++  bool m_settled{false};
++  bool m_closed{false};
++  Clock::time_point m_moved; //!< opened, or moved by a seek
++  Clock::time_point m_until; //!< waited for until then, unless asked about
++};
++
+ /*!
+  * \brief Hands cues to a model's work on a thread of its own, a few at a time, and each result to
+  * deliver with the cue's times, on that thread, in the order of the cues.
+@@ -196,6 +279,8 @@ public:
+   //! Drop every cue not yet delivered, ending the request for them: none is delivered once this
+   //! returns (after a seek).
+   void Flush();
++  //! Count the cues in a lead until each is delivered or dropped: before the first is handed in.
++  void Track(std::shared_ptr<CLead> lead) { m_lead = std::move(lead); }
+ 
+ private:
+   struct Cue
+@@ -205,11 +290,14 @@ private:
+     double stop;
+     unsigned generation;
+     bool done{false}; //!< worked on already: only delivered
++    uint64_t ticket{0}; //!< in the lead
+   };
+ 
+   //! Where a cue ends: its start for one the next ends.
+   static double End(const Cue& cue) { return cue.stop > cue.start ? cue.stop : cue.start; }
+   void Queue(Item item, double start, double stop, bool done);
++  //! The cue leaves the lead: delivered or dropped.
++  void Release(const Cue& cue);
+   void Run();
+   std::vector<Cue> NextBatch();
+ 
+@@ -218,6 +306,7 @@ private:
+   Deliver m_deliver;
+   Now m_now;
+   std::function<void(const std::string& source)> m_heard;
++  std::shared_ptr<CLead> m_lead;
+   const bool m_ahead;
+   const std::chrono::milliseconds m_quick;
+   size_t m_size{BATCH}; //!< how many cues the next request carries at most
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+index 10928b5..d6c7517 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictureCodec.cpp
+@@ -82,6 +82,9 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+   m_pictures = std::make_unique<CDVDOverlayCodecFFmpeg>();
+   if (!m_pictures->Open(hints, options))
+     return false;
++  m_cues.Open(
++      hints, true, [this](const std::string& text, double start, double stop)
++      { Show(text, start, stop); }, false);
+   // read and translated in one request; what is only read is translated by the cue stage
+   m_reader = std::make_unique<PICTURES::CReader>(
+       KODI::SUBTITLES::AI::LanguageName(KODI::SUBTITLES::TRANSLATION::CodeOf(hints.language)),
+@@ -94,10 +97,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+       },
+       hints.translateTo.empty()
+           ? std::nullopt
+-          : std::make_optional(KODI::SUBTITLES::AI::TranslationContext(hints, false)));
+-  m_cues.Open(
+-      hints, true, [this](const std::string& text, double start, double stop)
+-      { Show(text, start, stop); }, false);
++          : std::make_optional(KODI::SUBTITLES::AI::TranslationContext(hints, false)),
++      m_cues.Lead());
+   if (!hints.video.empty())
+   {
+     // the read-ahead's own decoder, used on its thread only
+@@ -113,7 +114,8 @@ bool CSubtitlePictureCodec::Open(CDVDStreamInfo& hints, CDVDCodecOptions& option
+               if (std::optional<PICTURES::CReader::Item> subtitle = Collect(*m_aheadPictures))
+                 Hand(std::move(*subtitle), generation);
+           },
+-          [this] { m_aheadPictures->Flush(); }, KODI::SUBTITLES::CReadAhead::Mode::WHOLE);
++          [this] { m_aheadPictures->Flush(); }, KODI::SUBTITLES::CReadAhead::Mode::WHOLE,
++          m_cues.Lead());
+   }
+   return Initialize();
+ }
+@@ -241,6 +243,7 @@ void CSubtitlePictureCodec::Reset()
+ 
+ void CSubtitlePictureCodec::Flush()
+ {
++  m_cues.Seek();
+   {
+     std::unique_lock guard(m_seenLock);
+     m_match.Seek();
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+index 15aa33c..a2e0afc 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.cpp
+@@ -349,9 +349,11 @@ std::string Png(const Picture& picture)
+ 
+ CReader::CReader(std::string language,
+                  Deliver deliver,
+-                 std::optional<TRANSLATION::Context> translate)
++                 std::optional<TRANSLATION::Context> translate,
++                 std::shared_ptr<MODEL::CLead> lead)
+   : m_language(std::move(language)),
+     m_deliver(std::move(deliver)),
++    m_lead(std::move(lead)),
+     m_translate(std::move(translate)),
+     m_ask(std::make_unique<AI::CPictureAsk>()),
+     m_thread([this] { Run(); })
+@@ -367,10 +369,21 @@ CReader::~CReader()
+   m_wake.notify_all();
+   m_ask->Cancel();
+   m_thread.join();
++  Release(m_queue);
++}
++
++template<class Items>
++void CReader::Release(const Items& items)
++{
++  if (m_lead)
++    for (const Item& item : items)
++      m_lead->Done(item.ticket);
+ }
+ 
+ void CReader::Add(Item item)
+ {
++  if (m_lead && !item.picture.grey.empty())
++    item.ticket = m_lead->Add(item.start, item.stop);
+   {
+     std::unique_lock guard(m_lock);
+     m_queue.push_back(std::move(item));
+@@ -380,11 +393,13 @@ void CReader::Add(Item item)
+ 
+ void CReader::Flush()
+ {
++  std::deque<Item> dropped;
+   {
+     std::unique_lock guard(m_lock);
+     ++m_generation;
+-    m_queue.clear();
++    dropped.swap(m_queue);
+   }
++  Release(dropped);
+   m_ask->Abort();
+ }
+ 
+@@ -495,14 +510,14 @@ void CReader::Run()
+     // delivered at once, not when the next packet comes - that can be minutes later - and under
+     // the lock, so a flush waits for it
+     lock.lock();
+-    if (generation != m_generation)
+-      continue;
+-    for (size_t i = 0, picture = 0; i < batch.size(); ++i)
+-      if (batch[i].picture.grey.empty())
+-        m_deliver({}, batch[i].start, batch[i].start, {});
+-      else if (const size_t read = picture++; read < texts.size() && !texts[read].empty())
+-        m_deliver(texts[read], batch[i].start, batch[i].stop,
+-                  read < sources.size() ? sources[read] : std::string());
++    if (generation == m_generation)
++      for (size_t i = 0, picture = 0; i < batch.size(); ++i)
++        if (batch[i].picture.grey.empty())
++          m_deliver({}, batch[i].start, batch[i].start, {});
++        else if (const size_t read = picture++; read < texts.size() && !texts[read].empty())
++          m_deliver(texts[read], batch[i].start, batch[i].stop,
++                    read < sources.size() ? sources[read] : std::string());
++    Release(batch);
+   }
+ }
+ } // namespace KODI::SUBTITLES::PICTURES
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+index b50fccc..d45241a 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitlePictures.h
+@@ -80,6 +80,7 @@ public:
+     Picture picture;
+     double start;
+     double stop; //!< its own end, or 0 for none
++    uint64_t ticket{0}; //!< in the lead
+   };
+   //! A picture's text, with its times, as soon as it is read, and "" for a clear, in the order
+   //! they came: from the reader's thread, never after Flush returns. source is what the model
+@@ -92,10 +93,12 @@ public:
+    * \param deliver where what is read goes; a picture not read goes nowhere
+    * \param translate what the model is told to translate the pictures as it reads them, or none
+    * to have them read only
++   * \param lead where each picture counts until its text is delivered, or none
+    */
+   CReader(std::string language,
+           Deliver deliver,
+-          std::optional<TRANSLATION::Context> translate = std::nullopt);
++          std::optional<TRANSLATION::Context> translate = std::nullopt,
++          std::shared_ptr<MODEL::CLead> lead = nullptr);
+   ~CReader();
+ 
+   void Add(Item item);
+@@ -106,9 +109,13 @@ public:
+ 
+ private:
+   void Run();
++  //! The pictures leave the lead: their text delivered, or dropped.
++  template<class Items>
++  void Release(const Items& items);
+ 
+   const std::string m_language;
+   const Deliver m_deliver;
++  const std::shared_ptr<MODEL::CLead> m_lead;
+   std::optional<TRANSLATION::Context> m_translate; //!< the reader's thread's once it runs
+   std::unique_ptr<AI::CPictureAsk> m_ask;
+   std::mutex m_lock;

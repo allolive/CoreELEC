@@ -29,16 +29,27 @@ that way when it plays again. The label is empty, and the skin hides the
 button, while "AI translate subtitles" is off or no AI provider is
 chosen.
 
-The player's hooks stay as they were: the entry of its own is never
-offered, so the list is the video's own tracks.
+With no entry of its own, the player's hooks for it go: the list is the
+video's own tracks, and a subtitle is selected and counted as Kodi does.
+The player still reopens a subtitle when the language it would be read
+in is not the one it was opened in, which is what turning the button
+does; the question no longer changes what the label shows, so the
+player asks it apart from the open. A target that changes on its own -
+"AI translate subtitles" turned off, or a subtitle in the viewer's
+language that arrives with the video playing - reaches the subtitle
+open the next time it is selected.
+
+The choice is written to its file after the translation's lock is let
+go, since the player takes it for every subtitle it selects; a later
+choice is never overwritten by an earlier one written after it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index 2993aa70..cf3e892a 100644
+index b726a80..c8ccf9b 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25537,13 +25537,13 @@ msgstr ""
+@@ -25519,13 +25519,13 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Translate subtitles"
  #: system/settings/settings.xml
  msgctxt "#60061"
@@ -55,7 +66,7 @@ index 2993aa70..cf3e892a 100644
  msgstr ""
  
  #. Label of setting "Player -> Subtitles -> AI provider"
-@@ -25756,6 +25756,12 @@ msgctxt "#60097"
+@@ -25738,6 +25738,12 @@ msgctxt "#60097"
  msgid "[B]What it does[/B][CR]A language model translates the subtitles of a video that has none in your language, and can correct what an OCR misread. Each film sends its subtitle lines, a few at a time - about 150 to 200 requests - with the video's title and its characters' names.[CR][CR][B]Free to try[/B] (as of October 2026: free offers change, check the provider's page)[CR]- Google Gemini: a free key at aistudio.google.com/apikey, no card. Its Flash Lite models allow a few films a day.[CR]- NVIDIA: a free developer account at build.nvidia.com. A limit per minute, not per day; meant for trying models out.[CR]- OpenRouter: the models whose name ends in \":free\". Few requests a day until credit is bought.[CR]- Your own server: free and private, on a computer of your network that runs llama.cpp, Ollama or vLLM. It has to be on.[CR][CR][B]Paid[/B][CR]OpenAI, Anthropic, and the paid models of the others: a few cents a film with a small model.[CR][CR][B]Choosing a model[/B][CR]Small, fast models are the ones for subtitles: Flash Lite, mini, Haiku. Choose a \"Newest\" entry - Newest gemini-flash-lite - and the next release is used when it comes out, with nothing to change here. A large model or one that reasons first is slower, not better for a subtitle.[CR][CR][B]Checking it[/B][CR]Test the connection translates one line. It should answer within a few seconds; it says so when the model is too slow for a film. When a free limit is reached during a film, a notification says so and the rest of the subtitle stays as it is.[CR][CR][B]Privacy[/B][CR]Free offers may keep what is sent to improve their models. Only subtitle lines, the title and character names are sent."
  msgstr ""
  
@@ -69,7 +80,7 @@ index 2993aa70..cf3e892a 100644
  #: system/settings/settings.xml
  msgctxt "#60100"
 diff --git a/xbmc/GUIInfoManager.cpp b/xbmc/GUIInfoManager.cpp
-index 7f1cc2e9..95e7e3e9 100644
+index 8242829..48502f2 100644
 --- a/xbmc/GUIInfoManager.cpp
 +++ b/xbmc/GUIInfoManager.cpp
 @@ -3190,6 +3190,14 @@ constexpr std::array<InfoMap, 46> musicplayer = {{
@@ -105,7 +116,7 @@ index 7f1cc2e9..95e7e3e9 100644
      {"subtitlelanguageex",    VIDEOPLAYER_SUBTITLE_LANG_EX},
      {"subtitlecodec",         VIDEOPLAYER_SUBTITLE_CODEC},
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
-index 4ee5ee90..8fee6d2c 100644
+index 4ee5ee9..2339dc6 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 @@ -24,6 +24,7 @@
@@ -124,12 +135,17 @@ index 4ee5ee90..8fee6d2c 100644
  #include <map>
  #include <mutex>
  #include <utility>
-@@ -963,34 +965,199 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
+@@ -963,86 +965,310 @@ void CAiSettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting
      guide->Open();
    }
  }
+-void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
 +namespace
-+{
+ {
+-  namespace TR = TRANSLATION;
+-  m_offer.reset();
+-  const std::string target = TranslateEnabled() ? TargetLanguage() : std::string();
+-  if (target.empty())
 +//! What the playing video's subtitles are translated into: shared by the player, which opens the
 +//! subtitle, and the subtitle dialog, which shows and turns it.
 +struct Translation
@@ -147,6 +163,7 @@ index 4ee5ee90..8fee6d2c 100644
 +  };
 +  std::optional<Open> open; //!< the track open translated
 +  std::string track; //!< the language of the subtitle open, translated or not
++  uint64_t kept{0}; //!< how many choices were kept: a file write never undoes a later one
 +};
 +
 +Translation& GetTranslation()
@@ -187,32 +204,75 @@ index 4ee5ee90..8fee6d2c 100644
 +  return *choices;
 +}
 +
-+void Keep(const std::string& video, const std::string& target)
++struct Kept
++{
++  std::string json;
++  uint64_t number;
++};
++
++//! Keep a film's choice, under the translation's lock: what the file is then to hold.
++std::optional<Kept> Keep(Translation& translation)
 +{
 +  CVariant& choices = Choices();
-+  if (choices.isMember(video) && choices[video].asString() == target)
-+    return;
-+  choices[video] = target;
++  if (choices.isMember(translation.video) &&
++      choices[translation.video].asString() == translation.target)
++    return {};
++  choices[translation.video] = translation.target;
 +  std::string json;
 +  if (!CJSONVariantWriter::Write(choices, json, false))
++    return {};
++  return Kept{std::move(json), ++translation.kept};
++}
++
++//! Write the choices kept, without the translation's lock: the player takes it.
++void Save(const Kept& kept)
++{
++  static std::mutex lock;
++  static uint64_t written{0};
++  std::unique_lock guard(lock);
++  if (kept.number <= written)
 +    return;
 +  // written aside and renamed over: a power cut leaves the old file or the new one
 +  XFILE::CFile file;
 +  if (!file.OpenForWrite(CHOICES_NEW, true) ||
-+      file.Write(json.data(), json.size()) != static_cast<ssize_t>(json.size()))
-+  {
++      file.Write(kept.json.data(), kept.json.size()) !=
++          static_cast<ssize_t>(kept.json.size()))
+   {
+-    m_selected = false;
 +    CLog::LogF(LOGERROR, "cannot write {}", CHOICES_NEW);
-+    return;
-+  }
+     return;
+   }
+-  std::vector<TR::Track> tracks;
+-  for (const SelectionStream& st : ordered)
 +  file.Close();
 +  if (!XFILE::CFile::Rename(CHOICES_NEW, CHOICES))
+   {
+-    // text inside the video, cue by cue, or a SubRip file beside it, read whole
+-    const bool text =
+-        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
+-         (st.codecId == AV_CODEC_ID_SUBRIP || st.codecId == AV_CODEC_ID_TEXT)) ||
+-        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
+-         URIUtils::HasExtension(st.filename, ".srt"));
+-    tracks.push_back({TR::CodeOf(st.language), reads(st.language),
+-                      (st.flags & StreamFlags::FLAG_FORCED) != 0, text});
 +    CLog::LogF(LOGERROR, "cannot replace {}", CHOICES);
-+}
-+
++    return;
+   }
+-  // a provider that does not answer offers nothing - but a translation being shown stays
+-  const auto chosen = TR::ChooseSource(tracks);
+-  if (chosen && (m_selected || Available()))
+-    m_offer = Offer{ordered[*chosen].type_index, tracks[*chosen].code, target};
+-  else
+-    m_selected = false;
++  written = kept.number;
+ }
+ 
+-int CTranslatedEntry::Index(const CSelectionStreams& streams)
 +//! The languages to translate into, in turn: the subtitle language, then those subtitles are
 +//! downloaded in.
 +std::vector<std::string> TranslationLanguages()
-+{
+ {
+-  return streams.CountType(StreamType::SUBTITLE);
 +  std::vector<std::string> codes;
 +  const auto add = [&codes](const std::string& code)
 +  {
@@ -237,6 +297,15 @@ index 4ee5ee90..8fee6d2c 100644
 +         (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
 +          URIUtils::HasExtension(st.filename, ".srt"));
 +}
++
++//! What a track is read in for a target: the target, or empty when it is shown as it is.
++std::string ReadFor(const SelectionStream& st, const std::string& target)
++{
++  const std::string from = TRANSLATION::CodeOf(st.language);
++  if (target.empty() || !IsText(st) || from.empty() || from == target)
++    return {};
++  return target;
++}
 +} // namespace
 +
 +std::string TranslationLabel()
@@ -254,6 +323,7 @@ index 4ee5ee90..8fee6d2c 100644
 +void NextTranslation()
 +{
 +  const std::vector<std::string> languages = TranslationLanguages();
++  std::optional<Kept> kept;
 +  {
 +    Translation& translation = GetTranslation();
 +    std::unique_lock guard(translation.lock);
@@ -267,8 +337,10 @@ index 4ee5ee90..8fee6d2c 100644
 +    const auto next = now == offered.end() ? offered.begin() : now + 1;
 +    translation.target = next == offered.end() ? std::string() : *next;
 +    translation.chosen = true;
-+    Keep(translation.video, translation.target);
++    kept = Keep(translation);
 +  }
++  if (kept)
++    Save(*kept);
 +  // the subtitle open is opened again, to be read in the language chosen
 +  const auto& player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
 +  if (player && player->IsPlayingVideo())
@@ -276,20 +348,15 @@ index 4ee5ee90..8fee6d2c 100644
 +      player->SetSubtitle(subtitle);
 +}
 +
- void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
- {
-   namespace TR = TRANSLATION;
--  m_offer.reset();
--  const std::string target = TranslateEnabled() ? TargetLanguage() : std::string();
--  if (target.empty())
++void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const Reads& reads)
++{
++  namespace TR = TRANSLATION;
 +  m_source.reset();
 +  const std::string preferred = TranslateEnabled() ? TargetLanguage() : std::string();
 +  const std::string video = PlayingVideo();
 +  Translation& translation = GetTranslation();
 +  bool translating = false;
-   {
--    m_selected = false;
--    return;
++  {
 +    std::unique_lock guard(translation.lock);
 +    if (translation.video != video)
 +    {
@@ -312,26 +379,11 @@ index 4ee5ee90..8fee6d2c 100644
 +    if (!translation.available || translation.chosen)
 +      return;
 +    translating = translation.open.has_value();
-   }
++  }
 +  // how the video starts: translated when it has no subtitle in the language the viewer reads
-   std::vector<TR::Track> tracks;
-   for (const SelectionStream& st : ordered)
--  {
--    // text inside the video, cue by cue, or a SubRip file beside it, read whole
--    const bool text =
--        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX &&
--         (st.codecId == AV_CODEC_ID_SUBRIP || st.codecId == AV_CODEC_ID_TEXT)) ||
--        (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
--         URIUtils::HasExtension(st.filename, ".srt"));
-     tracks.push_back({TR::CodeOf(st.language), reads(st.language),
--                      (st.flags & StreamFlags::FLAG_FORCED) != 0, text});
--  }
--  // a provider that does not answer offers nothing - but a translation being shown stays
--  const auto chosen = TR::ChooseSource(tracks);
--  if (chosen && (m_selected || Available()))
--    m_offer = Offer{ordered[*chosen].type_index, tracks[*chosen].code, target};
--  else
--    m_selected = false;
++  std::vector<TR::Track> tracks;
++  for (const SelectionStream& st : ordered)
++    tracks.push_back({TR::CodeOf(st.language), reads(st.language),
 +                      (st.flags & StreamFlags::FLAG_FORCED) != 0, IsText(st)});
 +  // a provider that does not answer starts nothing - but a translation being shown stays
 +  const auto source = TR::ChooseSource(tracks);
@@ -343,13 +395,11 @@ index 4ee5ee90..8fee6d2c 100644
 +    translation.target = starts ? preferred : std::string();
  }
  
- int CTranslatedEntry::Index(const CSelectionStreams& streams)
-@@ -1001,48 +1168,71 @@ int CTranslatedEntry::Index(const CSelectionStreams& streams)
  const SelectionStream* CTranslatedEntry::Default(const CSelectionStreams& streams,
                                                   bool reset,
-                                                  bool defaultSettings,
+-                                                 bool defaultSettings,
 -                                                 int saved)
-+                                                 int /* saved */)
++                                                 bool defaultSettings)
  {
 -  m_selected = m_offer && (reset ? defaultSettings || saved == Index(streams) : m_selected);
 -  return m_selected ? &streams.Get(StreamType::SUBTITLE, m_offer->sourceIndex) : nullptr;
@@ -358,21 +408,30 @@ index 4ee5ee90..8fee6d2c 100644
  }
  
 -int CTranslatedEntry::Select(int entry, const CSelectionStreams& streams)
-+int CTranslatedEntry::Select(int entry, const CSelectionStreams& /* streams */)
++void CTranslatedEntry::Opened(bool ok)
  {
 -  m_selected = m_offer && entry == Index(streams);
 -  return m_selected ? m_offer->sourceIndex : entry;
-+  return entry;
- }
- 
- void CTranslatedEntry::Opened(bool ok)
- {
--  m_selected = m_selected && ok;
 +  if (ok)
 +    return;
 +  Translation& translation = GetTranslation();
 +  std::unique_lock guard(translation.lock);
 +  translation.open.reset();
+ }
+ 
+-void CTranslatedEntry::Opened(bool ok)
++std::string CTranslatedEntry::ReadIn(int64_t demuxerId,
++                                     int id,
++                                     int source,
++                                     const CSelectionStreams& streams) const
+ {
+-  m_selected = m_selected && ok;
++  const int index = streams.TypeIndexOf(StreamType::SUBTITLE, source, demuxerId, id);
++  if (index < 0)
++    return {};
++  Translation& translation = GetTranslation();
++  std::unique_lock guard(translation.lock);
++  return ReadFor(streams.Get(StreamType::SUBTITLE, index), translation.target);
  }
  
  std::string CTranslatedEntry::TranslateTo(int64_t demuxerId,
@@ -393,19 +452,17 @@ index 4ee5ee90..8fee6d2c 100644
 -  return st.demuxerId == demuxerId && st.id == id && st.source == source ? m_offer->target
 -                                                                         : std::string();
 +  const SelectionStream& st = streams.Get(StreamType::SUBTITLE, index);
-+  const std::string from = TRANSLATION::CodeOf(st.language);
-+  translation.track = from;
-+  if (translation.target.empty())
-+    return {};
-+  if (!IsText(st) || from.empty() || from == translation.target)
-+    return {};
-+  translation.open = Translation::Open{demuxerId, id, source};
-+  return translation.target;
++  translation.track = TRANSLATION::CodeOf(st.language);
++  std::string target = ReadFor(st, translation.target);
++  if (!target.empty())
++    translation.open = Translation::Open{demuxerId, id, source};
++  return target;
  }
  
  bool CTranslatedEntry::Info(int index,
                              const CSelectionStreams& streams,
-                             SubtitleStreamInfo& info) const
+-                            SubtitleStreamInfo& info) const
++                            SubtitleStreamInfo& info)
  {
 -  if (!m_offer || index != Index(streams))
 +  Translation& translation = GetTranslation();
@@ -435,7 +492,7 @@ index 4ee5ee90..8fee6d2c 100644
  }
  } // namespace KODI::SUBTITLES::AI
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
-index 1a4c4b9d..62ac3d69 100644
+index 1a4c4b9..0f3d734 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 @@ -98,9 +98,25 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
@@ -467,7 +524,7 @@ index 1a4c4b9d..62ac3d69 100644
   */
  class CTranslatedEntry
  {
-@@ -108,46 +124,38 @@ public:
+@@ -108,46 +124,31 @@ public:
    using Reads = std::function<bool(const KODI::UTILS::CLanguageTag&)>;
  
    /*!
@@ -482,12 +539,7 @@ index 1a4c4b9d..62ac3d69 100644
 -  //! Whether the entry is the subtitle selected.
 -  bool Selected() const { return m_selected; }
 -  //! The entry's place in the subtitle list.
-+  //! Whether the list has an entry of its own: it has none, the tracks are translated themselves.
-+  bool Offered() const { return false; }
-+  //! Whether that entry is the subtitle selected.
-+  bool Selected() const { return false; }
-+  //! The place that entry would have in the subtitle list.
-   static int Index(const CSelectionStreams& streams);
+-  static int Index(const CSelectionStreams& streams);
    /*!
 -   * \brief The player chooses its subtitle: with no subtitle in the language the viewer reads,
 -   * the translation comes first - unless the viewer chose another for this video; once playing,
@@ -500,20 +552,23 @@ index 1a4c4b9d..62ac3d69 100644
     */
    const SelectionStream* Default(const CSelectionStreams& streams,
                                   bool reset,
-                                  bool defaultSettings,
-                                  int saved);
+-                                 bool defaultSettings,
+-                                 int saved);
 -  //! The viewer chooses an entry: the track to open for it.
-+  //! The viewer chooses an entry: the track to open for it, which is that entry.
-   int Select(int entry, const CSelectionStreams& streams);
+-  int Select(int entry, const CSelectionStreams& streams);
 -  //! Whether the track chosen opened.
++                                 bool defaultSettings);
 +  //! Whether the track opened.
    void Opened(bool ok);
++  //! The language a subtitle stream would be read in now, or empty.
++  std::string ReadIn(int64_t demuxerId, int id, int source, const CSelectionStreams& streams) const;
    //! The language a subtitle stream being opened is to be read in, or empty.
 -  std::string TranslateTo(int64_t demuxerId, int id, int source, const CSelectionStreams& streams) const;
 -  //! The entry's details, when index names it.
+-  bool Info(int index, const CSelectionStreams& streams, SubtitleStreamInfo& info) const;
 +  std::string TranslateTo(int64_t demuxerId, int id, int source, const CSelectionStreams& streams);
 +  //! The details of the track at index, when it is the one translated.
-   bool Info(int index, const CSelectionStreams& streams, SubtitleStreamInfo& info) const;
++  static bool Info(int index, const CSelectionStreams& streams, SubtitleStreamInfo& info);
  
  private:
 -  struct Offer
@@ -529,8 +584,92 @@ index 1a4c4b9d..62ac3d69 100644
  };
  
  /*!
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 9dd8416..3c7fe88 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -1155,8 +1155,7 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
+ 
+   UpdateTranslatedSubtitle();
+   if (const SelectionStream* st =
+-          m_translatedSubtitle.Default(m_SelectionStreams, reset, isDefaultVideosettings,
+-                                       m_processInfo->GetVideoSettings().m_SubtitleStream))
++          m_translatedSubtitle.Default(m_SelectionStreams, reset, isDefaultVideosettings))
+   {
+     valid = OpenStream(m_CurrentSubtitle, st->demuxerId, st->id, st->source);
+     m_translatedSubtitle.Opened(valid);
+@@ -3812,9 +3811,7 @@ void CVideoPlayer::HandleMessages()
+     {
+       auto pMsg2 = std::static_pointer_cast<CDVDMsgPlayerSetSubtitleStream>(pMsg);
+ 
+-      SelectionStream& st = m_SelectionStreams.Get(
+-          StreamType::SUBTITLE,
+-          m_translatedSubtitle.Select(pMsg2->GetStreamId(), m_SelectionStreams));
++      SelectionStream& st = m_SelectionStreams.Get(StreamType::SUBTITLE, pMsg2->GetStreamId());
+       if(st.source != STREAM_SOURCE_NONE)
+       {
+         if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+@@ -3827,8 +3824,8 @@ void CVideoPlayer::HandleMessages()
+           }
+         }
+         else if (!st.IsCurrent(m_CurrentSubtitle) || m_CurrentSubtitle.demuxDisabled ||
+-                 m_translatedSubtitle.TranslateTo(st.demuxerId, st.id, st.source,
+-                                                  m_SelectionStreams) !=
++                 m_translatedSubtitle.ReadIn(st.demuxerId, st.id, st.source,
++                                             m_SelectionStreams) !=
+                      m_CurrentSubtitle.hint.translateTo)
+         {
+ #if defined(HAVE_LIBBLURAY)
+@@ -7478,7 +7475,6 @@ void CVideoPlayer::UpdateContent()
+   std::unique_lock lock(m_content.m_section);
+   m_content.m_selectionStreams = m_SelectionStreams;
+   m_content.m_programs = m_programs;
+-  m_content.m_translatedSubtitle = m_translatedSubtitle;
+ }
+ 
+ void CVideoPlayer::UpdateTranslatedSubtitle()
+@@ -7501,8 +7497,6 @@ void CVideoPlayer::UpdateContentState()
+   m_content.m_subtitleIndex =
+       m_SelectionStreams.TypeIndexOf(StreamType::SUBTITLE, m_CurrentSubtitle.source,
+                                      m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
+-  if (m_translatedSubtitle.Selected())
+-    m_content.m_subtitleIndex = m_translatedSubtitle.Index(m_SelectionStreams);
+ 
+   if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) && m_content.m_videoIndex == -1 &&
+       m_content.m_audioIndex == -1)
+@@ -7692,7 +7686,7 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
+     return;
+   }
+ 
+-  if (m_content.m_translatedSubtitle.Info(index, m_content.m_selectionStreams, info))
++  if (SUBTITLES::AI::CTranslatedEntry::Info(index, m_content.m_selectionStreams, info))
+     return;
+ 
+   const SelectionStream& s = m_content.m_selectionStreams.Get(StreamType::SUBTITLE, index);
+@@ -7720,8 +7714,7 @@ void CVideoPlayer::SetSubtitle(int iStream)
+ int CVideoPlayer::GetSubtitleCount() const
+ {
+   std::unique_lock lock(m_content.m_section);
+-  return m_content.m_selectionStreams.CountType(StreamType::SUBTITLE) +
+-         (m_content.m_translatedSubtitle.Offered() ? 1 : 0);
++  return m_content.m_selectionStreams.CountType(StreamType::SUBTITLE);
+ }
+ 
+ int CVideoPlayer::GetSubtitle()
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 5a06049..ae95d6d 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -631,7 +631,6 @@ protected:
+     int m_videoIndex{-1};
+     int m_audioIndex{-1};
+     int m_subtitleIndex{-1};
+-    KODI::SUBTITLES::AI::CTranslatedEntry m_translatedSubtitle;
+   } m_content;
+ 
+   int m_playSpeed;
 diff --git a/xbmc/guilib/guiinfo/GUIInfoLabels.h b/xbmc/guilib/guiinfo/GUIInfoLabels.h
-index e3e3128c..20d35948 100644
+index 4f7b5e8..b20b1b8 100644
 --- a/xbmc/guilib/guiinfo/GUIInfoLabels.h
 +++ b/xbmc/guilib/guiinfo/GUIInfoLabels.h
 @@ -102,7 +102,8 @@ constexpr uint32_t PLAYER_IS_LIVE                    = 87;
@@ -544,7 +683,7 @@ index e3e3128c..20d35948 100644
  constexpr uint32_t WEATHER_TEMPERATURE               = 101;
  constexpr uint32_t WEATHER_LOCATION                  = 102;
 diff --git a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
-index d8f06234..3000abdc 100644
+index d8f0623..3000abd 100644
 --- a/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
 +++ b/xbmc/guilib/guiinfo/VideoGUIInfo.cpp
 @@ -17,6 +17,7 @@
@@ -566,7 +705,7 @@ index d8f06234..3000abdc 100644
        if (m_appPlayer->IsPlayingVideo())
        {
 diff --git a/xbmc/interfaces/builtins/PlayerBuiltins.cpp b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
-index 4c54beb0..5ea81248 100644
+index 4c54beb..5ea8124 100644
 --- a/xbmc/interfaces/builtins/PlayerBuiltins.cpp
 +++ b/xbmc/interfaces/builtins/PlayerBuiltins.cpp
 @@ -20,6 +20,7 @@

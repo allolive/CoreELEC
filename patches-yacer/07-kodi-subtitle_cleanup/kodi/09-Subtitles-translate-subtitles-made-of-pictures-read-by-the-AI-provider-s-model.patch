@@ -67,10 +67,10 @@ the two new files in the build list are all the shared code touched.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index cf3e892..d38f184 100644
+index c8ccf9b..a9f8fb8 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25537,7 +25537,7 @@ msgstr ""
+@@ -25519,7 +25519,7 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Translate subtitles"
  #: system/settings/settings.xml
  msgctxt "#60061"
@@ -126,7 +126,7 @@ index 7c4af3b..c1df8a0 100644
              SubtitleTiming.h
              SubtitleRevision.h
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
-index 8fee6d2..5d0ae3e 100644
+index 2339dc6..3d85267 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
 @@ -37,6 +37,7 @@
@@ -304,11 +304,10 @@ index 8fee6d2..5d0ae3e 100644
    const std::optional<REVISION::Mode> mode = RepairMode();
    if (!mode)
      return nullptr;
-@@ -1074,6 +1174,14 @@ bool IsText(const SelectionStream& st)
-          (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_TEXT &&
+@@ -1100,11 +1200,19 @@ bool IsText(const SelectionStream& st)
            URIUtils::HasExtension(st.filename, ".srt"));
  }
-+
+ 
 +//! Whether a track is pictures inside the video the model can read as text: Blu-ray, DVD, DVB.
 +bool IsPictures(const SelectionStream& st)
 +{
@@ -316,10 +315,17 @@ index 8fee6d2..5d0ae3e 100644
 +         (st.codecId == AV_CODEC_ID_HDMV_PGS_SUBTITLE || st.codecId == AV_CODEC_ID_DVD_SUBTITLE ||
 +          st.codecId == AV_CODEC_ID_DVB_SUBTITLE);
 +}
- } // namespace
- 
- std::string TranslationLabel()
-@@ -1145,13 +1253,20 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
++
+ //! What a track is read in for a target: the target, or empty when it is shown as it is.
+ std::string ReadFor(const SelectionStream& st, const std::string& target)
+ {
+   const std::string from = TRANSLATION::CodeOf(st.language);
+-  if (target.empty() || !IsText(st) || from.empty() || from == target)
++  if (target.empty() || (!IsText(st) && !IsPictures(st)) || from.empty() || from == target)
+     return {};
+   return target;
+ }
+@@ -1182,13 +1290,20 @@ void CTranslatedEntry::Update(const std::vector<SelectionStream>& ordered, const
        return;
      translating = translation.open.has_value();
    }
@@ -342,17 +348,8 @@ index 8fee6d2..5d0ae3e 100644
    const bool starts = source && (translating || Available());
    if (starts)
      m_source = ordered[*source].type_index;
-@@ -1205,7 +1320,7 @@ std::string CTranslatedEntry::TranslateTo(int64_t demuxerId,
-   translation.track = from;
-   if (translation.target.empty())
-     return {};
--  if (!IsText(st) || from.empty() || from == translation.target)
-+  if ((!IsText(st) && !IsPictures(st)) || from.empty() || from == translation.target)
-     return {};
-   translation.open = Translation::Open{demuxerId, id, source};
-   return translation.target;
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
-index 62ac3d6..2dfa804 100644
+index 0f3d734..6f3f926 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.h
 @@ -16,6 +16,7 @@
@@ -380,7 +377,7 @@ index 62ac3d6..2dfa804 100644
  
  //! Where playback is, in the time base of the cues of a subtitle file.
  double PlaybackTime();
-@@ -158,6 +161,32 @@ private:
+@@ -151,6 +154,32 @@ private:
    std::optional<int> m_source;
  };
  
@@ -793,7 +790,7 @@ index d360c29..102760f 100644
    //! broke into letters may be rejoined into
    std::vector<std::string> cast;
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
-index af32c7a..9e89989 100644
+index 06d561f..0978ee7 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleCueStage.cpp
 @@ -210,7 +210,7 @@ void CCueStage::Stop()

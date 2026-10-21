@@ -41,6 +41,11 @@ start decides the rest. A file opened in a running player (the next episode) can
 one's audio stream when the format matches; its start holds that stream
 the same way.
 
+A film whose subtitle is not yet translated far enough ahead starts the
+ordinary way, waiting for the translation (the subtitle group's wait)
+with the stream players paused: held here, the decoder would reset
+after 5 s without a picture taken.
+
 Eligibility is the resume's without what only its flush needs, on a plain
 file of ten seconds or more with video, no FEL: TrueHD, DTS, AC-3 or E-AC-3
 passthrough, or any codec decoded to PCM. PCM goes through the preparation
@@ -74,6 +79,8 @@ hold in CRenderManager and the stream players; there is no AML side to it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/xbmc/cores/VideoPlayer/AudioPreroll.h b/xbmc/cores/VideoPlayer/AudioPreroll.h
+index 7fa06b1..d422c5d 100644
 --- a/xbmc/cores/VideoPlayer/AudioPreroll.h
 +++ b/xbmc/cores/VideoPlayer/AudioPreroll.h
 @@ -182,7 +182,10 @@ public:
@@ -132,9 +139,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    bool Continuous(double pts) const
    {
      // Both the timestamps and the reported durations arrive rounded to whole
+diff --git a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
+index d4b6247..073cc21 100644
 --- a/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
 +++ b/xbmc/cores/VideoPlayer/AudioSinkAE.cpp
-@@ -369,6 +369,29 @@ CAudioSinkAE::PrerollPacketResult CAudio
+@@ -369,6 +369,29 @@ CAudioSinkAE::PrerollPacketResult CAudioSinkAE::AddPrerollPacket(const DVDAudioF
                frame.nb_frames, frame.framesOut);
      return PrerollPacketResult::Unavailable;
    }
@@ -164,7 +173,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    if (!m_bPassthrough || m_dataFormat != AE_FMT_RAW ||
        !frame.passthrough || frame.framesOut != 0 || frame.nb_frames <= 0 ||
        frame.nb_frames > MAX_IEC61937_PACKET || m_pAudioStream->GetFrameSize() != 1)
-@@ -400,7 +423,7 @@ CAudioSinkAE::PrerollPacketResult CAudio
+@@ -400,7 +423,7 @@ CAudioSinkAE::PrerollPacketResult CAudioSinkAE::AddPrerollPacket(const DVDAudioF
  AudioPrerollSinkState CAudioSinkAE::GetPrerollSyncState()
  {
    std::unique_lock lock(m_critSection);
@@ -173,6 +182,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      return {};
  
    // Delay and sync state come from one engine-stats snapshot, including while
+diff --git a/xbmc/cores/VideoPlayer/DVDMessage.h b/xbmc/cores/VideoPlayer/DVDMessage.h
+index 8623322..a6fdb11 100644
 --- a/xbmc/cores/VideoPlayer/DVDMessage.h
 +++ b/xbmc/cores/VideoPlayer/DVDMessage.h
 @@ -63,6 +63,7 @@ public:
@@ -183,6 +194,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      VIDEO_SET_ASPECT,               // set aspectratio of video
      VIDEO_DRAIN,                    // wait for decoder to output last frame
  
+diff --git a/xbmc/cores/VideoPlayer/PlaybackPreroll.h b/xbmc/cores/VideoPlayer/PlaybackPreroll.h
+index a3eeca2..d2e50c7 100644
 --- a/xbmc/cores/VideoPlayer/PlaybackPreroll.h
 +++ b/xbmc/cores/VideoPlayer/PlaybackPreroll.h
 @@ -50,13 +50,21 @@ public:
@@ -226,32 +239,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    double m_target = 0.0;
    double m_beginUs = 0.0;
    double m_startUs = 0.0;
---- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-+++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-@@ -110,6 +110,11 @@ bool CVideoPlayerAudio::OpenStream(CDVDS
- void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
- {
-   m_pAudioCodec = std::move(codec);
-+  // known from the codec, before any packet: a start that holds the packets asks
-+  {
-+    std::unique_lock<CCriticalSection> lock(m_info_section);
-+    m_info.passthrough = m_pAudioCodec->NeedPassthrough();
-+  }
- 
- 
-   /* store our stream hints */
-@@ -912,7 +917,7 @@ bool CVideoPlayerAudio::ProcessDecoderOu
-     }
-     else
-       m_preroll.Accepted(audioframe.pts, audioframe.duration, framesOutput, audioframe.nb_frames,
--                         audioframe.framesOut);
-+                         audioframe.framesOut, audioframe.passthrough);
-   }
-   else
-     framesOutput = m_audioSink.AddPackets(audioframe);
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 0c5cbb8..1c99314 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -1590,6 +1590,13 @@ void CVideoPlayer::Prepare()
+@@ -1589,6 +1589,13 @@ void CVideoPlayer::Prepare()
    }
    m_processInfo->SetFrameAdvance(false);
    m_State.Clear();
@@ -265,7 +257,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_nextStream.Cancel();
    m_displayTime.Clear();
    m_nextStreamSyncing = false;
-@@ -2189,6 +2196,8 @@ void CVideoPlayer::ProcessAudioData(CDem
+@@ -2180,6 +2187,8 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
  
    bool checkcont = CheckContinuity(m_CurrentAudio, pPacket);
    UpdateTimestamps(m_CurrentAudio, pPacket);
@@ -274,7 +266,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    if (checkcont && (m_CurrentAudio.avsync == CCurrentStream::AV_SYNC_CHECK))
      m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_NONE;
-@@ -2508,6 +2517,11 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2562,6 +2571,11 @@ void CVideoPlayer::HandlePlaySpeed()
    // stream players while the target picture is deliberately held.
    if (m_resumePreroll.Active())
      return;
@@ -286,7 +278,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    const bool isInMenu = IsInMenuInternal();
    const bool tolerateStall =
        isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
-@@ -2798,23 +2812,7 @@ void CVideoPlayer::HandlePlaySpeed()
+@@ -2852,23 +2866,7 @@ void CVideoPlayer::HandlePlaySpeed()
  
        m_syncTimer.Set(3000ms);
  
@@ -311,7 +303,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      }
      else
      {
-@@ -3948,7 +3946,8 @@ void CVideoPlayer::HandleMessages()
+@@ -4004,7 +4002,8 @@ void CVideoPlayer::HandleMessages()
            m_playSpeed == DVD_PLAYSPEED_PAUSE && m_CurrentAudio.id >= 0 &&
            m_CurrentVideo.id >= 0 && m_State.canseek && m_State.canpause && m_pInputStream &&
            m_pInputStream->IsStreamType(DVDSTREAM_TYPE_FILE) && !m_pInputStream->IsRealtime() &&
@@ -321,7 +313,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        // Eligibility can lapse during the pause, leaving an armed preroll with
        // no resume to serve. Only a flush retires the renderer's hold: cancelling
        // it bare leaves the gate holding a generation the video thread still
-@@ -4301,7 +4300,7 @@ void CVideoPlayer::HandleAudioPrerollSta
+@@ -4357,7 +4356,7 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
          !std::isfinite(playing) || !std::isfinite(age) ||
          age < 0.0 || age > DVD_MSEC_TO_TIME(100) ||
          video.generation != status.generation || !video.ready || video.failed ||
@@ -330,7 +322,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
          m_clock.IsPaused() || !std::isfinite(runningFor) || runningFor <= 0.0 ||
          std::abs(clockAhead) > runningFor)
      {
-@@ -4317,13 +4316,9 @@ void CVideoPlayer::HandleAudioPrerollSta
+@@ -4373,13 +4372,9 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
        m_resumePrerollFailed = true;
        return;
      }
@@ -347,7 +339,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      if (!m_renderManager.ReleaseVideoPreroll(status.generation))
      {
        CLog::Log(LOGWARNING, "CVideoPlayer::Preroll - renderer rejected release generation={}",
-@@ -4351,9 +4346,13 @@ void CVideoPlayer::HandleAudioPrerollSta
+@@ -4407,9 +4402,13 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
      m_streamPlayerSpeed = DVD_PLAYSPEED_NORMAL;
      m_caching = CACHESTATE_DONE;
      m_syncTimer.Set(3000ms);
@@ -363,7 +355,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    }
    else if (status.phase == AudioPrerollStatus::Phase::Failed)
      m_resumePrerollFailed = true;
-@@ -4369,14 +4368,27 @@ void CVideoPlayer::HandleAudioPrerollSta
+@@ -4425,14 +4424,27 @@ void CVideoPlayer::HandleAudioPrerollStatus(const AudioPrerollStatus& status)
    }
  }
  
@@ -394,7 +386,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
           m_pInputStream->IsStreamType(DVDSTREAM_TYPE_FILE) &&
           !m_pInputStream->IsRealtime() && !KODI::NETWORK::IsInternetStream(m_item) &&
           !m_pInputStream->GetIPosTime() && !m_pInputStream->GetITimes() &&
-@@ -4416,8 +4428,10 @@ double CVideoPlayer::ResumePrerollLeadIn
+@@ -4469,8 +4481,10 @@ double CVideoPlayer::ResumePrerollLeadIn(double rendererLeadUs,
    // see when an AVR begins producing sound, only when bytes were handed over.
    // Judged by ear, TrueHD becomes audible appreciably later than DTS from the
    // same submitted position, so it is given that much more lead to spend.
@@ -407,7 +399,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    // Decode this much more and throw it away. A packer restarting after a codec
    // reset emits nothing usable until its own sync returns: for TrueHD that is
    // the next major sync, one every 128 access units. Their rate is 1200 Hz at
-@@ -4455,12 +4469,8 @@ void CVideoPlayer::ArmResumePreroll()
+@@ -4508,12 +4522,8 @@ void CVideoPlayer::ArmResumePreroll()
    if (!std::isfinite(target) || target < 0.0 ||
        !ResumePrerollHasLead(target, m_renderManager.GetVideoPrerollLead()))
      return;
@@ -421,7 +413,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_resumePrerollPaused = true;
    if (!BeginResumePreroll(true))
    {
-@@ -4538,6 +4548,7 @@ void CVideoPlayer::CancelResumePreroll(b
+@@ -4591,6 +4601,7 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
    m_resumePrerollPaused = false;
    m_resumePictureGeneration = 0;
    m_resumePrerollTarget.reset();
@@ -429,7 +421,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_resumePrerollReleaseTime = 0.0;
    m_resumePrerollFailed = false;
    m_resumeAudioCommitPending = false;
-@@ -4559,7 +4570,9 @@ void CVideoPlayer::CancelResumePreroll(b
+@@ -4612,7 +4623,9 @@ void CVideoPlayer::CancelResumePreroll(bool restoreSpeed)
  
  void CVideoPlayer::RecoverResumePreroll(const char* reason)
  {
@@ -440,7 +432,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    // A preroll prepared behind a pause belongs to a pause that is still
    // running, whether or not it got as far as arming: recovery restores the
    // target picture without also starting playback the viewer never asked for.
-@@ -4606,6 +4619,172 @@ void CVideoPlayer::RecoverResumePreroll(
+@@ -4659,6 +4672,178 @@ void CVideoPlayer::RecoverResumePreroll(const char* reason)
      FlushBuffers(DVD_NOPTS_VALUE, false, true);
  }
  
@@ -500,6 +492,12 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +      (m_State.timeMax > 0 && m_State.timeMax < 10000))
 +  {
 +    ReleaseStartHold("not eligible");
++    return;
++  }
++  // the decoder resets after 5 s with no picture taken: the ordinary start waits paused
++  if (HoldForSubtitleTranslation(m_CurrentVideo.starttime))
++  {
++    ReleaseStartHold("the subtitle is being translated");
 +    return;
 +  }
 +
@@ -613,7 +611,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  bool CVideoPlayer::PollResumePreroll()
  {
    if (!m_resumePreroll.Active())
-@@ -4644,7 +4823,8 @@ bool CVideoPlayer::PollResumePreroll()
+@@ -4697,7 +4882,8 @@ bool CVideoPlayer::PollResumePreroll()
      RecoverResumePreroll("preparation or release acknowledgement failed");
      return true;
    }
@@ -623,7 +621,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    {
      CLog::Log(LOGWARNING,
                "CVideoPlayer::Preroll - eligibility changed generation={} passthrough={} "
-@@ -5617,20 +5797,41 @@ bool CVideoPlayer::OpenAudioStream(CDVDS
+@@ -5674,20 +5860,41 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
    if(player == nullptr)
      return false;
  
@@ -668,7 +666,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    m_HasAudio = true;
  
-@@ -5877,6 +6078,8 @@ bool CVideoPlayer::CloseStream(CCurrentS
+@@ -5934,6 +6141,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
  
  void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
  {
@@ -677,7 +675,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_syncStartPtsWait.reset();
    m_displayTime.Clear();
    m_nextStreamSyncing = false;
-@@ -7470,8 +7673,10 @@ void CVideoPlayer::OnResetDisplay()
+@@ -7530,8 +7739,10 @@ void CVideoPlayer::OnResetDisplay()
  void CVideoPlayer::FinishDisplayReset()
  {
    CLog::Log(LOGINFO, "VideoPlayer: display reset done, playback goes on");
@@ -689,9 +687,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, false), 1);
    m_clock.Pause(false);
    m_displayLost = false;
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index bf19a30..3ca82fe 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
-@@ -504,6 +504,7 @@ protected:
+@@ -510,6 +510,7 @@ protected:
    bool PollResumeGate();
    void ReleaseResumeGate(const CPlaybackResumeGate::Release& release);
    bool CanPrepareResumePreroll() const;
@@ -699,7 +699,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    void HandleAudioPrerollStatus(const AudioPrerollStatus& status);
    double ResumePrerollLeadIn(double rendererLeadUs, double& settle, double& receiverStart) const;
    bool ResumePrerollHasLead(double target, double rendererLeadUs) const;
-@@ -513,6 +514,11 @@ protected:
+@@ -519,6 +520,11 @@ protected:
    bool PollResumePreroll();
    void CancelResumePreroll(bool restoreSpeed);
    void RecoverResumePreroll(const char* reason);
@@ -711,7 +711,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    void HandleMessages();
    void HandlePlaySpeed();
    bool TryEnterSourceUnderrunHold();
-@@ -642,6 +648,18 @@ protected:
+@@ -652,6 +658,18 @@ protected:
    bool m_seekingResumePreroll = false;
    bool m_resumePrerollPaused = false;
    bool m_resumePrerollFailed = false;
@@ -730,6 +730,33 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    bool m_resumeAudioCommitPending = false;
    int m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
    struct SSpeedState
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+index a5b71bb..f127b0c 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
+@@ -110,6 +110,11 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
+ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAudioCodec> codec)
+ {
+   m_pAudioCodec = std::move(codec);
++  // known from the codec, before any packet: a start that holds the packets asks
++  {
++    std::unique_lock<CCriticalSection> lock(m_info_section);
++    m_info.passthrough = m_pAudioCodec->NeedPassthrough();
++  }
+ 
+ 
+   /* store our stream hints */
+@@ -912,7 +917,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
+     }
+     else
+       m_preroll.Accepted(audioframe.pts, audioframe.duration, framesOutput, audioframe.nb_frames,
+-                         audioframe.framesOut);
++                         audioframe.framesOut, audioframe.passthrough);
+   }
+   else
+     framesOutput = m_audioSink.AddPackets(audioframe);
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
+index cefb7f4..34e4f63 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
 @@ -457,6 +457,11 @@ void CVideoPlayerVideo::Process()
@@ -744,9 +771,11 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
      else if (pMsg->IsType(CDVDMsg::VIDEO_SET_ASPECT))
      {
        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::VIDEO_SET_ASPECT");
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index 490b52c..7f49ef0 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -123,7 +123,7 @@ bool CRenderManager::BeginVideoPreroll(u
+@@ -122,7 +122,7 @@ bool CRenderManager::BeginVideoPreroll(uint64_t generation, double target)
    std::unique_lock lock2(m_presentlock);
    if (!m_pRenderer || m_renderState != STATE_CONFIGURED || m_presentsource < 0 ||
        !m_bRenderGUI || !g_application.GetRenderGUI() || m_bTriggerUpdateResolution ||
@@ -755,7 +784,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
        generation <= m_videoPreroll.Read().generation ||
        (target != DVD_NOPTS_VALUE && !std::isfinite(target)))
      return false;
-@@ -220,6 +220,7 @@ void CRenderManager::DisplayReset()
+@@ -219,6 +219,7 @@ void CRenderManager::DisplayReset()
  {
    std::unique_lock lock(m_presentlock);
    m_displayReset = true;
@@ -763,6 +792,8 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
    m_videoPreroll.Fail();
  }
  
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
+index 9edcaf3..ca2cfe6 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 @@ -116,6 +116,9 @@ public:
@@ -775,7 +806,7 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  
    bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
    bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop,
-@@ -289,6 +292,7 @@ protected:
+@@ -285,6 +288,7 @@ protected:
  
    std::chrono::time_point<std::chrono::system_clock> m_videostarted;
    bool m_displayReset = false;

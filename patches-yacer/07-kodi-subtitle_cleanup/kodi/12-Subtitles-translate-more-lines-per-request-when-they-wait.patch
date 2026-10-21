@@ -1,0 +1,215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 00:00:00 -0400
+Subject: [PATCH] Subtitles: translate more lines per request when they wait
+
+A request carried at most eight cues, however many were waiting. When
+the model falls behind dense dialogue, every request pays again for the
+instructions, the title, the characters and the lines before, and the
+queue only grows.
+
+A request may now carry up to 24 of the cues waiting, but only while
+the model shows it can answer that: the worker starts at eight, and
+moves to 24 once a request of its current size was answered within a
+quarter of the time the provider may stay silent - 7.5 s for a stream
+being translated, 3.75 s for one only repaired, 15 s for a file. A
+quarter, not a half: a request three times the size takes about three
+times as long to answer, and must still come within the silence. A
+request that fails, or is answered more slowly than that, puts it back
+to eight, and from then on it takes two such answers in a row, not one,
+to move to 24 again. The answer is not streamed, so a request that takes
+too long is a timeout, not a slow answer: a large batch that fails is
+asked again for its first eight cues only, and the rest go back to the
+front of the queue for the requests after it. A seek never lets them
+back in: the queue is now cleared and its generation moved on under the
+same lock the worker takes to put them back.
+
+The answer is read as before: the numbered lines must come back 1 to n,
+each once, and n is not limited; the answer cap of 16 KB is far above
+24 subtitle lines. The request's max_tokens stays at 2048: an answer cut
+short loses its numbering and is asked again a line at a time, which
+also puts the size back to eight.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+index 212a6fc..0a8f60a 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
+@@ -1017,7 +1017,8 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+     context.tags = tags;
+     return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+                                                TRANSLATION::Translation(std::move(context)),
+-                                               std::move(deliver), std::move(now), ahead);
++                                               std::move(deliver), std::move(now), ahead,
++                                               silence / 4);
+   }
+   const std::optional<REVISION::Mode> mode = RepairMode();
+   if (!mode)
+@@ -1025,7 +1026,8 @@ std::unique_ptr<MODEL::CCueWorker> MakeWorker(const CDVDStreamInfo& hints,
+   doubts = *mode == REVISION::Mode::DOUBTS;
+   return std::make_unique<MODEL::CCueWorker>(std::make_unique<CChat>(provider, silence),
+                                              REVISION::Revision(RevisionContext(language), *mode),
+-                                             std::move(deliver), std::move(now), ahead);
++                                             std::move(deliver), std::move(now), ahead,
++                                             silence / 4);
+ }
+ 
+ double PlaybackTime()
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+index 6c6aca4..d3b4f8d 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.cpp
+@@ -178,13 +178,18 @@ std::vector<std::string> ReadNumbered(const std::string& answer, size_t count)
+ 
+ // -- the thread ----------------------------------------------------------------------------------
+ 
+-CCueWorker::CCueWorker(
+-    std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now, bool ahead)
++CCueWorker::CCueWorker(std::unique_ptr<IChat> chat,
++                       Work work,
++                       Deliver deliver,
++                       Now now,
++                       bool ahead,
++                       std::chrono::milliseconds quick)
+   : m_chat(std::move(chat)),
+     m_work(std::move(work)),
+     m_deliver(std::move(deliver)),
+     m_now(std::move(now)),
+     m_ahead(ahead),
++    m_quick(quick),
+     m_thread([this] { Run(); })
+ {
+ }
+@@ -223,12 +228,11 @@ void CCueWorker::Flush()
+ {
+   size_t waiting;
+   {
++    // no cue handed back to the queue survives it
+     std::unique_lock lock(m_queueLock);
+     waiting = m_queue.size();
+     m_queue.clear();
+-  }
+-  {
+-    std::unique_lock lock(m_deliverLock);
++    std::unique_lock deliver(m_deliverLock);
+     ++m_generation;
+   }
+   m_chat->Abort();
+@@ -252,7 +256,7 @@ std::vector<CCueWorker::Cue> CCueWorker::NextBatch()
+     if (ahead != m_queue.end())
+       first = ahead - m_queue.begin();
+   }
+-  const size_t last = std::min(m_queue.size(), first + BATCH);
++  const size_t last = first + std::min(m_queue.size() - first, m_size);
+   std::vector<Cue> batch(std::make_move_iterator(m_queue.begin() + first),
+                          std::make_move_iterator(m_queue.begin() + last));
+   m_queue.erase(m_queue.begin() + first, m_queue.begin() + last);
+@@ -274,7 +278,7 @@ void CCueWorker::Run()
+   };
+   while (true)
+   {
+-    const std::vector<Cue> batch = NextBatch();
++    std::vector<Cue> batch = NextBatch();
+     if (batch.empty())
+       return;
+ 
+@@ -288,13 +292,42 @@ void CCueWorker::Run()
+       m_chat->Note(std::to_string(batch.size()) + " lines dropped by a seek before their request");
+       continue;
+     }
++    const auto began = std::chrono::steady_clock::now();
+     Outcome outcome = m_work(*m_chat, items);
++    // the model keeps up with requests this size: the next may carry more of the cues waiting -
++    // after a drop back, once it has done so twice running; slow or failing, it gets fewer
++    if (!outcome.failed && batch.size() >= m_size &&
++        std::chrono::steady_clock::now() - began <= m_quick)
++    {
++      if (++m_quickRun >= m_quickWanted)
++        m_size = MORE;
++    }
++    else if (outcome.failed || std::chrono::steady_clock::now() - began > m_quick)
++    {
++      m_size = BATCH;
++      m_quickRun = 0;
++      m_quickWanted = 2;
++    }
+     // a request that fails is asked again at once, for cues not yet over
+     bool again = false;
+     if (outcome.failed && !closing() && !dropped(batch.front()) &&
+         !(m_now && std::all_of(batch.begin(), batch.end(),
+                                [now = m_now()](const Cue& cue) { return End(cue) < now; })))
+     {
++      if (batch.size() > BATCH)
++      {
++        // asked again for fewer: the rest wait for the requests after it
++        std::unique_lock lock(m_queueLock);
++        std::unique_lock deliver(m_deliverLock);
++        if (batch.front().generation == m_generation)
++          m_queue.insert(m_queue.begin(), std::make_move_iterator(batch.begin() + BATCH),
++                         std::make_move_iterator(batch.end()));
++        else
++          m_chat->Note(std::to_string(batch.size() - BATCH) +
++                       " lines dropped by a seek during their request");
++        batch.resize(BATCH);
++        items.resize(BATCH);
++      }
+       again = true;
+       m_chat->Note(std::to_string(batch.size()) + " lines asked again: the request failed");
+       outcome = m_work(*m_chat, items);
+diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+index fd8af16..c387442 100644
+--- a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
++++ b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleModel.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <chrono>
+ #include <condition_variable>
+ #include <deque>
+ #include <functional>
+@@ -120,15 +121,22 @@ public:
+   //! cues already over, and a file known whole is worked from there.
+   using Now = std::function<double()>;
+ 
+-  //! How many cues a request carries at most.
++  //! How many cues a request carries at most, and when the requests before were answered
++  //! quickly, how many at most of those waiting.
+   static constexpr size_t BATCH = 8;
++  static constexpr size_t MORE = 24;
+ 
+   /*!
+    * \param ahead whether the cues are known ahead of playback, a file's: those still to come go
+    * before those playback is past. A stream's go in the order they came.
++   * \param quick how soon a request must be answered for the next to carry more; none, never
+    */
+-  CCueWorker(
+-      std::unique_ptr<IChat> chat, Work work, Deliver deliver, Now now = {}, bool ahead = false);
++  CCueWorker(std::unique_ptr<IChat> chat,
++             Work work,
++             Deliver deliver,
++             Now now = {},
++             bool ahead = false,
++             std::chrono::milliseconds quick = {});
+   ~CCueWorker();
+   CCueWorker(const CCueWorker&) = delete;
+   CCueWorker& operator=(const CCueWorker&) = delete;
+@@ -161,11 +169,16 @@ private:
+   Deliver m_deliver;
+   Now m_now;
+   const bool m_ahead;
++  const std::chrono::milliseconds m_quick;
++  size_t m_size{BATCH}; //!< how many cues the next request carries at most
++  int m_quickRun{0}; //!< requests of that size answered quickly in a row
++  int m_quickWanted{1}; //!< and how many before it grows
+   std::mutex m_queueLock;
+   std::condition_variable m_wake;
+   std::deque<Cue> m_queue;
+   bool m_stop{false};
+-  std::mutex m_deliverLock; //!< held while delivering, and to change the generation
++  //! held while delivering, and to change the generation - inside m_queueLock when both are
++  std::mutex m_deliverLock;
+   unsigned m_generation{0};
+   std::thread m_thread;
+ };

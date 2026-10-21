@@ -19,9 +19,11 @@ the platform through the same CProcessInfo accessor as 11_32.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index 3200bca..73be091 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -2850,6 +2850,20 @@
+@@ -2906,6 +2906,20 @@ void CVideoPlayer::HandlePlaySpeed()
          clock = m_CurrentVideo.starttime - m_CurrentVideo.cachetotal;
        }
  
@@ -40,5 +42,5 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 +      }
 +
        m_syncStartPtsWait.reset();
-       m_clock.Discontinuity(clock);
-       m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_INSYNC;
+       // A film's start is already out of its buffering (the speed request Prepare queues): one
+       // whose subtitle translation is waited for goes back into it, the stream players paused,
