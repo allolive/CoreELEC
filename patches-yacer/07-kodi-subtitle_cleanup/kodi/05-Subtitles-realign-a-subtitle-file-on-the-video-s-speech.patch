@@ -75,10 +75,10 @@ The help of "Realign with the video" says so.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index de09c23..a69ab24 100644
+index 66673e5..6305121 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25669,7 +25669,7 @@ msgstr ""
+@@ -25681,7 +25681,7 @@ msgstr ""
  #. Help text of setting "Player -> Subtitles -> Realign with the video"
  #: system/settings/settings.xml
  msgctxt "#60101"
@@ -86,7 +86,7 @@ index de09c23..a69ab24 100644
 +msgid "A subtitle file made for another release of the film - another intro, or a PAL copy that runs 4% fast - is late or early, and more so as the film goes on. Compare its timing with a subtitle track inside the video, in any language - or, when the video has none, with where someone speaks in its sound - and move every line by the same change when it lines them up. Lines that translate what is written on screen move with the rest. Nothing changes when the evidence is not clear."
  msgstr ""
  
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt b/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt
 index ba4092e..7c4af3b 100644
 --- a/xbmc/cores/VideoPlayer/DVDSubtitles/CMakeLists.txt

@@ -72,10 +72,10 @@ HandlePlaySpeed.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index a5f143b..5876942 100644
+index b61808f..7718cba 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25708,6 +25708,12 @@ msgctxt "#60102"
+@@ -25720,6 +25720,12 @@ msgctxt "#60102"
  msgid "Automatic"
  msgstr ""
  
@@ -85,7 +85,7 @@ index a5f143b..5876942 100644
 +msgid "Translating subtitles..."
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp b/xbmc/cores/VideoPlayer/DVDSubtitles/SubtitleAI.cpp
