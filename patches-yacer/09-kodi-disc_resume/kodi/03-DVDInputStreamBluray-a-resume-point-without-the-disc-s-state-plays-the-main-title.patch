@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 04:30:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: a resume point without the disc's
+ state plays the main title
+
+A Blu-ray resumed from the disc image itself, not from one of its
+playlists, finds the playlist it was stopped in from the player state
+kept with the resume point. A resume point written without that state
+(by another client of a shared library, a library sync, or JSON-RPC)
+leaves GetTitleFromState() with nothing to read: Open() logs "failed to
+get title info" and the film does not play at all.
+
+A resume point with no state now plays the longest title from the saved
+time, which is the title the disc is played with when it has no menu. A
+state naming a playlist the disc does not have still fails as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 4716e8df61..05f12538cc 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -373,7 +373,8 @@ bool CDVDInputStreamBluray::Open()
+   else if (resumable && m_item.GetStartOffset() == STARTOFFSET_RESUME && m_item.IsResumable())
+   {
+     m_navmode = false;
+-    m_titleInfo = GetTitleFromState(m_item.GetVideoInfoTag()->GetResumePoint().playerState);
++    const std::string& state = m_item.GetVideoInfoTag()->GetResumePoint().playerState;
++    m_titleInfo = state.empty() ? GetTitleLongest() : GetTitleFromState(state);
+   }
+   else
+   {

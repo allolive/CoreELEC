@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:01:39 -0400
+Subject: [PATCH] DVDOverlayContainer: subtitles and a disc's menu kept apart
+
+A Blu-ray menu's graphics and the subtitles of the playlist under it
+share the player's overlay container, which was written for one source
+at a time, and the subtitles took the menu down in three ways:
+
+- opening a subtitle stream cleared the whole container. A menu playlist
+  opens its subtitle stream right after the menu is drawn, so the menu
+  went with the old stream's lines;
+- an overlay without an end is ended by the next one that starts. The
+  first subtitle line of the menu playlist so ended the menu's graphics,
+  and from that line on no picture showed them;
+- a forced overlay is dropped when a newer forced one has started, and a
+  forced subtitle line counted as a newer menu.
+
+A disc's menu is what libbluray hands in as forced and kept through a
+flush. Opening a subtitle stream now removes everything but the menu,
+and an overlay is ended or replaced only by one of its own kind, menu by
+menu, subtitle by subtitle. Containers without a disc menu - every file,
+and DVD menus, whose overlays are flushable - behave as before; closing
+the player still clears everything.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../cores/VideoPlayer/DVDOverlayContainer.cpp | 22 ++++++++++++++++++-
+ xbmc/cores/VideoPlayer/DVDOverlayContainer.h  |  5 +++++
+ .../cores/VideoPlayer/VideoPlayerSubtitle.cpp |  4 +++-
+ 3 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDOverlayContainer.cpp b/xbmc/cores/VideoPlayer/DVDOverlayContainer.cpp
+index d5b2e087..f39a99ad 100644
+--- a/xbmc/cores/VideoPlayer/DVDOverlayContainer.cpp
++++ b/xbmc/cores/VideoPlayer/DVDOverlayContainer.cpp
+@@ -19,6 +19,15 @@ CDVDOverlayContainer::~CDVDOverlayContainer()
+   Clear();
+ }
+ 
++namespace
++{
++// the graphics of a disc's menu, which a flush keeps
++bool IsDiscMenu(const CDVDOverlay& overlay)
++{
++  return overlay.bForced && !overlay.IsOverlayContainerFlushable();
++}
++} // namespace
++
+ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDVDOverlay>& pOverlay)
+ {
+   std::unique_lock lock(*this);
+@@ -31,6 +40,9 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
+   for(int i = m_overlays.size();i>0;)
+   {
+     i--;
++    // a subtitle does not end a disc's menu, nor the menu a subtitle
++    if (IsDiscMenu(*m_overlays[i]) != IsDiscMenu(*pOverlay))
++      continue;
+     if(m_overlays[i]->iPTSStopTime)
+     {
+       if(!m_overlays[i]->replace)
+@@ -87,7 +99,8 @@ void CDVDOverlayContainer::CleanUp(double pts)
+         const std::shared_ptr<CDVDOverlay>& pOverlay2 = *it2;
+         // There can be multiple overlays queued at same start point.
+         // Skip them to find a new start point.
+-        if (pOverlay2->bForced && pOverlay2->iPTSStartTime <= pts)
++        if (pOverlay2->bForced && IsDiscMenu(*pOverlay2) == IsDiscMenu(*pOverlay) &&
++            pOverlay2->iPTSStartTime <= pts)
+           bNewer = true;
+       }
+ 
+@@ -120,6 +133,13 @@ void CDVDOverlayContainer::Clear()
+   m_overlays.clear();
+ }
+ 
++void CDVDOverlayContainer::ClearSubtitles()
++{
++  std::unique_lock lock(*this);
++  std::erase_if(m_overlays,
++                [](const std::shared_ptr<CDVDOverlay>& ov) { return !IsDiscMenu(*ov); });
++}
++
+ size_t CDVDOverlayContainer::GetSize()
+ {
+   return m_overlays.size();
+diff --git a/xbmc/cores/VideoPlayer/DVDOverlayContainer.h b/xbmc/cores/VideoPlayer/DVDOverlayContainer.h
+index e64e4457..8376ef8c 100644
+--- a/xbmc/cores/VideoPlayer/DVDOverlayContainer.h
++++ b/xbmc/cores/VideoPlayer/DVDOverlayContainer.h
+@@ -40,6 +40,11 @@ public:
+ 
+   void Clear(); // clear the fifo and delete all overlays
+ 
++  /*!
++   * \brief Delete the overlays of a subtitle stream, keeping a disc's menu, which a flush keeps too.
++   */
++  void ClearSubtitles();
++
+   /*
+    * \brief Flush the overlays.
+    */
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayerSubtitle.cpp b/xbmc/cores/VideoPlayer/VideoPlayerSubtitle.cpp
+index 6529b010..c41612ef 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayerSubtitle.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayerSubtitle.cpp
+@@ -142,7 +142,9 @@ bool CVideoPlayerSubtitle::OpenStream(CDVDStreamInfo &hints, std::string &filena
+   std::unique_lock lock(m_section);
+ 
+   m_processInfo.ResetSubtitleCodecInfo();
+-  CloseStream(false);
++  // a disc's menu stays on screen while its subtitle stream changes
++  CloseStream(true);
++  m_pOverlayContainer->ClearSubtitles();
+   m_streaminfo = hints;
+ 
+   // okey check if this is a filesubtitle
+-- 
+2.53.0
+

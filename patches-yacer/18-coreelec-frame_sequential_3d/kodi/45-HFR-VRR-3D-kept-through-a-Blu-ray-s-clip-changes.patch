@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 07:00:00 -0400
+Subject: [PATCH] HFR VRR: 3D kept through a Blu-ray's clip changes
+
+A Blu-ray played with its menus moves from clip to clip, and where two
+clips are not joined seamlessly the player closes the video decoder and
+opens a new one. A 3D disc's menu background can be a loop of 45-second
+clips. As each new stream opens, Kodi asks for 2D until it has read the
+stream's stereo layout, then asks for 3D again about 200 ms later.
+
+Frame-sequential 3D was already kept across that request for 5 seconds
+after the decoder closed, but Kodi still built a new window each time:
+the GUI surface was torn down and made again, and the audio engine was
+reset. The menu blinked at every clip. The 5 seconds also ran out when
+libbluray took longer than that to open the next clip (it probes the
+MVC stream), and the output then left 3D and entered it again: two
+mode switches through the TV, eARC and the AVR.
+
+The 5-second wait now starts again when the next decoder is made. While
+3D is kept, the window stays as it is, and the check is asked again
+until the new stream's layout is known. A 2D clip still leaves 3D once
+its decoder has opened on a mono layout, and a stop still leaves at
+once.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 0a849453..76547cb4 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2314,6 +2314,8 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo)
+   , m_processInfo(processInfo)
+ {
+   am_private = new am_private_t();
++  if (auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem()))
++    winSystem->GetAmlDisplay()->aml_fs3d_decoder_opening();
+   m_dll = new DllLibAmCodec;
+   if(!m_dll->Load())
+     CLog::Log(LOGWARNING, "CAMLCodec::CAMLCodec libamcodec.so not found");
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.cpp b/xbmc/windowing/amlogic/AMLDisplay.cpp
+index dd9c3420..cc41ca79 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.cpp
++++ b/xbmc/windowing/amlogic/AMLDisplay.cpp
+@@ -1618,6 +1618,15 @@ void CAMLDisplay::aml_fs3d_decoder_closed()
+                                    : 0;
+ }
+ 
++// A Blu-ray's next clip can take longer than the wait to open (libbluray reads
++// ahead into it), so the wait counts from when its decoder is made, not only
++// from when the last one closed.
++void CAMLDisplay::aml_fs3d_decoder_opening()
++{
++  if (m_fs3d_active && m_fs3d_closed_at != 0)
++    m_fs3d_closed_at = std::chrono::steady_clock::now().time_since_epoch().count();
++}
++
+ // A film follows one shown in 3D: the player plays, and its decoder has not
+ // opened yet or opened on a stereo layout, not long after. Kodi asks for 2D at
+ // the new film's first picture, before it has read the layout, so a picture is
+diff --git a/xbmc/windowing/amlogic/AMLDisplay.h b/xbmc/windowing/amlogic/AMLDisplay.h
+index 4a83f1e6..9ba78519 100644
+--- a/xbmc/windowing/amlogic/AMLDisplay.h
++++ b/xbmc/windowing/amlogic/AMLDisplay.h
+@@ -233,6 +233,11 @@ public:
+   bool aml_display_fs3d_wanted(const RenderStereoMode stereo_mode) const;
+   //! frame-sequential 3D is on for this film rate
+   bool aml_display_fs3d_matches() const;
++  //! 2D is asked for while the next clip or film opens: frame-sequential 3D stays
++  bool aml_display_fs3d_kept(const RenderStereoMode stereo_mode) const
++  {
++    return !aml_display_fs3d_wanted(stereo_mode) && fs3d_next_film_starting();
++  }
+   //! frame-sequential 3D is on for another film rate than the playing one
+   bool aml_display_fs3d_stale() const;
+   //! In frame-sequential 3D, the size of each eye's GUI, stacked in a surface of
+@@ -252,6 +257,8 @@ public:
+   void aml_fs3d_playback_stopped() { m_fs3d_entry_failed = false; }
+   //! a decoder closed: in frame-sequential 3D, the next film of a playlist may follow
+   void aml_fs3d_decoder_closed();
++  //! the next decoder is being made: the wait for its layout runs from here
++  void aml_fs3d_decoder_opening();
+   //! The mode (name, rate) the output was on before a previous Kodi entered 3D
+   //! and died in it, once: the desktop, not the 3D base mode it was left on.
+   std::optional<std::pair<std::string, float>> aml_fs3d_take_recovered_desktop()
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+index b99d6170..e19c22a1 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.cpp
+@@ -577,6 +577,12 @@ bool CWinSystemAmlogic::HoldFs3dCheck()
+   return false;
+ }
+ 
++void CWinSystemAmlogic::AwaitFs3dLayout()
++{
++  m_fs3dAwaitNext = true;
++  RequestFs3dCheck();
++}
++
+ void CWinSystemAmlogic::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
+                                  const std::string& sender,
+                                  const std::string& message,
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogic.h b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+index f0a0fc9d..993b8e18 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogic.h
++++ b/xbmc/windowing/amlogic/WinSystemAmlogic.h
+@@ -38,6 +38,8 @@ public:
+   //! Main thread: whether to put a check off, the next film having shown no
+   //! picture yet, rather than leave 3D and enter it again
+   bool HoldFs3dCheck();
++  //! 3D kept as a clip opens: check again until its layout is known
++  void AwaitFs3dLayout();
+ 
+   void Announce(ANNOUNCEMENT::AnnouncementFlag flag,
+                 const std::string& sender,
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+index acb5e286..23771eab 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -165,10 +165,21 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+     __FUNCTION__,
+     res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight, res.fRefreshRate, res.dwFlags, nativeGUI);
+ 
++  // Kodi asks for 2D as each clip of a Blu-ray or each film opens, before it has
++  // read the layout: while 3D is kept for that, the window stays as it is.
++  const bool fs3d_kept = force_mode_switch_by_stereo_mode &&
++                         !m_amlDisplay->aml_display_support_3d() &&
++                         m_amlDisplay->aml_display_fs3d_kept(stereo_mode);
++  if (fs3d_kept)
++  {
++    force_mode_switch_by_stereo_mode = false;
++    AwaitFs3dLayout();
++  }
++
+   // In HFR VRR the output follows the film's rate whatever Kodi's resolution
+   // says, so any resolution of Kodi's is the current one.
+-  const bool fs3d_same = m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) &&
+-                         m_amlDisplay->aml_display_fs3d_matches();
++  const bool fs3d_same = fs3d_kept || (m_amlDisplay->aml_display_fs3d_wanted(stereo_mode) &&
++                                       m_amlDisplay->aml_display_fs3d_matches());
+   // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
+   if (fs3d_same)
+     force_mode_switch_by_fractional_rate = false;

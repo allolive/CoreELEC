@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 00:00:00 -0400
+Subject: [PATCH] AMLCodec: give up a disc menu's still picture
+
+A Blu-ray menu often stands on a still: a clip of a single picture held
+for as long as the menu is up. Its picture never reached the screen.
+The player asks the decoder to drain once the clip has no more data, but
+the decoder gives a picture only once its input buffer has filled past a
+level - which one picture never does - and while draining it asks the
+driver for one only when the driver's queue count says it holds some,
+and that count reads none while the driver already has the picture
+ready to hand over. With the menu's picture never shown, a disc's Java
+program that waits for it stood on a black screen for good, and the
+decoder was reset every five seconds as if it had hung.
+
+Draining, the decoder now asks the driver for a picture on every call,
+however little the buffer filled, and a drain with nothing to give is
+not counted as a decoder that hangs. With no picture it answers as
+before, so a drain early in a start - before the buffer first filled -
+still waits for data rather than ending the stream. Outside a drain the
+level and the queue count decide as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index bbbf5b2..66a5580 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3704,7 +3704,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+           amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &queued_frames) == 0 ? queued_frames : 0;
+   }
+ 
+-  if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || (queued_frames > 0)) && (ret = DequeueBuffer()) == 0)
++  // Draining, what is decoded is owed however little filled the buffer - a disc menu's still is a
++  // clip of one picture - and is asked for: the queue count misses a picture the driver holds ready.
++  if ((m_drain ||
++       (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || queued_frames > 0))) &&
++      (ret = DequeueBuffer()) == 0)
+   {
+     pVideoPicture->iFlags = 0;
+ 
+@@ -3749,7 +3753,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+   }
+   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
+     return CDVDVideoCodec::VC_NONE;
+-  else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
++  else if (ret != EAGAIN ||
++           (!m_drain && elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
+   {
+     CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
+       elapsed_since_last_frame.count(), ret, strerror(ret));

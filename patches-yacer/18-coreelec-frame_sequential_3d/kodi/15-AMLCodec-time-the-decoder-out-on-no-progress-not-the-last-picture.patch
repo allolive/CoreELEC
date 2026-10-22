@@ -36,10 +36,10 @@ no progress, rather than as whatever the uninitialised status held.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-index c7ba4c0..c53dacc 100644
+index 9d906ee..94be0e7 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
-@@ -2350,7 +2350,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+@@ -2369,7 +2369,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
    m_hints = hints;
    m_state = 0;
    m_hints.pClock = hints.pClock;
@@ -48,7 +48,7 @@ index c7ba4c0..c53dacc 100644
    m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
    m_buffer_level_ready = false;
  
-@@ -3078,6 +3078,7 @@ void CAMLCodec::Reset()
+@@ -3097,6 +3097,7 @@ void CAMLCodec::Reset()
    m_last_pts = DVD_NOPTS_VALUE;
    m_state = 0;
    m_buffer_level_ready = false;
@@ -56,7 +56,7 @@ index c7ba4c0..c53dacc 100644
  
    SetSpeed(m_speed);
    frameLock.unlock();
-@@ -3087,6 +3088,7 @@ void CAMLCodec::Reset()
+@@ -3106,6 +3107,7 @@ void CAMLCodec::Reset()
  
  bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
  {
@@ -64,7 +64,7 @@ index c7ba4c0..c53dacc 100644
    int data_len, free_len, size;
    int chunk_size = calc_chunk_size(iSize);
    float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len, size);
-@@ -3225,6 +3227,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+@@ -3244,6 +3246,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
      Reset();
      return false;
    }
@@ -72,7 +72,7 @@ index c7ba4c0..c53dacc 100644
    if (iSize > 50000)
      usleep(2000); // wait 2ms to process larger packets
  
-@@ -3645,9 +3648,15 @@ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
+@@ -3668,9 +3671,15 @@ int CAMLCodec::ReleaseFrame(uint32_t index, bool drop, uint64_t generation)
  
  float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len, int &size)
  {
@@ -90,7 +90,7 @@ index c7ba4c0..c53dacc 100644
  
    data_len = bs.data_len;
    free_len = bs.free_len;
-@@ -3706,13 +3715,21 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+@@ -3729,13 +3738,21 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
    int queued_frames = 0;
    int data_len, free_len, size;
    float buffer_level = GetBufferLevel(0, data_len, free_len, size);
@@ -103,7 +103,7 @@ index c7ba4c0..c53dacc 100644
  
 +  const auto now = std::chrono::steady_clock::now();
 +  NoteCall(now);
-+  if (m_speed == DVD_PLAYSPEED_PAUSE || (m_drain && m_buffer_level_ready) ||
++  if (m_speed == DVD_PLAYSPEED_PAUSE || m_drain ||
 +      (data_len >= 0 && data_len < m_last_data_len))
 +    m_tp_no_progress = now;
 +  if (data_len >= 0)
@@ -114,7 +114,7 @@ index c7ba4c0..c53dacc 100644
    if (m_drain)
    {
      PosixFilePtr amlVideoFile;
-@@ -3732,7 +3749,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+@@ -3759,7 +3776,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
  
      m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
  
@@ -124,7 +124,7 @@ index c7ba4c0..c53dacc 100644
  
      if (m_last_pts == DVD_NOPTS_VALUE)
        pVideoPicture->iDuration = static_cast<double>(am_private->video_rate) * DVD_TIME_BASE / UNIT_FREQ;
-@@ -3766,22 +3784,48 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+@@ -3793,23 +3811,48 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
      if (queued_frames)
        CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} frames left after {:d}ms",
          queued_frames, elapsed_since_last_frame.count());
@@ -139,12 +139,13 @@ index c7ba4c0..c53dacc 100644
 +
 +  const auto no_progress = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_tp_no_progress);
 +  const bool hung = no_progress > std::chrono::seconds(m_decoder_timeout) ||
-+                    (m_speed > DVD_PLAYSPEED_PAUSE &&
++                    (m_speed > DVD_PLAYSPEED_PAUSE && !m_drain &&
 +                     elapsed_since_last_frame > 3 * std::chrono::seconds(m_decoder_timeout));
 +
 +  if (!hung && buffer_level > (streambuffer ? 100.0f : 10.0f))
      return CDVDVideoCodec::VC_NONE;
--  else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
+-  else if (ret != EAGAIN ||
+-           (!m_drain && elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
 +  else if (ret != EAGAIN || hung)
    {
 -    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
@@ -178,7 +179,7 @@ index c7ba4c0..c53dacc 100644
  void CAMLCodec::SetSpeed(int speed)
  {
    if (m_speed == speed)
-@@ -3799,6 +3843,7 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3827,6 +3870,7 @@ void CAMLCodec::SetSpeed(int speed)
    // update internal vars regardless
    // of if we are open or not.
    m_speed = speed;
@@ -186,7 +187,7 @@ index c7ba4c0..c53dacc 100644
  
    if (!m_opened)
      return;
-@@ -3812,7 +3857,6 @@ void CAMLCodec::SetSpeed(int speed)
+@@ -3840,7 +3884,6 @@ void CAMLCodec::SetSpeed(int speed)
      case DVD_PLAYSPEED_NORMAL:
        //m_dll->codec_resume(&am_private->vcodec);
        m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
@@ -195,10 +196,10 @@ index c7ba4c0..c53dacc 100644
      default:
        //m_dll->codec_resume(&am_private->vcodec);
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-index 1dee5ec..fa99cc6 100644
+index b9a4f4e..ceaf398 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
-@@ -216,8 +216,15 @@ private:
+@@ -215,8 +215,15 @@ private:
    CProcessInfo &m_processInfo;
    CAMLGenlock      m_genlock;
    int m_decoder_timeout{0};

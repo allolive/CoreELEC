@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:43:09 -0400
+Subject: [PATCH] VideoPlayer: a packet whose time is in doubt anchors no disc
+ time
+
+The time shown for a disc pairs each packet's read time with its dts.
+Where a disc jumps back in time - two clips joined without a seamless
+connection, both starting at the same timestamp - the player is not
+yet sure of the jump on the first packet past it, and takes its time
+away until another stream confirms it. That packet then went in with
+the dts of the packet before it and the read time of the new clip: an
+anchor of the old clip's end giving the new clip's start, so for the
+last moments the old clip played out the time shown fell to nothing.
+
+A packet without a time of its own now adds no anchor.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/VideoPlayer.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index d4046b68..51678587 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -2829,7 +2829,8 @@ void CVideoPlayer::UpdateTimestamps(CCurrentStream& current, DemuxPacket* pPacke
+ 
+   current.dispTime = pPacket->dispTime;
+ 
+-  if (m_pInputStream &&
++  // a packet whose time is still in doubt carries the last one, not its own: no anchor
++  if (m_pInputStream && (pPacket->dts != DVD_NOPTS_VALUE || pPacket->pts != DVD_NOPTS_VALUE) &&
+       (&current == &m_CurrentVideo || (&current == &m_CurrentAudio && m_CurrentVideo.id < 0)))
+   {
+     if (CDVDInputStream::IDisplayTime* displayTime = m_pInputStream->GetIDisplayTime())
+-- 
+2.53.0
+

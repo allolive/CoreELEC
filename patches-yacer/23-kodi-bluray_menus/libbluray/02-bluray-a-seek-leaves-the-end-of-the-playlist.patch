@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:16:03 -0400
+Subject: [PATCH 2/2] bluray: a seek leaves the end of the playlist
+
+A BD-J program learns that its playlist has ended once per playlist:
+the end is flagged when the reader reaches it, and reported to the
+program only while the flag is fresh. Only opening a playlist cleared
+it. A program that loops its playlist by seeking back to the start and
+playing on - or a viewer seeking back once the end was read - got the
+playlist's end reported the first time only; the second time it never
+heard of it and sat on the last picture.
+
+A seek now clears the flag, so the end is reported each time playback
+reaches it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ src/libbluray/bluray.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/libbluray/bluray.c b/src/libbluray/bluray.c
+index d20f9f5..d331004 100644
+--- a/src/libbluray/bluray.c
++++ b/src/libbluray/bluray.c
+@@ -1754,6 +1754,7 @@ static int64_t _seek_internal(BLURAY *bd,
+ 
+         /* update title position */
+         bd->s_pos = (uint64_t)title_pkt * 192;
++        bd->end_of_playlist = 0;
+ 
+         /* Update PSR_TIME */
+         media_time = _update_time_psr_from_stream(bd);
+-- 
+2.53.0
+

@@ -1,0 +1,383 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 08:00:00 -0400
+Subject: [PATCH] HFR VRR: 3D depth kept in a file for every value of a film
+
+The 3D depths of each film were kept in special://profile/stereodepth.json,
+a file only they used. Other values belong to a film on this player
+rather than in the shared video database (the region a Blu-ray plays as
+is the next), so the file becomes one for all of them:
+
+- CFilmFile (video/FilmFile.*): special://profile/films.json, a JSON
+  object per film, each value set or forgotten by name; a film with no
+  value left is dropped. Written aside and renamed over, as before.
+  CFilmFile::Key is the film's key the depths always used.
+- stereodepth.json is still read, its films that films.json does not
+  have taken in (a film's lone depth as its picture's), and deleted once
+  films.json is written: no depth set so far is lost, nor one set by an
+  older build run since.
+- A file that cannot be read as a JSON object is moved aside to
+  <file>.bad rather than written over by the next value set; and the
+  file is read again when the profile changes.
+- CStereoDepth keeps "picture" and "subtitles" there, a depth of 0 not
+  kept, as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/video/CMakeLists.txt b/xbmc/video/CMakeLists.txt
+index 181b4b99d7..3561c5fe67 100644
+--- a/xbmc/video/CMakeLists.txt
++++ b/xbmc/video/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ set(SOURCES Bookmark.cpp
+             ContextMenus.cpp
+             FilenameAttributes.cpp
++            FilmFile.cpp
+             GUIViewStateVideo.cpp
+             PlayerController.cpp
+             PlayerControllerActions.cpp
+@@ -29,6 +30,7 @@ set(HEADERS Bookmark.h
+             ContextMenus.h
+             Episode.h
+             FilenameAttributes.h
++            FilmFile.h
+             GUIViewStateVideo.h
+             PlayerController.h
+             PlayerControllerActions.h
+diff --git a/xbmc/video/FilmFile.cpp b/xbmc/video/FilmFile.cpp
+new file mode 100644
+index 0000000000..9f523761de
+--- /dev/null
++++ b/xbmc/video/FilmFile.cpp
+@@ -0,0 +1,143 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "FilmFile.h"
++
++#include "FileItem.h"
++#include "filesystem/File.h"
++#include "filesystem/SpecialProtocol.h"
++#include "utils/JSONVariantParser.h"
++#include "utils/JSONVariantWriter.h"
++#include "utils/Variant.h"
++#include "utils/log.h"
++#include "video/VideoInfoTag.h"
++
++#include <cstdint>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace
++{
++constexpr const char* FilmsFile = "special://profile/films.json";
++constexpr const char* FilmsFileNew = "special://profile/films.json.new";
++//! what the file was before it held more than the 3D depths
++constexpr const char* DepthFile = "special://profile/stereodepth.json";
++
++std::mutex filmLock;
++//! the file's contents, read once for each profile
++std::optional<CVariant> films;
++std::string filmsProfile;
++
++std::optional<CVariant> Load(const char* path)
++{
++  if (!XFILE::CFile::Exists(path))
++    return {};
++  std::vector<uint8_t> buffer;
++  XFILE::CFile file;
++  CVariant read;
++  if (file.LoadFile(path, buffer) > 0 &&
++      CJSONVariantParser::Parse(std::string(buffer.begin(), buffer.end()), read) &&
++      read.isObject())
++    return read;
++  // kept aside rather than written over with what is set next
++  const std::string bad = std::string(path) + ".bad";
++  CLog::LogF(LOGERROR, "{} is not a JSON object, moved to {}", path, bad);
++  XFILE::CFile::Rename(path, bad);
++  return {};
++}
++
++CVariant& Stored()
++{
++  const std::string profile = CSpecialProtocol::TranslatePath(FilmsFile);
++  if (films && filmsProfile == profile)
++    return *films;
++  filmsProfile = profile;
++  films.emplace(CVariant::VariantTypeObject);
++  if (auto read = Load(FilmsFile))
++    *films = std::move(*read);
++  // the depths a build before this file set, the film's own kept where both have one
++  if (auto depths = Load(DepthFile))
++  {
++    for (auto it = depths->begin_map(); it != depths->end_map(); ++it)
++    {
++      if (films->isMember(it->first))
++        continue;
++      // a film was its picture's depth alone, or its picture's and its subtitles'
++      if (it->second.isObject())
++        (*films)[it->first] = it->second;
++      else
++        (*films)[it->first]["picture"] = it->second;
++    }
++  }
++  return *films;
++}
++
++void Save(const CVariant& films)
++{
++  std::string json;
++  if (!CJSONVariantWriter::Write(films, json, false))
++    return;
++  // written aside and renamed over, so a power cut leaves the old file or the new one
++  XFILE::CFile file;
++  if (!file.OpenForWrite(FilmsFileNew, true) ||
++      file.Write(json.data(), json.size()) != static_cast<ssize_t>(json.size()))
++  {
++    CLog::LogF(LOGERROR, "cannot write {}", FilmsFileNew);
++    return;
++  }
++  file.Close();
++  if (!XFILE::CFile::Rename(FilmsFileNew, FilmsFile))
++  {
++    CLog::LogF(LOGERROR, "cannot replace {}", FilmsFile);
++    return;
++  }
++  if (XFILE::CFile::Exists(DepthFile))
++    XFILE::CFile::Delete(DepthFile);
++}
++} // unnamed namespace
++
++std::string CFilmFile::Key(const CFileItem& item)
++{
++  if (item.HasVideoInfoTag() && !item.GetVideoInfoTag()->m_strFileNameAndPath.empty())
++    return item.GetVideoInfoTag()->m_strFileNameAndPath;
++  return item.GetPath();
++}
++
++CVariant CFilmFile::Get(const std::string& key)
++{
++  std::lock_guard lock(filmLock);
++  const CVariant& all = Stored();
++  if (!all.isMember(key) || !all[key].isObject())
++    return CVariant(CVariant::VariantTypeObject);
++  return all[key];
++}
++
++void CFilmFile::Set(const std::string& key, const char* name, const CVariant& value)
++{
++  std::lock_guard lock(filmLock);
++  CVariant& all = Stored();
++  if (value.isNull())
++  {
++    if (!all.isMember(key) || !all[key].isObject() || !all[key].isMember(name))
++      return;
++    all[key].erase(name);
++    if (all[key].empty())
++      all.erase(key);
++  }
++  else
++  {
++    if (all.isMember(key) && all[key].isMember(name) && all[key][name] == value)
++      return;
++    if (!all[key].isObject())
++      all[key] = CVariant(CVariant::VariantTypeObject);
++    all[key][name] = value;
++  }
++  Save(all);
++}
+diff --git a/xbmc/video/FilmFile.h b/xbmc/video/FilmFile.h
+new file mode 100644
+index 0000000000..3f87461c85
+--- /dev/null
++++ b/xbmc/video/FilmFile.h
+@@ -0,0 +1,30 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <string>
++
++class CFileItem;
++class CVariant;
++
++/*!
++ * \brief What is kept for each film on this player: a JSON object of values per film, in a file of
++ * its own in the profile rather than in the video database, which has no columns for them and is
++ * often a library several players share.
++ */
++class CFilmFile
++{
++public:
++  //! the film's own file, as the library knows it, whichever path played it
++  static std::string Key(const CFileItem& item);
++  //! the film's values, an empty object unless some were kept
++  static CVariant Get(const std::string& film);
++  //! keep one of the film's values; a null value forgets it, and a film with none is dropped
++  static void Set(const std::string& film, const char* name, const CVariant& value);
++};
+diff --git a/xbmc/video/StereoDepth.cpp b/xbmc/video/StereoDepth.cpp
+index 0929e23ffa..b78794676c 100644
+--- a/xbmc/video/StereoDepth.cpp
++++ b/xbmc/video/StereoDepth.cpp
+@@ -8,122 +8,30 @@
+ 
+ #include "StereoDepth.h"
+ 
+-#include "FileItem.h"
+ #include "ServiceBroker.h"
+-#include "filesystem/File.h"
+ #include "resources/LocalizeStrings.h"
+ #include "resources/ResourcesComponent.h"
+-#include "utils/JSONVariantParser.h"
+-#include "utils/JSONVariantWriter.h"
+ #include "utils/StringUtils.h"
+ #include "utils/Variant.h"
+-#include "utils/log.h"
+-#include "video/VideoInfoTag.h"
++#include "video/FilmFile.h"
+ 
+ #include <algorithm>
+-#include <cstdint>
+-#include <mutex>
+-#include <optional>
+-#include <vector>
+-
+-namespace
+-{
+-constexpr const char* DepthFile = "special://profile/stereodepth.json";
+-constexpr const char* DepthFileNew = "special://profile/stereodepth.json.new";
+-
+-std::mutex depthLock;
+-//! the file's contents, read once
+-std::optional<CVariant> depths;
+-
+-//! the film's own file, as the library knows it, whichever path played it
+-std::string Key(const CFileItem& item)
+-{
+-  if (item.HasVideoInfoTag() && !item.GetVideoInfoTag()->m_strFileNameAndPath.empty())
+-    return item.GetVideoInfoTag()->m_strFileNameAndPath;
+-  return item.GetPath();
+-}
+-
+-CVariant& Stored()
+-{
+-  if (depths)
+-    return *depths;
+-  depths.emplace(CVariant::VariantTypeObject);
+-  std::vector<uint8_t> buffer;
+-  XFILE::CFile file;
+-  if (file.LoadFile(DepthFile, buffer) <= 0)
+-    return *depths;
+-  CVariant read;
+-  if (CJSONVariantParser::Parse(std::string(buffer.begin(), buffer.end()), read) &&
+-      read.isObject())
+-    *depths = read;
+-  else
+-    CLog::LogF(LOGWARNING, "{} is not a JSON object, starting afresh", DepthFile);
+-  return *depths;
+-}
+-
+-void Save(const CVariant& depths)
+-{
+-  std::string json;
+-  if (!CJSONVariantWriter::Write(depths, json, false))
+-    return;
+-  // written aside and renamed over, so a power cut leaves the old file or the new one
+-  XFILE::CFile file;
+-  if (!file.OpenForWrite(DepthFileNew, true) ||
+-      file.Write(json.data(), json.size()) != static_cast<ssize_t>(json.size()))
+-  {
+-    CLog::LogF(LOGERROR, "cannot write {}", DepthFileNew);
+-    return;
+-  }
+-  file.Close();
+-  if (!XFILE::CFile::Rename(DepthFileNew, DepthFile))
+-    CLog::LogF(LOGERROR, "cannot replace {}", DepthFile);
+-}
+-} // unnamed namespace
+ 
+ CStereoDepth::Depths CStereoDepth::Get(const CFileItem& item)
+ {
+-  std::lock_guard lock(depthLock);
+-  const CVariant& all = Stored();
+-  const std::string key = Key(item);
+-  if (!all.isMember(key))
+-    return {};
+-  // the picture's depth alone, or both
+-  const CVariant& entry = all[key];
+-  const auto read = [](const CVariant& depth)
+-  { return std::clamp(static_cast<int>(depth.asInteger()), -MAX, MAX); };
+-  if (!entry.isObject())
+-    return {read(entry), 0};
+-  return {read(entry["picture"]), read(entry["subtitles"])};
++  const CVariant film = CFilmFile::Get(CFilmFile::Key(item));
++  const auto read = [&film](const char* name)
++  { return std::clamp(static_cast<int>(film[name].asInteger()), -MAX, MAX); };
++  return {read("picture"), read("subtitles")};
+ }
+ 
+ void CStereoDepth::Set(const CFileItem& item, const Depths& depths)
+ {
+-  std::lock_guard lock(depthLock);
+-  CVariant& all = Stored();
+-  const std::string key = Key(item);
+-  CVariant entry;
+-  // the picture's depth alone is written as it always was
+-  if (depths.subtitles == 0)
+-    entry = depths.picture;
+-  else
+-  {
+-    entry = CVariant(CVariant::VariantTypeObject);
+-    entry["picture"] = depths.picture;
+-    entry["subtitles"] = depths.subtitles;
+-  }
+-  if (depths.picture == 0 && depths.subtitles == 0)
+-  {
+-    if (!all.isMember(key))
+-      return;
+-    all.erase(key);
+-  }
+-  else
+-  {
+-    if (all.isMember(key) && all[key] == entry)
+-      return;
+-    all[key] = entry;
+-  }
+-  Save(all);
++  // a depth of 0 is not kept
++  const auto value = [](int depth) { return depth != 0 ? CVariant(depth) : CVariant(); };
++  const std::string film = CFilmFile::Key(item);
++  CFilmFile::Set(film, "picture", value(depths.picture));
++  CFilmFile::Set(film, "subtitles", value(depths.subtitles));
+ }
+ 
+ std::string CStereoDepth::Format(int depth)
+diff --git a/xbmc/video/StereoDepth.h b/xbmc/video/StereoDepth.h
+index 8afb520865..b6fc960e10 100644
+--- a/xbmc/video/StereoDepth.h
++++ b/xbmc/video/StereoDepth.h
+@@ -18,8 +18,8 @@ class CFileItem;
+  * negative sets it back behind the screen (the right eye's goes right). And the same for its
+  * subtitles, on top of the depth the disc or the subtitle settings give them.
+  *
+- * Kept in a file of its own in the profile rather than with the film's other video settings: the
+- * video database has no column for it, and is often a library several players share.
++ * Kept with the film's other values in the profile's film file (CFilmFile), not in the video
++ * database.
+  */
+ class CStereoDepth
+ {

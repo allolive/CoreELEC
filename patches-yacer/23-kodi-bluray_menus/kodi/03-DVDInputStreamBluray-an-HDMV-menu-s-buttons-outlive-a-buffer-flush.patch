@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:01:19 -0400
+Subject: [PATCH] DVDInputStreamBluray: an HDMV menu's buttons outlive a buffer
+ flush
+
+An HDMV menu is drawn by libbluray's graphics controller, as the disc's
+program reaches it - when the program starts the menu's playlist, or
+answers a menu call. libbluray reads ahead of what plays, and the player
+flushes its buffers when it reaches the playlist change or jumps to the
+menu: the forced overlay group the menu was handed in is flushable, and
+the flush that followed removed the buttons just drawn. A disc whose top
+menu draws its button bar once, as the menu call starts, showed the
+menu's background and no buttons.
+
+The interactive graphics plane is now kept through a flush, as a disc
+program's graphics are. The controller clears or closes the plane when
+the menu goes, so nothing is left behind. Presentation graphics, timed
+to the video, are flushed as before.
+
+Each plane is handed over on its own, so the menu's group never carries
+a subtitle line drawn on the other plane, nor a subtitle group the
+menu's buttons.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp         | 12 ++++++++----
+ .../DVDInputStreams/DVDInputStreamBluray.h           |  2 +-
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 3d126316..089ea787 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1053,7 +1053,7 @@ void CDVDInputStreamBluray::OverlayClear(SPlane& plane, int x, int y, int w, int
+ #endif
+ }
+ 
+-void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool kept)
++void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool kept, int onlyPlane)
+ {
+ #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+   auto group = std::make_shared<CDVDOverlayGroup>();
+@@ -1062,9 +1062,11 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool kept)
+   group->iPTSStopTime  = 0;
+   group->SetOverlayContainerFlushable(!kept);
+ 
+-  for(SPlane& plane : m_planes)
++  for (int i = 0; i < static_cast<int>(std::size(m_planes)); ++i)
+   {
+-    for(SOverlays::iterator it = plane.o.begin(); it != plane.o.end(); ++it)
++    if (onlyPlane >= 0 && i != onlyPlane)
++      continue;
++    for (SOverlays::iterator it = m_planes[i].o.begin(); it != m_planes[i].o.end(); ++it)
+       group->m_overlays.push_back(*it);
+   }
+ 
+@@ -1138,8 +1140,10 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
+     plane.o.push_back(overlay);
+   }
+ 
++  // A menu's buttons are drawn as the disc's program reaches them, ahead of what plays: the flush
++  // of the buffers read before must not remove them
+   if (ov->cmd == BD_OVERLAY_FLUSH)
+-    OverlayFlush(ov->pts);
++    OverlayFlush(ov->pts, ov->plane == BD_OVERLAY_IG, ov->plane);
+ #endif
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index ad3cb029..db17b2a3 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -227,7 +227,7 @@ public:
+ protected:
+   struct SPlane;
+ 
+-  void OverlayFlush(int64_t pts, bool kept = false);
++  void OverlayFlush(int64_t pts, bool kept = false, int onlyPlane = -1);
+   void OverlayClose();
+   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
+   static void OverlayInit (SPlane& plane, int w, int h);
+-- 
+2.53.0
+

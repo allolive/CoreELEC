@@ -122,3 +122,6 @@ The Kodi patches:
   already out goes as a drop rather than stepping the film back.
 - 44 takes a whole-refresh 3D picture offset out of the frame latency at each
   start and resume, once settled, clock and audio untouched.
+- 49 turns the depths' file into one for every value kept for a film on this
+  player (`films.json`, read from `stereodepth.json` once), so the Blu-ray
+  region of group 23 is kept there too.
