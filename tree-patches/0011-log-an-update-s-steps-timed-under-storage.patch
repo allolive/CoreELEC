@@ -1,0 +1,220 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] Log an update's steps, timed, under /storage
+
+An update runs in the initramfs before any other log exists and ends in
+a reboot, so a slow one leaves nothing to look at but init-previous.log,
+the screen's text: a progress meter that sat at 27% for 30 s says the
+write stalled, not why.
+
+Each step - extracting the archive, the md5 checks, every file written,
+the boot files, the cleanup - now goes to the kernel log with the time
+since boot and how long it took, a file's write with its rate. While a
+file is written, a line a second gives how much of it is written and the
+disk's counters (sectors written, I/O in flight, time busy), so a stall
+shows as the disk's or the file system's. The kernel log - with the
+disk's and USB's own messages - is kept as update-1.log in
+/storage/update-logs before the reboot, or after the cleanup when a
+failed update goes on to start the system; the last five are kept.
+
+diff --git a/packages/sysutils/busybox/scripts/init b/packages/sysutils/busybox/scripts/init
+--- a/packages/sysutils/busybox/scripts/init
++++ b/packages/sysutils/busybox/scripts/init
+@@ -110,6 +110,78 @@ break_after() {
+   fi
+ }
+ 
++
++# Ours: an update's steps, timed, in the kernel log, which do_reboot keeps
++# under /storage with the disk's own messages - the update runs before any
++# other log exists and ends in a reboot.
++UPDATE_LOGS=/storage/update-logs
++UPDATE_LOGGED=""
++UPDATE_KEPT=""
++
++update_log() {
++  local up rest
++  read -r up rest </proc/uptime
++  echo "init: update ${up}s: $1" >/dev/kmsg
++  UPDATE_LOGGED="yes"
++}
++
++# the disk a mounted path is on, and its I/O counters
++update_disk() {
++  local part disk
++  part="$(awk -v m="$1" '$2 == m {print $1}' /proc/mounts)"
++  part="${part##*/}"
++  [ -n "$part" ] || return 1
++  for disk in /sys/block/*; do
++    if [ "${disk##*/}" = "$part" ] || [ -e "$disk/$part" ]; then
++      echo "${disk##*/}"
++      return 0
++    fi
++  done
++  return 1
++}
++
++update_disk_stat() {
++  local disk
++  disk="$(update_disk "$1")" || return 0
++  # reads, sectors read, writes, sectors written, in flight, ms busy
++  awk -v d="$disk" '{printf "%s reads %s (%s sectors), writes %s (%s sectors), in flight %s, busy %s ms", d, $1, $3, $5, $7, $9, $10}' \
++    "/sys/block/$disk/stat"
++}
++
++# once a second while a file is written: how much of it, and what the disk is doing,
++# so a stall shows as the disk's or the file system's
++update_sample() {
++  local file="$1" total="$2" mount="$3" size
++  while [ -f /dev/.update-sampling ]; do
++    [ -f "$file" ] && size=$(stat -t "$file" | awk '{print $2}') || size=0
++    update_log "  ${file##*/} ${size}/${total} bytes; $(update_disk_stat "$mount")"
++    usleep 1000000
++  done
++}
++
++# a step's time and rate: $1 name, $2 start uptime, $3 bytes
++update_log_done() {
++  local up rest
++  read -r up rest </proc/uptime
++  update_log "$(awk -v n="$1" -v s="$2" -v e="$up" -v b="${3:-0}" 'BEGIN {
++    t = e - s; printf "%s done in %.1f s", n, t; if (b > 0 && t > 0) printf ", %.1f MB/s", b / t / 1048576 }')"
++}
++
++# the last five updates' logs; kept again later in the same boot, the newest is rewritten
++update_keep_logs() {
++  local i
++  [ "$UPDATE_LOGGED" = "yes" ] && /usr/bin/busybox mountpoint -q /storage || return 0
++  mkdir -p "$UPDATE_LOGS"
++  if [ "$UPDATE_KEPT" != "yes" ]; then
++    for i in 4 3 2 1; do
++      [ -f "$UPDATE_LOGS/update-$i.log" ] && mv "$UPDATE_LOGS/update-$i.log" "$UPDATE_LOGS/update-$((i + 1)).log"
++    done
++    UPDATE_KEPT="yes"
++  fi
++  dmesg >"$UPDATE_LOGS/update-1.log"
++  sync
++}
++
+ # Mount handlers
+ # All handlers take the following parameters:
+ # $1:target, $2:mountpoint, $3:mount options, [$4:fs type]
+@@ -305,13 +377,21 @@ update_file() {
+     mount -o remount,rw /flash
+ 
+     rm -f "$3"
+-    StartProgress percent "Updating $1... " "$3" $(stat -t "$UPDATE_DIR/$2" | awk '{print $2}')
++    local size start rest
++    size=$(stat -t "$UPDATE_DIR/$2" | awk '{print $2}')
++    read -r start rest </proc/uptime
++    update_log "writing $3, $size bytes; $(update_disk_stat /flash)"
++    echo >/dev/.update-sampling
++    update_sample "$3" "$size" /flash &
++    StartProgress percent "Updating $1... " "$3" $size
+       # use dd here with conv=fsync so that all writes are non-buffered
+       # ensuring accurate progress - take the sync hit during the
+       # transfer, rather than when flushing file buffers after the progress
+       # meter declares the transfer already complete
+       dd if=$UPDATE_DIR/$2 of=$3 bs=1M conv=fsync 2>/dev/null
+       StopProgress
++    rm -f /dev/.update-sampling
++    update_log_done "writing $3" "$start" "$size"
+ 
+     # loopback file needs writable /flash all the time
+     if [ "${disk%%=*}" != "FILE" ]; then
+@@ -325,9 +405,12 @@ update_partition() {
+   local result
+ 
+   if [ -f "$UPDATE_DIR/$2" ] && [ -b "$3" ]; then
++    local start rest
++    read -r start rest </proc/uptime
+     StartProgress spinner "Updating $1... "
+       result="$(dd if="$UPDATE_DIR/$2" of="$3" 2>&1)"
+       StopProgress "done"
++    update_log_done "writing $3" "$start" "$(stat -t "$UPDATE_DIR/$2" | awk '{print $2}')"
+     echo "${result}"
+   fi
+ }
+@@ -339,10 +422,13 @@ update_bootloader() {
+   export SYSTEM_ROOT="/update"
+ 
+   if [ -f $SYSTEM_ROOT/usr/share/bootloader/update.sh ]; then
++    local start rest
++    read -r start rest </proc/uptime
+     echo ""
+     echo "Updating Boot Files... "
+     sh $SYSTEM_ROOT/usr/share/bootloader/update.sh
+     sync
++    update_log_done "boot files" "$start"
+     echo "Boot Files Updated."
+     echo ""
+   fi
+@@ -433,6 +519,10 @@ do_reboot() {
+   if [ -s /dev/init.log ]; then
+     mv /dev/init.log /storage/init-previous.log
+   fi
++  if [ "$UPDATE_LOGGED" = "yes" ]; then
++    update_log "rebooting"
++    update_keep_logs
++  fi
+   redirect_output_to_screen
+   delete_descriptors
+ 
+@@ -722,6 +812,8 @@ do_cleanup() {
+   sync
+ 
+   StopProgress "done"
++  # a failed update starts the system without a reboot
++  update_keep_logs
+ }
+ 
+ check_force_splash() {
+@@ -793,6 +885,8 @@ check_update() {
+     return 0
+   fi
+ 
++  local step rest
++  update_log "update found; /storage $(update_disk_stat /storage)"
+   mkdir -p $UPDATE_DIR/.tmp &>/dev/null
+   sync
+ 
+@@ -806,12 +900,14 @@ check_update() {
+ 
+     echo "Found new .tar archive file"
+     UPDATE_FILENAME="$UPDATE_TAR"
++    read -r step rest </proc/uptime
+     StartProgress spinner "Extracting contents of archive... "
+       tar -xf "$UPDATE_TAR" -C $UPDATE_DIR/.tmp 1>/dev/null 2>/tmp/tarresult.txt || TARRESULT="1"
+ 
+     if [ "${TARRESULT}" -eq "0" ]; then
+       mv $UPDATE_DIR/.tmp/*/target/* $UPDATE_DIR &>/dev/null
+       sync
++      update_log_done "extracting the archive" "$step" "$(stat -t "$UPDATE_TAR" | awk '{print $2}')"
+       StopProgress "OK"
+     else
+       StopProgress "FAILED"
+@@ -918,6 +1014,7 @@ check_update() {
+         sed "s#target/KERNEL#$UPDATE_DIR/$UPDATE_KERNEL#g" "$UPDATE_DIR/${UPDATE_KERNEL}.md5" >"$UPDATE_ROOT/${UPDATE_KERNEL}.check.md5"
+         sed "s#target#$UPDATE_DIR#g" "$UPDATE_DIR/${UPDATE_SYSTEM}.md5" >"$UPDATE_ROOT/${UPDATE_SYSTEM}.check.md5"
+ 
++        read -r step rest </proc/uptime
+         StartProgress spinner "Checking ${UPDATE_KERNEL}.md5... "
+           if md5sum -sc "$UPDATE_ROOT/${UPDATE_KERNEL}.check.md5"; then
+             StopProgress "OK"
+@@ -933,6 +1030,7 @@ check_update() {
+             StopProgress "FAILED"
+             MD5_FAILED="1"
+           fi
++        update_log_done "checking md5 sums" "$step"
+       fi
+     else
+       echo "Missing ${UPDATE_KERNEL}.md5 or ${UPDATE_SYSTEM}.md5!"
+@@ -1011,7 +1109,9 @@ check_update() {
+   update_file "System    " "${UPDATE_SYSTEM}"     "/flash/${IMAGE_SYSTEM}"
+   update_file "System md5" "${UPDATE_SYSTEM}.md5" "/flash/${IMAGE_SYSTEM}.md5"
+   update_bootloader
++  read -r step rest </proc/uptime
+   do_cleanup
++  update_log_done "cleaning up" "$step"
+ 
+   if [ -f /flash/user-update.sh ]; then
+     sync
