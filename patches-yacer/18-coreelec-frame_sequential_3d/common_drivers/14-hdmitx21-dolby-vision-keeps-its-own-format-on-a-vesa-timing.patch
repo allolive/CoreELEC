@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 05:04:40 -0400
+Subject: [PATCH] hdmitx21: Dolby Vision keeps its own format on a VESA timing
+
+Dolby Vision on the 1080p165 frame-sequential 3D base went out broken.
+Player-led (low-latency) Dolby Vision is sent as YCbCr 4:2:2 12-bit,
+and DRM decides that from the tunnel the DV driver asks for. The VESA
+timing branch added for 3D then made every VESA output YCbCr 4:4:4,
+and 4:4:4 12-bit at 1080p165 needs 601 MHz of TMDS clock, so it fell to
+8-bit: the link carried 4:4:4 8-bit while the DV vendor frame and the
+AVI frame stated 4:2:2, a signal no sink can show.
+
+A VESA timing now keeps the format and depth the Dolby Vision tunnel
+decided (4:2:2 12-bit for low-latency, 401 MHz on 1080p165, or the
+4:4:4 8-bit container of the standard tunnel), and hdmitx21_set_display
+lets a VESA timing go as YCbCr 4:2:2 as well as 4:4:4. Without Dolby
+Vision nothing changes.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/drivers/drm/meson_hdmi.c
++++ b/drivers/drm/meson_hdmi.c
+@@ -423,9 +423,10 @@
+ 
+ 	/* A VESA timing goes out as YCbCr 4:4:4, as the VPU makes it, when the
+ 	 * sink takes it, in deep colour where it takes that in 4:4:4 and the
+-	 * link carries it; otherwise as RGB 8-bit
++	 * link carries it; otherwise as RGB 8-bit. Dolby Vision keeps the format
++	 * and depth its tunnel set above.
+ 	 */
+-	if (vic >= HDMITX_VESA_OFFSET) {
++	if (vic >= HDMITX_VESA_OFFSET && !is_amdv_output_dv()) {
+ 		char attr_str[16];
+ 
+ 		if (attr->colorformat != HDMI_COLORSPACE_RGB &&
+--- a/drivers/media/vout/hdmitx21/hdmi_tx_video.c
++++ b/drivers/media/vout/hdmitx21/hdmi_tx_video.c
+@@ -103,9 +103,10 @@
+ 	struct hdmi_format_para *param = &hdev->tx_comm.fmt_para;
+ 	int ret = -1;
+ 
+-	/* a VESA timing goes as YCbCr 4:4:4 where DRM decided it, else as RGB */
++	/* a VESA timing goes as YCbCr where DRM decided it, else as RGB */
+ 	if (videocode >= HDMITX_VESA_OFFSET &&
+-	    param->cs != HDMI_COLORSPACE_YUV444) {
++	    param->cs != HDMI_COLORSPACE_YUV444 &&
++	    param->cs != HDMI_COLORSPACE_YUV422) {
+ 		param->cs = HDMI_COLORSPACE_RGB;
+ 		param->cd = COLORDEPTH_24B;
+ 		HDMITX_INFO("VESA only support RGB format\n");
