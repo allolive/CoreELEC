@@ -26,17 +26,23 @@ events wait for the player to take them in order, as it does at every
 hold. Only a jump the key itself started flushes the player; one
 already queued, or an angle change, does not.
 
+A Java program takes a key on its own threads: an event libbluray holds
+after the key may be one the program queued itself, at the end of a
+loop or a trailer, and the key's own jump comes later. On a BD-J title a
+key so flushes nothing, and the read takes the program's jumps as
+before.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- .../DVDInputStreams/DVDInputStreamBluray.cpp  | 63 ++++++++++++++++---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 65 ++++++++++++++++---
  .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
- 2 files changed, 56 insertions(+), 8 deletions(-)
+ 2 files changed, 58 insertions(+), 8 deletions(-)
 
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-index 637dc888..9458a119 100644
+index 1cc3cacb99..f6e96a373c 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-@@ -984,6 +984,54 @@ void CDVDInputStreamBluray::RunProgram()
+@@ -985,6 +985,56 @@ void CDVDInputStreamBluray::RunProgram()
    }
  }
  
@@ -47,7 +53,9 @@ index 637dc888..9458a119 100644
 +{
 +  const size_t queued = m_pending.size();
 +  RunProgram();
-+  // only a jump this key started leaves the old position
++  // only a jump this key started leaves the old position; a Java program takes the key on its own
++  // threads, so what it queued may be its own and the key's jump comes later
++  const bool javaProgram = m_title && m_title->bdj == 1;
 +  bool jump = false;
 +  bool flushed = false;
 +  for (size_t i = queued; i < m_pending.size(); ++i)
@@ -62,7 +70,7 @@ index 637dc888..9458a119 100644
 +  // held at a change, the player takes the events in order once it has played out what it holds
 +  if (m_hold == HOLD_HELD)
 +  {
-+    if (jump)
++    if (jump && !javaProgram)
 +    {
 +      // a still the key jumps away from is over
 +      if (m_event.event == BD_EVENT_STILL_TIME)
@@ -84,14 +92,14 @@ index 637dc888..9458a119 100644
 +      flushed = true;
 +    ProcessEvent();
 +  }
-+  if (jump && !flushed)
++  if (jump && !flushed && !javaProgram)
 +    m_player->OnDiscNavResult(nullptr, BD_EVENT_PLAYLIST_STOP);
 +}
 +
  bool CDVDInputStreamBluray::NextEvent()
  {
    if (m_pending.empty())
-@@ -1603,14 +1651,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
+@@ -1604,14 +1654,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::UserInput - user input failed");
    }
    else
@@ -107,7 +115,7 @@ index 637dc888..9458a119 100644
  }
  
  bool CDVDInputStreamBluray::MouseMove(const CPoint &point)
-@@ -1647,7 +1688,10 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
+@@ -1648,7 +1691,10 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
    }
  
    if (bd_user_input(m_bd, -1, BD_VK_MOUSE_ACTIVATE) >= 0)
@@ -118,7 +126,7 @@ index 637dc888..9458a119 100644
  
    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::MouseClick - mouse click (user input) failed");
    return false;
-@@ -1666,6 +1710,7 @@ bool CDVDInputStreamBluray::OnMenu()
+@@ -1667,6 +1713,7 @@ bool CDVDInputStreamBluray::OnMenu()
    // internal tracking state would be wrong. So just process and return.
    if(bd_user_input(m_bd, -1, BD_VK_POPUP) >= 0)
    {
@@ -126,7 +134,7 @@ index 637dc888..9458a119 100644
      return true;
    }
  
-@@ -1673,6 +1718,7 @@ bool CDVDInputStreamBluray::OnMenu()
+@@ -1674,6 +1721,7 @@ bool CDVDInputStreamBluray::OnMenu()
  
    if (bd_user_input(m_bd, -1, BD_VK_ROOT_MENU) >= 0)
    {
@@ -134,7 +142,7 @@ index 637dc888..9458a119 100644
      return true;
    }
  
-@@ -1682,6 +1728,7 @@ bool CDVDInputStreamBluray::OnMenu()
+@@ -1683,6 +1731,7 @@ bool CDVDInputStreamBluray::OnMenu()
      CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - root failed");
      return false;
    }
@@ -143,7 +151,7 @@ index 637dc888..9458a119 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
-index 0c1b6b0d..e884f40a 100644
+index 0c1b6b0d45..e884f40a53 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 @@ -313,6 +313,7 @@ protected:

@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 13:00:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: a disc whose program has ended stops
+
+A title's end resumes the disc's HDMV program, and the read after it
+starts what the program plays next. A program whose last command plays a
+playlist - a region lock-out screen, a first-play object that only plays
+an intro, an extra that does not return to the menu - has nothing left
+to run: libbluray marks it ended and from then on reports the title's
+end on every read, with no data. The read loop took each one as an
+ordinary event and read again at once, a busy loop that held the player
+in its read until the user stopped playback, and with debug logging on
+wrote some hundred thousand lines a second.
+
+A second end of title with nothing between the two is now the end of the
+disc: the read returns an error with the stream held for exit, and the
+player plays out what it holds and ends playback as at the end of a
+file. A Java program decides what follows on its own threads, so its
+title's end can repeat for a while before it acts; there a repeated end
+waits 10 ms before reading again, as an idle read already waits.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 20 +++++++++++++++++++
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
+ 2 files changed, 21 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index e9305b2af8..efc5fe706f 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -507,6 +507,7 @@ void CDVDInputStreamBluray::Close()
+   m_hasMVCExtension = false;
+   m_clipStart.clear();
+   m_pending.clear();
++  m_endOfTitle = false;
+ 
+ #if defined(HAS_UDFREAD)
+   // Released last, as the files opened from the volume are closed above
+@@ -832,6 +833,25 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+         return result;
+       }
+ 
++      // A title's end resumes an HDMV program, whose next read starts what it plays next; the
++      // end again means the program has ended, and libbluray reports it on every read from then
++      // on. A Java program decides on its own threads, so its title's end can repeat a while.
++      if (result == 0 && m_event.event == BD_EVENT_END_OF_TITLE)
++      {
++        if (m_endOfTitle && !(m_title && m_title->bdj == 1))
++        {
++          CLog::Log(LOGINFO, "CDVDInputStreamBluray - the disc's program has ended");
++          m_event.event = BD_EVENT_NONE;
++          m_hold = HOLD_EXIT;
++          return -1;
++        }
++        if (m_endOfTitle)
++          KODI::TIME::Sleep(10ms);
++        m_endOfTitle = true;
++      }
++      else if (result > 0 || m_event.event != BD_EVENT_NONE)
++        m_endOfTitle = false;
++
+       /* Check for holding events */
+       switch(m_event.event) {
+         case BD_EVENT_SEEK:
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 928aaa3223..784d649997 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -299,6 +299,7 @@ protected:
+   } m_hold = HOLD_NONE;
+   BD_EVENT m_event;
+   std::deque<BD_EVENT> m_pending; //!< events taken from libbluray to let the disc's program run
++  bool m_endOfTitle = false; //!< the last read ended the title and brought nothing else
+ #ifdef HAVE_LIBBLURAY_BDJ
+   struct bd_argb_buffer_s m_argb;
+ #endif
+-- 
+2.53.0
+
