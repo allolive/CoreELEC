@@ -22,7 +22,8 @@ makeinstall_target() {
     *)       die "makemkv-bin: no MakeMKV program for ${TARGET_ARCH}" ;;
   esac
   mkdir -p ${INSTALL}/usr/bin ${INSTALL}/usr/share/MakeMKV
-  cp -p bin/${arch}/makemkvcon ${INSTALL}/usr/bin
-  cp -p src/share/appdata.tar src/share/blues.jar src/share/blues.policy \
-        src/eula_en_linux.txt ${INSTALL}/usr/share/MakeMKV
+  # with the modes MakeMKV's own install gives them; the tarball keeps none
+  install -m 755 bin/${arch}/makemkvcon ${INSTALL}/usr/bin
+  install -m 644 src/share/appdata.tar src/share/blues.jar src/share/blues.policy \
+                 src/eula_en_linux.txt ${INSTALL}/usr/share/MakeMKV
 }
