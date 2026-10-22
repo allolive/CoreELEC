@@ -1,0 +1,23 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] Decrypt Blu-ray discs with MakeMKV
+
+A Blu-ray disc in a drive is encrypted, and libaacs opens it only with
+that disc's key in a key file the user has to fill. MakeMKV's libmmbd
+stands in for libaacs and libbdplus and gets the keys itself; libbluray
+takes it when Kodi names it (the makemkv package's kodi.service drop-in).
+The makemkv package (overlay) builds MakeMKV's open source part, and
+makemkv-bin installs its program as MakeMKV ships it, as its licence
+allows a distribution to.
+
+diff --git a/packages/multimedia/libbluray/package.mk b/packages/multimedia/libbluray/package.mk
+--- a/packages/multimedia/libbluray/package.mk
++++ b/packages/multimedia/libbluray/package.mk
+@@ -12,7 +12,7 @@ PKG_DEPENDS_TARGET="toolchain fontconfig freetype libxml2 libudfread"
+ PKG_LONGDESC="libbluray is an open-source library designed for Blu-Ray Discs playback for media players."
+ 
+ if [ "${BLURAY_AACS_SUPPORT}" = "yes" ]; then
+-  PKG_DEPENDS_TARGET+=" libaacs"
++  PKG_DEPENDS_TARGET+=" libaacs makemkv"
+ fi
+ 
+ if [ "${BLURAY_BDPLUS_SUPPORT}" = "yes" ]; then
