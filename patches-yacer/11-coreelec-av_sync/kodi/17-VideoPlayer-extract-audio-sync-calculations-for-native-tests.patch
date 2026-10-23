@@ -19,7 +19,7 @@ native harness compiles these production headers, not a separate sync model.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-index 6ed348f0de..2b87a7eab9 100644
+index 0439942..c3098b0 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -13,6 +13,7 @@
@@ -30,7 +30,7 @@ index 6ed348f0de..2b87a7eab9 100644
  #include "threads/Event.h"
  
  #include <atomic>
-@@ -22,98 +23,6 @@ namespace ActiveAE
+@@ -22,108 +23,6 @@ namespace ActiveAE
  {
  class CActiveAE;
  
@@ -81,6 +81,16 @@ index 6ed348f0de..2b87a7eab9 100644
 -    }
 -  }
 -
+-  // The error averaged so far, before the interval of Get() is over.
+-  bool GetSoFar(double& error) const
+-  {
+-    if (!m_count)
+-      return false;
+-
+-    error = Get();
+-    return true;
+-  }
+-
 -  double GetLastError(unsigned int &time)
 -  {
 -    time = m_timer.GetStartTime().time_since_epoch().count();
@@ -129,7 +139,7 @@ index 6ed348f0de..2b87a7eab9 100644
  class CActiveAEStreamBuffers
  {
  public:
-@@ -266,12 +175,12 @@ protected:
+@@ -276,12 +175,12 @@ protected:
    enum AVAudioServiceType m_audioServiceType;
    bool m_forceResampler;
    IAEClockCallback *m_pClock;
@@ -146,10 +156,10 @@ index 6ed348f0de..2b87a7eab9 100644
    bool m_errorSaturated{false};
 diff --git a/xbmc/cores/AudioEngine/Utils/AESyncError.h b/xbmc/cores/AudioEngine/Utils/AESyncError.h
 new file mode 100644
-index 0000000000..81ca30825f
+index 0000000..e70c695
 --- /dev/null
 +++ b/xbmc/cores/AudioEngine/Utils/AESyncError.h
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,112 @@
 +/*
 + *  Copyright (C) 2010-2018 Team Kodi
 + *  This file is part of Kodi - https://kodi.tv
@@ -209,6 +219,16 @@ index 0000000000..81ca30825f
 +    }
 +  }
 +
++  // The error averaged so far, before the interval of Get() is over.
++  bool GetSoFar(double& error) const
++  {
++    if (!m_count)
++      return false;
++
++    error = Get();
++    return true;
++  }
++
 +  double GetLastError(unsigned int& time)
 +  {
 +    time = m_timer.GetStartTime().time_since_epoch().count();
@@ -254,7 +274,7 @@ index 0000000000..81ca30825f
 +} // namespace ActiveAE
 diff --git a/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
 new file mode 100644
-index 0000000000..84cba7fbe0
+index 0000000..84cba7f
 --- /dev/null
 +++ b/xbmc/cores/VideoPlayer/AudioSyncAcquisition.h
 @@ -0,0 +1,54 @@
@@ -313,7 +333,7 @@ index 0000000000..84cba7fbe0
 +  unsigned int m_readings{0};
 +};
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
-index 0c6aefa3aa..572fa9ce06 100644
+index 0c6aefa..572fa9c 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp
 @@ -31,62 +31,6 @@
@@ -462,7 +482,7 @@ index 0c6aefa3aa..572fa9ce06 100644
      if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
      {
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
-index 8c860023c6..70f9b8130e 100644
+index 8c86002..70f9b81 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerAudio.h
 @@ -9,6 +9,7 @@

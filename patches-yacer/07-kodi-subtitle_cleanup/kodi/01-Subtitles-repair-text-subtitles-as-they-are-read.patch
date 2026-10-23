@@ -97,10 +97,10 @@ index 7404d0d..31bafa0 100644
                    LCMS2>=2.10
                    LircClient
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index eda76b5..0646e8b 100644
+index 165907a..c9ba386 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25462,6 +25462,54 @@ msgctxt "#60003"
+@@ -25474,6 +25474,54 @@ msgctxt "#60003"
  msgid "{0:d} nits"
  msgstr ""
  
@@ -152,7 +152,7 @@ index eda76b5..0646e8b 100644
 +msgid "Keep a line that would flash by too fast to be seen on screen for a second, and end a line where the next one starts when they overlap briefly in the same place, so the dialogue does not jump. Timing that works is left as it is."
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/cmake/modules/FindCld2.cmake b/cmake/modules/FindCld2.cmake
@@ -224,10 +224,10 @@ index 0000000..513a776
 +  endif()
 +endif()
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index b727df8..9779396 100755
+index 09a995a..9d219b9 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -903,6 +903,41 @@
+@@ -924,6 +924,41 @@
              <formatlabel>60003</formatlabel>
            </control>
          </setting>
