@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 23 Oct 2026 19:00:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: a Java disc is in a menu only while its
+ graphics show
+
+A Java program opens the interactive graphics plane for its whole title,
+which libbluray reports as a menu (BD_EVENT_MENU 1), and draws a popup on
+it only when one is shown; the rest of the time the plane is all
+transparent. Kodi counted the disc as in a menu from the plane's opening,
+and after any flush of graphics, so during the film every Select went to
+the disc - "button select", with nothing to press - and the player bar
+never opened.
+
+A flush now records whether the interactive plane holds a pixel that
+shows, and a Java title is in a menu only while it does. An HDMV disc
+keeps its menu events as before; graphics flushed on the subtitle plane
+no longer count as a menu.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 44 ++++++++++++++++---
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
+ 2 files changed, 38 insertions(+), 7 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 4bdd684..03b7c9b 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -1191,10 +1191,40 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool kept, int onlyPlane)
+   }
+ 
+   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+-  m_hasOverlay = true;
++  m_hasOverlay = MenuGraphicsShown();
+ #endif
+ }
+ 
++bool CDVDInputStreamBluray::MenuGraphicsShown() const
++{
++#if(BD_OVERLAY_INTERFACE_VERSION >= 2)
++  // A menu is on the interactive graphics plane, and only where it shows: a Java program keeps
++  // that plane open for its whole title, all of it transparent while the film plays
++  for (const SOverlay& overlay : m_planes[BD_OVERLAY_IG].o)
++  {
++    for (int y = 0; y < overlay->height; ++y)
++    {
++      const uint8_t* row = overlay->pixels.data() + static_cast<size_t>(y) * overlay->linesize;
++      for (int x = 0; x < overlay->width; ++x)
++      {
++        uint32_t alpha;
++        if (!overlay->palette.empty())
++          alpha = (overlay->palette[row[x]] >> PIXEL_ASHIFT) & 0xff;
++        else
++        {
++          uint32_t argb; // as libbluray hands it over, alpha in the top byte
++          memcpy(&argb, row + 4 * x, sizeof(argb));
++          alpha = argb >> 24;
++        }
++        if (alpha != 0)
++          return true;
++      }
++    }
++  }
++#endif
++  return false;
++}
++
+ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
+ {
+ #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+@@ -1765,12 +1795,12 @@ bool CDVDInputStreamBluray::IsInMenu()
+   if(m_bd == nullptr || !m_navmode)
+     return false;
+ 
+-  // since there is no way to tell in a BD-J blu-ray when a popup menu actually is visible,
+-  // we have to assume that the blu-ray is in menu/navigation mode when there is an overlay
+-  // on screen, even if it might be invisible (which is impossible to detect)
+-  if(m_menu || m_hasOverlay)
+-    return true;
+-  return false;
++  // A Java program opens its graphics plane for its whole title, which libbluray reports as a
++  // menu, and draws a popup on it only when one is shown: there, what counts is graphics that
++  // show. Keys go to Kodi while the film plays, to the disc while its menu is up.
++  if (m_title && m_title->bdj == 1)
++    return m_hasOverlay;
++  return m_menu || m_hasOverlay;
+ }
+ 
+ void CDVDInputStreamBluray::SkipStill()
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 784d649..42b70d5 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -229,6 +229,7 @@ protected:
+   struct SPlane;
+ 
+   void OverlayFlush(int64_t pts, bool kept = false, int onlyPlane = -1);
++  bool MenuGraphicsShown() const;
+   void OverlayClose();
+   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
+   static void OverlayInit (SPlane& plane, int w, int h);
