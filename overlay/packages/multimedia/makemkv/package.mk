@@ -6,6 +6,7 @@ PKG_SHA256="435316b2d219eb48c880526557addd076b5f5e6de5171424c7651f9cac95b161"
 PKG_LICENSE="MakeMKV EULA, LGPL-2.1"
 PKG_SITE="https://www.makemkv.com/"
 PKG_URL="https://www.makemkv.com/download/${PKG_NAME}-oss-${PKG_VERSION}.tar.gz"
+# keep PKG_VERSION the same as makemkv-bin's: libmmbd and makemkvcon come as a pair
 PKG_DEPENDS_TARGET="toolchain ffmpeg openssl zlib expat makemkv-bin"
 PKG_LONGDESC="libmmbd, which plays an encrypted Blu-ray through MakeMKV in place of libaacs and libbdplus."
 PKG_TOOLCHAIN="configure"

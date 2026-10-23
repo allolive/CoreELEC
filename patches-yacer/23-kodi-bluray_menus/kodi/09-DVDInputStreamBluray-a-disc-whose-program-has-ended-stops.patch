@@ -22,9 +22,9 @@ waits 10 ms before reading again, as an idle read already waits.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- .../DVDInputStreams/DVDInputStreamBluray.cpp  | 20 +++++++++++++++++++
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 21 ++++++++++++++++++++
  .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
- 2 files changed, 21 insertions(+)
+ 2 files changed, 22 insertions(+)
 
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 index e9305b2af8..efc5fe706f 100644
@@ -38,7 +38,7 @@ index e9305b2af8..efc5fe706f 100644
  
  #if defined(HAS_UDFREAD)
    // Released last, as the files opened from the volume are closed above
-@@ -832,6 +833,25 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -832,6 +833,26 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
          return result;
        }
  
@@ -49,7 +49,8 @@ index e9305b2af8..efc5fe706f 100644
 +      {
 +        if (m_endOfTitle && !(m_title && m_title->bdj == 1))
 +        {
-+          CLog::Log(LOGINFO, "CDVDInputStreamBluray - the disc's program has ended");
++          CLog::Log(LOGINFO, "CDVDInputStreamBluray - the disc's program has ended, at title {} playlist {:05}",
++                    m_title ? m_title->id_ref : 0, m_titleInfo ? m_titleInfo->playlist : 0);
 +          m_event.event = BD_EVENT_NONE;
 +          m_hold = HOLD_EXIT;
 +          return -1;

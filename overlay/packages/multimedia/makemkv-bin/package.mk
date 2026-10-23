@@ -12,6 +12,10 @@ PKG_TOOLCHAIN="manual"
 # its licence lets a distribution repackage the Linux part as long as the
 # program files stay unchanged: they are installed as they come
 PKG_BUILD_FLAGS="-strip"
+# repackaging is allowed, re-hosting the archive is not said to be: never in our mirror
+YACER_MIRROR="no"
+# MakeMKV moves a release to /download/old/ once the next one is out, and its builds stop
+# decrypting after a while: bump this and makemkv's PKG_VERSION together to the newest
 
 makeinstall_target() {
   local arch
