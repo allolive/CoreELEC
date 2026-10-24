@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 13:45:00 -0400
+Subject: [PATCH] ActiveAE: keep the chosen passthrough device when it plays
+ the stream
+
+On S5 and later, each new stream goes to the first device of the chosen
+one's type that supports it, so that TrueHD and DTS-HD MA, which only the
+AML card's surround71 carries, reach it rather than hdmi. The search also
+replaces a chosen device that supports the stream itself: an ALSA loopback
+that is offered TrueHD (binaural decodes it on the box) is passed over for
+the AML card, which comes first in the list.
+
+Look further only when the chosen device cannot play the stream. With the
+AML card chosen, hdmi does not list TrueHD, so the search runs as before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -3017,11 +3017,13 @@
+   m_settings.device = settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE);
+   m_settings.passthroughdevice = settings->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE);
+ 
+-  // find on NEWSTREAM the matching passthrough device by device type
++  // find on NEWSTREAM the matching passthrough device by device type,
++  // unless the chosen one plays the stream itself
+   if (format != NULL && (soc_id >= AML_S5 || soc_id == AML_T7))
+   {
+     std::string device(m_settings.passthroughdevice);
+-    if (SupportsFormat(*format, &device))
++    if (!m_sink.SupportsFormat(m_settings.passthroughdevice, *format) &&
++        SupportsFormat(*format, &device))
+     {
+       if (device != m_settings.passthroughdevice)
+       {
