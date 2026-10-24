@@ -11,6 +11,8 @@ PKG_TOOLCHAIN="manual"
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/share/binaural
   cp ${PKG_DIR}/config/camilladsp-7.1.yml ${INSTALL}/usr/share/binaural
+  mkdir -p ${INSTALL}/usr/lib/modprobe.d
+  cp ${PKG_DIR}/modprobe.d/binaural.conf ${INSTALL}/usr/lib/modprobe.d
 }
 
 post_install() {

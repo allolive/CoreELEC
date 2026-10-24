@@ -6,7 +6,7 @@ After=sound.target
 Before=kodi.service
 
 [Service]
-ExecStartPre=/sbin/modprobe snd-aloop id=Loopback pcm_substreams=1
+ExecStartPre=/sbin/modprobe snd-aloop
 # Kodi sets these when it opens the HDMI output itself; playing to the loopback, it does not.
 ExecStartPre=-/usr/bin/amixer -q -c AMLAUGESOUND sset 'HDMITX Audio Source Select' 'Spdif_b'
 ExecStartPre=-/usr/bin/amixer -q -c AMLAUGESOUND sset 'Audio spdif_b format' 'Multi-channel LPCM'

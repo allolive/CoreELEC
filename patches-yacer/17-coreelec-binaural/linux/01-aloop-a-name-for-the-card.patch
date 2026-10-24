@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 14:00:00 -0400
+Subject: [PATCH] ALSA: aloop: a name for the card
+
+Players list a sound card by its short name, which aloop fixes to
+"Loopback". binaural loads it as the box's headphone output, and Kodi
+should offer it as "Virtual Sound": a name option sets the short name and
+leaves the id, and so every device string, as they were.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ sound/drivers/aloop.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
+--- a/sound/drivers/aloop.c
++++ b/sound/drivers/aloop.c
+@@ -42,6 +42,7 @@
+ static int pcm_substreams[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 8};
+ static int pcm_notify[SNDRV_CARDS];
+ static char *timer_source[SNDRV_CARDS];
++static char *card_name[SNDRV_CARDS];
+ 
+ module_param_array(index, int, NULL, 0444);
+ MODULE_PARM_DESC(index, "Index value for loopback soundcard.");
+@@ -55,6 +56,8 @@
+ MODULE_PARM_DESC(pcm_notify, "Break capture when PCM format/rate/channels changes.");
+ module_param_array(timer_source, charp, NULL, 0444);
+ MODULE_PARM_DESC(timer_source, "Sound card name or number and device/subdevice number of timer to be used. Empty string for jiffies timer [default].");
++module_param_array_named(name, card_name, charp, NULL, 0444);
++MODULE_PARM_DESC(name, "Name the loopback soundcard shows to players [Loopback].");
+ 
+ #define NO_PITCH 100000
+ 
+@@ -1742,7 +1745,8 @@
+ 	loopback_cable_proc_new(loopback, 1);
+ 	loopback_timer_source_proc_new(loopback);
+ 	strcpy(card->driver, "Loopback");
+-	strcpy(card->shortname, "Loopback");
++	strscpy(card->shortname, card_name[dev] && *card_name[dev] ? card_name[dev] : "Loopback",
++		sizeof(card->shortname));
+ 	sprintf(card->longname, "Loopback %i", dev + 1);
+ 	err = snd_card_register(card);
+ 	if (err < 0)
