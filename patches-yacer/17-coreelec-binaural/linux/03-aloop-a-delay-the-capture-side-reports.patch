@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 18:15:00 -0400
+Subject: [PATCH] ALSA: aloop: a delay the capture side reports to the playback
+
+A player syncs its picture on what snd_pcm_delay() says the sound card
+still holds. Through a loopback, whatever the capture side does with the
+sound afterwards (binaural convolves it and plays it on another card, some
+tens of ms later) is invisible to the player, so the picture runs ahead.
+
+"PCM Extra Delay us" (microseconds, 0 to 2 s) is set by the capture side
+and reported as the playback's runtime->delay, converted at the playback's
+rate, so the player keeps picture and sound in step by itself, for every
+format it opens (PCM at 48 kHz, a passthrough at 192 kHz) and without
+anything stored in its library.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ sound/drivers/aloop.c | 46 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
+--- a/sound/drivers/aloop.c
++++ b/sound/drivers/aloop.c
+@@ -123,6 +123,7 @@
+ struct loopback_setup {
+ 	unsigned int notify: 1;
+ 	unsigned int rate_shift;
++	unsigned int extra_delay_us;	/* reported on top of the playback's own */
+ 	snd_pcm_format_t format;
+ 	unsigned int rate;
+ 	unsigned int channels;
+@@ -878,6 +879,10 @@
+ 		dpcm->cable->ops->pos_update(dpcm->cable);
+ 	pos = dpcm->buf_pos;
+ 	spin_unlock(&dpcm->cable->lock);
++	/* what the capture side adds after the cable, for the player to sync on */
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		runtime->delay = div_u64((u64)READ_ONCE(get_setup(dpcm)->extra_delay_us) *
++					 runtime->rate, 1000000);
+ 	return bytes_to_frames(runtime, pos);
+ }
+ 
+@@ -1386,6 +1391,45 @@
+ 	return change;
+ }
+ 
++#define MAX_EXTRA_DELAY_US 2000000
++
++static int loopback_extra_delay_info(struct snd_kcontrol *kcontrol,
++				     struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 1;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = MAX_EXTRA_DELAY_US;
++	uinfo->value.integer.step = 1;
++	return 0;
++}
++
++static int loopback_extra_delay_get(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct loopback *loopback = snd_kcontrol_chip(kcontrol);
++
++	ucontrol->value.integer.value[0] =
++		READ_ONCE(loopback->setup[kcontrol->id.subdevice]
++					 [kcontrol->id.device].extra_delay_us);
++	return 0;
++}
++
++static int loopback_extra_delay_put(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct loopback *loopback = snd_kcontrol_chip(kcontrol);
++	struct loopback_setup *setup =
++		&loopback->setup[kcontrol->id.subdevice][kcontrol->id.device];
++	long val = ucontrol->value.integer.value[0];
++
++	val = clamp_val(val, 0, MAX_EXTRA_DELAY_US);
++	if (val == READ_ONCE(setup->extra_delay_us))
++		return 0;
++	WRITE_ONCE(setup->extra_delay_us, val);
++	return 1;
++}
++
+ static int loopback_notify_get(struct snd_kcontrol *kcontrol,
+ 			       struct snd_ctl_elem_value *ucontrol)
+ {
+@@ -1554,6 +1598,13 @@
+ 	.name =         "PCM Slave Channels",
+ 	.info =         loopback_channels_info,
+ 	.get =          loopback_channels_get
++},
++{
++	.iface =        SNDRV_CTL_ELEM_IFACE_PCM,
++	.name =         "PCM Extra Delay us",
++	.info =         loopback_extra_delay_info,
++	.get =          loopback_extra_delay_get,
++	.put =          loopback_extra_delay_put,
+ }
+ };
+ 
+@@ -1574,6 +1625,7 @@
+ 			setup = &loopback->setup[substr][dev];
+ 			setup->notify = notify;
+ 			setup->rate_shift = NO_PITCH;
++			setup->extra_delay_us = 0;
+ 			setup->format = SNDRV_PCM_FORMAT_S16_LE;
+ 			setup->rate = 48000;
+ 			setup->channels = 2;
