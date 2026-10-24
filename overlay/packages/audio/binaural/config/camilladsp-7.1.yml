@@ -21,6 +21,12 @@ devices:
     device: "plughw:AMLAUGESOUND,3"
     format: S32_LE
 filters:
+  # catches the rare peak of a loud mix; leaves everything below -1 dBFS alone
+  limiter:
+    type: Limiter
+    parameters:
+      soft_clip: true
+      clip_limit: -1.0
   FL_L:
     type: Conv
     parameters:
@@ -313,3 +319,6 @@ pipeline:
     names: [SR_R]
   - type: Mixer
     name: sum
+  - type: Filter
+    channels: [0, 1]
+    names: [limiter]
