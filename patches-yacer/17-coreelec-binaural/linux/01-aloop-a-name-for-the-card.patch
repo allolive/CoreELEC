@@ -5,13 +5,16 @@ Subject: [PATCH] ALSA: aloop: a name for the card
 
 Players list a sound card by its short name, which aloop fixes to
 "Loopback". binaural loads it as the box's headphone output, and Kodi
-should offer it as "Virtual Sound": a name option sets the short name and
-leaves the id, and so every device string, as they were.
+should offer it as "Virtual Sound": a name option sets the short name.
+
+A card without an id takes one from its short name, so a named card
+without one keeps "Loopback" (made unique as any id is), and every device
+string with it.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- sound/drivers/aloop.c | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
+ sound/drivers/aloop.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
 --- a/sound/drivers/aloop.c
@@ -33,13 +36,16 @@ diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
  
  #define NO_PITCH 100000
  
-@@ -1742,7 +1745,8 @@
+@@ -1742,7 +1745,11 @@
  	loopback_cable_proc_new(loopback, 1);
  	loopback_timer_source_proc_new(loopback);
  	strcpy(card->driver, "Loopback");
 -	strcpy(card->shortname, "Loopback");
 +	strscpy(card->shortname, card_name[dev] && *card_name[dev] ? card_name[dev] : "Loopback",
 +		sizeof(card->shortname));
++	/* without an id the card would take one from its new name */
++	if (card_name[dev] && *card_name[dev] && !card->id[0])
++		snd_card_set_id(card, "Loopback");
  	sprintf(card->longname, "Loopback %i", dev + 1);
  	err = snd_card_register(card);
  	if (err < 0)

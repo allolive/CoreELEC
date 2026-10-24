@@ -2,8 +2,9 @@
 Description=Binaural headphone sound (CamillaDSP on Kodi's 7.1 through snd-aloop)
 # Inert until the listener sets it up: copy /usr/share/binaural/camilladsp-7.1.yml here
 ConditionPathExists=/storage/.config/binaural/camilladsp.yml
-After=sound.target
 Before=kodi.service
+# a daemon that cannot start yet keeps trying, as Kodi does
+StartLimitIntervalSec=0
 
 [Service]
 ExecStartPre=/sbin/modprobe snd-aloop

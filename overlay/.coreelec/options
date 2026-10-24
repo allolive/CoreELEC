@@ -4,3 +4,6 @@
 # the skin a new profile starts on, and the add-ons these builds come with
 # (packages in overlay/packages/mediacenter/allolive)
 ADDITIONAL_PACKAGES+=" skin.estuary.allolive script.module.subtitlespeech.allolive service.shutter3d.allolive"
+
+# headphone sound from Kodi's loopback (packages in overlay/packages/audio)
+ADDITIONAL_PACKAGES+=" binaural"

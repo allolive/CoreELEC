@@ -10,14 +10,17 @@ capture left open holds the playback to it: Kodi, reopening for a 5.1 film
 or a TrueHD passthrough while binaural still captured its stereo menu
 sound, was refused or downmixed to two channels.
 
-playback_free leaves the playback's format unrefined; the capture follows.
-It also lets a player list every rate and channel count while a capture is
-open.
+playback_free leaves the playback's format, rate and channels unrefined;
+the capture follows. The period rule stays: a sound timer needs both sides
+on one period. A free playback sets the cable's format when it prepares
+even if notify was turned off after it opened, so the capture never
+follows a stale one. It also lets a player list every rate and channel
+count while a capture is open.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
- sound/drivers/aloop.c | 11 +++++++++++
- 1 file changed, 11 insertions(+)
+ sound/drivers/aloop.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
 --- a/sound/drivers/aloop.c
@@ -47,6 +50,15 @@ diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
  };
  
  struct loopback_pcm {
+@@ -490,7 +494,7 @@
+ 
+ 	mutex_lock(&dpcm->loopback->cable_lock);
+ 	if (!(cable->valid & ~(1 << substream->stream)) ||
+-            (get_setup(dpcm)->notify &&
++            ((get_setup(dpcm)->notify || dpcm->loopback->playback_free) &&
+ 	     substream->stream == SNDRV_PCM_STREAM_PLAYBACK))
+ 		params_change(substream);
+ 	cable->valid |= 1 << substream->stream;
 @@ -1227,6 +1231,11 @@
  
  	snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
@@ -54,19 +66,19 @@ diff --git a/sound/drivers/aloop.c b/sound/drivers/aloop.c
 +	/* a free playback leads: an open capture follows it rather than holding it */
 +	if (get_notify(dpcm) && loopback->playback_free &&
 +	    substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-+		goto rules_done;
++		goto format_free;
 +
  	/* use dynamic rules based on actual runtime->hw values */
  	/* note that the default rules created in the PCM midlevel code */
  	/* are cached -> they do not reflect the actual state */
-@@ -1262,6 +1271,7 @@
- 			goto unlock;
- 	}
+@@ -1249,6 +1258,7 @@
+ 	if (err < 0)
+ 		goto unlock;
  
-+ rules_done:
- 	/* loopback_runtime_free() has not to be called if kfree(dpcm) was
- 	 * already called here. Otherwise it will end up with a double free.
- 	 */
++ format_free:
+ 	/* In case of sound timer the period time of both devices of the same
+ 	 * loop has to be the same.
+ 	 * This rule only takes effect if a sound timer was chosen
 @@ -1728,6 +1738,7 @@
  		pcm_substreams[dev] = MAX_PCM_SUBSTREAMS;
  	
