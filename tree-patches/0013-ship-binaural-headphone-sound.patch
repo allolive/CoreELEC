@@ -1,0 +1,18 @@
+Ship binaural headphone sound
+
+The binaural package (overlay) installs a service that turns Kodi's 7.1,
+played into an ALSA loopback, into headphone sound with CamillaDSP and the
+listener's measured speaker responses. It stays inert until the listener
+puts a configuration in /storage/.config/binaural.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/distributions/CoreELEC/options
++++ b/distributions/CoreELEC/options
+@@ -271,4 +271,5 @@
+ # Space separated list is supported,
+ # e.g. ADDITIONAL_PACKAGES="PACKAGE1 PACKAGE2"
+   ADDITIONAL_PACKAGES="u-boot-script dtc CoreELEC-Debug-Scripts inject_bl301 ceemmc
+-                       nfs-utils dtb-xml megatools parse-android-dynparts aml_recovery"
++                       nfs-utils dtb-xml megatools parse-android-dynparts aml_recovery
++                       binaural"
