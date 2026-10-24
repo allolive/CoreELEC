@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 19:10:00 -0400
+Subject: [PATCH] AMLAudioTrim: only on the AML card's own devices
+
+The trim holds the audio clock to the picture by moving mpll0, and while
+it holds, the player leaves its own clock alone (11_30). It engaged for
+any device Kodi played to, so with Virtual Sound chosen - a loopback the
+binaural daemon reads at its own pace, and plays out of the AML card
+itself - it measured the loopback's rate as a drift of nearly 1000 ppm,
+refused that as no rate a clock runs at, and kept dithering mpll0 under
+the daemon's output, while the player, told the trim was holding,
+corrected nothing: the picture slipped against the sound, frames were
+dropped and repeated, and the daemon's output, trimmed underneath it,
+ran dry now and then and clicked.
+
+It now engages only when the device the stream plays on is the AML
+card's (its ALSA name carries CARD=AML). Any other card, a loopback, a
+USB DAC, keeps its own time, and the player corrects against it as it
+does everywhere else.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp | 12 ++++++++++++
+ xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h   |  4 ++++
+ xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp     |  8 +++++++-
+ 3 files changed, 23 insertions(+), 1 deletion(-)
+
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.cpp
+@@ -271,6 +271,18 @@
+   return Node().reachesPcm;
+ }
+ 
++bool CAMLAudioTrim::ReachesSink(bool passthrough)
++{
++  const auto component = CServiceBroker::GetSettingsComponent();
++  const auto settings = component ? component->GetSettings() : nullptr;
++  if (!settings)
++    return false;
++  const std::string device =
++      settings->GetString(passthrough ? CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE
++                                      : CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE);
++  return device.find("CARD=AML") != std::string::npos;
++}
++
+ bool CAMLAudioTrim::WriteLevel(int level)
+ {
+   try
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h
+@@ -51,6 +51,10 @@
+   //! \brief Whether the trimmed clock also paces PCM output, not only a bitstream.
+   static bool ReachesPcm();
+ 
++  //! \brief Whether the device the stream plays on is the AML card's: another
++  //! card (a loopback, a USB DAC) keeps its own time, whatever mpll0 does.
++  static bool ReachesSink(bool passthrough);
++
+   //! \brief Called once per presented frame. Paces itself.
+   //! \param error audio ahead of the master clock in DVD time units, or nullopt
+   //! when nothing measured it this frame. Must be the unscaled figure: this is a
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -3577,7 +3577,13 @@
+   // Given back once on the way out rather than on every frame after it: the
+   // release is what clears a stand-down, and repeating it would erase the loop's
+   // memory of having given up as fast as it formed.
+-  const bool trimmed = m_processInfo.GetAudioPassthrough() || CAMLAudioTrim::ReachesPcm();
++  //
++  // Nor on another card's device: its clock is its own, so the loop would read
++  // that card's drift, move mpll0 under whatever else plays from it, and keep
++  // the player from correcting the drift itself.
++  const bool passthrough = m_processInfo.GetAudioPassthrough();
++  const bool trimmed =
++      (passthrough || CAMLAudioTrim::ReachesPcm()) && CAMLAudioTrim::ReachesSink(passthrough);
+   if (!trimmed)
+   {
+     if (m_trimEngaged)
