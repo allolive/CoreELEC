@@ -5,5 +5,5 @@
 # (packages in overlay/packages/mediacenter/allolive)
 ADDITIONAL_PACKAGES+=" skin.estuary.allolive script.module.subtitlespeech.allolive service.shutter3d.allolive"
 
-# headphone sound from Kodi's loopback (packages in overlay/packages/audio)
+# the loopback the Virtual Sound add-on listens on (overlay/packages/audio/binaural)
 ADDITIONAL_PACKAGES+=" binaural"
