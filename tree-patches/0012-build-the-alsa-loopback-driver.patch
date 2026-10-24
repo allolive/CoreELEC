@@ -1,0 +1,28 @@
+Build the ALSA loopback driver
+
+snd-aloop gives a pair of linked sound cards: what one program plays into
+one end, another records from the other. It lets Kodi's decoded PCM go to a
+separate process (a convolver for binaural headphone listening) instead of
+straight to a device. Built as a module, so nothing changes until it is
+loaded.
+
+SND_DRIVERS only gates the generic drivers; the others it uncovers stay off.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+
+--- a/projects/Amlogic-ce/devices/Amlogic-no/linux/linux.aarch64.conf
++++ b/projects/Amlogic-ce/devices/Amlogic-no/linux/linux.aarch64.conf
+@@ -4535,7 +4535,12 @@
+ CONFIG_SND_CTL_FAST_LOOKUP=y
+ # CONFIG_SND_DEBUG is not set
+ # CONFIG_SND_SEQUENCER is not set
+-# CONFIG_SND_DRIVERS is not set
++CONFIG_SND_DRIVERS=y
++# CONFIG_SND_DUMMY is not set
++CONFIG_SND_ALOOP=m
++# CONFIG_SND_MTPAV is not set
++# CONFIG_SND_SERIAL_U16550 is not set
++# CONFIG_SND_MPU401 is not set
+ # CONFIG_SND_PCI is not set
+ 
+ #
