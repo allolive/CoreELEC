@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 19:30:00 -0400
+Subject: [PATCH] ActiveAE: late audio is corrected here, not handed to the
+ player's clock
+
+Upstream's d6904a7531 leaves audio starting up to 500 ms late to the
+player, which moves its clock to it, and keeps such audio audible while
+the first error is averaged: the delay Android's AudioTrack reports right
+after opening is too small, and the first syllable was lost.
+
+Here the sink's delay is measured (11_05), the first correction after a
+start aims at zero from the window's last sample (11_39), and the player
+steps its clock only by the error measured (11_08): handing the same error
+to the player as well corrects it twice. The first window stays muted and
+the correction stays here, as before upstream's change.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../AudioEngine/Engines/ActiveAE/ActiveAE.cpp | 30 ++-----------------
+ 1 file changed, 3 insertions(+), 27 deletions(-)
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+index 305c188..d60e712 100644
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
+@@ -44,7 +44,6 @@ constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
+ constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
+ constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
+ constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+-constexpr double MAX_LATE_START_MS = 500.0; // late start of audio left to the player's clock
+ // What a TrueHD passthrough stream's sync error is shrunk by before the sync
+ // loop sees it. Named so the unscaled copy kept beside it has one source.
+ constexpr double TRUEHD_SYNC_ERROR_SCALE = 0.45;
+@@ -2703,7 +2702,6 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+     ResetSyncObservation(stream, "sync-start");
+     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
+     stream->m_resampleIntegral = 0;
+-    stream->m_lateStartHandedOver = false;
+     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
+   }
+ 
+@@ -2734,27 +2732,6 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+     }
+   }
+ 
+-  if (newerror && stream->m_lateStartHandedOver)
+-  {
+-    // Mostly averaged before the player moved its clock to the late audio, so neither acted upon
+-    // nor reported.
+-    stream->m_lateStartHandedOver = false;
+-    stream->m_syncError.Flush(timeout);
+-    newerror = false;
+-    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} dropped", error);
+-  }
+-
+-  // Without resampling, the player moves its clock to the audio once the error exceeds its own
+-  // limit. Audio starting late is therefore left to the player, as skipping it would lose the
+-  // start of the audio. The errors of TrueHD passthrough are scaled down, so they do not tell how
+-  // late the audio is.
+-  const bool clockFollowsAudio{!stream->m_resampleMode && !IsTrueHDPassthrough()};
+-  const auto keepAudible = [&](double syncError)
+-  {
+-    return fabs(syncError) <= threshold ||
+-           (clockFollowsAudio && syncError < 0 && -syncError <= MAX_LATE_START_MS);
+-  };
+-
+   if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+   {
+     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
+@@ -2784,10 +2761,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+               average);
+   }
+ 
+-  // While the error is averaged, samples that will not be skipped stay audible.
+-  double errorSoFar{0.0};
+-  const bool audible{stream->m_syncError.GetSoFar(errorSoFar) && keepAudible(errorSoFar)};
+-  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE && !audible)
++  // The first window starts muted and our first correction aims at zero (11_39): late audio is
++  // corrected here, not handed to the player's clock
++  if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
+   {
+     CSampleBuffer *buf = stream->m_processingBuffers->m_outputSamples.front();
+     if (m_mode == MODE_RAW)

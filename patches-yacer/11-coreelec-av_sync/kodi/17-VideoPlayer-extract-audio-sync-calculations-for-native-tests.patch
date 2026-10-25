@@ -19,7 +19,7 @@ native harness compiles these production headers, not a separate sync model.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-index ddeacab..2b87a7e 100644
+index 0439942..c3098b0 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -13,6 +13,7 @@

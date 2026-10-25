@@ -24,10 +24,10 @@ after that keep the band.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-index 29caa82..6b0ce54 100644
+index 90b1a0f..305c188 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAE.cpp
-@@ -48,6 +48,11 @@ constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+@@ -49,6 +49,11 @@ constexpr double MAX_LATE_START_MS = 500.0; // late start of audio left to the p
  // loop sees it. Named so the unscaled copy kept beside it has one source.
  constexpr double TRUEHD_SYNC_ERROR_SCALE = 0.45;
  
@@ -47,31 +47,45 @@ index 29caa82..6b0ce54 100644
          if (m_mode == MODE_RAW)
            (*it)->m_syncObservations.Add(errorMeasured, errorRaw, error, (*it)->m_errorScale,
                                          maxError, playingPts, clock, delay, m_syncDelayGeneration,
-@@ -2732,9 +2738,22 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2760,23 +2766,22 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
    }
    else if (newerror && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_MUTE)
    {
+-    if (clockFollowsAudio && error < 0 && -error <= MAX_LATE_START_MS)
+-    {
+-      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
+-      stream->m_syncError.Flush(1000ms);
+-      // Reports the error to the player right away
+-      stream->m_syncError.Correction(error);
+-      stream->m_resampleIntegral = 0;
+-      stream->m_lateStartHandedOver = true;
+-      CLog::Log(LOGDEBUG,
+-                "ActiveAE::SyncStream - average error of {:f}, left to the player's clock", error);
+-    }
+-    else
 +    // The window opened while the engine was still filling its queue, and the
 +    // first samples read up to a frame early. The last one is taken with the
 +    // queue full: correct from it.
 +    const double average = error;
 +    if (stream->m_syncError.LastErrorValid())
-+    {
+     {
+-      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
+-      stream->m_lastSyncError = error;
+-      CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error of {:f}, start adjusting", error);
 +      error = stream->m_lastSyncSample;
 +      stream->m_syncError.Correction(error - average);
 +      stream->m_syncErrorRaw.Correction((error - average) / stream->m_errorScale);
-+    }
-     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
+     }
++    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_ADJUST;
 +    stream->m_startAdjust = m_mode != MODE_TRANSCODE;
-     stream->m_lastSyncError = error;
--    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error of {:f}, start adjusting", error);
++    stream->m_lastSyncError = error;
 +    CLog::Log(LOGDEBUG,
 +              "ActiveAE::SyncStream - error of {:f} (window average {:f}), start adjusting", error,
 +              average);
    }
  
-   // While the error is averaged, samples that already play close to in sync stay audible, so that
-@@ -2832,7 +2851,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+   // While the error is averaged, samples that will not be skipped stay audible.
+@@ -2873,7 +2878,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
          // The same crossing as the delay branch: a whole frame of real time
          // goes, and the scaled error is owed only its share of it.
          const double dropped = stream->m_format.m_streamInfo.GetDuration();
@@ -82,7 +96,7 @@ index 29caa82..6b0ce54 100644
          {
            stream->m_syncError.Correction(dropped * stream->m_errorScale);
            stream->m_syncErrorRaw.Correction(dropped);
-@@ -2859,8 +2880,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
+@@ -2900,8 +2907,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
  
      // The band is a tolerance on real time - the comment on the scaling calls it
      // a frame - so it is compared in the units the bursts were spent in.
@@ -94,7 +108,7 @@ index 29caa82..6b0ce54 100644
        {
          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
 diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
-index 2b87a7e..f893e8b 100644
+index c3098b0..f050eef 100644
 --- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 +++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAEStream.h
 @@ -182,6 +182,10 @@ protected:

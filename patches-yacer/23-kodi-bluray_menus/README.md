@@ -11,3 +11,6 @@ the film file of group 18 (patch 49).
 
 Kodi patch 09 ends playback when a disc's HDMV program has ended, where Kodi read
 again and again at once until stopped by hand.
+
+Kodi patch 10 counts a Java disc as in a menu only while its graphics show, so
+Select opens the player bar during the film instead of going to an empty menu.

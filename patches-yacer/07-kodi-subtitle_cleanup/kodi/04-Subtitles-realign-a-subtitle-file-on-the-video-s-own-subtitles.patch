@@ -927,10 +927,10 @@ index 0000000..2b0eb67
 +std::optional<bool> PgsShows(const uint8_t* data, size_t size);
 +} // namespace KODI::SUBTITLES::TIMING
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-index fdd227e..57a685c 100644
+index 7d03b65..6aba117 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
-@@ -5483,8 +5483,11 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
+@@ -5498,8 +5498,11 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
    }
  
    if (current.type == StreamType::SUBTITLE)
