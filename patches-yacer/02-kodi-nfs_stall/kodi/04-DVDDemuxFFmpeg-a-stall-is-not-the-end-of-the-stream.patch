@@ -13,7 +13,7 @@ does not spoil the rest of the file.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
-index 1d03fa7322..5cd43a0aab 100644
+index 031027b..6a4a6a8 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
 @@ -14,6 +14,7 @@
@@ -77,15 +77,15 @@ index 1d03fa7322..5cd43a0aab 100644
    strFile = m_pInput->GetFileName();
  
    if (!m_pInput->GetContent().empty())
-@@ -780,6 +798,7 @@ void CDVDDemuxFFmpeg::Dispose()
- 
-   DisposeStreams();
+@@ -790,6 +808,7 @@ void CDVDDemuxFFmpeg::Dispose()
+   // held layers outlive a stream rebuild, which the first EL extradata triggers mid pair
+   m_dualLayer.Flush();
  
 +  m_fileInput.reset();
    m_pInput = NULL;
  }
  
-@@ -1123,7 +1142,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
+@@ -1185,7 +1204,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
      {
        // assume we are not eof
        if (m_pFormatContext->pb)
@@ -100,10 +100,10 @@ index 1d03fa7322..5cd43a0aab 100644
        // check for saved packet after a program change
        if (m_pkt.result < 0)
 diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
-index 0b97317c7e..376568f282 100644
+index d7a6439..135db4d 100644
 --- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
 +++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.h
-@@ -119,6 +119,7 @@ public:
+@@ -120,6 +120,7 @@ public:
  
    AVFormatContext* m_pFormatContext;
    std::shared_ptr<CDVDInputStream> m_pInput;
@@ -111,7 +111,7 @@ index 0b97317c7e..376568f282 100644
  
  protected:
    friend class CDemuxStreamAudioFFmpeg;
-@@ -170,6 +171,7 @@ protected:
+@@ -176,6 +177,7 @@ protected:
    int m_seekStream;
  
    XbmcThreads::EndTime<> m_timeout;
