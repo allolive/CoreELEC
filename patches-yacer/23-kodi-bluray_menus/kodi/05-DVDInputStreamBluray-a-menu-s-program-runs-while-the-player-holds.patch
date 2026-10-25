@@ -32,10 +32,10 @@ Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
  2 files changed, 60 insertions(+), 11 deletions(-)
 
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-index 089ea787..637dc888 100644
+index 67390de..4979abb 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
-@@ -446,7 +446,7 @@ bool CDVDInputStreamBluray::Open()
+@@ -447,7 +447,7 @@ bool CDVDInputStreamBluray::Open()
    m_startWatchTime = std::chrono::steady_clock::now();
  
    // Process any events that occurred during opening
@@ -44,7 +44,7 @@ index 089ea787..637dc888 100644
      ProcessEvent();
  
    OpenNextStream();
-@@ -501,6 +501,7 @@ void CDVDInputStreamBluray::Close()
+@@ -502,6 +502,7 @@ void CDVDInputStreamBluray::Close()
    m_clipSpans.clear();
    m_hasMVCExtension = false;
    m_clipStart.clear();
@@ -52,7 +52,7 @@ index 089ea787..637dc888 100644
  
  #if defined(HAS_UDFREAD)
    // Released last, as the files opened from the volume are closed above
-@@ -818,7 +819,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -819,7 +820,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
          || m_hold == HOLD_EXIT)
          return -1;
  
@@ -61,7 +61,7 @@ index 089ea787..637dc888 100644
  
        if(result < 0)
        {
-@@ -840,8 +841,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -841,8 +842,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
              if (m_event.event == BD_EVENT_PLAYITEM && result > 0 && !m_hasMVCExtension)
              {
                HoldClipStart(buf, result);
@@ -72,7 +72,7 @@ index 089ea787..637dc888 100644
              return result;
            }
            break;
-@@ -864,7 +866,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -865,7 +867,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
        ProcessEvent();
  
        // a clip open can queue its play item behind other events of the same read
@@ -81,7 +81,7 @@ index 089ea787..637dc888 100644
        {
          switch(m_event.event) {
            case BD_EVENT_PLAYITEM:
-@@ -872,6 +874,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -873,6 +875,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
              {
                m_hold = HOLD_HELD;
                HoldClipStart(buf, result);
@@ -89,7 +89,7 @@ index 089ea787..637dc888 100644
                return 0;
              }
              [[fallthrough]];
-@@ -881,6 +884,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -882,6 +885,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
            case BD_EVENT_PLAYLIST:
            case BD_EVENT_STILL_TIME:
              m_hold = HOLD_HELD;
@@ -97,7 +97,7 @@ index 089ea787..637dc888 100644
              return result;
  
            default:
-@@ -896,7 +900,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+@@ -897,7 +901,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
    {
      result = bd_read(m_bd, buf, buf_size);
      bool discontinuity = false;
@@ -106,7 +106,7 @@ index 089ea787..637dc888 100644
      {
        if (m_event.event == BD_EVENT_DISCONTINUITY)
          discontinuity = true;
-@@ -929,7 +933,7 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
+@@ -930,7 +934,7 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
  {
    while (true)
    {
@@ -115,7 +115,7 @@ index 089ea787..637dc888 100644
      {
        m_hold = HOLD_ERROR;
        break;
-@@ -958,6 +962,46 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
+@@ -961,6 +965,46 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
      m_hold = HOLD_NONE;
  }
  
@@ -162,25 +162,25 @@ index 089ea787..637dc888 100644
  int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
  {
    CDVDInputStreamFile* lpstream = m_pstream.get();
-@@ -1221,7 +1265,7 @@ bool CDVDInputStreamBluray::PosTime(int ms)
-     return false;
- 
-   m_clipStart.clear();
+@@ -1227,7 +1271,7 @@ bool CDVDInputStreamBluray::PosTime(int ms)
+   // a held still belongs to the position the seek left
+   if (m_event.event != BD_EVENT_NONE && m_event.event != BD_EVENT_STILL_TIME)
+     ProcessEvent();
 -  while (bd_get_event(m_bd, &m_event))
 +  while (NextEvent())
      ProcessEvent();
    OpenClipSpan();
    RestartExtention();
-@@ -1265,7 +1309,7 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
-     return false;
- 
-   m_clipStart.clear();
+@@ -1274,7 +1318,7 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
+   // a held still belongs to the position the seek left
+   if (m_event.event != BD_EVENT_NONE && m_event.event != BD_EVENT_STILL_TIME)
+     ProcessEvent();
 -  while (bd_get_event(m_bd, &m_event))
 +  while (NextEvent())
      ProcessEvent();
    OpenClipSpan();
    RestartExtention();
-@@ -1537,7 +1581,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
+@@ -1546,7 +1590,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
    ProcessEvent();
  
    /* process all queued up events */
@@ -189,7 +189,7 @@ index 089ea787..637dc888 100644
      ProcessEvent();
  
    if(m_hold == HOLD_STILL)
-@@ -1564,7 +1608,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
+@@ -1573,7 +1617,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
      if (m_event.event != BD_EVENT_NONE)
        ProcessEvent();
      /* process all queued up events */
@@ -198,7 +198,7 @@ index 089ea787..637dc888 100644
        ProcessEvent();
    }
  }
-@@ -1665,7 +1709,7 @@ void CDVDInputStreamBluray::SkipStill()
+@@ -1674,7 +1718,7 @@ void CDVDInputStreamBluray::SkipStill()
      bd_read_skip_still(m_bd);
  
      /* process all queued up events */
@@ -208,7 +208,7 @@ index 089ea787..637dc888 100644
    }
  }
 diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
-index db17b2a3..0c1b6b0d 100644
+index db17b2a..0c1b6b0 100644
 --- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 +++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
 @@ -17,6 +17,7 @@
@@ -237,6 +237,3 @@ index db17b2a3..0c1b6b0d 100644
  
      /*!
       * \brief Read the clip information of a play item of the playlist being played.
--- 
-2.53.0
-
