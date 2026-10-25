@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 08:30:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: a disc program's graphics outlive a
+ buffer flush
+
+A BD-J program draws its graphics through libbluray, which hands them to
+the player as a forced overlay group. The player's overlay container
+drops every flushable overlay on a flush, and a group is flushable by
+default.
+
+libbluray reads ahead of what plays: when a disc program starts another
+playlist, the program runs at once, while the player reaches the old
+playlist's end - and flushes its buffers for the new one - only when it
+has played what it had read, seconds later. A menu that draws its
+buttons once, as its background loop starts, had them removed by that
+flush, and the menu stayed blank until a key made the program draw again.
+An animated menu redraws and hid the problem.
+
+The graphics a disc program draws are the state of its graphics plane,
+which only the program changes: libbluray clears or closes the plane
+when it goes. They are now kept through a flush, and so is the empty
+group that closes the plane, so a close is never lost to a flush either.
+Presentation graphics and HDMV menus, timed to the video, are flushed as
+before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 7ea9b7ab..3d126316 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -998,6 +998,8 @@ void CDVDInputStreamBluray::OverlayClose()
+     plane.o.clear();
+   auto group = std::make_shared<CDVDOverlayGroup>();
+   group->bForced = true;
++  // it replaces graphics a flush does not remove
++  group->SetOverlayContainerFlushable(false);
+   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
+   m_hasOverlay = false;
+ #endif
+@@ -1051,13 +1053,14 @@ void CDVDInputStreamBluray::OverlayClear(SPlane& plane, int x, int y, int w, int
+ #endif
+ }
+ 
+-void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
++void CDVDInputStreamBluray::OverlayFlush(int64_t pts, bool kept)
+ {
+ #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+   auto group = std::make_shared<CDVDOverlayGroup>();
+   group->bForced       = true;
+   group->iPTSStartTime = static_cast<double>(pts);
+   group->iPTSStopTime  = 0;
++  group->SetOverlayContainerFlushable(!kept);
+ 
+   for(SPlane& plane : m_planes)
+   {
+@@ -1187,8 +1190,10 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
+     plane.o.push_back(overlay);
+   }
+ 
++  // A disc program's graphics stay until it changes them: libbluray reads ahead of what plays,
++  // and the flush of an older playlist's buffers must not remove what was drawn since
+   if(ov->cmd == BD_ARGB_OVERLAY_FLUSH)
+-    OverlayFlush(ov->pts);
++    OverlayFlush(ov->pts, true);
+ }
+ #endif
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index bc69cead..ad3cb029 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -227,7 +227,7 @@ public:
+ protected:
+   struct SPlane;
+ 
+-  void OverlayFlush(int64_t pts);
++  void OverlayFlush(int64_t pts, bool kept = false);
+   void OverlayClose();
+   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
+   static void OverlayInit (SPlane& plane, int w, int h);

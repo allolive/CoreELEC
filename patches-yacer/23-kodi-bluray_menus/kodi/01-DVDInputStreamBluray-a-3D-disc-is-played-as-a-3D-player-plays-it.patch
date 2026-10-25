@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 00:00:00 -0400
+Subject: [PATCH] DVDInputStreamBluray: a 3D disc is played as a 3D player
+ plays it
+
+Kodi tells a disc it is a profile 6 player - an Ultra HD Blu-ray player
+- and Ultra HD Blu-ray has no 3D. The Java program of a 3D disc reads
+the profile and the display's 3D capability before it shows its first
+screen, and finding a player that cannot play its 3D it took a path
+that never comes back: the disc stood on its first still for good, its
+language or warning screen answered a key and then went black.
+
+A disc with 3D content is now told the player is profile 5, the 3D
+profile, and that the display shows 1080p and 720p 3D - true of Kodi
+on any display, since it shows 3D as the display takes it, and some
+discs' programs wait for a 3D display as they wait for the profile.
+Every other disc is told what it was told before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 988ba14..7ea9b7a 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -356,6 +356,17 @@ bool CDVDInputStreamBluray::Open()
+   else
+     CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - BluRay not detected");
+ 
++#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
++  // A 3D disc's Java application looks for the 3D profile, which a UHD player is not, and for a
++  // display that shows 3D - which Kodi gives it on any display, as the display takes it: without
++  // them it waits for good on its first screen.
++  if (disc_info->bluray_detected && disc_info->content_exist_3D)
++  {
++    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
++    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISPLAY_CAP, BLURAY_DCAP_1080p_720p_3D);
++  }
++#endif
++
+   if (disc_info->aacs_detected && !disc_info->aacs_handled)
+   {
+     CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - Media stream scrambled/encrypted with AACS");

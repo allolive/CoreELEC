@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:19:03 -0400
+Subject: [PATCH] DVDInputStreamBluray: a menu key takes effect at once
+
+A key in a Blu-ray menu - the menu key, a button's activation - reaches
+libbluray at once, but what it starts runs only when the player next
+reads: an HDMV button's commands, a menu call, run in libbluray's read.
+The player reads nothing while its buffers are full, and on a menu's
+background loop or a trailer they hold tens of seconds. A menu key
+pressed during a disc's trailers so opened the menu 25 seconds later; a
+menu button that starts the film started it as late.
+
+After a key the input stream now lets the disc's program run, and hands
+the player what it reported. A jump to another position - a playlist
+stop, a new playlist, a seek - flushes the player's buffers at once, as
+a standalone player leaves the old position when the key is pressed;
+the position change itself is left to the next read, which holds the
+player for it as before. A key that only moves between buttons changes
+nothing but the menu's graphics, as before.
+
+While the player holds at a change of position, playing out what it
+read before, a key only lets the program run: a jump it starts flushes
+the player at once - and ends a still the player held at - and the
+events wait for the player to take them in order, as it does at every
+hold. Only a jump the key itself started flushes the player; one
+already queued, or an angle change, does not.
+
+A Java program takes a key on its own threads: an event libbluray holds
+after the key may be one the program queued itself, at the end of a
+loop or a trailer, and the key's own jump comes later. On a BD-J title a
+key so flushes nothing, and the read takes the program's jumps as
+before.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 65 ++++++++++++++++---
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  1 +
+ 2 files changed, 58 insertions(+), 8 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 1cc3cacb99..f6e96a373c 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -985,6 +985,56 @@ void CDVDInputStreamBluray::RunProgram()
+   }
+ }
+ 
++// What a key starts - a menu call, a button's jump - runs at once rather than when the player
++// next reads, which, its buffers full of what was read before, can be tens of seconds later. A
++// jump drops what the player holds of the old position, as a standalone player leaves it at once.
++void CDVDInputStreamBluray::ProcessInput()
++{
++  const size_t queued = m_pending.size();
++  RunProgram();
++  // only a jump this key started leaves the old position; a Java program takes the key on its own
++  // threads, so what it queued may be its own and the key's jump comes later
++  const bool javaProgram = m_title && m_title->bdj == 1;
++  bool jump = false;
++  bool flushed = false;
++  for (size_t i = queued; i < m_pending.size(); ++i)
++  {
++    const uint32_t event = m_pending[i].event;
++    if (event == BD_EVENT_SEEK || event == BD_EVENT_TITLE || event == BD_EVENT_PLAYLIST ||
++        event == BD_EVENT_PLAYITEM)
++      jump = true;
++    else if (event == BD_EVENT_PLAYLIST_STOP && !jump)
++      flushed = true;
++  }
++  // held at a change, the player takes the events in order once it has played out what it holds
++  if (m_hold == HOLD_HELD)
++  {
++    if (jump && !javaProgram)
++    {
++      // a still the key jumps away from is over
++      if (m_event.event == BD_EVENT_STILL_TIME)
++        m_event.event = BD_EVENT_NONE;
++      m_player->OnDiscNavResult(nullptr, BD_EVENT_PLAYLIST_STOP);
++    }
++    return;
++  }
++  while (!m_pending.empty())
++  {
++    const uint32_t event = m_pending.front().event;
++    // a position change is left to the read, which holds the player for it
++    if (event == BD_EVENT_SEEK || event == BD_EVENT_TITLE || event == BD_EVENT_ANGLE ||
++        event == BD_EVENT_PLAYLIST || event == BD_EVENT_PLAYITEM)
++      break;
++    m_event = m_pending.front();
++    m_pending.pop_front();
++    if (event == BD_EVENT_PLAYLIST_STOP)
++      flushed = true;
++    ProcessEvent();
++  }
++  if (jump && !flushed && !javaProgram)
++    m_player->OnDiscNavResult(nullptr, BD_EVENT_PLAYLIST_STOP);
++}
++
+ bool CDVDInputStreamBluray::NextEvent()
+ {
+   if (m_pending.empty())
+@@ -1604,14 +1654,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
+     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::UserInput - user input failed");
+   }
+   else
+-  {
+-    // an event the input stream still holds for the player came first
+-    if (m_event.event != BD_EVENT_NONE)
+-      ProcessEvent();
+-    /* process all queued up events */
+-    while (NextEvent())
+-      ProcessEvent();
+-  }
++    ProcessInput();
+ }
+ 
+ bool CDVDInputStreamBluray::MouseMove(const CPoint &point)
+@@ -1648,7 +1691,10 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
+   }
+ 
+   if (bd_user_input(m_bd, -1, BD_VK_MOUSE_ACTIVATE) >= 0)
++  {
++    ProcessInput();
+     return true;
++  }
+ 
+   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::MouseClick - mouse click (user input) failed");
+   return false;
+@@ -1667,6 +1713,7 @@ bool CDVDInputStreamBluray::OnMenu()
+   // internal tracking state would be wrong. So just process and return.
+   if(bd_user_input(m_bd, -1, BD_VK_POPUP) >= 0)
+   {
++    ProcessInput();
+     return true;
+   }
+ 
+@@ -1674,6 +1721,7 @@ bool CDVDInputStreamBluray::OnMenu()
+ 
+   if (bd_user_input(m_bd, -1, BD_VK_ROOT_MENU) >= 0)
+   {
++    ProcessInput();
+     return true;
+   }
+ 
+@@ -1683,6 +1731,7 @@ bool CDVDInputStreamBluray::OnMenu()
+     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::OnMenu - root failed");
+     return false;
+   }
++  ProcessInput();
+   return true;
+ }
+ 
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index 0c1b6b0d45..e884f40a53 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -313,6 +313,7 @@ protected:
+     bool NextEvent();
+     int ReadEvent(uint8_t* buf, int size);
+     void RunProgram();
++    void ProcessInput();
+ 
+     /*!
+      * \brief Read the clip information of a play item of the playlist being played.
+-- 
+2.53.0
+

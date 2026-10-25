@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:19:10 -0400
+Subject: [PATCH] DemuxStreamSSIF: a 3D picture keeps the time it was read at
+
+The time Kodi shows for a disc played with its menus is the time each
+packet was read at, carried to the picture it belongs to. A 3D
+picture is its base view and its second view merged into a new packet,
+and the merge kept the timestamps but not that time: no 3D picture
+carried it. The shown time went by the read position, tens of seconds
+ahead of the picture, and while the player played out a clip before
+the next one - a disc's trailers, joined without a seamless connection
+- it stood still for as long as the play-out lasted.
+
+The merged packet now keeps the base view's read time, as a 2D packet
+does.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+index 52e8035d..597a1911 100644
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DemuxStreamSSIF.cpp
+@@ -203,6 +203,7 @@ DemuxPacket* CDemuxStreamSSIF::MergePacket(DemuxPacket* &srcPkt, DemuxPacket* &a
+   newpkt->pts = srcPkt->pts;
+   newpkt->dts = srcPkt->dts;
+   newpkt->duration = srcPkt->duration;
++  newpkt->dispTime = srcPkt->dispTime;
+   newpkt->iGroupId = srcPkt->iGroupId;
+   newpkt->iStreamId = srcPkt->iStreamId;
+   memcpy(newpkt->pData, srcPkt->pData, srcPkt->iSize);
+-- 
+2.53.0
+

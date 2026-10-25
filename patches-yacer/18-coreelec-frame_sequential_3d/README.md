@@ -32,6 +32,9 @@ The kernel patches:
 - 13 makes fa_sync give the eye on screen (the one RDMA put out at this vsync,
   not the one chosen for the next) and the time its first active line leaves
   the encoder: a glasses delay of 0 is the start of the eye's picture.
+- 14 keeps the format and depth a Dolby Vision tunnel decides on a VESA
+  timing (4:2:2 12-bit for low-latency DV on 1080p165), where 11 made it
+  4:4:4 and it fell to 8-bit under a frame stating 4:2:2.
 
 The decoder patch (media_modules-aml):
 - 01 pins both MVC views' buffers for a frame kept on screen (pause, seek), so
@@ -122,3 +125,9 @@ The Kodi patches:
   already out goes as a drop rather than stepping the film back.
 - 44 takes a whole-refresh 3D picture offset out of the frame latency at each
   start and resume, once settled, clock and audio untouched.
+- 48 keeps the 3D output when an HDR10 or HLG film's HDR type arrives after
+  HFR VRR is on: the kernel signals it frame by frame, and 1080p165 was set
+  a second time. Dolby Vision still sets the mode for its tunnel.
+- 49 turns the depths' file into one for every value kept for a film on this
+  player (`films.json`, read from `stereodepth.json` once), so the Blu-ray
+  region of group 23 is kept there too.

@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:16:02 -0400
+Subject: [PATCH 1/2] bluray: a BD-J playlist started again after its end plays
+ again
+
+A BD-J program that loops a menu's background clip waits for the end of
+the playlist, then starts its player again. libbluray only set the rate
+back to normal: the title stayed at its end, nothing more was read, and
+the menu sat on its last picture with no button ever drawn.
+
+A start from BD-J on a playlist read to its end now opens that playlist
+again from its start, as a standalone player plays it again. A program
+that selects another playlist, or seeks, before starting is unchanged:
+either one leaves the title off its end.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ src/libbluray/bluray.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/libbluray/bluray.c b/src/libbluray/bluray.c
+index 6a4a8a4..d20f9f5 100644
+--- a/src/libbluray/bluray.c
++++ b/src/libbluray/bluray.c
+@@ -1294,6 +1294,8 @@ int bdpriv_sound_effect(BLURAY *bd, int id)
+     return 0;
+ }
+ 
++static int _open_playlist(BLURAY *bd, unsigned playlist, unsigned angle);
++
+ void bdpriv_select_rate(BLURAY *bd, float rate, int reason)
+ {
+     if (reason == BDJ_PLAYBACK_STOP) {
+@@ -1304,6 +1306,17 @@ void bdpriv_select_rate(BLURAY *bd, float rate, int reason)
+     if (reason == BDJ_PLAYBACK_START) {
+         /* playback is triggered by bdpriv_select_rate() */
+         bd->bdj_wait_start = 0;
++
++        if (rate >= 0.5) {
++            bd_mutex_lock(&bd->mutex);
++            if (bd->title_type == title_bdj && bd->title && !bd->st0.clip &&
++                (bd->end_of_playlist & 1)) {
++                /* a playlist started again after its end plays again from its start */
++                BD_DEBUG(DBG_BLURAY, "bdpriv_select_rate(): restarting %s\n", bd->title->name);
++                _open_playlist(bd, atoi(bd->title->name), bd->title->angle);
++            }
++            bd_mutex_unlock(&bd->mutex);
++        }
+     }
+ 
+     if (rate < 0.5) {
+-- 
+2.53.0
+

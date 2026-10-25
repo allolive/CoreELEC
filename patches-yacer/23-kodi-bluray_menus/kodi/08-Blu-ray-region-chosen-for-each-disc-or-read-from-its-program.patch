@@ -1,0 +1,514 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 08:00:00 -0400
+Subject: [PATCH] Blu-ray: region chosen for each disc, or read from its
+ program
+
+A Blu-ray has no region of its own to read: its program compares the
+player's region (PSR 20) with the ones it was sold for and shows a
+lock-out screen to any other. Kodi has one region for every disc, the
+Blu-ray region code setting, so a disc locked to another one never plays
+unless the setting is changed for it and back.
+
+- The playback choices a Blu-ray opens with end with "Blu-ray region:
+  Automatic". It lists Automatic and Regions A, B and C; the one picked
+  is kept for the disc (its image, or the folder holding its BDMV,
+  whichever path plays it) in the film file (CFilmFile), and the
+  choices come back, used playlists labelled once.
+- A Blu-ray film's context menu has "Blu-ray region" too, opening the
+  same list: with the disc playback setting on its menu or its main
+  title, the playback choices are never shown.
+- At open, once the disc is read and before its program runs, the disc
+  plays as the region chosen for it. On Automatic it plays as the
+  setting's, unless its HDMV program (BDMV/MovieObject.bdmv) refuses any
+  region but one, and not the setting's: a test that the region is not
+  that one followed at once by a jump, a call or a playlist. A test
+  followed by anything else may pick a warning or a trailer as well as
+  refuse the disc, and tests that refuse different regions decide
+  nothing; both leave the setting's. The region played as, and why, is
+  logged.
+- A BD-J disc's check is in its Java code, and is not read: choosing the
+  region is the way for it.
+
+Shared code: the playback choices are generic Kodi, as is the Blu-ray
+input stream; there is nothing Amlogic about a disc's region. The film
+file comes from the 3D depth patches of this tree, which put it there.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index fcee2652a2..e484e4d04c 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -22781,6 +22781,25 @@ msgctxt "#60130"
+ msgid "3D subtitle depth"
+ msgstr ""
+ 
++#. Line of a Blu-ray's playback choices that picks the region the disc plays as; {0:s} is the region
++#: xbmc/filesystem/DiscDirectoryHelper.cpp
++msgctxt "#60140"
++msgid "Blu-ray region: {0:s}"
++msgstr ""
++
++#. A Blu-ray plays as the player's region unless its own program names one region only
++#: xbmc/video/BlurayRegion.cpp
++msgctxt "#60141"
++msgid "Automatic"
++msgstr ""
++
++#. Heading of the list of regions a Blu-ray can play as, and the context menu entry opening it
++#: xbmc/video/BlurayRegion.cpp
++#: xbmc/video/ContextMenus.cpp
++msgctxt "#60142"
++msgid "Blu-ray region"
++msgstr ""
++
+ #. Notification when Active 3D starts: the film's frame rate, the refresh it plays at and the base mode's
+ #: xbmc/windowing/amlogic/AMLDisplay.cpp
+ msgctxt "#60113"
+diff --git a/xbmc/ContextMenuManager.cpp b/xbmc/ContextMenuManager.cpp
+index 14555ee39c..bbfa4c2a9a 100644
+--- a/xbmc/ContextMenuManager.cpp
++++ b/xbmc/ContextMenuManager.cpp
+@@ -97,6 +97,7 @@ void CContextMenuManager::Init()
+       std::make_shared<CONTEXTMENU::CVideoMarkWatched>(),
+       std::make_shared<CONTEXTMENU::CVideoMarkUnWatched>(),
+       std::make_shared<CONTEXTMENU::CVideoRemoveResumePoint>(),
++      std::make_shared<CONTEXTMENU::CVideoBlurayRegion>(),
+       std::make_shared<CONTEXTMENU::CTVShowScanForNewContent>(),
+       std::make_shared<CONTEXTMENU::CEjectDisk>(),
+       std::make_shared<CONTEXTMENU::CEjectDrive>(),
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 358197dcd5..00da800f08 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -26,6 +26,7 @@
+ #include "utils/URIUtils.h"
+ #include "utils/XTimeUtils.h"
+ #include "utils/log.h"
++#include "video/BlurayRegion.h"
+ #include "video/VideoFileItemClassify.h"
+ #include "video/VideoInfoTag.h"
+ 
+@@ -36,6 +37,7 @@
+ #include <limits>
+ #include <memory>
+ #include <string>
++#include <string_view>
+ #include <vector>
+ 
+ #include <libbluray/bluray-version.h>
+@@ -317,6 +319,8 @@ bool CDVDInputStreamBluray::Open()
+     return false;
+   }
+ 
++  SetupRegion();
++
+   if (disc_info->bluray_detected)
+   {
+ #if (BLURAY_VERSION > BLURAY_VERSION_CODE(1,0,0))
+@@ -2009,6 +2013,126 @@ int CDVDInputStreamBluray::BaseClip() const
+   return m_clip && m_titleInfo ? static_cast<int>(m_clip - m_titleInfo->clips) : -1;
+ }
+ 
++namespace
++{
++/*!
++ * \brief The region a disc's HDMV program locks it to: the one it tests the player's region
++ * (PSR 20) is not, and leaves for another title, object or playlist when it is not, as A 1, B 2 or
++ * C 4. 0 when it has no such test, tests several regions so, or cannot be read: a test followed by
++ * anything else may as well pick a warning or a trailer as refuse the disc.
++ * A command is 12 bytes: the operand count, group and sub-group, the immediate flags, the branch,
++ * compare or set operation, then destination and source. A register is a PSR when its top bit is
++ * set. A compare that fails skips the command after it.
++ */
++int DiscRegion(BLURAY* bd)
++{
++  void* data{nullptr};
++  int64_t size{0};
++  if (!bd_read_file(bd, "BDMV/MovieObject.bdmv", &data, &size))
++    return 0;
++  const std::unique_ptr<uint8_t, decltype(&free)> owned(static_cast<uint8_t*>(data), &free);
++  const uint8_t* mobj = owned.get();
++  const auto be16 = [mobj](int64_t at) { return (mobj[at] << 8) | mobj[at + 1]; };
++  const auto be32 = [mobj](int64_t at)
++  {
++    return (static_cast<uint32_t>(mobj[at]) << 24) | (mobj[at + 1] << 16) | (mobj[at + 2] << 8) |
++           mobj[at + 3];
++  };
++  if (size < 50 || std::memcmp(mobj, "MOBJ", 4) != 0)
++    return 0;
++
++  constexpr uint32_t PSR = 0x80000000;
++  constexpr uint32_t PSR_REGION = PSR | 20;
++  constexpr int SET_MOVE = 1;
++  constexpr int SET_SWAP = 2;
++  constexpr int SET_AND = 9;
++  constexpr int COMPARE_NE = 3;
++  int locked{0};
++  int64_t at{50};
++  for (int object = be16(48); object > 0; --object)
++  {
++    if (at + 4 > size)
++      break;
++    const int commands = be16(at + 2);
++    at += 4;
++    if (at + 12 * commands > size)
++      break;
++    // the general purpose registers given the region, or the region masked
++    std::vector<uint32_t> region;
++    const auto holdsRegion = [&region](uint32_t reg, bool immediate)
++    {
++      return !immediate &&
++             (reg == PSR_REGION || (!(reg & PSR) && std::ranges::count(region, reg & 0xfff)));
++    };
++    for (int command = 0; command < commands; ++command, at += 12)
++    {
++      const int group = (mobj[at] >> 3) & 3;
++      const int subGroup = mobj[at] & 7;
++      const bool dstImmediate = mobj[at + 1] >> 7;
++      const bool srcImmediate = (mobj[at + 1] >> 6) & 1;
++      const int compare = mobj[at + 2] & 15;
++      const int set = mobj[at + 3] & 31;
++      const uint32_t dst = be32(at + 4);
++      const uint32_t src = be32(at + 8);
++      if (group == 2 && subGroup == 0 && !dstImmediate && !(dst & PSR))
++      {
++        // a register moved the region holds it, and keeps it masked; any other write ends it
++        const bool masked = set == SET_AND && holdsRegion(dst, false) && srcImmediate;
++        std::erase(region, dst & 0xfff);
++        if ((set == SET_MOVE && holdsRegion(src, srcImmediate)) || masked)
++          region.push_back(dst & 0xfff);
++        // a swap writes its source too
++        if (set == SET_SWAP && !srcImmediate && !(src & PSR))
++          std::erase(region, src & 0xfff);
++      }
++      else if (group == 1 && compare == COMPARE_NE && command + 1 < commands)
++      {
++        uint32_t value{0};
++        if (holdsRegion(dst, dstImmediate) && srcImmediate)
++          value = src;
++        else if (holdsRegion(src, srcImmediate) && dstImmediate)
++          value = dst;
++        // when the region is not that one: a jump or call (sub-group 1), or a playlist (2)
++        const int next = mobj[at + 12];
++        const int nextGroup = (next >> 3) & 3;
++        const int nextSubGroup = next & 7;
++        const bool leaves = nextGroup == 0 && (nextSubGroup == 1 || nextSubGroup == 2);
++        if ((value == 1 || value == 2 || value == 4) && leaves)
++        {
++          if (locked != 0 && locked != static_cast<int>(value))
++            return 0;
++          locked = static_cast<int>(value);
++        }
++      }
++    }
++  }
++  return locked;
++}
++} // unnamed namespace
++
++void CDVDInputStreamBluray::SetupRegion()
++{
++  const std::string disc = CBlurayRegion::Disc(m_root);
++  int region = CBlurayRegion::Chosen(disc);
++  std::string_view why{"chosen for the disc"};
++  if (region == CBlurayRegion::AUTOMATIC)
++  {
++    region = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++        CSettings::SETTING_BLURAY_PLAYERREGION);
++    why = "the player's";
++    if (const int locked = DiscRegion(m_bd); locked != 0 && locked != region)
++    {
++      region = locked;
++      why = "the disc's program refuses any other";
++    }
++  }
++  if (region != CBlurayRegion::A && region != CBlurayRegion::B && region != CBlurayRegion::C)
++    return; // SetupPlayerSettings has set A
++  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
++  CLog::Log(LOGINFO, "CDVDInputStreamBluray::Open - plays as {}: {}", CBlurayRegion::Name(region),
++            why);
++}
++
+ void CDVDInputStreamBluray::SetupPlayerSettings()
+ {
+   int region = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index e884f40a53..928aaa3223 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -306,6 +306,8 @@ protected:
+   private:
+     bool OpenStream(CFileItem &item);
+     void SetupPlayerSettings();
++    //! the region the disc plays as: the one chosen for it, else its own, else the player's
++    void SetupRegion();
+     void FreeTitleInfo();
+     void FreeClipInfo();
+     void HoldClipStart(const uint8_t* buf, int size);
+diff --git a/xbmc/filesystem/DiscDirectoryHelper.cpp b/xbmc/filesystem/DiscDirectoryHelper.cpp
+index aa6e48991a..09146a0511 100644
+--- a/xbmc/filesystem/DiscDirectoryHelper.cpp
++++ b/xbmc/filesystem/DiscDirectoryHelper.cpp
+@@ -26,6 +26,7 @@
+ #include "utils/StringUtils.h"
+ #include "utils/URIUtils.h"
+ #include "utils/log.h"
++#include "video/BlurayRegion.h"
+ #include "video/VideoDatabase.h"
+ #include "video/VideoManagerTypes.h"
+ 
+@@ -4039,12 +4040,31 @@ bool CDiscDirectoryHelper::GetOrShowPlaylistSelection(const CFileItem& item,
+             item.GetVideoContentType() == VideoDbContentType::TVSHOWS)
+           sourceItems.Sort(SortBy::TIME, SortOrder::DESCENDING);
+ 
+-        LabelUsedPlaylists(sourceItems, usedPlaylists);
+-
+-        if (!CGUIDialogSimpleMenu::ShowPlaylistSelection(item, selectedItem, sourceItems,
++        // The region the disc plays as, for a disc whose own program refuses this player's
++        const std::string disc{CBlurayRegion::Disc(directory)};
++        CFileItemList shownItems;
++        shownItems.Copy(sourceItems);
++        // labelled on the copy, as the choices are shown again after a region is picked
++        LabelUsedPlaylists(shownItems, usedPlaylists);
++        auto regionItem{std::make_shared<CFileItem>(disc, true)};
++        regionItem->SetLabel(StringUtils::Format(
++            CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(60140),
++            CBlurayRegion::Name(CBlurayRegion::Chosen(disc))));
++        regionItem->SetProperty("bluray_region", true);
++        regionItem->SetSpecialSort(SortSpecial::BOTTOM);
++        regionItem->SetArt("icon", "DefaultAddonLanguage.png");
++        shownItems.Add(regionItem);
++
++        if (!CGUIDialogSimpleMenu::ShowPlaylistSelection(item, selectedItem, shownItems,
+                                                          reusablePlaylists))
+           return false;
+ 
++        if (selectedItem.GetProperty("bluray_region").asBoolean(false))
++        {
++          CBlurayRegion::Pick(disc);
++          continue;
++        }
++
+         // If a non-folder item is selected, we're done
+         if (!selectedItem.IsFolder())
+           break;
+diff --git a/xbmc/video/BlurayRegion.cpp b/xbmc/video/BlurayRegion.cpp
+new file mode 100644
+index 0000000000..37fa0c7633
+--- /dev/null
++++ b/xbmc/video/BlurayRegion.cpp
+@@ -0,0 +1,100 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#include "BlurayRegion.h"
++
++#include "ServiceBroker.h"
++#include "URL.h"
++#include "dialogs/GUIDialogSelect.h"
++#include "guilib/GUIComponent.h"
++#include "guilib/GUIWindowManager.h"
++#include "guilib/WindowIDs.h"
++#include "resources/LocalizeStrings.h"
++#include "resources/ResourcesComponent.h"
++#include "utils/StringUtils.h"
++#include "utils/URIUtils.h"
++#include "utils/Variant.h"
++#include "video/FilmFile.h"
++
++#include <algorithm>
++#include <array>
++#include <iterator>
++
++namespace
++{
++constexpr const char* RegionValue = "bdregion";
++constexpr std::array Regions{CBlurayRegion::AUTOMATIC, CBlurayRegion::A, CBlurayRegion::B,
++                             CBlurayRegion::C};
++constexpr std::array Letters{"", "A", "B", "C"};
++} // unnamed namespace
++
++std::string CBlurayRegion::Disc(const std::string& path)
++{
++  std::string disc{URIUtils::IsBlurayPath(path) ? URIUtils::GetDiscFile(path) : path};
++  if (const CURL url(disc); url.IsProtocol("udf"))
++    disc = url.GetHostName();
++  if (URIUtils::IsDiscImage(disc))
++    return disc;
++  // a folder's index.bdmv or playlist, or the folder itself
++  if (URIUtils::HasExtension(disc, ".bdmv|.mpls"))
++    disc = URIUtils::GetDirectory(disc);
++  URIUtils::RemoveSlashAtEnd(disc);
++  while (StringUtils::EqualsNoCase(URIUtils::GetFileName(disc), "PLAYLIST") ||
++         StringUtils::EqualsNoCase(URIUtils::GetFileName(disc), "BDMV"))
++  {
++    disc = URIUtils::GetDirectory(disc);
++    URIUtils::RemoveSlashAtEnd(disc);
++  }
++  return disc;
++}
++
++int CBlurayRegion::Chosen(const std::string& disc)
++{
++  const std::string letter = CFilmFile::Get(disc)[RegionValue].asString();
++  const auto it = std::ranges::find_if(Letters, [&letter](const char* l)
++                                       { return !letter.empty() && letter == l; });
++  return it != Letters.end() ? Regions[std::distance(Letters.begin(), it)] : AUTOMATIC;
++}
++
++std::string CBlurayRegion::Name(int region)
++{
++  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
++  switch (region)
++  {
++    case A:
++      return strings.Get(14122);
++    case B:
++      return strings.Get(14123);
++    case C:
++      return strings.Get(14124);
++    default:
++      return strings.Get(60141);
++  }
++}
++
++bool CBlurayRegion::Pick(const std::string& disc)
++{
++  auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(
++      WINDOW_DIALOG_SELECT);
++  if (!dialog)
++    return false;
++  dialog->Reset();
++  dialog->SetHeading(CVariant{60142});
++  for (const int region : Regions)
++    dialog->Add(Name(region));
++  const int chosen = Chosen(disc);
++  dialog->SetSelected(static_cast<int>(std::distance(
++      Regions.begin(), std::ranges::find(Regions, chosen))));
++  dialog->Open();
++  const int selected = dialog->GetSelectedItem();
++  if (selected < 0 || selected >= static_cast<int>(Regions.size()))
++    return false;
++  CFilmFile::Set(disc, RegionValue,
++                 selected == 0 ? CVariant() : CVariant(Letters[selected]));
++  return true;
++}
+diff --git a/xbmc/video/BlurayRegion.h b/xbmc/video/BlurayRegion.h
+new file mode 100644
+index 0000000000..0553e1e558
+--- /dev/null
++++ b/xbmc/video/BlurayRegion.h
+@@ -0,0 +1,35 @@
++/*
++ *  Copyright (C) 2026 Team Kodi
++ *  This file is part of Kodi - https://kodi.tv
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ *  See LICENSES/README.md for more information.
++ */
++
++#pragma once
++
++#include <string>
++
++/*!
++ * \brief The region a Blu-ray plays as when one is chosen for it, kept with the film's other values
++ * in the profile's film file (CFilmFile) under the disc's own image or folder, whichever path
++ * plays it.
++ */
++class CBlurayRegion
++{
++public:
++  //! as libbluray and the bluray.playerregion setting have them; AUTOMATIC is none chosen
++  static constexpr int AUTOMATIC = 0;
++  static constexpr int A = 1;
++  static constexpr int B = 2;
++  static constexpr int C = 4;
++
++  //! the disc a path plays from: its image, or the folder holding its BDMV
++  static std::string Disc(const std::string& path);
++  //! the region chosen for the disc, AUTOMATIC unless one was
++  static int Chosen(const std::string& disc);
++  //! "Automatic", "Region A"...
++  static std::string Name(int region);
++  //! asks which region the disc plays as and keeps the answer; false when cancelled
++  static bool Pick(const std::string& disc);
++};
+diff --git a/xbmc/video/CMakeLists.txt b/xbmc/video/CMakeLists.txt
+index 3561c5fe67..a17e404135 100644
+--- a/xbmc/video/CMakeLists.txt
++++ b/xbmc/video/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ set(SOURCES Bookmark.cpp
++            BlurayRegion.cpp
+             ContextMenus.cpp
+             FilenameAttributes.cpp
+             FilmFile.cpp
+@@ -27,6 +28,7 @@ set(SOURCES Bookmark.cpp
+             ViewModeSettings.cpp)
+ 
+ set(HEADERS Bookmark.h
++            BlurayRegion.h
+             ContextMenus.h
+             Episode.h
+             FilenameAttributes.h
+diff --git a/xbmc/video/ContextMenus.cpp b/xbmc/video/ContextMenus.cpp
+index 29700d8a47..3f1cbde829 100644
+--- a/xbmc/video/ContextMenus.cpp
++++ b/xbmc/video/ContextMenus.cpp
+@@ -23,6 +23,7 @@
+ #include "utils/PlayerUtils.h"
+ #include "utils/StringUtils.h"
+ #include "utils/URIUtils.h"
++#include "video/BlurayRegion.h"
+ #include "video/VideoDbUrl.h"
+ #include "video/VideoFileItemClassify.h"
+ #include "video/VideoInfoTag.h"
+@@ -94,6 +95,21 @@ bool CVideoRemoveResumePoint::Execute(const std::shared_ptr<CFileItem>& item) co
+   return true;
+ }
+ 
++bool CVideoBlurayRegion::IsVisible(const CFileItem& itemIn) const
++{
++  const CFileItem item(itemIn.GetItemToPlay());
++  if (item.IsFolder())
++    return false;
++  const std::string& path = item.GetDynPath();
++  return URIUtils::IsBlurayPath(path) || VIDEO::IsBDFile(item) || URIUtils::IsDiscImage(path);
++}
++
++bool CVideoBlurayRegion::Execute(const std::shared_ptr<CFileItem>& item) const
++{
++  CBlurayRegion::Pick(CBlurayRegion::Disc(item->GetItemToPlay().GetDynPath()));
++  return true;
++}
++
+ bool CVideoMarkWatched::IsVisible(const CFileItem& item) const
+ {
+   if (item.IsDeleted()) // e.g. trashed pvr recording
+diff --git a/xbmc/video/ContextMenus.h b/xbmc/video/ContextMenus.h
+index a042de13df..9572d3012a 100644
+--- a/xbmc/video/ContextMenus.h
++++ b/xbmc/video/ContextMenus.h
+@@ -71,6 +71,14 @@ struct CVideoRemoveResumePoint : CStaticContextMenuAction
+   bool Execute(const std::shared_ptr<CFileItem>& item) const override;
+ };
+ 
++//! the region a Blu-ray plays as, whatever the disc playback setting shows when it starts
++struct CVideoBlurayRegion : CStaticContextMenuAction
++{
++  CVideoBlurayRegion() : CStaticContextMenuAction(60142) {}
++  bool IsVisible(const CFileItem& item) const override;
++  bool Execute(const std::shared_ptr<CFileItem>& item) const override;
++};
++
+ struct CVideoMarkWatched : CStaticContextMenuAction
+ {
+   CVideoMarkWatched() : CStaticContextMenuAction(16103) {}

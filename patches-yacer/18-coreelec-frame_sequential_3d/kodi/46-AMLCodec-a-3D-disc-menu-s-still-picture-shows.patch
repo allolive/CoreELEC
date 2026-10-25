@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 19:10:29 -0400
+Subject: [PATCH] AMLCodec: a 3D disc menu's still picture shows
+
+A Blu-ray menu's background is often a still: a clip of one picture,
+which the player drains and holds on screen. 13_16 takes that picture
+out of the decoder while draining. The 3D (MVC) decoder never gives it:
+its firmware hands a picture out only when a newer one pushes it out of
+the reorder buffer, and it has no command to empty the buffer - an
+access unit delimiter, an end of sequence or stream, padding, all were
+consumed with no picture out. A 3D disc whose first menu is a still
+stayed on Kodi's screen, the decoder reporting no frame.
+
+An IDR picture empties the reorder buffer. A 3D stream's last packet is
+kept when it holds one, and when, draining, the decoder has handed out
+nothing 200 ms after it, the packet is given once more without a pts:
+the still comes out, its copy stays in the decoder until the next clip.
+Only the 3D decoder is concerned, and only a packet that starts an IDR
+picture is given again; a reset or a new stream forgets it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../VideoPlayer/DVDCodecs/Video/AMLCodec.cpp  | 42 +++++++++++++++++++
+ .../VideoPlayer/DVDCodecs/Video/AMLCodec.h    |  6 +++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+index 76547cb4..c370c24c 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp
+@@ -2376,6 +2376,7 @@ void CAMLCodec::SetDoviZeroLevel5(bool value)
+ 
+ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
+ {
++  m_stillPicture.clear();
+   m_openedLayout = StreamIsStereo(hints, m_processInfo.GetVideoSettings()) ? OpenedLayout::STEREO
+                                                                           : OpenedLayout::MONO;
+   m_speed = DVD_PLAYSPEED_NORMAL;
+@@ -3067,6 +3068,7 @@ void CAMLCodec::Reset()
+   CAMLAudioTrim::GetInstance().Forget();
+ 
+   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
++  m_stillPicture.clear();
+ 
+   if (!m_opened)
+   {
+@@ -3181,6 +3183,7 @@ CAMLCodec::AddResult CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts
+ 
+   // the extradata goes with the first packet that gets into the decoder
+   const bool withExtradata = am_private->hdr_buf.size > 0;
++  const size_t packetSize = iSize;
+   if (withExtradata)
+   {
+     CLog::Log(LOGDEBUG, "CAMLCodec::{}: feed extradata on first frame. extradata size: {:d}", __FUNCTION__,
+@@ -3302,6 +3305,7 @@ CAMLCodec::AddResult CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts
+     am_private->hdr_buf.data = NULL;
+   }
+   m_tp_no_progress = std::chrono::steady_clock::now();
++  KeepStillPicture(pData, packetSize);
+   if (iSize > 50000)
+     usleep(2000); // wait 2ms to process larger packets
+ 
+@@ -3822,6 +3826,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+           amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &queued_frames) == 0 ? queued_frames : 0;
+   }
+ 
++  if (m_drain && !m_stillPushed && !m_stillPicture.empty() && m_tp_last_frame < m_tp_last_data &&
++      now - m_tp_last_data > std::chrono::milliseconds(200))
++    PushStillPicture();
++
+   // Draining, what is decoded is owed however little filled the buffer - a disc menu's still is a
+   // clip of one picture - and is asked for: the queue count misses a picture the driver holds ready.
+   if ((m_drain ||
+@@ -3901,6 +3909,40 @@ void CAMLCodec::RestartDecoderTimeout()
+   m_tp_last_frame = m_tp_no_progress = std::chrono::steady_clock::now();
+ }
+ 
++// The 3D decoder hands a picture out only when a newer one pushes it out of its reorder buffer,
++// and has no command to empty it: a disc menu's still, a clip of one picture, never showed. A key
++// picture empties the buffer, so the still's own packet, given again, pushes the still out.
++void CAMLCodec::KeepStillPicture(const uint8_t* data, size_t size)
++{
++  if (data == m_stillPicture.data())
++    return;
++  m_tp_last_data = std::chrono::steady_clock::now();
++  m_stillPushed = false;
++  m_stillPicture.clear();
++  if (am_private->video_format != VFORMAT_H264MVC)
++    return;
++  // the base view's first slice tells: an IDR one, or another
++  for (size_t i = 0; i + 3 < size; i++)
++  {
++    if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1)
++      continue;
++    const int type = data[i + 3] & 0x1f;
++    if (type == 5)
++      m_stillPicture.assign(data, data + size);
++    if (type == 1 || type == 5)
++      return;
++  }
++}
++
++void CAMLCodec::PushStillPicture()
++{
++  const AddResult result = AddData(m_stillPicture.data(), m_stillPicture.size(), DVD_NOPTS_VALUE,
++                                   DVD_NOPTS_VALUE, false);
++  m_stillPushed = result != AddResult::RETRY;
++  CLog::Log(LOGDEBUG, "CAMLCodec::{}: the still given again ({})", __FUNCTION__,
++            static_cast<int>(result));
++}
++
+ // a second without a call is a break in playback, not a decoder that hangs
+ void CAMLCodec::NoteCall(std::chrono::steady_clock::time_point now)
+ {
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+index aa9bc062..19ba77ac 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h
+@@ -20,6 +20,7 @@
+ 
+ #include <deque>
+ #include <mutex>
++#include <vector>
+ #include <atomic>
+ 
+ typedef struct am_private_t am_private_t;
+@@ -239,6 +240,11 @@ private:
+   std::chrono::steady_clock::time_point m_tp_last_call;
+   int m_last_data_len{0};
+   void NoteCall(std::chrono::steady_clock::time_point now);
++  void KeepStillPicture(const uint8_t* data, size_t size);
++  void PushStillPicture();
++  std::vector<uint8_t> m_stillPicture; //!< the last packet of a 3D stream, when a key picture
++  std::chrono::steady_clock::time_point m_tp_last_data;
++  bool m_stillPushed{false};
+ 
+   bool            m_buffer_level_ready{false};
+   float           m_minimum_buffer_level{0.0f};
+-- 
+2.53.0
+

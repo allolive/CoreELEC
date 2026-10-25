@@ -1,0 +1,242 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 16:02:17 -0400
+Subject: [PATCH] DVDInputStreamBluray: a menu's program runs while the player
+ holds
+
+libbluray runs an HDMV disc's program - the commands of a menu's
+auto-activated button, those a button sends to the graphics controller -
+from bd_read_ext, and only once the player has taken every event it
+queued: a read returns the next event first and leaves the program
+waiting.
+
+At a playlist change the player holds: it stops reading until it has
+played what it read before, which on a menu's low-rate background loop
+is tens of seconds. A playlist change queues several events, so the
+program stopped with them. A menu that draws a blank page as its loop
+starts and shows its buttons from an auto-activated button had its
+buttons drawn only when the hold ended, and drew the blank page again
+when the read reached the end of the next loop, seconds later: a
+32-second menu loop showed its buttons for about 3 seconds.
+
+When the player starts holding, the input stream now takes libbluray's
+events into a queue of its own until the program has run, and hands
+them to the player, in order, wherever it read libbluray's: the next
+read, the events of a new stream, a seek. Playback without menus is
+unchanged.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ .../DVDInputStreams/DVDInputStreamBluray.cpp  | 66 +++++++++++++++----
+ .../DVDInputStreams/DVDInputStreamBluray.h    |  5 ++
+ 2 files changed, 60 insertions(+), 11 deletions(-)
+
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 089ea787..637dc888 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -446,7 +446,7 @@ bool CDVDInputStreamBluray::Open()
+   m_startWatchTime = std::chrono::steady_clock::now();
+ 
+   // Process any events that occurred during opening
+-  while (bd_get_event(m_bd, &m_event))
++  while (NextEvent())
+     ProcessEvent();
+ 
+   OpenNextStream();
+@@ -501,6 +501,7 @@ void CDVDInputStreamBluray::Close()
+   m_clipSpans.clear();
+   m_hasMVCExtension = false;
+   m_clipStart.clear();
++  m_pending.clear();
+ 
+ #if defined(HAS_UDFREAD)
+   // Released last, as the files opened from the volume are closed above
+@@ -818,7 +819,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+         || m_hold == HOLD_EXIT)
+         return -1;
+ 
+-      result = bd_read_ext (m_bd, buf, buf_size, &m_event);
++      result = ReadEvent(buf, buf_size);
+ 
+       if(result < 0)
+       {
+@@ -840,8 +841,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+             if (m_event.event == BD_EVENT_PLAYITEM && result > 0 && !m_hasMVCExtension)
+             {
+               HoldClipStart(buf, result);
+-              return 0;
++              result = 0;
+             }
++            RunProgram();
+             return result;
+           }
+           break;
+@@ -864,7 +866,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+       ProcessEvent();
+ 
+       // a clip open can queue its play item behind other events of the same read
+-      while(result > 0 && queued && m_hold == HOLD_NONE && bd_get_event(m_bd, &m_event))
++      while(result > 0 && queued && m_hold == HOLD_NONE && NextEvent())
+       {
+         switch(m_event.event) {
+           case BD_EVENT_PLAYITEM:
+@@ -872,6 +874,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+             {
+               m_hold = HOLD_HELD;
+               HoldClipStart(buf, result);
++              RunProgram();
+               return 0;
+             }
+             [[fallthrough]];
+@@ -881,6 +884,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+           case BD_EVENT_PLAYLIST:
+           case BD_EVENT_STILL_TIME:
+             m_hold = HOLD_HELD;
++            RunProgram();
+             return result;
+ 
+           default:
+@@ -896,7 +900,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
+   {
+     result = bd_read(m_bd, buf, buf_size);
+     bool discontinuity = false;
+-    while (bd_get_event(m_bd, &m_event))
++    while (NextEvent())
+     {
+       if (m_event.event == BD_EVENT_DISCONTINUITY)
+         discontinuity = true;
+@@ -929,7 +933,7 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
+ {
+   while (true)
+   {
+-    if (bd_read_ext(m_bd, nullptr, 0, &m_event) < 0)
++    if (ReadEvent(nullptr, 0) < 0)
+     {
+       m_hold = HOLD_ERROR;
+       break;
+@@ -958,6 +962,46 @@ void CDVDInputStreamBluray::DropClipStartOnJump()
+     m_hold = HOLD_NONE;
+ }
+ 
++// libbluray runs a disc's program - a menu's auto-activated button, the commands it is waiting to
++// run - only when it is read with no event left for the player. At a playlist change the player
++// stops reading until it has played what it holds, tens of seconds of a menu's loop, and the menu
++// waited for its buttons as long: the events are taken now, for the player to handle in order.
++void CDVDInputStreamBluray::RunProgram()
++{
++  if (!m_navmode)
++    return;
++  for (int i = 0; i < 64; i++)
++  {
++    BD_EVENT event;
++    if (bd_read_ext(m_bd, nullptr, 0, &event) < 0)
++    {
++      m_hold = HOLD_ERROR;
++      return;
++    }
++    if (event.event == BD_EVENT_NONE)
++      return;
++    m_pending.push_back(event);
++  }
++}
++
++bool CDVDInputStreamBluray::NextEvent()
++{
++  if (m_pending.empty())
++    return bd_get_event(m_bd, &m_event);
++  m_event = m_pending.front();
++  m_pending.pop_front();
++  return true;
++}
++
++int CDVDInputStreamBluray::ReadEvent(uint8_t* buf, int size)
++{
++  if (m_pending.empty())
++    return bd_read_ext(m_bd, buf, size, &m_event);
++  m_event = m_pending.front();
++  m_pending.pop_front();
++  return 0;
++}
++
+ int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
+ {
+   CDVDInputStreamFile* lpstream = m_pstream.get();
+@@ -1221,7 +1265,7 @@ bool CDVDInputStreamBluray::PosTime(int ms)
+     return false;
+ 
+   m_clipStart.clear();
+-  while (bd_get_event(m_bd, &m_event))
++  while (NextEvent())
+     ProcessEvent();
+   OpenClipSpan();
+   RestartExtention();
+@@ -1265,7 +1309,7 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
+     return false;
+ 
+   m_clipStart.clear();
+-  while (bd_get_event(m_bd, &m_event))
++  while (NextEvent())
+     ProcessEvent();
+   OpenClipSpan();
+   RestartExtention();
+@@ -1537,7 +1581,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
+   ProcessEvent();
+ 
+   /* process all queued up events */
+-  while(bd_get_event(m_bd, &m_event))
++  while (NextEvent())
+     ProcessEvent();
+ 
+   if(m_hold == HOLD_STILL)
+@@ -1564,7 +1608,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
+     if (m_event.event != BD_EVENT_NONE)
+       ProcessEvent();
+     /* process all queued up events */
+-    while (bd_get_event(m_bd, &m_event))
++    while (NextEvent())
+       ProcessEvent();
+   }
+ }
+@@ -1665,7 +1709,7 @@ void CDVDInputStreamBluray::SkipStill()
+     bd_read_skip_still(m_bd);
+ 
+     /* process all queued up events */
+-    while (bd_get_event(m_bd, &m_event))
++    while (NextEvent())
+       ProcessEvent();
+   }
+ }
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+index db17b2a3..0c1b6b0d 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h
+@@ -17,6 +17,7 @@
+ #endif
+ 
+ #include <chrono>
++#include <deque>
+ #include <list>
+ #include <atomic>
+ #include <memory>
+@@ -297,6 +298,7 @@ protected:
+     HOLD_EXIT
+   } m_hold = HOLD_NONE;
+   BD_EVENT m_event;
++  std::deque<BD_EVENT> m_pending; //!< events taken from libbluray to let the disc's program run
+ #ifdef HAVE_LIBBLURAY_BDJ
+   struct bd_argb_buffer_s m_argb;
+ #endif
+@@ -308,6 +310,9 @@ protected:
+     void FreeClipInfo();
+     void HoldClipStart(const uint8_t* buf, int size);
+     void DropClipStartOnJump();
++    bool NextEvent();
++    int ReadEvent(uint8_t* buf, int size);
++    void RunProgram();
+ 
+     /*!
+      * \brief Read the clip information of a play item of the playlist being played.
+-- 
+2.53.0
+

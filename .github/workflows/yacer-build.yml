@@ -1122,10 +1122,12 @@ jobs:
           # is a string compare - re-hashing gigabytes here would cost more than
           # the upload it guards. get_archive only writes that stamp after its own
           # checksum test passes, so a match is not circular.
-          declare -A PKGSHA
+          declare -A PKGSHA NOMIRROR
           while IFS= read -r mk; do
             n=$(sed -n 's/^[[:space:]]*PKG_NAME="\(.*\)"/\1/p' "$mk" | head -1)
             [ -n "$n" ] || continue
+            # a package whose licence does not cover re-hosting its archive says so
+            grep -q '^YACER_MIRROR="no"' "$mk" && NOMIRROR["$n"]=1
             PKGSHA["$n"]+=" $(sed -n 's/^[[:space:]]*PKG_SHA256="\(.*\)"/\1/p' "$mk" \
                                | grep -v '^[[:space:]]*$' | tr '\n' ' ')"
           done < <(find packages "projects/${PROJECT}" -name package.mk 2>/dev/null | sort)
@@ -1154,6 +1156,7 @@ jobs:
               grep -qxF -- "$asset" stale.txt || continue
               replacing=1
             fi
+            [ -z "${NOMIRROR["$pkg"]:-}" ] || continue
             want=${PKGSHA["$pkg"]:-}
             [ -n "${want// /}" ] || continue
             got=$(cat "$stamp" 2>/dev/null)

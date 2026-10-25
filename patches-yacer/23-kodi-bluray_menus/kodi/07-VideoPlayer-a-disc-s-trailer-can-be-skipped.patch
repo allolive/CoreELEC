@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 04:30:00 -0400
+Subject: [PATCH] VideoPlayer: a disc's trailer can be skipped
+
+A Blu-ray marks user operations it forbids, and libbluray enforces the
+marks it is asked to: at its default level it refuses the menu call, so
+the menu key does nothing during a disc's warnings and trailers. It is
+now asked to enforce none (BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL,
+libbluray 1.4.1).
+
+Next on a title's last chapter has no chapter to go to, and during a
+BD-J disc's trailers, which play in its top menu title with its graphics
+up, Next goes to CDVDInputStreamBluray::OnNext(), which does nothing. A
+title played with the disc's menus is now skipped by seeking to its last
+second: the title ends as it would have, and the disc's own program goes
+on to what follows it, the next trailer or the menu.
+
+The seek goes to the playlist being read. Near a title's end that is
+already the next one, so the skip is refused when the title read is not
+the one shown. A still picture is left to its own timer.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+index 5408cc77a2..358197dcd5 100644
+--- a/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
++++ b/xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp
+@@ -2021,6 +2021,10 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
+   }
+   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
+   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
++#if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 4, 1))
++  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL,
++                        BLURAY_PLAYER_SETTING_UO_RESTRICTION_DISABLED);
++#endif
+   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
+ #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
+   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index bc07b9c31f..e71962ea77 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -5468,6 +5468,37 @@ bool CVideoPlayer::SeekScene(Direction seekDirection)
+   return false;
+ }
+ 
++bool CVideoPlayer::SkipDiscTitle()
++{
++  // the disc's own program goes on when the title ends, so a skip plays only its last second
++  const auto pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
++  if (!pMenus || !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
++      pMenus->GetSupportedMenuType() != MenuType::NATIVE || m_dvd.state == DVDSTATE_STILL)
++    return false;
++
++  int64_t shown;
++  {
++    std::unique_lock lock(m_StateSection);
++    shown = llrint(m_State.timeMax);
++  }
++  // near a title's end the next one is already read, and a seek goes to the one read
++  const int64_t end = m_pInputStream->GetIDisplayTime()->GetTotalTime();
++  if (std::abs(end - shown) > 1000 || end - GetTime() <= 2000)
++    return false;
++
++  CDVDMsgPlayerSeek::CMode mode;
++  mode.time = end - 1000;
++  mode.backward = false;
++  mode.accurate = true;
++  mode.restore = false;
++  mode.trickplay = false;
++  mode.sync = true;
++
++  m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
++  m_processInfo->SeekFinished(0);
++  return true;
++}
++
+ void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
+ {
+   if (!m_bStop)
+@@ -6784,7 +6815,7 @@ bool CVideoPlayer::OnAction(const CAction &action)
+         CLog::Log(LOGDEBUG, " - pushed next in menu, stream will decide");
+         if (pMenus->CanSeek() && GetChapterCount() > 0 && GetChapter() < GetChapterCount())
+           m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(GetChapter() + 1));
+-        else
++        else if (!SkipDiscTitle())
+           pMenus->OnNext();
+ 
+         m_processInfo->SeekFinished(0);
+@@ -6915,6 +6946,14 @@ bool CVideoPlayer::OnAction(const CAction &action)
+       }
+       else if (SeekScene(Direction::FORWARD))
+         return true;
++      else if (const auto pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
++               pMenus && pMenus->GetSupportedMenuType() == MenuType::NATIVE &&
++               m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
++      {
++        THREAD_ACTION(action);
++        SkipDiscTitle();
++        return true;
++      }
+       else
+         break;
+     case ACTION_PREV_ITEM:
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.h b/xbmc/cores/VideoPlayer/VideoPlayer.h
+index 682bfbe9e3..d1d79e6e07 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.h
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.h
+@@ -561,6 +561,7 @@ protected:
+   void GetGeneralInfo(std::string& strVideoInfo);
+   int64_t GetUpdatedTime();
+   int64_t GetTime() const;
++  bool SkipDiscTitle();
+   float GetPercentage();
+ 
+   virtual bool CanTempo();

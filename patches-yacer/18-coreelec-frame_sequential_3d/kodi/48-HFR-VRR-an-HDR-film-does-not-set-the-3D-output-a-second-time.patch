@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 05:04:40 -0400
+Subject: [PATCH] HFR VRR: an HDR film does not set the 3D output a second time
+
+Kodi learns a film's HDR type from its first configured picture, which
+can come a moment after the stereo mode has entered HFR VRR. The HDR
+type change then forced a mode switch of its own: 1080p165 was set a
+second time 0.3 s after the first (seen on 2 of 4 HDR10 and Dolby Vision
+3D starts), losing the picture again and resetting the TV, the eARC
+link and the receiver once more.
+
+In HFR VRR the output's format does not depend on HDR10 or HLG: the
+kernel signals them from each frame on the mode already set. So there an
+HDR type change between none, HDR10, HLG and HDR10+ keeps the window
+and only records the new type. A change to or from Dolby Vision still
+sets the mode: the link format is the DV tunnel's.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -183,6 +183,10 @@
+   // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
+   if (fs3d_same)
+     force_mode_switch_by_fractional_rate = false;
++  // there the kernel signals HDR10 and HLG frame by frame; Dolby Vision sets the link
++  if (fs3d_same && hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
++      m_hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION)
++    force_mode_switch_by_hdr = false;
+ 
+   // check if mode switch is needed
+   if ((fs3d_same ||
+@@ -197,6 +201,7 @@
+       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
+   {
+     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
++    m_hdrType = hdrType;
+     // the surface stays as it is, stacked HFR VRR GUI included
+     int eyeWidth = 0;
+     int eyeHeight = 0;

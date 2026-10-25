@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 05:00:00 -0400
+Subject: [PATCH] VideoPlayer: a disc's time is the picture's at a title change
+ and in a menu
+
+Around a disc's change of title the time shown went wrong for several
+seconds: a total of -589 s on a 512 s title, a 118 s trailer counting 28
+seconds in four, a film opening at 56 s before falling back to 11 s.
+Nothing was skipped; UpdatePlayState() reported times the picture did not
+have.
+
+When the reader reaches the end of a title the disc has no title info,
+so no total, and the full update falls back to a start and an end both
+equal to the time. The update made while the old title plays out then
+copies that state and replaces only the time and the end, so the stale
+start stays, and the total, end minus start, goes negative until the
+next full update. It now starts from zero, as the full update does.
+
+In a menu, and a BD-J disc counts as one whenever its graphics plane is
+up, which covers the trailers it plays, the time was replaced by the
+input's time: the read position, which runs ahead while the queue fills
+and crawls once it is full. A time computed from the picture on screen
+is now kept, and the read position is used only when there is none.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+index d4046b681f..8afcd249ed 100644
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -5948,6 +5948,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+       return;
+     SPlayerState state(m_State);
+     state.time = DVD_TIME_TO_MSEC(m_clock.GetClock() + offset);
++    state.timeMin = 0;
+     state.timeMax = totalTime;
+     if (m_Edl.HasCuts())
+     {
+@@ -5958,6 +5959,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+     m_processInfo->SetPlayTimes(state.startTime, state.time, state.timeMin, state.timeMax);
+     std::unique_lock lock(m_StateSection);
+     m_State.time = state.time;
++    m_State.timeMin = state.timeMin;
+     m_State.timeMax = state.timeMax;
+     return;
+   }
+@@ -5984,6 +5986,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+   std::shared_ptr<CDVDInputStream::IMenus> pMenu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+ 
+   bool chapterNbEnabled{false};
++  bool pictureTime{false};
+ 
+   if (m_pDemuxer)
+   {
+@@ -6128,6 +6131,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+       m_displayTime.Get(clock, offset, totalTime);
+       state.time += offset * 1000 / DVD_TIME_BASE;
+       state.timeMax = totalTime;
++      pictureTime = true;
+     }
+     else
+     {
+@@ -6150,7 +6154,8 @@ void CVideoPlayer::UpdatePlayState(double timeout)
+       }
+       else if (IsInMenuInternal())
+       {
+-        state.time = pDisplayTime->GetTime();
++        if (!pictureTime)
++          state.time = pDisplayTime->GetTime();
+         state.isInMenu = true;
+         if (!pMenu->CanSeek())
+           state.time_offset = 0;

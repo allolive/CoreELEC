@@ -1,0 +1,83 @@
+From: allolive <160342668+allolive@users.noreply.github.com>
+Subject: [PATCH] libffabi: a codec's capabilities through FFmpeg 8's API
+
+FFmpeg 8 removed AVCodec's ch_layouts, supported_samplerates and
+sample_fmts, which libffabi still reads; avcodec_get_supported_config
+(FFmpeg 7.1) gives the same lists.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+--- a/libffabi/src/ffabi.c
++++ b/libffabi/src/ffabi.c
+@@ -527,6 +527,20 @@
+ }
+ 
+ #ifndef FFABI_HAVE_OLD_CHANNEL_LAYOUT
++
++/* FFmpeg 8 dropped AVCodec's ch_layouts, supported_samplerates and sample_fmts */
++static const void* codec_config(const AVCodec* codec, enum AVCodecConfig config)
++{
++    const void* values = NULL;
++    int count = 0;
++    if (avcodec_get_supported_config(NULL, codec, config, 0, &values, &count) < 0)
++        return NULL;
++    return values;
++}
++#define CODEC_CH_LAYOUTS(c) ((const AVChannelLayout*)codec_config((c), AV_CODEC_CONFIG_CHANNEL_LAYOUT))
++#define CODEC_SAMPLE_RATES(c) ((const int*)codec_config((c), AV_CODEC_CONFIG_SAMPLE_RATE))
++#define CODEC_SAMPLE_FMTS(c) ((const enum AVSampleFormat*)codec_config((c), AV_CODEC_CONFIG_SAMPLE_FORMAT))
++
+ static int set_codec_info_extended(FFM_CodecInfo* info, const AVCodec* codec)
+ {
+     char* exinfo;
+@@ -539,8 +553,8 @@
+     len = strlen(codec->name);
+     if (len >= FFM_CODEC_INFO_NAME_MAX_LENGTH) return -1;
+ 
+-    if (NULL != codec->ch_layouts) {
+-        while (0 != codec->ch_layouts[count_ch_layouts_in].nb_channels)
++    if (NULL != CODEC_CH_LAYOUTS(codec)) {
++        while (0 != CODEC_CH_LAYOUTS(codec)[count_ch_layouts_in].nb_channels)
+         {
+             count_ch_layouts_in++;
+         }
+@@ -558,8 +572,8 @@
+ 
+     for (i = 0; i < count_ch_layouts_in; i++)
+     {
+-        if (AV_CHANNEL_ORDER_NATIVE != codec->ch_layouts[i].order) continue;
+-        channel_layouts[count_ch_layouts_out++] = codec->ch_layouts[i].u.mask;
++        if (AV_CHANNEL_ORDER_NATIVE != CODEC_CH_LAYOUTS(codec)[i].order) continue;
++        channel_layouts[count_ch_layouts_out++] = CODEC_CH_LAYOUTS(codec)[i].u.mask;
+     }
+     channel_layouts[count_ch_layouts_out] = 0;
+ 
+@@ -586,11 +600,11 @@
+ 
+     info->name = codec->name;
+     info->long_name = codec->long_name;
+-    info->sample_rates = codec->supported_samplerates;
++    info->sample_rates = CODEC_SAMPLE_RATES(codec);
+ #ifdef FFABI_HAVE_OLD_CHANNEL_LAYOUT
+     info->channel_layouts = codec->channel_layouts;
+ #else
+-    if (NULL == codec->ch_layouts) {
++    if (NULL == CODEC_CH_LAYOUTS(codec)) {
+         info->channel_layouts = NULL;
+     } else {
+         if (set_codec_info_extended(info, codec)) {
+@@ -609,11 +623,11 @@
+             info->profiles_count = i+1;
+         }
+     }
+-    if (codec->sample_fmts) {
++    if (CODEC_SAMPLE_FMTS(codec)) {
+         for (i=0;i<16;i++) {
+-            if (codec->sample_fmts[i]==AV_SAMPLE_FMT_NONE)
++            if (CODEC_SAMPLE_FMTS(codec)[i]==AV_SAMPLE_FMT_NONE)
+                 break;
+-            info->sample_formats[i]=(uint8_t)back_translate_sample_fmt(codec->sample_fmts[i]);
++            info->sample_formats[i]=(uint8_t)back_translate_sample_fmt(CODEC_SAMPLE_FMTS(codec)[i]);
+             info->sample_formats_count = i+1;
+         }
+     }
