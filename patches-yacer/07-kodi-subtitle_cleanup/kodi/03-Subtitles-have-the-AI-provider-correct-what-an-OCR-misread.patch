@@ -60,10 +60,10 @@ doubted words, and CCueCleaner::Clean() hands them out.
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
-index ac5d99f..44c3369 100644
+index 8bd1c11..9bc0e4b 100644
 --- a/addons/resource.language.en_gb/resources/strings.po
 +++ b/addons/resource.language.en_gb/resources/strings.po
-@@ -25654,6 +25654,30 @@ msgctxt "#60080"
+@@ -25648,6 +25648,30 @@ msgctxt "#60080"
  msgid "The provider lists no model."
  msgstr ""
  
@@ -91,14 +91,14 @@ index ac5d99f..44c3369 100644
 +msgid "Every line"
 +msgstr ""
 +
- #empty strings from id 39218 to 39899
+ #empty strings from id 39220 to 39899
  
  #. List formatting: pattern used to join a list of exactly two items, e.g. "A and B"
 diff --git a/system/settings/settings.xml b/system/settings/settings.xml
-index b18ba74..b4aff7d 100755
+index 7fab3de..5f6dd4d 100755
 --- a/system/settings/settings.xml
 +++ b/system/settings/settings.xml
-@@ -949,6 +949,21 @@
+@@ -959,6 +959,21 @@
            </dependencies>
            <control type="toggle" />
          </setting>
@@ -937,10 +937,10 @@ index 0000000..ce903f0
 +MODEL::Work Revision(Context context, Mode mode);
 +} // namespace KODI::SUBTITLES::REVISION
 diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
-index 97cee3f..684db51 100644
+index 75ed604..16d7ccf 100644
 --- a/xbmc/settings/Settings.h
 +++ b/xbmc/settings/Settings.h
-@@ -196,6 +196,7 @@ public:
+@@ -195,6 +195,7 @@ public:
    static constexpr auto SETTING_SUBTITLES_AIMODEL = "subtitles.aimodel";
    static constexpr auto SETTING_SUBTITLES_AIMODELS = "subtitles.aimodels";
    static constexpr auto SETTING_SUBTITLES_AITEST = "subtitles.aitest";

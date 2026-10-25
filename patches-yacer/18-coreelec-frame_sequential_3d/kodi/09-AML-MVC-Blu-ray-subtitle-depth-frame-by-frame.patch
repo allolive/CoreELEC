@@ -324,7 +324,7 @@ index 0000000..238ee9c
 +
 +} // namespace AML_MVC_DEPTH
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
-index 59388e3..c192407 100644
+index 4cd55fe..8bba958 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp
 @@ -43,7 +43,7 @@ void VideoPicture::Reset()
@@ -337,18 +337,18 @@ index 59388e3..c192407 100644
    qp_table = nullptr;
    qstride = 0;
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
-index 8c0e000..151838a 100644
+index 9635b7b..f9a31fb 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h
-@@ -21,6 +21,7 @@ extern "C" {
- #include <vector>
- #include <string>
+@@ -20,6 +20,7 @@ extern "C" {
+ 
  #include <map>
+ #include <memory>
 +#include <optional>
+ #include <string>
+ #include <vector>
  
- class CSetting;
- 
-@@ -60,7 +61,8 @@ public:
+@@ -69,7 +70,8 @@ public:
    unsigned int colorBits = 8;
    std::string stereoMode;
  
@@ -469,10 +469,10 @@ index f838885..d78f60e 100644
    bool MvcParamsScan(const uint8_t* data, uint32_t size);
    bool MvcParamsReady(const uint8_t* data, uint32_t size);
 diff --git a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
-index cefb7f4..e5191bd 100644
+index 9bafb81..7166f06 100644
 --- a/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp
-@@ -952,9 +952,6 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+@@ -974,9 +974,6 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
  
        if((pOverlay->iPTSStartTime <= pts2 && (pOverlay->iPTSStopTime > pts2 || pOverlay->iPTSStopTime == 0LL)))
        {
@@ -482,7 +482,7 @@ index cefb7f4..e5191bd 100644
          if(pOverlay->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
            overlays.insert(overlays.end(),
                            static_cast<CDVDOverlayGroup&>(*pOverlay).m_overlays.begin(),
-@@ -967,7 +964,9 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+@@ -989,7 +986,9 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
      for(it = overlays.begin(); it != overlays.end(); ++it)
      {
        double pts2 = (*it)->bForced ? pts : pts - m_iSubtitleDelay;
@@ -494,10 +494,10 @@ index cefb7f4..e5191bd 100644
    }
  }
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
-index d00bd9f..0ab125d 100644
+index bbe8ad9..52a1694 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.cpp
-@@ -68,13 +68,17 @@ CRenderer::~CRenderer()
+@@ -67,13 +67,17 @@ CRenderer::~CRenderer()
    Flush();
  }
  
@@ -516,7 +516,7 @@ index d00bd9f..0ab125d 100644
    m_buffers[index].push_back(e);
  }
  
-@@ -1089,20 +1093,24 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
+@@ -680,20 +684,24 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
        r = it->second;
    }
  
@@ -553,7 +553,7 @@ index d00bd9f..0ab125d 100644
  }
  
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
-index 20dd2b4..a24c3f6 100644
+index 87cc11b..a210e05 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h
 @@ -19,6 +19,7 @@
@@ -656,10 +656,10 @@ index 24311ee..b5911e5 100644
  
  } // namespace OVERLAY
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-index 549f9ce..b0d1ea8 100644
+index cc590d7..b02ca44 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
-@@ -1301,7 +1301,9 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
+@@ -1311,7 +1311,9 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
    return true;
  }
  
@@ -670,7 +670,7 @@ index 549f9ce..b0d1ea8 100644
  {
    int idx;
    {
-@@ -1311,7 +1313,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
+@@ -1321,7 +1323,7 @@ void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
      idx = m_free.front();
    }
    std::unique_lock lock(m_datalock);
@@ -680,10 +680,10 @@ index 549f9ce..b0d1ea8 100644
  
  bool CRenderManager::Supports(ERENDERFEATURE feature) const
 diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-index f8e8f15..22dfe0a 100644
+index 530c3e9..4e65bff 100644
 --- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
 +++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h
-@@ -118,7 +118,8 @@ public:
+@@ -123,7 +123,8 @@ public:
    bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
    bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop,
                         EINTERLACEMETHOD deintMethod, bool wait, uint64_t prerollGeneration = 0);
