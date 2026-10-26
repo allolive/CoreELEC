@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 23:30:00 -0400
+Subject: [PATCH] ActiveAE: the AML card's surround71 alone is not a
+ passthrough device
+
+On S5/T7 and later every surround71 is marked HDMI, and the AML card's
+carries only TrueHD and DTS-HD MA: the device check (at Kodi's start and
+at every device change) and the passthrough device list leave it out by
+name, so the setting points at the card's hdmi. That filter matched any
+card's surround71, so with binaural's loopback (Virtual Sound) chosen for
+passthrough, the check moved the device ActiveAE holds to the AML card's
+iec958 until it next read the setting. A sink opened for passthrough in
+between, as at a device change during a bitstream, opened the AML card:
+the receiver played it directly, some 27 dB louder than through Virtual
+Sound.
+
+The filter now matches the AML card's surround71 alone; the loopback's
+is checked and listed as any passthrough device is.
+
+Shared code: CoreELEC put this AML filter in the device check
+(ActiveAESink.cpp) and the list's filler (ActiveAESettings.cpp); both
+filter by name before any sink is asked, so the AML sink cannot do it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+ xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp |  3 ++-
+ xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp     | 15 +++++++++++----
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
+@@ -180,7 +180,8 @@
+     {
+       // filter L-PCM device when passthrough on Amlogic T7, S5 or newer
+       if (passthrough && filter_passthrough &&
+-          StringUtils::StartsWith(sink->second, "ALSA:surround71"))
++          StringUtils::StartsWith(sink->second, "ALSA:surround71") &&
++          sink->second.find("AUGESOUND") != std::string::npos)
+         continue;
+ 
+       if (sink == sinkList.begin())
+diff --git a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+--- a/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
++++ b/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+@@ -758,6 +758,13 @@
+   }
+ }
+ 
++// the AML card's surround71 is its L-PCM device on S5/T7; another card's
++// (an ALSA loopback) is a passthrough device itself
++static bool IsAMLLPCMDevice(const std::string& name)
++{
++  return name.substr(0, name.find(':')) == "surround71" && name.find("AUGESOUND") != std::string::npos;
++}
++
+ std::string CActiveAESink::ValidateOuputDevice(const std::string& device, bool passthrough) const
+ {
+   if (m_sinkInfoList.empty())
+@@ -782,7 +789,7 @@
+           continue;
+ 
+         // filter L-PCM device when passthrough on Amlogic S5/T7
+-        if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
++        if (passthrough && IsAMLLPCMDevice(d.m_deviceName))
+           continue;
+ 
+         if (d.m_deviceName == dev.name)
+@@ -808,7 +815,7 @@
+           continue;
+ 
+         // filter L-PCM device when passthrough on Amlogic S5/T7
+-        if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
++        if (passthrough && IsAMLLPCMDevice(d.m_deviceName))
+           continue;
+ 
+         if (d.GetFriendlyName() == dev.friendlyName)
+@@ -836,7 +843,7 @@
+           continue;
+ 
+         // filter L-PCM device when passthrough on Amlogic S5/T7
+-        if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
++        if (passthrough && IsAMLLPCMDevice(d.m_deviceName))
+           continue;
+ 
+         if (firstDevice.empty())
+@@ -869,7 +876,7 @@
+         continue;
+ 
+       // filter L-PCM device when passthrough on Amlogic S5/T7
+-      if (passthrough && (d.m_deviceName.substr(0, d.m_deviceName.find(':')) == "surround71"))
++      if (passthrough && IsAMLLPCMDevice(d.m_deviceName))
+         continue;
+ 
+       if (firstDevice.empty())
