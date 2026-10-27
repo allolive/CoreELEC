@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 PKG_NAME="service.shutter3d.allolive"
-PKG_VERSION="0.1.6"
-PKG_SHA256="4845a23da890d36dd855ccfa0c6e4065cd9eab793ae5a766fe91f8029efdb0b9"
+PKG_VERSION="0.1.13"
+PKG_SHA256="d4fd051dc61f8fc082385f1cee29cbeb88020ed193d713712203b43c25bce3f4"
 PKG_LICENSE="PolyForm-Noncommercial-1.0.0"
 PKG_SITE="https://github.com/allolive/kodi_addons"
 PKG_URL="https://github.com/allolive/kodi_addons/releases/download/ce22/${PKG_NAME}-${PKG_VERSION}/${PKG_NAME}-${PKG_VERSION}.zip"
