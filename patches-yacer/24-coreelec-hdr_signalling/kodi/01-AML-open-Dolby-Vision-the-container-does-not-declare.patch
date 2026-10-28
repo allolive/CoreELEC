@@ -1,0 +1,312 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 -0400
+Subject: [PATCH] AML: open Dolby Vision the container does not declare
+
+A remux by an older ffmpeg keeps a stream's Dolby Vision RPUs but drops
+the Matroska block addition mapping that declares them, so the player
+saw HDR10 and the decoder opened as HDR10. The HDR10+ conversion, which
+leaves native RPUs alone, stood down on the same file and nothing played
+the Dolby Vision it carried.
+
+Before the decoder opens, the first packets are now scanned for an RPU,
+and its header gives the profile the way dovi_tool reads it. A single
+layer profile 5 or 8 stream then opens as Dolby Vision, with the base
+layer's compatibility taken from its transfer. A stream with an
+enhancement layer is left as it was. Nothing is scanned where the RPUs
+are stripped for a sink without Dolby Vision.
+
+HDR10+ that is stripped for a sink without it was never reported: the
+converter does not look for what it is told to remove. It is now found
+in the packet before conversion and reported once the decoder has
+opened, so the decoder still treats the stream as HDR10.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLInbandDovi.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLInbandDovi.h
+new file mode 100644
+index 0000000000..a9f57ce22c
+--- /dev/null
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLInbandDovi.h
+@@ -0,0 +1,144 @@
++/*
++ *  Copyright (C) 2026 Team CoreELEC
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++// Finds Dolby Vision in an HEVC access unit whose container does not declare
++// it, and tells its profile from the RPU header the way dovi_tool does. Depends
++// on nothing but the NAL walker, so it can be tested on its own.
++
++#include "AMLNalWalker.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++struct AMLInbandDovi
++{
++  bool rpu{false}; // an RPU was found
++  bool el{false}; // an enhancement layer NAL sits in the same access unit
++  int profile{0}; // 0 when the header does not name one
++};
++
++namespace AML_INBAND_DOVI
++{
++constexpr uint8_t HEVC_NAL_UNSPEC63 = 63; // Dolby Vision enhancement layer
++
++class CBits
++{
++public:
++  CBits(const uint8_t* data, size_t size) : m_data(data), m_size(size) {}
++
++  bool Ok() const { return m_ok; }
++
++  uint32_t Read(int n)
++  {
++    uint32_t v = 0;
++    while (n-- > 0)
++    {
++      if (m_pos >= m_size * 8)
++      {
++        m_ok = false;
++        return 0;
++      }
++      v = (v << 1) | ((m_data[m_pos / 8] >> (7 - m_pos % 8)) & 1);
++      ++m_pos;
++    }
++    return v;
++  }
++
++  uint32_t ReadUE()
++  {
++    int zeros = 0;
++    while (m_ok && Read(1) == 0)
++      if (++zeros > 31)
++        m_ok = false;
++    return m_ok ? (1u << zeros) - 1 + Read(zeros) : 0;
++  }
++
++private:
++  const uint8_t* m_data;
++  size_t m_size;
++  size_t m_pos{0};
++  bool m_ok{true};
++};
++
++// the RPU NAL past its 7C 01 header and 19 prefix, emulation prevention removed
++inline int RpuProfile(const uint8_t* nal, size_t len)
++{
++  if (len < 4 || nal[2] != 0x19)
++    return 0;
++
++  std::vector<uint8_t> rbsp;
++  rbsp.reserve(len);
++  for (size_t i = 3; i < len; ++i)
++  {
++    if (i + 2 < len && nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 3)
++    {
++      rbsp.push_back(0);
++      rbsp.push_back(0);
++      i += 2;
++    }
++    else
++      rbsp.push_back(nal[i]);
++  }
++
++  CBits bits(rbsp.data(), rbsp.size());
++  const uint32_t rpuType = bits.Read(6);
++  const uint32_t rpuFormat = bits.Read(11);
++  if (rpuType != 2)
++    return 0;
++  const uint32_t vdrRpuProfile = bits.Read(4);
++  bits.Read(4); // vdr_rpu_level
++  if (!bits.Read(1)) // vdr_seq_info_present_flag
++    return 0;
++  bits.Read(1); // chroma_resampling_explicit_filter_flag
++  if (bits.Read(2) == 0) // coef_data_type
++    bits.ReadUE(); // coef_log2_denom
++  bits.Read(2); // vdr_rpu_normalized_idc
++  const bool blFullRange = bits.Read(1);
++  if ((rpuFormat & 0x700) != 0)
++    return 0;
++  bits.ReadUE(); // bl_bit_depth_minus8
++  bits.ReadUE(); // el_bit_depth_minus8
++  const uint32_t vdrBitDepthMinus8 = bits.ReadUE();
++  bits.Read(1); // spatial_resampling_filter_flag
++  bits.Read(3); // reserved_zero_3bits
++  const bool elSpatialResampling = bits.Read(1);
++  const bool disableResidual = bits.Read(1);
++  if (!bits.Ok())
++    return 0;
++
++  if (vdrRpuProfile == 0)
++    return blFullRange ? 5 : 0;
++  if (vdrRpuProfile == 1)
++  {
++    if (elSpatialResampling && !disableResidual)
++      return vdrBitDepthMinus8 == 4 ? 7 : 4;
++    return 8;
++  }
++  return 0;
++}
++} // namespace AML_INBAND_DOVI
++
++// nalLengthSize 0 means Annex-B
++inline AMLInbandDovi AMLScanInbandDovi(const uint8_t* data, size_t size, int nalLengthSize)
++{
++  AMLInbandDovi found;
++  AMLForEachNal(data, size, nalLengthSize,
++                [&found](const uint8_t* nal, size_t len)
++                {
++                  const uint8_t type = (nal[0] >> 1) & 0x3f;
++                  if (type == AML_INBAND_DOVI::HEVC_NAL_UNSPEC63)
++                    found.el = true;
++                  else if (type == HEVC_NAL_UNSPEC62 && !found.rpu)
++                  {
++                    found.rpu = true;
++                    found.profile = AML_INBAND_DOVI::RpuProfile(nal, len);
++                  }
++                  return true;
++                });
++  return found;
++}
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 8a6b452364..31347cc7c4 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -130,6 +130,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+   m_nalLengthSize = 0;
+   m_streamMeta = {};
+   m_stripHdr10Plus = false;
++  m_doviStripped = false;
++  m_inbandDovi = {};
+   m_h10p = {};
+   m_metadataSequencer.Reset();
+ 
+@@ -469,6 +471,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+         m_hints.dovi.dv_profile != 5)
+     {
+       m_bitstream->SetRemoveDovi(true);
++      m_doviStripped = true;
+       if (m_hints.dovi.dv_profile > 0)
+         m_streamMeta.flags.push_back("rpu-removed");
+     }
+@@ -646,6 +649,47 @@ bool CDVDVideoCodecAmlogic::KeyframeGateOpens(const uint8_t* data, uint32_t size
+   return true;
+ }
+ 
++// Single layer only: an enhancement layer needs the record's FEL/MEL handling.
++void CDVDVideoCodecAmlogic::OpenAsInbandDovi()
++{
++  const int profile = m_inbandDovi.profile;
++  if (m_inbandDovi.el || (profile != 5 && profile != 8))
++  {
++    CLog::Log(LOGINFO,
++              "CDVDVideoCodecAmlogic::{}: undeclared Dolby Vision RPUs (profile {}{}) left "
++              "as they are",
++              __FUNCTION__, profile, m_inbandDovi.el ? ", enhancement layer" : "");
++    return;
++  }
++
++  AVDOVIDecoderConfigurationRecord dovi{};
++  dovi.dv_version_major = 1;
++  dovi.dv_profile = profile;
++  dovi.dv_level = 6;
++  dovi.rpu_present_flag = 1;
++  dovi.bl_present_flag = 1;
++  if (profile == 8)
++  {
++    if (m_hints.colorTransferCharacteristic == AVCOL_TRC_ARIB_STD_B67)
++      dovi.dv_bl_signal_compatibility_id = 4;
++    else if (m_hints.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084 ||
++             m_hints.hdrType != StreamHdrType::HDR_TYPE_NONE)
++      dovi.dv_bl_signal_compatibility_id = 1;
++    else
++      dovi.dv_bl_signal_compatibility_id = 2;
++  }
++
++  m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
++  m_hints.dovi = dovi;
++  m_videobuffer.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
++  m_streamMeta.doviConfig = AMLSerializeDoviConfig(dovi);
++  m_pendingMeta.doviConfig = m_streamMeta.doviConfig;
++  CLog::Log(LOGINFO,
++            "CDVDVideoCodecAmlogic::{}: Dolby Vision RPUs the container does not declare: "
++            "opening as profile {}.{}",
++            __FUNCTION__, profile, dovi.dv_bl_signal_compatibility_id);
++}
++
+ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
+   m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
+@@ -739,6 +783,12 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+       m_pendingMeta.structure = m_streamMeta.structure;
+     }
+ 
++    // a remux can keep the RPUs and lose the record that declares them
++    if (!m_opened && !m_inbandDovi.rpu && !m_doviStripped && !packet.isDualStream &&
++        m_hints.codec == AV_CODEC_ID_HEVC && m_hints.dovi.dv_profile == 0 &&
++        m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION)
++      m_inbandDovi = AMLScanInbandDovi(pData, iSize, m_nalLengthSize);
++
+     // latch from the original demuxer payload, before Convert() can strip or
+     // rewrite it. Dual-track streams are latched from the base layer at pair
+     // completion: the EL carries its own static SEIs with different values
+@@ -855,6 +905,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ 
+       m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
+ 
++      if (m_inbandDovi.rpu && m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION)
++        OpenAsInbandDovi();
++
+       m_processInfo.SetDoviIsFEL(doviIsFEL);
+       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
+ 
+@@ -866,6 +919,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+         m_Codec = nullptr;
+       }
+ 
++      // The converter does not look for HDR10+ it is told to remove. Reported
++      // only after the decoder opened, which still treats the stream as HDR10.
++      if (!IsHdr10Plus && m_stripHdr10Plus && !m_pendingMeta.hdr10pSei.empty())
++      {
++        m_processInfo.SetIsHdr10Plus(true);
++        m_streamMeta.flags.push_back("hdr10plus-removed");
++        m_pendingMeta.flags = m_streamMeta.flags;
++      }
++
+       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
+ 
+       m_opened = true;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 8fda4d6863..2542b1bb14 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -10,6 +10,7 @@
+ 
+ #include "AMLFrameMetadata.h"
+ #include "AMLHdr10PlusHook.h"
++#include "AMLInbandDovi.h"
+ #include "AMLSeekPreroll.h"
+ #include "AMLMvcSubtitleDepth.h"
+ #include "DVDVideoCodec.h"
+@@ -85,6 +86,7 @@ public:
+   // Required overrides
+   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options) override;
+   virtual bool AddData(const DemuxPacket &packet) override;
++  void OpenAsInbandDovi();
+   virtual void Reset() override;
+   virtual VCReturn GetPicture(VideoPicture* pVideoPicture) override;
+   virtual void SetSpeed(int iSpeed) override;
+@@ -134,6 +136,8 @@ private:
+ 
+   uint32_t m_metadataToken{0};
+   bool m_stripHdr10Plus{false};
++  bool m_doviStripped{false};
++  AMLInbandDovi m_inbandDovi;
+   bool m_dualLayer{false};
+   int m_nalLengthSize{0};
+   //! the packet fed next is the one that just reset the decoder

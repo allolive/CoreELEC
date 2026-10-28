@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:00:00 -0400
+Subject: [PATCH] AML: an HDR change sets the mode again only where it changes
+ the link
+
+Any change of HDR type forced a full mode set, even at an unchanged
+resolution and rate. Stopping an HDR10 film at 2160p24 tore the HDMI
+link down and up again with nothing on it different: the kernel had
+already sent the SDR metadata, and the colour format and depth it picks
+follow the HDR type only on the Dolby Vision path. Each such re-set
+costs the sink chain a relock, and one of them left an LG TV with no
+signal until the next mode set.
+
+The force is now kept where the HDR type does decide the link: Dolby
+Vision on either side, or a conversion the user set (the VS10 modes and
+the forced SDR/HDR output).
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/utils/AMLUtils.cpp b/xbmc/utils/AMLUtils.cpp
+index 07003fc375..393f7abc86 100644
+--- a/xbmc/utils/AMLUtils.cpp
++++ b/xbmc/utils/AMLUtils.cpp
+@@ -333,6 +333,20 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
+   return ((convert_to_dv && !!user_convert_to_dv && !!dv_user_enabled) == 1);
+ }
+ 
++// Only the Dolby Vision engine and a forced conversion tie the HDMI colour
++// format to the HDR type; otherwise the kernel signals HDR frame by frame.
++static bool aml_hdr_type_sets_link(StreamHdrType hdrType)
++{
++  return hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION || aml_convert_to_dv_by_vs_engine(hdrType) ||
++         aml_convert_to_sdr_by_vs_engine(hdrType) || aml_convert_to_hdr_by_vs_engine(hdrType) ||
++         aml_convert_to_sdr(hdrType) || aml_convert_to_hdr(hdrType);
++}
++
++bool aml_hdr_change_needs_mode_set(StreamHdrType from, StreamHdrType to)
++{
++  return from != to && (aml_hdr_type_sets_link(from) || aml_hdr_type_sets_link(to));
++}
++
+ bool aml_video_started()
+ {
+   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};
+diff --git a/xbmc/utils/AMLUtils.h b/xbmc/utils/AMLUtils.h
+index 755201720e..fcea3e78a6 100644
+--- a/xbmc/utils/AMLUtils.h
++++ b/xbmc/utils/AMLUtils.h
+@@ -67,6 +67,7 @@ bool aml_convert_to_hdr(StreamHdrType hdrType);
+ bool aml_convert_to_sdr_by_vs_engine(StreamHdrType hdrType);
+ bool aml_convert_to_hdr_by_vs_engine(StreamHdrType hdrType);
+ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
++bool aml_hdr_change_needs_mode_set(StreamHdrType from, StreamHdrType to);
+ bool aml_video_started();
+ int aml_amdv_wait(StreamHdrType hdrType);
+ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
+diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+index ff9f8d3433..a3576feddb 100644
+--- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
++++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
+@@ -123,7 +123,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+   bool nativeGUI = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
+ 
+   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
+-  bool force_mode_switch_by_hdr = (m_hdrType != hdrType);
++  bool force_mode_switch_by_hdr = aml_hdr_change_needs_mode_set(m_hdrType, hdrType);
+   // Without HDMI 3D, a stereo mode changes the output only by entering or
+   // leaving HFR VRR.
+   bool force_mode_switch_by_stereo_mode =
