@@ -99,7 +99,7 @@ index 0b50b1db14..21b7f957f8 100644
  
  enum
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 8a6b452364..0d3f4bd290 100644
+index 8a6b452364..f8e752580f 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 @@ -130,6 +130,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
@@ -110,36 +110,25 @@ index 8a6b452364..0d3f4bd290 100644
    m_h10p = {};
    m_metadataSequencer.Reset();
  
-@@ -456,6 +457,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -456,6 +457,9 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
  
    m_has_keyframe = false;
  
-+  bool doviStripped = false;
++  // a remux can keep the RPUs and lose the record that declares them
++  m_scanInbandDovi = m_hints.codec == AV_CODEC_ID_HEVC && m_hints.dovi.dv_profile == 0 &&
++                     m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION;
    if (m_bitstream)
    {
      const CHDRCapabilities caps = CServiceBroker::GetWinSystem()->GetDisplayHDRCapabilities();
-@@ -469,6 +471,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+@@ -469,6 +473,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
          m_hints.dovi.dv_profile != 5)
      {
        m_bitstream->SetRemoveDovi(true);
-+      doviStripped = true;
++      m_scanInbandDovi = false;
        if (m_hints.dovi.dv_profile > 0)
          m_streamMeta.flags.push_back("rpu-removed");
      }
-@@ -476,6 +479,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
-     m_h10p.Arm(m_hints, m_bitstream, caps, m_stripHdr10Plus);
-   }
- 
-+  // a remux can keep the RPUs and lose the record that declares them; where
-+  // they are stripped for the sink there is nothing to open as Dolby Vision
-+  m_scanInbandDovi = m_hints.codec == AV_CODEC_ID_HEVC && m_hints.dovi.dv_profile == 0 &&
-+                     m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-+                     !doviStripped;
-+
-   if (m_hints.contentLightMetadata)
-     m_streamMeta.hdrCll = AMLSerializeContentLight(*m_hints.contentLightMetadata);
-   if (m_hints.masteringMetadata &&
-@@ -646,6 +655,47 @@ bool CDVDVideoCodecAmlogic::KeyframeGateOpens(const uint8_t* data, uint32_t size
+@@ -646,6 +651,47 @@ bool CDVDVideoCodecAmlogic::KeyframeGateOpens(const uint8_t* data, uint32_t size
    return true;
  }
  
@@ -187,7 +176,7 @@ index 8a6b452364..0d3f4bd290 100644
  bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  {
    m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
-@@ -739,6 +789,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -739,6 +785,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
        m_pendingMeta.structure = m_streamMeta.structure;
      }
  
@@ -197,7 +186,7 @@ index 8a6b452364..0d3f4bd290 100644
      // latch from the original demuxer payload, before Convert() can strip or
      // rewrite it. Dual-track streams are latched from the base layer at pair
      // completion: the EL carries its own static SEIs with different values
-@@ -855,6 +908,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -855,6 +904,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
  
        m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
  
@@ -207,7 +196,7 @@ index 8a6b452364..0d3f4bd290 100644
        m_processInfo.SetDoviIsFEL(doviIsFEL);
        m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
  
-@@ -866,6 +922,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -866,6 +918,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          m_Codec = nullptr;
        }
  
