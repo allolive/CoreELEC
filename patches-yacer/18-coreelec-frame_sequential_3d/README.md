@@ -125,9 +125,8 @@ The Kodi patches:
   already out goes as a drop rather than stepping the film back.
 - 44 takes a whole-refresh 3D picture offset out of the frame latency at each
   start and resume, once settled, clock and audio untouched.
-- 48 keeps the 3D output when an HDR10 or HLG film's HDR type arrives after
-  HFR VRR is on: the kernel signals it frame by frame, and 1080p165 was set
-  a second time. Dolby Vision still sets the mode for its tunnel.
+- 48 is gone: keeping the 3D output when a film's HDR type arrives after HFR
+  VRR is on is now part of `24-coreelec-hdr_signalling` 02.
 - 49 turns the depths' file into one for every value kept for a film on this
   player (`films.json`, read from `stereodepth.json` once), so the Blu-ray
   region of group 23 is kept there too.

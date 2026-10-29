@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 -0400
+Subject: [PATCH] AML: report HDR10+ that is removed for the sink
+
+HDR10+ that is stripped for a sink without it was never reported: the
+converter does not look for what it is told to remove, so the player
+showed plain HDR10. The HDR10+ the codec latches from the packet before
+conversion is now reported once the decoder has opened, so the decoder
+itself still treats the stream as HDR10.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+index 08c83d4c1c..f8e752580f 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -918,6 +918,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+         m_Codec = nullptr;
+       }
+ 
++      // The converter does not look for HDR10+ it is told to remove. Reported
++      // only after the decoder opened, which still treats the stream as HDR10.
++      if (!IsHdr10Plus && m_stripHdr10Plus && !m_pendingMeta.hdr10pSei.empty())
++      {
++        m_processInfo.SetIsHdr10Plus(true);
++        m_streamMeta.flags.push_back("hdr10plus-removed");
++        m_pendingMeta.flags = m_streamMeta.flags;
++      }
++
+       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
+ 
+       m_opened = true;
