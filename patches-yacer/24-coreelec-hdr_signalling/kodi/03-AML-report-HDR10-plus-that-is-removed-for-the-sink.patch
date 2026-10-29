@@ -9,13 +9,57 @@ showed plain HDR10. The HDR10+ the codec latches from the packet before
 conversion is now reported once the decoder has opened, so the decoder
 itself still treats the stream as HDR10.
 
+Both ways of seeing it, the converter's and the packet's, now set the
+flag through one helper that adds it once.
+
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
 diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-index 08c83d4c1c..f8e752580f 100644
+index 08c83d4c1c..12f059e4ad 100644
 --- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
 +++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
-@@ -918,6 +918,15 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+@@ -466,7 +466,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
+     if (!caps.SupportsHDR10Plus())
+     {
+       m_bitstream->SetRemoveHdr10Plus(true);
+-      // the flag waits until the converter proves the stream carries HDR10+
++      // the flag waits until HDR10+ is seen, by the converter or in the packet
+       m_stripHdr10Plus = true;
+     }
+     if (caps.SupportsDolbyVision() == DolbyVisionFormat::DOLBYVISION_TYPE_NONE &&
+@@ -692,6 +692,15 @@ void CDVDVideoCodecAmlogic::OpenAsInbandDovi()
+             __FUNCTION__, profile, dovi.dv_bl_signal_compatibility_id);
+ }
+ 
++void CDVDVideoCodecAmlogic::MarkHdr10PlusRemoved()
++{
++  if (std::find(m_streamMeta.flags.begin(), m_streamMeta.flags.end(), "hdr10plus-removed") !=
++      m_streamMeta.flags.end())
++    return;
++  m_streamMeta.flags.push_back("hdr10plus-removed");
++  m_pendingMeta.flags = m_streamMeta.flags;
++}
++
+ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+ {
+   m_seekPreroll.SetDrop((m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0);
+@@ -855,13 +864,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
+       m_h10p.RewriteAu(pData, iSize);
+       doviIsFEL = m_bitstream->GetDoviIsFEL();
+       IsHdr10Plus = m_bitstream->GetIsHdrPlus();
+-      if (IsHdr10Plus && m_stripHdr10Plus &&
+-          std::find(m_streamMeta.flags.begin(), m_streamMeta.flags.end(), "hdr10plus-removed") ==
+-              m_streamMeta.flags.end())
+-      {
+-        m_streamMeta.flags.push_back("hdr10plus-removed");
+-        m_pendingMeta.flags = m_streamMeta.flags;
+-      }
++      if (IsHdr10Plus && m_stripHdr10Plus)
++        MarkHdr10PlusRemoved();
+     }
+     else if (!m_has_keyframe && m_bitparser)
+     {
+@@ -918,6 +922,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
          m_Codec = nullptr;
        }
  
@@ -24,10 +68,21 @@ index 08c83d4c1c..f8e752580f 100644
 +      if (!IsHdr10Plus && m_stripHdr10Plus && !m_pendingMeta.hdr10pSei.empty())
 +      {
 +        m_processInfo.SetIsHdr10Plus(true);
-+        m_streamMeta.flags.push_back("hdr10plus-removed");
-+        m_pendingMeta.flags = m_streamMeta.flags;
++        MarkHdr10PlusRemoved();
 +      }
 +
        m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
  
        m_opened = true;
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+index 0f82451517..87366f2f5c 100644
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h
+@@ -131,6 +131,7 @@ protected:
+   std::vector<uint8_t> m_frameNumBuffer;
+ private:
+   void OpenAsInbandDovi();
++  void MarkHdr10PlusRemoved();
+ 
+   std::shared_ptr<CAMLVideoBufferPool> m_videoBufferPool;
+   static std::atomic<bool> m_InstanceGuard;

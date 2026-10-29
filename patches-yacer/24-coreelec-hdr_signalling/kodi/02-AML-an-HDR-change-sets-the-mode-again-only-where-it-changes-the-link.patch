@@ -23,8 +23,8 @@ second time 0.3 s later, resetting the TV, the eARC link and the
 receiver once more. The 3D output patches carried that as a special
 case of their own.
 
-Where the window is kept, the new HDR type is recorded, so the next
-change is judged from it.
+The HDR type is recorded as soon as it is judged, so the next change is
+judged from it whether the window was kept or made again.
 
 Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
 ---
@@ -66,7 +66,7 @@ index 755201720e..fcea3e78a6 100644
  int aml_amdv_wait(StreamHdrType hdrType);
  void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
 diff --git a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
-index 23771eab17..35aa536d6a 100644
+index 23771eab17..1efd3332ea 100644
 --- a/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 +++ b/xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp
 @@ -123,7 +123,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
@@ -78,11 +78,20 @@ index 23771eab17..35aa536d6a 100644
    // Without HDMI 3D, a stereo mode changes the output only by entering or
    // leaving HFR VRR.
    bool force_mode_switch_by_stereo_mode =
-@@ -197,6 +197,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
-       !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
-   {
-     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
-+    m_hdrType = hdrType;
-     // the surface stays as it is, stacked HFR VRR GUI included
-     int eyeWidth = 0;
-     int eyeHeight = 0;
+@@ -146,6 +146,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+ 
+   const std::string new_hdrStr = CStreamDetails::HdrTypeToString(hdrType);
+   const std::string old_hdrStr = CStreamDetails::HdrTypeToString(m_hdrType);
++  // the next change is judged from this one, window kept or not
++  m_hdrType = hdrType;
+   CLog::Log(LOGDEBUG,
+             "CWinSystemAmlogicGLESContext::{}: "
+             "m_bWindowCreated: {}, "
+@@ -235,7 +237,6 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: force mode switch", __FUNCTION__);
+ 
+   // refresh backup data
+-  m_hdrType = hdrType;
+   m_stereo_mode = stereo_mode;
+   m_bFullScreen = fullScreen;
+   m_nativeGUI = nativeGUI;
