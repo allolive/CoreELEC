@@ -16,12 +16,12 @@ The force is now kept where the HDR type does decide the link: Dolby
 Vision on either side, or a conversion the user set (the VS10 modes and
 the forced SDR/HDR output).
 
-Frame-sequential 3D in HFR VRR keeps its mode for any HDR type but
-Dolby Vision, a conversion included, and that rule moves here from the
-3D output patches: Kodi learns a film's HDR type from its first
-configured picture, which can come a moment after the stereo mode has
-entered HFR VRR, and the second mode set 0.3 s later reset the TV, the
-eARC link and the receiver once more.
+The same rule covers frame-sequential 3D in HFR VRR, where Kodi learns a
+film's HDR type from its first configured picture, a moment after the
+stereo mode has entered HFR VRR: an HDR10 film no longer sets 1080p165 a
+second time 0.3 s later, resetting the TV, the eARC link and the
+receiver once more. The 3D output patches carried that as a special
+case of their own.
 
 Where the window is kept, the new HDR type is recorded, so the next
 change is judged from it.
@@ -78,18 +78,7 @@ index 23771eab17..35aa536d6a 100644
    // Without HDMI 3D, a stereo mode changes the output only by entering or
    // leaving HFR VRR.
    bool force_mode_switch_by_stereo_mode =
-@@ -183,6 +183,10 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
-   // the output's 120/119.88 Hz follows the film there, not Kodi's resolution
-   if (fs3d_same)
-     force_mode_switch_by_fractional_rate = false;
-+  // HFR VRR keeps its mode for any HDR type but Dolby Vision, a conversion included
-+  if (fs3d_same && hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
-+      m_hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION)
-+    force_mode_switch_by_hdr = false;
- 
-   // check if mode switch is needed
-   if ((fs3d_same ||
-@@ -197,6 +201,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
+@@ -197,6 +197,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
        !force_mode_switch_by_stereo_mode && !force_mode_switch_by_fs3d_rate)
    {
      CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
