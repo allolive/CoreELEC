@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 23:40:00 -0400
+Subject: [PATCH] VideoPlayer: a file's settings keep the subtitle position
+
+Text subtitles of an episode started with Play Next, while the one before
+was ending, sat at the top of the screen for the whole episode. Stopping and
+playing again put them back at the bottom.
+
+The renderer works the position out itself, and only again when the frame
+height changes. Play Next keeps the player and its renderer: the position
+is worked out from the first frame, and then playback start loads the new
+file's video settings and hands them to the player. A file stores no
+subtitle position, so they carry 0, which the renderer takes as its
+position - the top - and the frame height has not changed for it to work
+it out again. A fresh start loads the settings before the renderer has a
+frame, so it works the position out after them.
+
+A file's settings now keep the subtitle position the player already has.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/VideoPlayer.cpp b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+--- a/xbmc/cores/VideoPlayer/VideoPlayer.cpp
++++ b/xbmc/cores/VideoPlayer/VideoPlayer.cpp
+@@ -7722,6 +7722,11 @@
+ 
+ void CVideoPlayer::SetVideoSettings(CVideoSettings& settings)
+ {
++  // a file stores no subtitle position: keep the one the renderer set for this resolution
++  const CVideoSettings current{m_processInfo->GetVideoSettings()};
++  settings.m_subtitleVerticalPosition = current.m_subtitleVerticalPosition;
++  settings.m_subtitleVerticalPositionSave = current.m_subtitleVerticalPositionSave;
++
+   m_processInfo->SetVideoSettings(settings);
+   m_renderManager.SetVideoSettings(settings);
+   m_renderManager.SetDelay(static_cast<int>(settings.m_AudioDelay * 1000.0f));
