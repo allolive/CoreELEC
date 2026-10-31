@@ -17,3 +17,10 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/share/kodi/addons
   cp -a ${PKG_BUILD} ${INSTALL}/usr/share/kodi/addons/${PKG_NAME}
 }
+
+post_makeinstall_target() {
+  # a box coming from stock CoreELEC moves to this skin once
+  mkdir -p ${INSTALL}/usr/lib/kodi ${INSTALL}/usr/lib/systemd/system/kodi.service.d
+  cp ${PKG_DIR}/scripts/yacer-skin ${INSTALL}/usr/lib/kodi
+  cp ${PKG_DIR}/system.d/kodi.service.d/yacer-skin.conf ${INSTALL}/usr/lib/systemd/system/kodi.service.d
+}

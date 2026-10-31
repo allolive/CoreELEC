@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Ours: the first start of these builds on a box that ran stock CoreELEC moves
+# it from stock Estuary to ours, once. A new profile already starts on ours
+# (kodi-config copies the build's guisettings.xml); a skin chosen later,
+# Estuary included, and any other skin the box was on, stay.
+
+DONE=/storage/.cache/yacer-skin
+GUI=/storage/.kodi/userdata/guisettings.xml
+SETTING="/settings/setting[@id='lookandfeel.skin']"
+
+[ -f "${DONE}" ] && exit 0
+
+# no settings yet, or unreadable: the next start, once Kodi has saved them
+skin=$(xmlstarlet sel -t -v "${SETTING}" "${GUI}" 2>/dev/null) || exit 0
+
+# without default="true", which Kodi would reset to its own default, Estuary
+if [ "${skin}" = "skin.estuary" ]; then
+  xmlstarlet ed --omit-decl --inplace -u "${SETTING}" -v skin.estuary.allolive \
+    -d "${SETTING}/@default" "${GUI}" || exit 0
+fi
+touch "${DONE}"
