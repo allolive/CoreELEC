@@ -11,7 +11,8 @@
 
 namespace
 {
-enum { AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_HEVC, AV_PKT_DATA_DOVI_CONF,
+enum AVCodecID { AV_CODEC_ID_NONE, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_MJPEG };
+enum { AVMEDIA_TYPE_VIDEO, AV_PKT_DATA_DOVI_CONF,
        AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AVCOL_TRC_SMPTE2084,
        AVCOL_TRC_ARIB_STD_B67, AVCOL_TRC_BT709, AVCOL_SPC_ICTCP, AVCOL_SPC_IPT_C2,
        AVCOL_SPC_UNSPECIFIED, AVCOL_SPC_BT2020_NCL, AVCOL_SPC_BT709, AVCOL_PRI_BT2020,
@@ -29,7 +30,8 @@ struct AVDictionaryEntry { const char* value; };
 using AVDictionary = std::map<std::string, AVDictionaryEntry>;
 struct AVCodecParameters
 {
-  int codec_type{AVMEDIA_TYPE_VIDEO}, codec_id{AV_CODEC_ID_HEVC};
+  int codec_type{AVMEDIA_TYPE_VIDEO};
+  AVCodecID codec_id{AV_CODEC_ID_HEVC};
   int width{}, height{}, color_trc{AVCOL_TRC_SMPTE2084};
   const AVPacketSideData* coded_side_data{};
   int nb_coded_side_data{};
@@ -77,6 +79,7 @@ struct CDemuxStream
 {
   virtual ~CDemuxStream() = default;
   StreamType type{StreamType::VIDEO};
+  AVCodecID codec{AV_CODEC_ID_NONE};
   int uniqueId{};
 };
 struct CDemuxStreamVideo : CDemuxStream
@@ -207,6 +210,39 @@ TEST_F(DolbyVisionDemux, ContainerRecordTakesPriorityOverLegacyTags)
   ASSERT_NE(demux.AddPairingStream(0), nullptr);
   ASSERT_NE(demux.AddPairingStream(1), nullptr);
   EXPECT_EQ(static_cast<CDemuxStreamVideo*>(demux.m_streams.at(0))->dovi.dv_profile, 8);
+}
+
+// A cover picture kept as a video track is never the base layer of the film.
+TEST_F(DolbyVisionDemux, CoverPictureIsNotADolbyVisionLayer)
+{
+  const AVDOVIDecoderConfigurationRecord config{1, 0, 8, 6, 1, 0, 1, 1};
+  const AVPacketSideData sideData{AV_PKT_DATA_DOVI_CONF, sizeof(config), &config};
+  AVCodecParameters filmCodec, coverCodec;
+  filmCodec.width = coverCodec.width = 3840;
+  filmCodec.height = coverCodec.height = 2160;
+  filmCodec.coded_side_data = &sideData;
+  filmCodec.nb_coded_side_data = 1;
+  coverCodec.codec_id = AV_CODEC_ID_MJPEG;
+  const AVDictionary none;
+  AVStream film{0, 0, 0, &filmCodec, &none};
+  AVStream cover{1, 0, 0, &coverCodec, &none};
+  AVStream* streams[]{&film, &cover};
+  AVInputFormat format{"matroska"};
+  AVFormatContext context{&format, 2, streams};
+  for (const auto order : {std::array<int, 2>{0, 1}, std::array<int, 2>{1, 0}})
+  {
+    SCOPED_TRACE(testing::PrintToString(order));
+    CDVDDemuxFFmpeg demux{&context, {}};
+    for (const int index : order)
+      ASSERT_NE(demux.AddPairingStream(index), nullptr);
+    const auto* filmStream = static_cast<CDemuxStreamVideo*>(demux.m_streams.at(0));
+    const auto* coverStream = static_cast<CDemuxStreamVideo*>(demux.m_streams.at(1));
+    EXPECT_EQ(filmStream->hdr_type, StreamHdrType::HDR_TYPE_DOLBYVISION);
+    EXPECT_FALSE(filmStream->isDualStream);
+    EXPECT_FALSE(filmStream->isELStream);
+    EXPECT_FALSE(coverStream->isDualStream);
+    EXPECT_FALSE(coverStream->isELStream);
+  }
 }
 
 TEST_F(DolbyVisionDemux, LegacyDetectionRequiresMatroskaAndEnabledDolbyVision)

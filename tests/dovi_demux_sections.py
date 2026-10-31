@@ -35,6 +35,7 @@ pieces.append('''CDemuxStream* CDVDDemuxFFmpeg::AddPairingStream(int streamIdx)
   st->uniqueId = streamIdx;
   CDemuxStream* stream = st;
 ''' + source[start:end] + '''
+  stream->codec = pStream->codecpar->codec_id;
   m_streams.emplace(streamIdx, stream);
   return stream;
 }
