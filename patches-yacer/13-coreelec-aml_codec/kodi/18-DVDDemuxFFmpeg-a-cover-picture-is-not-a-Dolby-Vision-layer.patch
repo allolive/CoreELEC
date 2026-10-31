@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 00:00:00 -0400
+Subject: [PATCH] DVDDemuxFFmpeg: a cover picture is not a Dolby Vision layer
+
+A dual-layer Dolby Vision file carries its base and enhancement layers as
+two video tracks, and the demuxer pairs a Dolby Vision track with any
+other video track it finds. A cut of a single-layer Dolby Vision film
+kept its cover picture as a one-frame MJPEG video track: the film was
+taken for the enhancement layer of the cover, and the player, which
+never opens an enhancement layer on its own, played the cover instead
+of the film.
+
+Both layers of a pair are HEVC or AVC now, and the base layer looked
+up for an enhancement layer is one too, so a picture track is left as
+the extra track it is and the film plays.
+
+The pairing is CoreELEC's own Dolby Vision code in the shared demuxer,
+so the change has to be there.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+--- a/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
++++ b/xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemuxFFmpeg.cpp
+@@ -2241,7 +2241,7 @@
+ 
+         // check if it's dual video stream and one of it is type DV
+         auto it = std::find_if(m_streams.begin(), m_streams.end(),
+-          [&st, &matchesLegacyPartner](const std::pair<int, CDemuxStream*>& v)
++          [&st, &matchesLegacyPartner, pStream](const std::pair<int, CDemuxStream*>& v)
+           {
+             if (v.second->type != StreamType::VIDEO)
+               return false;
+@@ -2249,6 +2249,11 @@
+             if (!matchesLegacyPartner(v.first))
+               return false;
+             CDemuxStreamVideo* vs = static_cast<CDemuxStreamVideo*>(v.second);
++            // both layers are HEVC or AVC: a cover picture is not a base layer
++            const AVCodecID codec = pStream->codecpar->codec_id;
++            if ((vs->codec != AV_CODEC_ID_HEVC && vs->codec != AV_CODEC_ID_H264) ||
++                (codec != AV_CODEC_ID_HEVC && codec != AV_CODEC_ID_H264))
++              return false;
+             return (vs->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
+                    (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION);
+           });
+@@ -2274,7 +2279,9 @@
+ 
+                   if (!matchesLegacyPartner(v.first))
+                     return false;
+-                  return static_cast<CDemuxStreamVideo*>(v.second)->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION;
++                  const auto* vs = static_cast<CDemuxStreamVideo*>(v.second);
++                  return vs->hdr_type != StreamHdrType::HDR_TYPE_DOLBYVISION &&
++                         (vs->codec == AV_CODEC_ID_HEVC || vs->codec == AV_CODEC_ID_H264);
+                 });
+ 
+               if (it != m_streams.end())
