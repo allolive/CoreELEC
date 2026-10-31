@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: allolive <160342668+allolive@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 00:00:00 -0400
+Subject: [PATCH] DVDVideoCodecAmlogic: MJPEG is decoded in software
+
+A cut of a film kept its cover picture, a 3840x2160 JPEG, as a second
+video track of a single frame. Playing it, the hardware MJPEG decoder
+was created for that track and the S6 locked up at once: no panic
+message, no trace, a reset by the watchdog.
+
+MJPEG is no longer opened on the hardware decoder, so Kodi decodes it
+with FFmpeg, as it does on every other platform: a cover picture or a
+camera clip costs little to decode in software, and no file can take
+the box down through it.
+
+Signed-off-by: allolive <160342668+allolive@users.noreply.github.com>
+---
+diff --git a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+--- a/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
++++ b/xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp
+@@ -157,8 +157,8 @@
+   switch(m_hints.codec)
+   {
+     case AV_CODEC_ID_MJPEG:
+-      m_pFormatName = "am-mjpeg";
+-      break;
++      // decoded in software: the hardware locked the chip on a 4K picture
++      goto FAIL;
+     case AV_CODEC_ID_MPEG1VIDEO:
+     case AV_CODEC_ID_MPEG2VIDEO:
+       if (m_hints.width <= CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG2))
